@@ -2,5 +2,87 @@
 name = "rust_swe_agent"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Rust port of mini-swe-agent: a ~100-line agent loop with bash-only tool semantics"
+license = "MIT"
+
+[lib]
+name = "rust_swe_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-swe-agent"
+path = "src/main.rs"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Errors / logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Templates & config
+minijinja = { version = "2", features = ["loader"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+dialoguer = "0.11"
+indicatif = "0.17"
+
+# HTTP (for AnthropicBackend — see note below)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+
+# NOTE on model backend:
+# The original plan called for `litellm-rs`. On inspection, that crate on crates.io
+# is a full proxy *server* (it pulls in actix-web, sea-orm, redis, dotenvy, etc.),
+# not a client library for multi-provider dispatch. Using it would drag in a web
+# framework and a database migration system for no gain. Since the entire point
+# of the `Model` trait is to insulate the rest of the code from backend choice,
+# we implement a small direct-reqwest `AnthropicBackend` instead. Any future
+# backend (OpenAI, OpenRouter, or a client to a running litellm proxy) slots in
+# behind the same trait without touching agent/env/trajectory code.
+
+[dev-dependencies]
+proptest = "1"
+insta = { version = "1", features = ["json", "yaml"] }
+tempfile = "3"
+pretty_assertions = "1"
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[features]
+default = []
+docker = []
+live-anthropic = []
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Overly noisy / low-value pedantic lints:
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+doc_lazy_continuation = "allow"
+too_long_first_doc_paragraph = "allow"
+needless_raw_string_hashes = "allow"
+missing_const_for_fn = "allow"
+struct_field_names = "allow"
+default_trait_access = "allow"
+option_if_let_else = "allow"
+# Correctness-style lints: keep strict in lib code.
+unwrap_used = "deny"
+expect_used = "deny"
