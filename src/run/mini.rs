@@ -10,9 +10,9 @@ use crate::config::{Config, EnvKind};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment};
-use crate::error::{Error, ModelError};
-use crate::model::litellm::is_anthropic_model;
-use crate::model::{AnthropicBackend, DeterministicModel, Model};
+use crate::error::Error;
+use crate::model::litellm::LitellmBackend;
+use crate::model::{DeterministicModel, Model};
 
 pub struct MiniArgs {
     pub task: String,
@@ -26,7 +26,7 @@ pub struct MiniArgs {
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
-    let model = build_model(&args.config, args.deterministic_responses)?;
+    let model = build_model(&args.config, args.deterministic_responses);
     let env = build_env(&args.config).await?;
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
@@ -57,22 +57,16 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     Ok(())
 }
 
-fn build_model(cfg: &Config, deterministic: Option<Vec<String>>) -> Result<Arc<dyn Model>, Error> {
+fn build_model(cfg: &Config, deterministic: Option<Vec<String>>) -> Arc<dyn Model> {
     if let Some(responses) = deterministic {
-        return Ok(Arc::new(DeterministicModel::new(responses)));
+        return Arc::new(DeterministicModel::new(responses));
     }
-    let name = &cfg.root.model.name;
-    if is_anthropic_model(name) {
-        let key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| ModelError::MissingCredentials("ANTHROPIC_API_KEY not set".into()))?;
-        let backend =
-            AnthropicBackend::new(name.clone(), key)?.with_max_tokens(cfg.root.model.max_tokens);
-        Ok(Arc::new(backend))
-    } else {
-        Err(Error::Model(ModelError::Request(format!(
-            "no backend registered for model `{name}` — supported prefixes: claude*, anthropic/*"
-        ))))
-    }
+    // `LitellmBackend` dispatches by model prefix; credentials come from
+    // the usual provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+    // …) the way Python LiteLLM expects.
+    let backend =
+        LitellmBackend::new(cfg.root.model.name.clone()).with_max_tokens(cfg.root.model.max_tokens);
+    Arc::new(backend)
 }
 
 async fn build_env(cfg: &Config) -> Result<Box<dyn Environment>, Error> {

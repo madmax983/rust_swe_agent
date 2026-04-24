@@ -20,7 +20,7 @@ pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
 pub use error::{ConfigError, EnvError, Error, ModelError};
 pub use model::{
-    AnthropicBackend, CacheHint, DeterministicModel, Message, MessageExtra, Model, ModelResponse,
-    ModelUsage, QueryOpts, Role,
+    AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
+    ModelResponse, ModelUsage, QueryOpts, Role,
 };
 pub use trajectory::{FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo};

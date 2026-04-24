@@ -1,164 +1,85 @@
-//! `AnthropicBackend`: a direct `reqwest`-based client for Anthropic's
-//! Messages API. See the note in `Cargo.toml` about why we did not use the
-//! `litellm-rs` crate from crates.io (it's a full proxy *server*, not a
-//! client library).
+//! `LitellmBackend`: wraps `litellm-rs`'s `completion()` for multi-provider
+//! dispatch (OpenAI, Anthropic, Azure, Google, OpenRouter, etc.).
 //!
-//! This module translates our `Message` + `CacheHint` → Anthropic's message
-//! format and their `cache_control: { type: "ephemeral" }` block markers.
-//! We enforce Anthropic's 4-breakpoint cap defensively in our wrapper.
+//! Routing is by model-name prefix and is handled inside `litellm-rs`.
+//! API credentials come from env vars the way Python LiteLLM expects them
+//! (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...). We don't pass them
+//! explicitly.
 //!
-//! The module is kept narrow on purpose — everything provider-specific lives
-//! here; the agent loop stays backend-agnostic.
+//! ## Cache hints
+//! Our `CacheHint::Auto`/`Breakpoint` are advisory. We still apply the
+//! 4-breakpoint cap defensively before handing off — this preserves the
+//! architectural invariant ("agent loop is naive about caps") even where
+//! the upstream doesn't currently propagate cache markers on plain-text
+//! parts. `litellm-rs` 0.4.16's `ContentPart::Text` has no
+//! `cache_control` field, so explicit per-text-block cache markers are a
+//! known gap there. The Anthropic provider still benefits from
+//! prompt-prefix automatic caching when enabled.
+//!
+//! ## Cost
+//! After a successful call we ask `litellm-rs`'s built-in cost calculator
+//! (`generic_cost_per_token`) for a USD figure. If the model isn't in its
+//! pricing table, `cost_usd` stays `None`.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
-use super::{
-    CacheHint, Message, Model, ModelResponse, ModelUsage, QueryOpts, Role, cap_breakpoints,
-};
+use litellm_rs::core::cost::{UsageTokens, generic_cost_per_token};
+use litellm_rs::{CompletionOptions, assistant_message, completion, system_message, user_message};
+
+use super::{Message, Model, ModelResponse, ModelUsage, QueryOpts, Role, cap_breakpoints};
 use crate::error::ModelError;
 
-const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
 const BREAKPOINT_CAP: usize = 4;
 
-pub struct AnthropicBackend {
+pub struct LitellmBackend {
     model: String,
-    api_key: String,
-    base_url: String,
-    client: reqwest::Client,
-    max_tokens_default: u32,
+    /// Optional override for `max_tokens`. Falls back to `QueryOpts.max_tokens`.
+    default_max_tokens: Option<u32>,
 }
 
-impl AnthropicBackend {
-    pub fn new(model: impl Into<String>, api_key: impl Into<String>) -> Result<Self, ModelError> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| ModelError::Request(e.to_string()))?;
-        Ok(Self {
+impl LitellmBackend {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
             model: model.into(),
-            api_key: api_key.into(),
-            base_url: ANTHROPIC_API.to_owned(),
-            client,
-            max_tokens_default: 4096,
-        })
-    }
-
-    /// For tests: point at a mock server.
-    #[must_use]
-    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = url.into();
-        self
+            default_max_tokens: None,
+        }
     }
 
     #[must_use]
     pub fn with_max_tokens(mut self, n: u32) -> Self {
-        self.max_tokens_default = n;
+        self.default_max_tokens = Some(n);
         self
     }
 }
 
-/// Prefix dispatch: route by leading token of the model name. We currently
-/// only *serve* Anthropic, but the dispatch helper lives here so the backend
-/// map has an obvious home when we add more.
+/// Anthropic-family detection. Used by the agent and CLI to decide whether
+/// to advertise explicit-cache support — `litellm-rs` will route correctly
+/// either way.
 pub fn is_anthropic_model(name: &str) -> bool {
     let n = name.strip_prefix("anthropic/").unwrap_or(name);
     n.starts_with("claude")
 }
 
-#[derive(Serialize)]
-struct AnthropicSystemBlock<'a> {
-    #[serde(rename = "type")]
-    ty: &'a str,
-    text: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
-#[derive(Serialize)]
-struct AnthropicContentBlock<'a> {
-    #[serde(rename = "type")]
-    ty: &'a str,
-    text: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
-#[derive(Serialize)]
-struct AnthropicMessage<'a> {
-    role: &'a str,
-    content: Vec<AnthropicContentBlock<'a>>,
-}
-
-#[derive(Serialize, Clone, Copy)]
-struct CacheControl {
-    #[serde(rename = "type")]
-    ty: &'static str,
-}
-
-impl CacheControl {
-    const EPHEMERAL: Self = Self { ty: "ephemeral" };
-}
-
-#[derive(Serialize)]
-struct AnthropicRequest<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    messages: Vec<AnthropicMessage<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    system: Vec<AnthropicSystemBlock<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-}
-
-#[derive(Deserialize, Debug)]
-struct AnthropicResponse {
-    content: Vec<AnthropicResponseBlock>,
-    #[serde(default)]
-    usage: AnthropicUsage,
-}
-
-#[derive(Deserialize, Debug, Default)]
-struct AnthropicUsage {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: u64,
-    #[serde(default)]
-    cache_creation_input_tokens: u64,
-}
-
-#[derive(Deserialize, Debug)]
-struct AnthropicResponseBlock {
-    #[serde(rename = "type")]
-    ty: String,
-    #[serde(default)]
-    text: String,
-}
-
-fn cache_control_for(hint: CacheHint) -> Option<CacheControl> {
-    match hint {
-        CacheHint::None => None,
-        // Auto and Breakpoint both map to ephemeral — the only kind Anthropic
-        // exposes today. The difference between them is one of intent: the
-        // agent uses Breakpoint for stable long-lived content and Auto for
-        // rolling windows. Anthropic doesn't distinguish, so neither do we.
-        CacheHint::Auto | CacheHint::Breakpoint => Some(CacheControl::EPHEMERAL),
+/// Provider routing: same convention `litellm-rs` uses internally.
+fn parse_provider(model: &str) -> (&str, &str) {
+    if let Some(idx) = model.find('/') {
+        let (provider, rest) = model.split_at(idx);
+        (provider, &rest[1..])
+    } else if model.starts_with("claude") {
+        ("anthropic", model)
+    } else {
+        ("openai", model)
     }
 }
 
 #[async_trait]
-impl Model for AnthropicBackend {
+impl Model for LitellmBackend {
     fn name(&self) -> &str {
         &self.model
     }
 
     fn supports_explicit_cache(&self) -> bool {
-        true
+        is_anthropic_model(&self.model)
     }
 
     async fn query(
@@ -166,108 +87,118 @@ impl Model for AnthropicBackend {
         messages: &[Message],
         opts: &QueryOpts,
     ) -> Result<ModelResponse, ModelError> {
+        // Defensive 4-breakpoint cap. Even though `litellm-rs` 0.4.16
+        // doesn't currently surface per-text-part cache markers, we keep
+        // the policy because (a) it's the architectural contract our
+        // `Model` trait advertises, and (b) future versions of litellm-rs
+        // may propagate hints through `extra_params`.
         let capped = cap_breakpoints::<BREAKPOINT_CAP>(messages);
 
-        let mut system_blocks: Vec<AnthropicSystemBlock<'_>> = Vec::new();
-        let mut body_msgs: Vec<AnthropicMessage<'_>> = Vec::new();
+        let lite_msgs = capped
+            .iter()
+            .map(|m| match m.role {
+                Role::System => system_message(m.content.clone()),
+                Role::Assistant => assistant_message(m.content.clone()),
+                // Tool messages map to user role for litellm-rs's flat
+                // completion API; the `tool_call_id` round-trip would need
+                // the multi-block path which we don't use.
+                Role::User | Role::Tool => user_message(m.content.clone()),
+            })
+            .collect::<Vec<_>>();
 
-        for m in &capped {
-            match m.role {
-                Role::System => {
-                    system_blocks.push(AnthropicSystemBlock {
-                        ty: "text",
-                        text: &m.content,
-                        cache_control: cache_control_for(m.cache_hint),
-                    });
-                }
-                Role::User | Role::Tool => {
-                    body_msgs.push(AnthropicMessage {
-                        role: "user",
-                        content: vec![AnthropicContentBlock {
-                            ty: "text",
-                            text: &m.content,
-                            cache_control: cache_control_for(m.cache_hint),
-                        }],
-                    });
-                }
-                Role::Assistant => {
-                    body_msgs.push(AnthropicMessage {
-                        role: "assistant",
-                        content: vec![AnthropicContentBlock {
-                            ty: "text",
-                            text: &m.content,
-                            cache_control: cache_control_for(m.cache_hint),
-                        }],
-                    });
-                }
-            }
-        }
-
-        let req = AnthropicRequest {
-            model: &self.model,
-            max_tokens: opts.max_tokens.unwrap_or(self.max_tokens_default),
-            messages: body_msgs,
-            system: system_blocks,
+        let lite_opts = CompletionOptions {
             temperature: opts.temperature,
+            max_tokens: opts.max_tokens.or(self.default_max_tokens),
+            ..CompletionOptions::default()
         };
 
-        let resp = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&req)
-            .send()
+        let resp = completion(&self.model, lite_msgs, Some(lite_opts))
             .await
             .map_err(|e| ModelError::Request(e.to_string()))?;
 
-        let status = resp.status();
-        let raw_text = resp
-            .text()
-            .await
-            .map_err(|e| ModelError::Request(e.to_string()))?;
+        let choice = resp
+            .choices
+            .first()
+            .ok_or_else(|| ModelError::Malformed("response had zero choices".into()))?;
 
-        if !status.is_success() {
-            if status.as_u16() == 429 {
-                return Err(ModelError::RateLimited(raw_text));
-            }
-            return Err(ModelError::Request(format!("HTTP {status}: {raw_text}")));
-        }
+        let content = extract_text_content(choice);
 
-        let parsed: AnthropicResponse = serde_json::from_str(&raw_text)
-            .map_err(|e| ModelError::Malformed(format!("{e}: {raw_text}")))?;
-        let raw_json: serde_json::Value =
-            serde_json::from_str(&raw_text).map_err(|e| ModelError::Malformed(e.to_string()))?;
+        let (input_tokens, output_tokens, cache_read_tokens) =
+            resp.usage.as_ref().map_or((0, 0, 0), |u| {
+                let cached = u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .unwrap_or(0);
+                (
+                    u64::from(u.prompt_tokens),
+                    u64::from(u.completion_tokens),
+                    u64::from(cached),
+                )
+            });
 
-        let content = parsed
-            .content
-            .iter()
-            .filter(|b| b.ty == "text")
-            .map(|b| b.text.as_str())
-            .collect::<Vec<_>>()
-            .join("");
+        // Cost: try the built-in calculator. If the model isn't in the
+        // price table we leave `cost_usd = None` rather than guess.
+        let cost_usd = resp.usage.as_ref().and_then(|u| {
+            let (provider, base_model) = parse_provider(&self.model);
+            let usage_tokens = UsageTokens::from(u.clone());
+            generic_cost_per_token(base_model, &usage_tokens, provider)
+                .ok()
+                .map(|breakdown| {
+                    breakdown.input_cost
+                        + breakdown.output_cost
+                        + breakdown.cache_cost
+                        + breakdown.reasoning_cost
+                })
+        });
+
+        let raw = serde_json::to_value(&resp)
+            .map_err(|e| ModelError::Malformed(format!("response not JSON-serializable: {e}")))?;
 
         Ok(ModelResponse {
             content,
             usage: ModelUsage {
-                input_tokens: parsed.usage.input_tokens,
-                output_tokens: parsed.usage.output_tokens,
-                cache_read_tokens: parsed.usage.cache_read_input_tokens,
-                cache_creation_tokens: parsed.usage.cache_creation_input_tokens,
-                cost_usd: None, // We do not maintain a price table; leave None.
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens: 0, // Not surfaced by litellm-rs Usage.
+                cost_usd,
             },
-            raw: raw_json,
+            raw,
         })
     }
 }
+
+fn extract_text_content(choice: &litellm_rs::Choice) -> String {
+    use litellm_rs::core::types::content::ContentPart;
+    use litellm_rs::core::types::message::MessageContent;
+
+    match &choice.message.content {
+        Some(MessageContent::Text(t)) => t.clone(),
+        Some(MessageContent::Parts(parts)) => parts
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        None => String::new(),
+    }
+}
+
+/// Backwards-compatible alias for code that previously referenced the
+/// direct-reqwest `AnthropicBackend`. The single `LitellmBackend` now
+/// covers all providers; `is_anthropic_model` still gates the explicit-cache
+/// claim in the trait.
+pub type AnthropicBackend = LitellmBackend;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn model_prefix_dispatch() {
+    fn detects_anthropic_models() {
         assert!(is_anthropic_model("claude-opus-4-7"));
         assert!(is_anthropic_model("anthropic/claude-sonnet-4-6"));
         assert!(!is_anthropic_model("gpt-4"));
@@ -275,9 +206,26 @@ mod tests {
     }
 
     #[test]
-    fn cache_control_mapping() {
-        assert!(cache_control_for(CacheHint::None).is_none());
-        assert!(cache_control_for(CacheHint::Auto).is_some());
-        assert!(cache_control_for(CacheHint::Breakpoint).is_some());
+    fn parses_provider_prefix() {
+        assert_eq!(parse_provider("gpt-4o"), ("openai", "gpt-4o"));
+        assert_eq!(
+            parse_provider("anthropic/claude-opus-4-7"),
+            ("anthropic", "claude-opus-4-7")
+        );
+        assert_eq!(
+            parse_provider("claude-opus-4-7"),
+            ("anthropic", "claude-opus-4-7")
+        );
+        assert_eq!(parse_provider("openrouter/x/y"), ("openrouter", "x/y"));
+    }
+
+    #[test]
+    fn backend_advertises_capabilities() {
+        let b = LitellmBackend::new("claude-opus-4-7").with_max_tokens(2048);
+        assert_eq!(b.name(), "claude-opus-4-7");
+        assert!(b.supports_explicit_cache());
+
+        let b2 = LitellmBackend::new("gpt-4");
+        assert!(!b2.supports_explicit_cache());
     }
 }

@@ -17,7 +17,7 @@ pub mod deterministic;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
-pub use litellm::AnthropicBackend;
+pub use litellm::{AnthropicBackend, LitellmBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

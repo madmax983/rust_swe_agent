@@ -39,21 +39,25 @@ clap = { version = "4", features = ["derive", "env"] }
 dialoguer = "0.11"
 indicatif = "0.17"
 
-# HTTP (for AnthropicBackend — see note below)
+# HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
+# escape hatch if any backend needs raw HTTP).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Multi-provider LLM dispatch. Default features pull in the gateway server
+# stack (actix-web, sea-orm, redis); we want only the library API
+# (`completion`, `system_message`, `user_message`, response types,
+# CacheControl). `default-features = false` strips the gateway.
+litellm-rs = { version = "*", default-features = false }
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 
 # NOTE on model backend:
-# The original plan called for `litellm-rs`. On inspection, that crate on crates.io
-# is a full proxy *server* (it pulls in actix-web, sea-orm, redis, dotenvy, etc.),
-# not a client library for multi-provider dispatch. Using it would drag in a web
-# framework and a database migration system for no gain. Since the entire point
-# of the `Model` trait is to insulate the rest of the code from backend choice,
-# we implement a small direct-reqwest `AnthropicBackend` instead. Any future
-# backend (OpenAI, OpenRouter, or a client to a running litellm proxy) slots in
-# behind the same trait without touching agent/env/trajectory code.
+# `litellm-rs` ships a library API (`completion`, message constructors,
+# response types, CacheControl) AND a gateway binary. The default features
+# build the gateway, which drags in actix-web/sea-orm/redis. We disable
+# default features to keep just the library surface — multi-provider
+# dispatch behind a single `completion()` call, which is what we want.
 
 [dev-dependencies]
 proptest = "1"
