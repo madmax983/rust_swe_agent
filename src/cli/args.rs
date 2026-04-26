@@ -49,6 +49,33 @@ pub struct HelloWorldCmd {
     pub output: PathBuf,
 }
 
+#[derive(Debug, Args)]
+pub struct ReplayCmd {
+    /// Path to the original trajectory JSON file.
+    #[arg(long)]
+    pub trajectory_path: PathBuf,
+
+    /// Optional path to a YAML config (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
+
+    /// Output directory for trajectories.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Override trajectory filename (default: derived from task).
+    #[arg(long)]
+    pub trajectory_name: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
