@@ -90,6 +90,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         .clone()
         .unwrap_or_else(|| crate::run::mini::slugify(&m.task));
 
+    let stream_addr = match &m.stream {
+        Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid --stream address `{s}`: {e}"
+            )))
+        })?),
+        None => None,
+    };
+
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -97,6 +106,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         output_dir: m.output,
         trajectory_name,
         deterministic_responses: None,
+        stream_addr,
     };
     crate::run::mini::run(args).await
 }

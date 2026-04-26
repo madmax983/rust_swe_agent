@@ -28,6 +28,7 @@ async fn two_turn_echo_submit_produces_well_formed_trajectory() {
         task: "round trip".into(),
         extra_context: None,
         renderer: None,
+        stream: None,
     }
     .build()
     .unwrap();

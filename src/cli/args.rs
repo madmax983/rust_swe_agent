@@ -41,6 +41,12 @@ pub struct MiniCmd {
     /// Override trajectory filename (default: slugified task).
     #[arg(long)]
     pub trajectory_name: Option<String>,
+
+    /// Stream trajectory events over HTTP/SSE on the given `host:port`
+    /// (e.g. `127.0.0.1:7878`). Use port `0` to let the OS pick. When
+    /// unset, no server is started.
+    #[arg(long)]
+    pub stream: Option<String>,
 }
 
 #[derive(Debug, Args)]

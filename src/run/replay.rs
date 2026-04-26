@@ -61,6 +61,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         task,
         extra_context: None,
         renderer: None,
+        stream: None,
     }
     .build()?;
 

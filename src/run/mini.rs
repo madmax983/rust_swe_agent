@@ -2,6 +2,7 @@
 //! the model name, builds `DefaultAgent`, runs to completion, writes a
 //! trajectory file and (if submitted) an output artifact.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use crate::env::{Environment, LocalEnvironment};
 use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, Model};
+use crate::stream::{BroadcastSink, SseServer, StreamSink};
 
 pub struct MiniArgs {
     pub task: String,
@@ -21,6 +23,9 @@ pub struct MiniArgs {
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
+    /// Optional SSE stream endpoint to bind. When `Some`, the runner
+    /// starts a server before the agent runs and shuts it down after.
+    pub stream_addr: Option<SocketAddr>,
 }
 
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
@@ -29,6 +34,21 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let model = build_model(&args.config, args.deterministic_responses);
     let env = build_env(&args.config).await?;
 
+    // Bring up the SSE server first so any client that connects right
+    // after CLI startup catches the `run_started` event the builder
+    // emits below.
+    let (sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) = match args.stream_addr {
+        Some(addr) => {
+            let bcast = Arc::new(BroadcastSink::default());
+            let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
+                Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
+            })?;
+            tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
+            (Some(bcast as Arc<dyn StreamSink>), Some(server))
+        }
+        None => (None, None),
+    };
+
     let mut agent: DefaultAgent = DefaultAgentBuilder {
         config: args.config.clone(),
         model,
@@ -36,6 +56,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         task: args.task.clone(),
         extra_context: args.extra_context.clone(),
         renderer: None,
+        stream: sink,
     }
     .build()?;
 
@@ -54,6 +75,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
 
     tracing::info!(?traj_path, "trajectory written");
+
+    if let Some(server) = server {
+        server.shutdown().await;
+    }
     Ok(())
 }
 
