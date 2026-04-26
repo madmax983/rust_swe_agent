@@ -3,4 +3,5 @@
 
 pub mod hello_world;
 pub mod mini;
+pub mod replay;
 pub mod swebench;

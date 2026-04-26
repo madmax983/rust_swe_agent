@@ -28,6 +28,8 @@ pub enum Command {
     Mini(args::MiniCmd),
     /// Smoke-test: scripted model + local env writes a trajectory.
     HelloWorld(args::HelloWorldCmd),
+    /// Replay an existing trajectory using a deterministic model.
+    Replay(args::ReplayCmd),
     /// SWE-bench parallel sweep.
     Bench {
         #[command(subcommand)]
@@ -44,6 +46,7 @@ pub async fn run() -> Result<(), Error> {
     match cli.command {
         Command::Mini(m) => mini_cmd(m).await,
         Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
+        Command::Replay(r) => replay_cmd(r).await,
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
@@ -96,6 +99,35 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         deterministic_responses: None,
     };
     crate::run::mini::run(args).await
+}
+
+async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
+    let mut cfg = match &r.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+    if let Some(kind) = &r.env {
+        cfg.root.environment.kind = match kind.as_str() {
+            "local" => crate::config::EnvKind::Local,
+            "docker" => crate::config::EnvKind::Docker,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "unknown --env `{other}` (expected `local` or `docker`)"
+                ))));
+            }
+        };
+    }
+    if let Some(img) = r.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+
+    let args = crate::run::replay::ReplayArgs {
+        trajectory_path: r.trajectory_path,
+        config: cfg,
+        output_dir: r.output,
+        trajectory_name: r.trajectory_name,
+    };
+    crate::run::replay::run(args).await
 }
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
