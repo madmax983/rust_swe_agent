@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -120,8 +120,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
 
     for r in &results.instances {
         match r.instance_id.as_str() {
-            "ok" => assert!(r.failure_category.is_none()),
-            "legacy" => assert!(r.failure_category.is_none()),
+            "ok" | "legacy" => assert!(r.failure_category.is_none()),
             "env" => assert_eq!(r.failure_category, Some(FailureCategory::EnvSetup)),
             "api" => assert_eq!(r.failure_category, Some(FailureCategory::ModelApi)),
             "parse" => assert_eq!(r.failure_category, Some(FailureCategory::ModelParse)),
