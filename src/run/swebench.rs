@@ -65,6 +65,7 @@ pub struct InstanceResult {
 pub struct SweepResults {
     pub total: usize,
     pub submitted: usize,
+    pub skipped: usize,
     pub errored: usize,
     pub total_prompt_tokens: u64,
     pub total_completion_tokens: u64,
@@ -90,6 +91,11 @@ impl SweepResults {
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
+        let _ = writeln!(
+            s,
+            "Skipped:            {} — trajectory already on disk",
+            self.skipped
+        );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
         let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
         let _ = writeln!(
@@ -112,6 +118,32 @@ pub struct SwebenchArgs {
     pub output_dir: PathBuf,
     pub parallel: usize,
     pub config: Config,
+    /// When true, tasks whose trajectory file already exists and parses as
+    /// valid JSON are skipped before any agent (or Docker container, or
+    /// model API call) is launched for them.
+    pub resume: bool,
+    /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
+    /// Lets sweeps run end-to-end against a scripted model without network
+    /// I/O — mainly useful for tests and local smoke checks.
+    pub deterministic_responses: Option<Vec<String>>,
+}
+
+/// Path where `run_one` writes the trajectory for an instance. Centralized so
+/// the resume-skip check stays in lockstep with the writer.
+#[must_use]
+pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    output_dir.join(format!("{instance_id}.traj.json"))
+}
+
+/// Inspect a trajectory path on disk. Returns `Some(info)` only when the file
+/// exists *and* parses as valid trajectory JSON; truncated or corrupt files
+/// (e.g. a mid-write crash) yield `None` so the task re-runs.
+#[must_use]
+pub fn existing_trajectory_info(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+) -> Option<crate::trajectory::TrajectoryInfo> {
+    read_trajectory_info(&trajectory_path_for(output_dir, instance_id))
 }
 
 pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Error> {
@@ -139,11 +171,23 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let total = instances.len();
     let sem = Arc::new(Semaphore::new(args.parallel.max(1)));
     let mut set = tokio::task::JoinSet::new();
+    let mut skipped_results: Vec<InstanceResult> = Vec::new();
 
     for inst in instances {
+        // Resume short-circuit: a valid on-disk trajectory means this task
+        // already completed in a prior sweep. Skip it before we spawn — no
+        // semaphore slot, no Docker container, no model API call.
+        if args.resume {
+            if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
+                skipped_results.push(skipped_result_from_info(&inst.instance_id, &info));
+                continue;
+            }
+        }
+
         let permit_sem = Arc::clone(&sem);
         let output_dir = args.output_dir.clone();
         let cfg = args.config.clone();
+        let deterministic = args.deterministic_responses.clone();
         set.spawn(async move {
             let _permit = match permit_sem.acquire_owned().await {
                 Ok(p) => p,
@@ -161,15 +205,18 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     };
                 }
             };
-            run_one(inst, output_dir, cfg).await
+            run_one(inst, output_dir, cfg, deterministic).await
         });
     }
 
-    let mut results = Vec::new();
+    let mut results = skipped_results;
+    let skipped = results.len();
     let mut submitted = 0;
     let mut errored = 0;
     let mut total_prompt = 0u64;
     let mut total_completion = 0u64;
+    // Skipped tasks are excluded from token totals: those API calls were
+    // billed in the original sweep and shouldn't be counted again here.
     while let Some(j) = set.join_next().await {
         match j {
             Ok(r) => {
@@ -206,6 +253,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let sweep = SweepResults {
         total,
         submitted,
+        skipped,
         errored,
         total_prompt_tokens: total_prompt,
         total_completion_tokens: total_completion,
@@ -218,12 +266,48 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     Ok(sweep)
 }
 
-async fn run_one(inst: SweBenchInstance, output_dir: PathBuf, mut cfg: Config) -> InstanceResult {
+/// Build an `InstanceResult` for a task skipped via `--resume`. Mirrors what
+/// `run_one` would have produced from the on-disk trajectory, with
+/// `exit_reason = "skipped_resume"` so summaries can distinguish a fresh run
+/// from a resumed one.
+fn skipped_result_from_info(
+    instance_id: &str,
+    info: &crate::trajectory::TrajectoryInfo,
+) -> InstanceResult {
+    let (prompt_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None), |t| {
+            (Some(t.prompt_tokens), Some(t.completion_tokens))
+        });
+    InstanceResult {
+        instance_id: instance_id.to_owned(),
+        exit_reason: "skipped_resume".into(),
+        outcome: info.outcome.clone(),
+        steps: info.steps,
+        cost_usd: info.total_cost_usd,
+        prompt_tokens,
+        completion_tokens,
+        duration_secs: info.duration_secs,
+        error: None,
+    }
+}
+
+async fn run_one(
+    inst: SweBenchInstance,
+    output_dir: PathBuf,
+    mut cfg: Config,
+    deterministic_responses: Option<Vec<String>>,
+) -> InstanceResult {
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
-    if let Some(img) = &inst.image {
-        cfg.root.environment.docker_image = Some(img.clone());
-        cfg.root.environment.kind = crate::config::EnvKind::Docker;
+    // A scripted model implies a local-only sweep — `image` from the dataset
+    // would otherwise force the Docker env, which is wrong for tests.
+    if deterministic_responses.is_none() {
+        if let Some(img) = &inst.image {
+            cfg.root.environment.docker_image = Some(img.clone());
+            cfg.root.environment.kind = crate::config::EnvKind::Docker;
+        }
     }
     let args = crate::run::mini::MiniArgs {
         task,
@@ -231,7 +315,7 @@ async fn run_one(inst: SweBenchInstance, output_dir: PathBuf, mut cfg: Config) -
         config: cfg,
         output_dir: output_dir.clone(),
         trajectory_name: id.clone(),
-        deterministic_responses: None,
+        deterministic_responses,
         stream_addr: None,
     };
     let run_err = crate::run::mini::run(args).await.err();
@@ -297,6 +381,7 @@ mod tests {
         let s = SweepResults {
             total: 10,
             submitted: 4,
+            skipped: 3,
             errored: 1,
             total_prompt_tokens: 250_000,
             total_completion_tokens: 50_000,
@@ -306,9 +391,47 @@ mod tests {
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
         assert!(t.contains("Submitted:          4"));
+        assert!(
+            t.contains("Skipped:            3 — trajectory already on disk"),
+            "missing skipped row in: {t}"
+        );
         assert!(t.contains("Submit rate:        40.00%"));
         assert!(t.contains("Total tokens:       300000"));
         assert!(t.contains("Estimated cost:     $1.5000"));
+    }
+
+    #[test]
+    fn existing_trajectory_info_returns_some_for_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let traj = Trajectory {
+            trajectory_format: crate::trajectory::FORMAT_VERSION.into(),
+            info: crate::trajectory::TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                steps: Some(2),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        let path = trajectory_path_for(dir.path(), "inst-1");
+        std::fs::write(&path, serde_json::to_string(&traj).unwrap()).unwrap();
+
+        let info = existing_trajectory_info(dir.path(), "inst-1").unwrap();
+        assert_eq!(info.outcome.as_deref(), Some(outcome::SUBMITTED));
+    }
+
+    #[test]
+    fn existing_trajectory_info_returns_none_for_truncated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = trajectory_path_for(dir.path(), "inst-2");
+        std::fs::write(&path, "{\"trajectory_format\": \"mini-swe-agent-1.").unwrap();
+        assert!(existing_trajectory_info(dir.path(), "inst-2").is_none());
+    }
+
+    #[test]
+    fn existing_trajectory_info_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(existing_trajectory_info(dir.path(), "no-such-id").is_none());
     }
 
     #[test]

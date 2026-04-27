@@ -153,12 +153,15 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         output_dir: s.output,
         parallel: s.parallel,
         config: cfg,
+        resume: s.resume,
+        deterministic_responses: None,
     })
     .await?;
 
     tracing::info!(
         total = results.total,
         submitted = results.submitted,
+        skipped = results.skipped,
         errored = results.errored,
         prompt_tokens = results.total_prompt_tokens,
         completion_tokens = results.total_completion_tokens,

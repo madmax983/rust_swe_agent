@@ -107,4 +107,12 @@ pub struct SwebenchCmd {
 
     #[arg(long)]
     pub config: Option<PathBuf>,
+
+    /// Skip tasks whose output trajectory file already exists on disk and
+    /// parses as valid JSON. Lets an interrupted sweep resume without
+    /// re-spending API budget on already-completed work. Files that fail
+    /// JSON parsing (e.g. truncated by a mid-write crash) are treated as
+    /// absent and re-run.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
 }
