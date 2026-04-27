@@ -59,6 +59,18 @@ pub struct InstanceResult {
     pub completion_tokens: Option<u64>,
     pub duration_secs: Option<f64>,
     pub error: Option<String>,
+    /// `true` once the runner persisted a `.patch` artifact for this
+    /// instance — even an empty diff. Submitted instances missing a
+    /// patch indicate a capture failure (which downgrades `outcome` to
+    /// `error`); non-submitted outcomes never write a patch.
+    #[serde(default)]
+    pub patch_present: bool,
+    /// `true` if the captured patch had any content. Distinct from
+    /// `patch_present`: a submitted instance always sets `patch_present`
+    /// after a successful capture, but `non_empty_patch` only when the
+    /// agent's working tree actually diverged from `base_commit`.
+    #[serde(default)]
+    pub non_empty_patch: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +79,9 @@ pub struct SweepResults {
     pub submitted: usize,
     pub skipped: usize,
     pub errored: usize,
+    /// Submitted instances whose captured patch had non-zero length.
+    /// Equal to `submitted` minus the count of empty-diff submissions.
+    pub with_patch: usize,
     pub total_prompt_tokens: u64,
     pub total_completion_tokens: u64,
     pub estimated_cost_usd: f64,
@@ -93,16 +108,17 @@ impl SweepResults {
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
         let _ = writeln!(
             s,
+            "With patch:         {} — non-empty diff against base_commit",
+            self.with_patch
+        );
+        let _ = writeln!(
+            s,
             "Skipped:            {} — trajectory already on disk",
             self.skipped
         );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
         let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
-        let _ = writeln!(
-            s,
-            "Completion tokens:  {}",
-            self.total_completion_tokens
-        );
+        let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
         let _ = writeln!(s, "Total tokens:       {total_tokens}");
         let _ = writeln!(
             s,
@@ -135,6 +151,22 @@ pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> P
     output_dir.join(format!("{instance_id}.traj.json"))
 }
 
+/// Path where the SWE-bench-style unified diff is written for an instance.
+/// File presence is the resume-mode signal that the patch artifact was
+/// captured for a previously-submitted run.
+#[must_use]
+pub fn patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    output_dir.join(format!("{instance_id}.patch"))
+}
+
+/// Path of the aggregated SWE-bench predictions file written at the end of
+/// a sweep. One JSONL line per submitted instance, in the schema sb-cli
+/// expects (`instance_id`, `model_patch`, `model_name_or_path`).
+#[must_use]
+pub fn predictions_path(output_dir: &std::path::Path) -> PathBuf {
+    output_dir.join("all_preds.jsonl")
+}
+
 /// Inspect a trajectory path on disk. Returns `Some(info)` only when the file
 /// exists *and* parses as valid trajectory JSON; truncated or corrupt files
 /// (e.g. a mid-write crash) yield `None` so the task re-runs.
@@ -164,6 +196,10 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 /// Run the sweep. This scaffolds the parallelism + trajectory emission; the
 /// per-instance body calls through to `run::mini::run` using a Docker env
 /// (when the `docker` feature is enabled).
+// The body is a single sequential pipeline (load → resume-skip → spawn →
+// join → aggregate → emit). Splitting it would obscure the linear flow
+// without yielding reusable pieces.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
@@ -174,13 +210,26 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
 
     for inst in instances {
-        // Resume short-circuit: a valid on-disk trajectory means this task
-        // already completed in a prior sweep. Skip it before we spawn — no
-        // semaphore slot, no Docker container, no model API call.
+        // Resume short-circuit: a valid on-disk trajectory + (when the run
+        // was submitted) a patch file mean this task is fully archived
+        // from a prior sweep. Skip it before we spawn — no semaphore slot,
+        // no Docker container, no model API call.
         if args.resume {
             if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
-                skipped_results.push(skipped_result_from_info(&inst.instance_id, &info));
-                continue;
+                let patch_path = patch_path_for(&args.output_dir, &inst.instance_id);
+                let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+                if !needs_patch || patch_path.exists() {
+                    skipped_results.push(skipped_result_from_info(
+                        &inst.instance_id,
+                        &info,
+                        &patch_path,
+                    ));
+                    continue;
+                }
+                tracing::info!(
+                    instance = %inst.instance_id,
+                    "resume: trajectory present but patch missing — re-running"
+                );
             }
         }
 
@@ -202,6 +251,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         completion_tokens: None,
                         duration_secs: None,
                         error: Some(e.to_string()),
+                        patch_present: false,
+                        non_empty_patch: false,
                     };
                 }
             };
@@ -213,6 +264,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let skipped = results.len();
     let mut submitted = 0;
     let mut errored = 0;
+    let mut with_patch = 0;
     let mut total_prompt = 0u64;
     let mut total_completion = 0u64;
     // Skipped tasks are excluded from token totals: those API calls were
@@ -224,6 +276,9 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     Some(outcome::SUBMITTED) => submitted += 1,
                     Some(outcome::ERROR) => errored += 1,
                     _ => {}
+                }
+                if r.non_empty_patch {
+                    with_patch += 1;
                 }
                 if let Some(p) = r.prompt_tokens {
                     total_prompt = total_prompt.saturating_add(p);
@@ -245,16 +300,29 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     completion_tokens: None,
                     duration_secs: None,
                     error: Some(e.to_string()),
+                    patch_present: false,
+                    non_empty_patch: false,
                 });
             }
         }
     }
+
+    // Skipped instances loaded from disk also contribute to the patch
+    // counter so resumed sweeps report cumulative `with_patch` correctly.
+    for r in &results {
+        if r.exit_reason == "skipped_resume" && r.non_empty_patch {
+            with_patch += 1;
+        }
+    }
+
+    write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
     let sweep = SweepResults {
         total,
         submitted,
         skipped,
         errored,
+        with_patch,
         total_prompt_tokens: total_prompt,
         total_completion_tokens: total_completion,
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
@@ -266,6 +334,42 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     Ok(sweep)
 }
 
+/// Write `all_preds.jsonl` containing one line per *submitted* instance
+/// with a patch artifact on disk. Schema: `{instance_id, model_patch,
+/// model_name_or_path}` — the minimum sb-cli accepts. Non-submitted and
+/// patch-capture-failed instances are excluded by design so sb-cli
+/// reports them as unresolved rather than misattributes a stale diff.
+fn write_predictions_file(
+    output_dir: &std::path::Path,
+    results: &[InstanceResult],
+    model_name: &str,
+) -> Result<(), Error> {
+    let path = predictions_path(output_dir);
+    let mut text = String::new();
+    for r in results {
+        if r.outcome.as_deref() != Some(outcome::SUBMITTED) {
+            continue;
+        }
+        if !r.patch_present {
+            // A submitted-but-patch-missing instance only happens on a
+            // resume that found the trajectory but no `.patch`; we already
+            // re-queued it above so this branch is defensive.
+            continue;
+        }
+        let patch_path = patch_path_for(output_dir, &r.instance_id);
+        let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        let line = serde_json::json!({
+            "instance_id": r.instance_id,
+            "model_patch": model_patch,
+            "model_name_or_path": model_name,
+        });
+        text.push_str(&serde_json::to_string(&line)?);
+        text.push('\n');
+    }
+    std::fs::write(&path, text)?;
+    Ok(())
+}
+
 /// Build an `InstanceResult` for a task skipped via `--resume`. Mirrors what
 /// `run_one` would have produced from the on-disk trajectory, with
 /// `exit_reason = "skipped_resume"` so summaries can distinguish a fresh run
@@ -273,13 +377,15 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
 fn skipped_result_from_info(
     instance_id: &str,
     info: &crate::trajectory::TrajectoryInfo,
+    patch_path: &std::path::Path,
 ) -> InstanceResult {
-    let (prompt_tokens, completion_tokens) = info
-        .token_usage
-        .as_ref()
-        .map_or((None, None), |t| {
-            (Some(t.prompt_tokens), Some(t.completion_tokens))
-        });
+    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
+        (Some(t.prompt_tokens), Some(t.completion_tokens))
+    });
+    let (patch_present, non_empty_patch) = match std::fs::metadata(patch_path) {
+        Ok(m) => (true, m.len() > 0),
+        Err(_) => (false, false),
+    };
     InstanceResult {
         instance_id: instance_id.to_owned(),
         exit_reason: "skipped_resume".into(),
@@ -290,6 +396,8 @@ fn skipped_result_from_info(
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
+        patch_present,
+        non_empty_patch,
     }
 }
 
@@ -309,6 +417,13 @@ async fn run_one(
             cfg.root.environment.kind = crate::config::EnvKind::Docker;
         }
     }
+    let workdir = PathBuf::from(cfg.root.environment.workdir.clone());
+    let patch_path = patch_path_for(&output_dir, &id);
+    let patch_capture = Some(crate::run::mini::PatchCaptureSpec {
+        base_commit: inst.base_commit.clone(),
+        workdir,
+        patch_path: patch_path.clone(),
+    });
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: None,
@@ -317,6 +432,7 @@ async fn run_one(
         trajectory_name: id.clone(),
         deterministic_responses,
         stream_addr: None,
+        patch_capture,
     };
     let run_err = crate::run::mini::run(args).await.err();
 
@@ -343,6 +459,11 @@ async fn run_one(
             (Some(t.prompt_tokens), Some(t.completion_tokens))
         });
 
+    let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
+        Ok(m) => (true, m.len() > 0),
+        Err(_) => (false, false),
+    };
+
     InstanceResult {
         instance_id: id,
         exit_reason,
@@ -353,6 +474,8 @@ async fn run_one(
         completion_tokens,
         duration_secs: info.as_ref().and_then(|i| i.duration_secs),
         error: run_err.map(|e| e.to_string()),
+        patch_present,
+        non_empty_patch,
     }
 }
 
@@ -383,6 +506,7 @@ mod tests {
             submitted: 4,
             skipped: 3,
             errored: 1,
+            with_patch: 3,
             total_prompt_tokens: 250_000,
             total_completion_tokens: 50_000,
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
@@ -391,6 +515,10 @@ mod tests {
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
         assert!(t.contains("Submitted:          4"));
+        assert!(
+            t.contains("With patch:         3 — non-empty diff against base_commit"),
+            "missing with_patch row in: {t}"
+        );
         assert!(
             t.contains("Skipped:            3 — trajectory already on disk"),
             "missing skipped row in: {t}"

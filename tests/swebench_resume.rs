@@ -1,5 +1,5 @@
 //! Resume behavior for the `bench swebench` sweep:
-//!   * pre-existing valid trajectory → task is skipped (no agent runs)
+//!   * pre-existing valid trajectory + patch → task is skipped (no agent runs)
 //!   * pre-existing invalid trajectory → file is treated as absent and the
 //!     task re-runs, producing a fresh, valid trajectory
 //!   * without `--resume`, valid pre-existing files are *not* skipped
@@ -8,6 +8,7 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::process::Command;
 
 use rust_swe_agent::Config;
 use rust_swe_agent::run::swebench::{SwebenchArgs, run};
@@ -51,19 +52,56 @@ fn submit_only_responses() -> Vec<String> {
     vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfresh-run\n```".into()]
 }
 
+/// Initialize a git working tree at `dir` with a single empty commit.
+/// Patch capture wires `git diff <base> -- .` against this directory, so
+/// every test that exercises a fresh sweep needs one — otherwise patch
+/// capture would fail and downgrade the run's outcome to `error`.
+fn init_repo(dir: &Path) {
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.email", "test@test"]);
+    git(dir, &["config", "user.name", "test"]);
+    git(dir, &["config", "commit.gpgSign", "false"]);
+    git(dir, &["config", "tag.gpgSign", "false"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+}
+
+fn config_with_workdir(dir: &Path) -> Config {
+    let yaml = format!("environment:\n  workdir: {}\n", dir.display());
+    Config::from_yaml_str(&yaml).unwrap()
+}
+
 #[tokio::test]
 async fn resume_skips_valid_trajectory_and_reruns_invalid() {
     let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
     let dataset = work.path().join("dataset.jsonl");
     let output = work.path().join("runs");
     std::fs::create_dir_all(&output).unwrap();
 
     write_dataset(&dataset, &["pre-valid", "pre-invalid", "fresh"]);
 
-    // Instance 1: pre-existing *valid* trajectory → must be skipped.
+    // Instance 1: pre-existing *valid* trajectory + patch → must be skipped.
     let valid_path = output.join("pre-valid.traj.json");
     write_valid_trajectory(&valid_path, "preserved");
     let valid_before = std::fs::read(&valid_path).unwrap();
+    let valid_patch_path = output.join("pre-valid.patch");
+    std::fs::write(&valid_patch_path, "preserved-diff\n").unwrap();
+    let valid_patch_before = std::fs::read(&valid_patch_path).unwrap();
 
     // Instance 2: pre-existing *invalid* trajectory → treated as absent.
     let invalid_path = output.join("pre-invalid.traj.json");
@@ -71,7 +109,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
 
     // Instance 3: no pre-existing file → fresh run.
 
-    let cfg = Config::defaults().unwrap();
+    let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
@@ -86,11 +124,17 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
     assert_eq!(results.total, 3);
     assert_eq!(results.skipped, 1, "exactly one task should be skipped");
 
-    // Skipped instance: trajectory file is byte-identical to what we wrote.
+    // Skipped instance: trajectory + patch files are byte-identical to what
+    // we wrote.
     let valid_after = std::fs::read(&valid_path).unwrap();
     assert_eq!(
         valid_before, valid_after,
         "skipped trajectory should be untouched"
+    );
+    let valid_patch_after = std::fs::read(&valid_patch_path).unwrap();
+    assert_eq!(
+        valid_patch_before, valid_patch_after,
+        "skipped patch should be untouched"
     );
 
     // Invalid pre-existing trajectory was overwritten with a fresh, parseable one.
@@ -105,6 +149,11 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         serde_json::from_str(&std::fs::read_to_string(&fresh_path).unwrap()).unwrap();
     assert_eq!(fresh.info.outcome.as_deref(), Some(outcome::SUBMITTED));
 
+    // Both freshly-run instances got a `.patch` file (empty, since the agent
+    // submitted without modifying anything in `repo`).
+    assert!(output.join("pre-invalid.patch").exists());
+    assert!(output.join("fresh.patch").exists());
+
     // Summary table mentions the skipped count.
     let table = results.summary_table();
     assert!(
@@ -114,8 +163,54 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
 }
 
 #[tokio::test]
+async fn resume_reruns_submitted_trajectory_with_missing_patch() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["needs-patch"]);
+
+    // Submitted trajectory but the patch file is missing — common shape
+    // for sweeps run before #9 landed. Resume must re-run rather than
+    // emit `all_preds.jsonl` with an absent diff.
+    let traj = output.join("needs-patch.traj.json");
+    write_valid_trajectory(&traj, "stale-without-patch");
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        config: cfg,
+        resume: true,
+        deterministic_responses: Some(submit_only_responses()),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.skipped, 0, "missing patch must trigger a re-run");
+
+    // After the re-run both files exist.
+    assert!(output.join("needs-patch.patch").exists());
+    let reread: Trajectory =
+        serde_json::from_str(&std::fs::read_to_string(&traj).unwrap()).unwrap();
+    assert_eq!(reread.info.outcome.as_deref(), Some(outcome::SUBMITTED));
+    assert!(
+        !reread.info.other.contains_key("test_marker"),
+        "stale trajectory was not overwritten"
+    );
+}
+
+#[tokio::test]
 async fn without_resume_existing_trajectories_are_overwritten() {
     let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
     let dataset = work.path().join("dataset.jsonl");
     let output = work.path().join("runs");
     std::fs::create_dir_all(&output).unwrap();
@@ -125,7 +220,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
     let traj_path = output.join("only.traj.json");
     write_valid_trajectory(&traj_path, "stale");
 
-    let cfg = Config::defaults().unwrap();
+    let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
@@ -138,7 +233,10 @@ async fn without_resume_existing_trajectories_are_overwritten() {
     .unwrap();
 
     assert_eq!(results.total, 1);
-    assert_eq!(results.skipped, 0, "no tasks may be skipped without --resume");
+    assert_eq!(
+        results.skipped, 0,
+        "no tasks may be skipped without --resume"
+    );
 
     // The stale marker we wrote should have been overwritten by a fresh run.
     let reread: Trajectory =
