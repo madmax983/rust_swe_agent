@@ -175,11 +175,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
 
     // (d) Total recorded cost is ≥ limit but bounded by
     //     limit + (parallel - 1) * per_task_cost.
-    let recorded_cost: f64 = results
-        .instances
-        .iter()
-        .filter_map(|r| r.cost_usd)
-        .sum();
+    let recorded_cost: f64 = results.instances.iter().filter_map(|r| r.cost_usd).sum();
     let bound_overshoot = (parallel as f64 - 1.0) * per_task_cost;
     assert!(
         recorded_cost >= limit,
@@ -220,9 +216,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
     for r in &results.instances {
         if r.exit_reason == EXIT_REASON_BUDGET_HALT {
             assert!(
-                !output
-                    .join(format!("{}.traj.json", r.instance_id))
-                    .exists(),
+                !output.join(format!("{}.traj.json", r.instance_id)).exists(),
                 "budget_halt task must not write a trajectory"
             );
             assert!(

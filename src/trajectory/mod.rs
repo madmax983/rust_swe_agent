@@ -21,6 +21,19 @@ pub mod outcome {
     pub const ERROR: &str = "error";
 }
 
+/// Closed set of non-success terminal failure modes for sweeps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCategory {
+    EnvSetup,
+    ModelApi,
+    ModelParse,
+    StepLimit,
+    CostLimit,
+    AgentInternal,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub prompt_tokens: u64,
@@ -35,6 +48,8 @@ pub struct TrajectoryInfo {
     pub model_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<FailureCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -161,7 +161,9 @@ async fn handle_connection(
             }
             Err(broadcast::error::RecvError::Closed) => {
                 // Sink dropped (agent run completed and CLI is exiting).
-                let _ = stream.write_all(b"event: stream_closed\ndata: {}\n\n").await;
+                let _ = stream
+                    .write_all(b"event: stream_closed\ndata: {}\n\n")
+                    .await;
                 let _ = stream.shutdown().await;
                 return;
             }
@@ -291,10 +293,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let s = String::from_utf8_lossy(&buf[..n]).to_string();
-        assert!(
-            s.contains("HTTP/1.1 200 OK"),
-            "missing status, got: {s:?}"
-        );
+        assert!(s.contains("HTTP/1.1 200 OK"), "missing status, got: {s:?}");
         assert!(
             s.contains("text/event-stream"),
             "missing content-type, got: {s:?}"

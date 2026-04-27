@@ -20,7 +20,7 @@ use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
-use crate::trajectory::{TokenUsage, Trajectory, outcome};
+use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
 pub struct DefaultAgent {
     pub config: Config,
@@ -144,9 +144,10 @@ impl Agent for DefaultAgent {
         // 1. Limit checks.
         if self.steps >= self.config.root.agent.step_limit {
             self.trajectory.info.exit_reason = Some("step_limit".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
             self.trajectory.info.steps = Some(self.steps);
             self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-            self.emit_run_ended("step_limit", None);
+            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
             return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
                 limit: self.config.root.agent.step_limit,
             }));
@@ -154,12 +155,13 @@ impl Agent for DefaultAgent {
         if let Some(limit) = self.config.root.agent.cost_limit_usd {
             if self.total_cost_usd >= limit {
                 self.trajectory.info.exit_reason = Some("cost_limit".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                 // Cost limit is also a resource limit; map to the same
                 // coarse outcome as step limit per the three-value spec.
                 self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-                self.emit_run_ended("cost_limit", None);
+                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
                 return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
                     limit_usd: limit,
                     spent_usd: self.total_cost_usd,
@@ -209,12 +211,13 @@ impl Agent for DefaultAgent {
                 self.history.push(Message::assistant(resp.content.clone()));
                 self.trajectory.record_message(&asst);
                 self.trajectory.info.exit_reason = Some("submitted".into());
+                self.trajectory.info.failure_category = None;
                 self.trajectory.info.final_output = Some(output.clone());
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                 self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
                 self.finalize_run_metadata(outcome::SUBMITTED);
-                self.emit_run_ended("submitted", Some(output.clone()));
+                self.emit_run_ended("submitted", None, Some(output.clone()));
                 return Ok(StepOutcome::Terminate(ExitReason::Submitted {
                     final_output: output.clone(),
                 }));
@@ -223,6 +226,14 @@ impl Agent for DefaultAgent {
                 asst.extra.actions = Some(vec![cmd.clone()]);
             }
             Action::None => {
+                // Keep a breadcrumb that at least one model response could
+                // not be parsed into a valid action. Terminal limit checks
+                // above still take precedence if the run eventually ends on
+                // step/cost exhaustion.
+                self.trajectory
+                    .info
+                    .failure_category
+                    .get_or_insert(FailureCategory::ModelParse);
                 self.history.push(Message::assistant(resp.content.clone()));
                 self.trajectory.record_message(&asst);
                 // Observation = format_error_template, verbatim (no vars in
@@ -307,9 +318,15 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
-    fn emit_run_ended(&self, exit_reason: &str, final_output: Option<String>) {
+    fn emit_run_ended(
+        &self,
+        exit_reason: &str,
+        failure_category: Option<FailureCategory>,
+        final_output: Option<String>,
+    ) {
         self.stream.emit(StreamEvent::RunEnded {
             exit_reason: exit_reason.to_owned(),
+            failure_category,
             final_output,
             steps: self.steps,
             total_cost_usd: self.total_cost_usd,
@@ -327,8 +344,7 @@ impl DefaultAgent {
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
         });
-        self.trajectory.info.duration_secs =
-            Some(self.started_at_instant.elapsed().as_secs_f64());
+        self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
     }
 }
 

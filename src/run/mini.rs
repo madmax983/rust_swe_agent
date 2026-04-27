@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, Model, ModelUsage};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
+use crate::trajectory::FailureCategory;
 
 /// How a runner should snapshot the agent's working tree as a unified diff
 /// after submission. Optional on `MiniArgs` because patch capture only
@@ -107,6 +108,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             .info
             .exit_reason
             .get_or_insert_with(|| "error".into());
+        agent.trajectory.info.failure_category = Some(classify_error(e));
         agent
             .trajectory
             .info
@@ -141,6 +143,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     "patch capture failed; downgrading outcome to error"
                 );
                 agent.trajectory.info.exit_reason = Some("error".into());
+                agent.trajectory.info.failure_category = Some(FailureCategory::EnvSetup);
                 agent
                     .trajectory
                     .info
@@ -168,6 +171,15 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         server.shutdown().await;
     }
     Ok(())
+}
+
+fn classify_error(err: &Error) -> FailureCategory {
+    match err {
+        Error::Env(_) => FailureCategory::EnvSetup,
+        Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        Error::Model(_) => FailureCategory::ModelApi,
+        _ => FailureCategory::AgentInternal,
+    }
 }
 
 /// Snapshot the working tree at `spec.workdir` as a unified diff against
