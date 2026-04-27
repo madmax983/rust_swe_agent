@@ -794,7 +794,7 @@ fn apply_subset(
         if n < instances.len() {
             let mut rng = XorShift64::new(seed_value);
             for i in (1..instances.len()).rev() {
-                let j = (rng.next_u64() % ((i + 1) as u64)) as usize;
+                let j = rng.next_usize() % (i + 1);
                 instances.swap(i, j);
             }
             instances.truncate(n);
@@ -881,6 +881,18 @@ impl XorShift64 {
         x ^= x << 17;
         self.state = x;
         x
+    }
+
+    fn next_usize(&mut self) -> usize {
+        #[cfg(target_pointer_width = "64")]
+        {
+            usize::from_le_bytes(self.next_u64().to_le_bytes())
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            let bytes = self.next_u64().to_le_bytes();
+            usize::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        }
     }
 }
 
