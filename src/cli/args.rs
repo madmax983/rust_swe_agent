@@ -89,6 +89,8 @@ pub enum BenchCmd {
     /// Diff two completed sweep runs by instance id; surfaces regressions
     /// and (with `--max-regressions`) gates CI on prompt/harness changes.
     Compare(CompareCmd),
+    /// Evaluate a completed sweep with an evaluation backend (e.g. sb-cli).
+    Evaluate(EvaluateCmd),
 }
 
 #[derive(Debug, Args)]
@@ -154,4 +156,27 @@ pub struct SwebenchCmd {
     /// `submitted` / `errored`. When unset, behavior is unchanged.
     #[arg(long)]
     pub sweep_cost_limit_usd: Option<f64>,
+}
+
+#[derive(Debug, Args)]
+pub struct EvaluateCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Optional dataset JSONL path passed through to the evaluator.
+    #[arg(long)]
+    pub dataset: Option<PathBuf>,
+
+    /// Evaluation backend: `sb-cli` or `none`.
+    #[arg(long, default_value = "sb-cli")]
+    pub backend: String,
+
+    /// Per-instance evaluation timeout in seconds.
+    #[arg(long, default_value_t = 600)]
+    pub timeout_per_instance: u64,
+
+    /// Parallel worker count for evaluation backend.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
 }

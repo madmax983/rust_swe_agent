@@ -384,3 +384,106 @@ fn cli_disjoint_id_sets_bucketed_not_dropped() {
     assert_eq!(v["transitions"]["present_missing"], 1);
     assert_eq!(v["regressions"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn compare_gate_uses_evaluation_resolved_when_present() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
+    write_results(candidate_dir.path(), vec![submitted("a"), submitted("b")]);
+
+    let baseline_eval = serde_json::json!({
+        "instances": [
+            {"instance_id": "a", "resolved": true, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "resolved"},
+            {"instance_id": "b", "resolved": true, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "resolved"}
+        ]
+    });
+    let candidate_eval = serde_json::json!({
+        "instances": [
+            {"instance_id": "a", "resolved": false, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "unresolved"},
+            {"instance_id": "b", "resolved": false, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "unresolved"}
+        ]
+    });
+    std::fs::write(
+        baseline_dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&baseline_eval).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate_dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&candidate_eval).unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-regressions",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected non-zero with resolved regressions; stdout:
+{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["baseline_resolved"], 2);
+    assert_eq!(v["candidate_resolved"], 0);
+    assert_eq!(v["resolved_delta"], -2);
+    assert_eq!(v["regressions"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn evaluate_none_backend_writes_evaluation_json() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    assert!(eval_path.exists());
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    assert_eq!(v["instances"].as_array().unwrap().len(), 2);
+}

@@ -53,6 +53,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
+        Command::Bench {
+            cmd: args::BenchCmd::Evaluate(e),
+        } => bench_evaluate(e).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -231,4 +234,34 @@ fn cleanup_cmd() -> Result<(), Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "docker feature not compiled in".into(),
     )))
+}
+
+async fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
+    let backend = match e.backend.as_str() {
+        "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
+        "none" => crate::run::evaluate::EvaluateBackend::None,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --backend `{other}` (expected `sb-cli` or `none`)"
+            ))));
+        }
+    };
+
+    let eval = crate::run::evaluate::run(crate::run::evaluate::EvaluateArgs {
+        sweep_dir: e.sweep.clone(),
+        dataset_path: e.dataset,
+        backend,
+        timeout_per_instance_secs: e.timeout_per_instance,
+        parallel: e.parallel,
+    })
+    .await?;
+
+    let resolved = eval.instances.iter().filter(|x| x.resolved).count();
+    tracing::info!(
+        instances = eval.instances.len(),
+        resolved,
+        evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
+        "evaluation complete"
+    );
+    Ok(())
 }

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::run::evaluate::EvaluationResults;
 use crate::run::swebench::{InstanceResult, SweepResults};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
@@ -286,7 +287,16 @@ pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline = load_run(&args.baseline)?;
     let candidate = load_run(&args.candidate)?;
-    Ok(diff(&args.baseline, &args.candidate, &baseline, &candidate))
+    let baseline_eval = load_resolved_overrides(&args.baseline)?;
+    let candidate_eval = load_resolved_overrides(&args.candidate)?;
+    Ok(diff_with_overrides(
+        &args.baseline,
+        &args.candidate,
+        &baseline,
+        &candidate,
+        baseline_eval.as_ref(),
+        candidate_eval.as_ref(),
+    ))
 }
 
 /// Pure diff over two already-loaded id->result maps. Split out so tests
@@ -297,6 +307,17 @@ pub fn diff<S: std::hash::BuildHasher>(
     candidate_dir: &Path,
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
+) -> CompareReport {
+    diff_with_overrides(baseline_dir, candidate_dir, baseline, candidate, None, None)
+}
+
+fn diff_with_overrides<S: std::hash::BuildHasher>(
+    baseline_dir: &Path,
+    candidate_dir: &Path,
+    baseline: &HashMap<String, InstanceResult, S>,
+    candidate: &HashMap<String, InstanceResult, S>,
+    baseline_resolved_override: Option<&HashMap<String, bool>>,
+    candidate_resolved_override: Option<&HashMap<String, bool>>,
 ) -> CompareReport {
     let mut all_ids: BTreeSet<&str> = BTreeSet::new();
     all_ids.extend(baseline.keys().map(String::as_str));
@@ -318,7 +339,13 @@ pub fn diff<S: std::hash::BuildHasher>(
     for id in &all_ids {
         let b = baseline.get(*id);
         let c = candidate.get(*id);
-        let kind = classify(b, c);
+        let kind = classify(
+            id,
+            b,
+            c,
+            baseline_resolved_override,
+            candidate_resolved_override,
+        );
         *transitions.entry(kind).or_insert(0) += 1;
         if matches!(kind, TransitionKind::PassFail) {
             regressions.push(TaskTransition {
@@ -334,8 +361,14 @@ pub fn diff<S: std::hash::BuildHasher>(
         }
     }
 
-    let baseline_resolved = baseline.values().filter(|r| is_pass(r)).count();
-    let candidate_resolved = candidate.values().filter(|r| is_pass(r)).count();
+    let baseline_resolved = baseline
+        .iter()
+        .filter(|(id, r)| resolved_for(id, r, baseline_resolved_override))
+        .count();
+    let candidate_resolved = candidate
+        .iter()
+        .filter(|(id, r)| resolved_for(id, r, candidate_resolved_override))
+        .count();
 
     let baseline_total_cost: f64 = baseline.values().filter_map(|r| r.cost_usd).sum();
     let candidate_total_cost: f64 = candidate.values().filter_map(|r| r.cost_usd).sum();
@@ -384,11 +417,20 @@ pub fn diff<S: std::hash::BuildHasher>(
     }
 }
 
-fn classify(b: Option<&InstanceResult>, c: Option<&InstanceResult>) -> TransitionKind {
+fn classify(
+    id: &str,
+    b: Option<&InstanceResult>,
+    c: Option<&InstanceResult>,
+    baseline_resolved_override: Option<&HashMap<String, bool>>,
+    candidate_resolved_override: Option<&HashMap<String, bool>>,
+) -> TransitionKind {
     match (b, c) {
         (None, Some(_)) => TransitionKind::MissingPresent,
         (None | Some(_), None) => TransitionKind::PresentMissing,
-        (Some(b), Some(c)) => match (is_pass(b), is_pass(c)) {
+        (Some(b), Some(c)) => match (
+            resolved_for(id, b, baseline_resolved_override),
+            resolved_for(id, c, candidate_resolved_override),
+        ) {
             (true, true) => TransitionKind::PassPass,
             (true, false) => TransitionKind::PassFail,
             (false, true) => TransitionKind::FailPass,
@@ -401,6 +443,30 @@ fn is_pass(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.failure_category.is_none()
 }
 
+fn resolved_for(
+    id: &str,
+    r: &InstanceResult,
+    resolved_override: Option<&HashMap<String, bool>>,
+) -> bool {
+    resolved_override
+        .and_then(|m| m.get(id).copied())
+        .unwrap_or_else(|| is_pass(r))
+}
+
+fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, Error> {
+    let path = crate::run::evaluate::evaluation_path(dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path)?;
+    let eval: EvaluationResults = serde_json::from_str(&text)?;
+    Ok(Some(
+        eval.instances
+            .into_iter()
+            .map(|row| (row.instance_id, row.resolved))
+            .collect(),
+    ))
+}
 fn mean_steps<S: std::hash::BuildHasher>(map: &HashMap<String, InstanceResult, S>) -> Option<f64> {
     let xs: Vec<u32> = map.values().filter_map(|r| r.steps).collect();
     if xs.is_empty() {
@@ -649,6 +715,80 @@ mod tests {
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
         assert!(t.contains("- b"), "got:\n{t}");
         assert!(t.contains("category=step_limit"), "got:\n{t}");
+    }
+
+    #[test]
+    fn prefers_evaluation_json_resolved_over_submission_proxy() {
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let baseline_sweep = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cost_limit_usd: None,
+            instances: vec![submitted("a")],
+        };
+        let candidate_sweep = baseline_sweep.clone();
+        std::fs::write(
+            dir_b.path().join("results.json"),
+            serde_json::to_string_pretty(&baseline_sweep).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir_c.path().join("results.json"),
+            serde_json::to_string_pretty(&candidate_sweep).unwrap(),
+        )
+        .unwrap();
+
+        let baseline_eval = crate::run::evaluate::EvaluationResults {
+            instances: vec![crate::run::evaluate::InstanceEvaluation {
+                instance_id: "a".into(),
+                resolved: true,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
+                eval_log_path: None,
+            }],
+        };
+        let candidate_eval = crate::run::evaluate::EvaluationResults {
+            instances: vec![crate::run::evaluate::InstanceEvaluation {
+                instance_id: "a".into(),
+                resolved: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
+                eval_log_path: None,
+            }],
+        };
+
+        std::fs::write(
+            crate::run::evaluate::evaluation_path(dir_b.path()),
+            serde_json::to_string_pretty(&baseline_eval).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::run::evaluate::evaluation_path(dir_c.path()),
+            serde_json::to_string_pretty(&candidate_eval).unwrap(),
+        )
+        .unwrap();
+
+        let r = compute(&CompareArgs {
+            baseline: dir_b.path().to_path_buf(),
+            candidate: dir_c.path().to_path_buf(),
+            format: CompareFormat::Json,
+            max_regressions: None,
+        })
+        .unwrap();
+        assert_eq!(r.baseline_resolved, 1);
+        assert_eq!(r.candidate_resolved, 0);
+        assert_eq!(r.regressions.len(), 1);
     }
 
     #[test]
