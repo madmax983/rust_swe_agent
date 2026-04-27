@@ -1,6 +1,6 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::error::Error;
@@ -15,11 +15,28 @@ pub mod args;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: args::Command,
+    pub command: Command,
 
     /// Global log level.
     #[arg(long, default_value = "info", env = "RUST_SWE_AGENT_LOG")]
     pub log: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run one task end-to-end and write a trajectory.
+    Mini(args::MiniCmd),
+    /// Smoke-test: scripted model + local env writes a trajectory.
+    HelloWorld(args::HelloWorldCmd),
+    /// Replay an existing trajectory using a deterministic model.
+    Replay(args::ReplayCmd),
+    /// SWE-bench parallel sweep.
+    Bench {
+        #[command(subcommand)]
+        cmd: args::BenchCmd,
+    },
+    /// Reap any leftover `rust-swe-agent=1` labeled containers.
+    Cleanup,
 }
 
 pub async fn run() -> Result<(), Error> {
@@ -27,85 +44,25 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&cli.log);
 
     match cli.command {
-        args::Command::Mini(m) => mini_cmd(m).await,
-        args::Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
-        args::Command::Replay(r) => replay_cmd(r).await,
-        args::Command::Bench {
+        Command::Mini(m) => mini_cmd(m).await,
+        Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
+        Command::Replay(r) => replay_cmd(r).await,
+        Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
-        args::Command::Bench {
+        Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
-        args::Command::Bench {
+        Command::Bench {
             cmd: args::BenchCmd::Evaluate(e),
         } => bench_evaluate(e),
-        args::Command::Bench {
+        Command::Bench {
             cmd: args::BenchCmd::Inspect(i),
         } => bench_inspect(i),
         #[cfg(feature = "docker")]
-        args::Command::Cleanup => cleanup_cmd().await,
+        Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
-        args::Command::Cleanup => cleanup_cmd(),
-        #[cfg(feature = "exporter")]
-        args::Command::Export(e) => export_cmd(&e),
-    }
-}
-
-#[cfg(feature = "exporter")]
-fn export_cmd(e: &args::ExportCmd) -> Result<(), Error> {
-    let json = std::fs::read_to_string(&e.trajectory_path)?;
-    let trajectory: crate::trajectory::Trajectory = serde_json::from_str(&json)?;
-    let script = crate::trajectory::export::to_bash_script(&trajectory);
-    print!("{script}");
-    Ok(())
-}
-
-#[cfg(all(test, feature = "exporter"))]
-mod export_tests {
-    #![allow(clippy::unwrap_used)]
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn test_export_cmd() {
-        let mut t = crate::trajectory::Trajectory::new();
-        let mut msg = crate::model::Message::assistant("Hello");
-        msg.extra.actions = Some(vec!["echo hi".into()]);
-        t.record_with_extra(&msg, msg.extra.clone());
-
-        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
-        let json = serde_json::to_string(&t).unwrap();
-        temp_file.write_all(json.as_bytes()).unwrap();
-
-        let e = args::ExportCmd {
-            trajectory_path: temp_file.path().to_path_buf(),
-        };
-
-        let res = export_cmd(&e);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_export_cmd_invalid_json() {
-        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
-        temp_file.write_all(b"not json").unwrap();
-
-        let e = args::ExportCmd {
-            trajectory_path: temp_file.path().to_path_buf(),
-        };
-
-        let res = export_cmd(&e);
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn test_export_cmd_missing_file() {
-        let e = args::ExportCmd {
-            trajectory_path: std::path::PathBuf::from("does_not_exist.json"),
-        };
-
-        let res = export_cmd(&e);
-        assert!(res.is_err());
+        Command::Cleanup => cleanup_cmd(),
     }
 }
 
