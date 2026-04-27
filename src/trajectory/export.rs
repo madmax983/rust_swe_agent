@@ -87,4 +87,28 @@ mod tests {
         let expected = "echo hi\n\n";
         assert_eq!(script, expected);
     }
+
+    #[test]
+    fn test_to_bash_script_system_role() {
+        let mut t = Trajectory::new();
+
+        let mut msg = Message::system("System instructions");
+        msg.extra.actions = Some(vec!["echo no\n".to_string()]);
+        t.record_with_extra(&msg, msg.extra.clone());
+
+        let script = to_bash_script(&t);
+        assert_eq!(script, "");
+    }
+
+    #[test]
+    fn test_to_bash_script_user_role() {
+        let mut t = Trajectory::new();
+
+        let mut msg = Message::user("User input");
+        msg.extra.actions = Some(vec!["echo no\n".to_string()]);
+        t.record_with_extra(&msg, msg.extra.clone());
+
+        let script = to_bash_script(&t);
+        assert_eq!(script, "");
+    }
 }
