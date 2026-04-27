@@ -1,0 +1,386 @@
+//! `bench compare`: end-to-end + CLI-binary integration tests.
+//!
+//! Covers the AC from issue #16:
+//!   * subcommand exists in `--help`
+//!   * regression list + transition matrix are correct
+//!   * `--max-regressions` flips the process exit code
+//!   * `--format json` emits a structured document
+//!   * baseline missing newer fields (legacy) does not panic
+
+#![allow(clippy::unwrap_used)]
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::process::Command;
+
+use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
+use rust_swe_agent::trajectory::{FailureCategory, outcome};
+
+fn binary_path() -> std::path::PathBuf {
+    // CARGO_BIN_EXE_<name> is set by cargo when running integration tests.
+    // Fallback covers `cargo test --bin rust-swe-agent` invocations that
+    // don't set it (rare in practice but harmless).
+    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
+        |_| {
+            let mut p = std::env::current_exe().unwrap();
+            p.pop(); // tests/deps
+            p.pop(); // debug
+            p.push("rust-swe-agent");
+            p
+        },
+        std::path::PathBuf::from,
+    )
+}
+
+fn submitted(id: &str) -> InstanceResult {
+    InstanceResult {
+        instance_id: id.into(),
+        exit_reason: "submitted".into(),
+        outcome: Some(outcome::SUBMITTED.into()),
+        failure_category: None,
+        steps: Some(4),
+        cost_usd: Some(0.05),
+        prompt_tokens: Some(500),
+        completion_tokens: Some(100),
+        duration_secs: Some(8.0),
+        error: None,
+        patch_present: true,
+        non_empty_patch: true,
+    }
+}
+
+fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
+    InstanceResult {
+        instance_id: id.into(),
+        exit_reason: "error".into(),
+        outcome: Some(outcome::ERROR.into()),
+        failure_category: Some(cat),
+        steps: Some(6),
+        cost_usd: Some(0.10),
+        prompt_tokens: Some(1500),
+        completion_tokens: Some(200),
+        duration_secs: Some(15.0),
+        error: Some("stub".into()),
+        patch_present: false,
+        non_empty_patch: false,
+    }
+}
+
+fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
+    let sweep = SweepResults {
+        total: instances.len(),
+        submitted: instances
+            .iter()
+            .filter(|r| r.outcome.as_deref() == Some(outcome::SUBMITTED))
+            .count(),
+        skipped: 0,
+        errored: instances
+            .iter()
+            .filter(|r| r.outcome.as_deref() == Some(outcome::ERROR))
+            .count(),
+        failures_by_category: BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 0,
+        total_prompt_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        cost_limit_usd: None,
+        instances,
+    };
+    std::fs::write(
+        dir.join("results.json"),
+        serde_json::to_string_pretty(&sweep).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn help_lists_compare_subcommand() {
+    let out = Command::new(binary_path())
+        .args(["bench", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("compare"),
+        "expected `compare` in `bench --help`, got:\n{stdout}"
+    );
+
+    let out = Command::new(binary_path())
+        .args(["bench", "compare", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for flag in ["--baseline", "--candidate", "--format", "--max-regressions"] {
+        assert!(
+            stdout.contains(flag),
+            "expected `{flag}` in compare --help, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn cli_text_output_lists_regressions() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    write_results(
+        baseline_dir.path(),
+        vec![
+            submitted("a"),
+            submitted("b"),
+            errored("c", FailureCategory::ModelApi),
+        ],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![
+            submitted("a"),
+            errored("b", FailureCategory::StepLimit),
+            submitted("c"),
+        ],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("=== bench compare ==="), "got: {stdout}");
+    assert!(
+        stdout.contains("Resolved:           2 -> 2 (+0)"),
+        "got: {stdout}"
+    );
+    assert!(stdout.contains("pass->fail"), "got: {stdout}");
+    assert!(stdout.contains("Regressions (1):"), "got: {stdout}");
+    assert!(stdout.contains("- b"), "got: {stdout}");
+    assert!(stdout.contains("category=step_limit"), "got: {stdout}");
+}
+
+#[test]
+fn cli_json_output_is_machine_readable() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
+    write_results(
+        candidate_dir.path(),
+        vec![submitted("a"), errored("b", FailureCategory::AgentInternal)],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("expected valid JSON; err={e}; got:\n{stdout}");
+    });
+    assert_eq!(v["regressions"].as_array().unwrap().len(), 1);
+    assert_eq!(v["regressions"][0]["instance_id"], "b");
+    assert_eq!(v["regressions"][0]["kind"], "pass_fail");
+    assert_eq!(v["resolved_delta"], -1);
+    assert_eq!(v["transitions"]["pass_fail"], 1);
+}
+
+#[test]
+fn cli_max_regressions_flips_exit_code() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
+    write_results(
+        candidate_dir.path(),
+        vec![
+            errored("a", FailureCategory::StepLimit),
+            errored("b", FailureCategory::StepLimit),
+        ],
+    );
+
+    // Threshold 0 -> any regression fails the gate (2 regressions > 0).
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-regressions",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when regressions > max; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // Threshold 5 -> 2 regressions <= 5; informational only, exit 0.
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-regressions",
+            "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "expected zero exit under threshold; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Unset -> always exit 0 even with regressions.
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "expected zero exit when --max-regressions unset; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn cli_legacy_baseline_without_failure_category_does_not_panic() {
+    // Per AC: tolerate trajectories missing newer fields. We synthesize
+    // a baseline `results.json` that pre-dates #15 — no `failure_category`
+    // anywhere, and missing `failures_by_category`/`budget_halted`/
+    // `with_patch` keys at the top level.
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let legacy = serde_json::json!({
+        "total": 2,
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 1,
+        "instances": [
+            {
+                "instance_id": "a",
+                "exit_reason": "submitted",
+                "outcome": "submitted"
+            },
+            {
+                "instance_id": "b",
+                "exit_reason": "error",
+                "outcome": "error"
+            }
+        ]
+    });
+    std::fs::write(
+        baseline_dir.path().join("results.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+    write_results(
+        candidate_dir.path(),
+        vec![errored("a", FailureCategory::StepLimit), submitted("b")],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    // `a` was submitted in baseline, errored in candidate -> regression.
+    // `b` was errored in baseline, submitted in candidate -> fail->pass.
+    assert_eq!(v["regressions"].as_array().unwrap().len(), 1);
+    assert_eq!(v["regressions"][0]["instance_id"], "a");
+    assert_eq!(v["transitions"]["fail_pass"], 1);
+}
+
+#[test]
+fn cli_disjoint_id_sets_bucketed_not_dropped() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(
+        baseline_dir.path(),
+        vec![submitted("only_in_baseline"), submitted("shared")],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![submitted("only_in_candidate"), submitted("shared")],
+    );
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["transitions"]["pass_pass"], 1);
+    assert_eq!(v["transitions"]["missing_present"], 1);
+    assert_eq!(v["transitions"]["present_missing"], 1);
+    assert_eq!(v["regressions"].as_array().unwrap().len(), 0);
+}

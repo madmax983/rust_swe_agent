@@ -86,6 +86,36 @@ pub struct ReplayCmd {
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
     Swebench(SwebenchCmd),
+    /// Diff two completed sweep runs by instance id; surfaces regressions
+    /// and (with `--max-regressions`) gates CI on prompt/harness changes.
+    Compare(CompareCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct CompareCmd {
+    /// Sweep output directory written by a prior `bench swebench` run
+    /// (must contain `results.json` or per-instance `*.traj.json` files).
+    /// Treated as the "before" side of the diff.
+    #[arg(long)]
+    pub baseline: PathBuf,
+
+    /// Sweep output directory to compare against the baseline. Treated as
+    /// the "after" side; regressions are tasks that passed in baseline
+    /// but failed here.
+    #[arg(long)]
+    pub candidate: PathBuf,
+
+    /// Output format: `text` (default, terminal-friendly) or `json`
+    /// (machine-readable diff document).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Exit non-zero when regressed-task count strictly exceeds N. Unset
+    /// (default) is informational only — the report prints regardless,
+    /// but the process always exits 0. Set to 0 for a strict gate that
+    /// fails on any regression.
+    #[arg(long)]
+    pub max_regressions: Option<usize>,
 }
 
 #[derive(Debug, Args)]

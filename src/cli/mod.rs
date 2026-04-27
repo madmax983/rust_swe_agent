@@ -50,6 +50,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Compare(c),
+        } => bench_compare(c),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -175,6 +178,41 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep complete"
     );
     print!("{}", results.summary_table());
+    Ok(())
+}
+
+fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
+    let format = match c.format.as_str() {
+        "text" => crate::run::compare::CompareFormat::Text,
+        "json" => crate::run::compare::CompareFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::compare::compute(&crate::run::compare::CompareArgs {
+        baseline: c.baseline,
+        candidate: c.candidate,
+        format,
+        max_regressions: c.max_regressions,
+    })?;
+    match format {
+        crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
+        crate::run::compare::CompareFormat::Json => {
+            println!("{}", report.to_json_pretty()?);
+        }
+    }
+    if let Some(max) = c.max_regressions {
+        if report.regression_count() > max {
+            tracing::error!(
+                regressions = report.regression_count(),
+                max = max,
+                "compare: regression count exceeds --max-regressions threshold"
+            );
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }
 
