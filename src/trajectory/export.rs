@@ -53,4 +53,24 @@ mod tests {
         let expected = "# I will list the directory.\nls -la\n\n# I will print hello world.\necho 'Hello, World!'\n\n";
         assert_eq!(script, expected);
     }
+
+    #[test]
+    fn test_to_bash_script_empty_and_no_actions() {
+        let mut t = Trajectory::new();
+
+        let msg1 = Message::assistant("I am thinking...");
+        t.record_with_extra(&msg1, msg1.extra.clone());
+
+        let mut msg2 = Message::assistant("");
+        msg2.extra.actions = Some(vec![]);
+        t.record_with_extra(&msg2, msg2.extra.clone());
+
+        let msg3 = Message::user("User input");
+        t.record_with_extra(&msg3, msg3.extra.clone());
+
+        let script = to_bash_script(&t);
+
+        let expected = "";
+        assert_eq!(script, expected);
+    }
 }
