@@ -279,3 +279,44 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         "stale trajectory was not overwritten without --resume"
     );
 }
+
+#[tokio::test]
+async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["one"]);
+    std::fs::write(output.join("results.json"), "{not-json").unwrap();
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.total, 1);
+    assert_eq!(results.submitted, 1);
+    assert!(output.join("one.traj.json").exists());
+}

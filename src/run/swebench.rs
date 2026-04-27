@@ -351,7 +351,11 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
-    let prior_results = load_prior_results_by_instance(&args.output_dir)?;
+    let prior_results = if args.resume {
+        load_prior_results_by_instance(&args.output_dir)
+    } else {
+        HashMap::new()
+    };
     let retry_policy = RetryPolicy::from_args(
         args.max_retries,
         args.retry_on.as_deref(),
@@ -402,6 +406,24 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     && info
                         .failure_category
                         .is_some_and(|cat| retry_policy.is_retry_category(cat));
+                if retryable_resume {
+                    let prior = prior_results.get(&inst.instance_id).map_or_else(
+                        || skipped_result_from_info(&inst.instance_id, &info, &patch_path),
+                        skipped_result_from_prior_result,
+                    );
+                    bump_cost(
+                        estimate_cost_usd(
+                            prior.prompt_tokens.unwrap_or(0),
+                            prior.completion_tokens.unwrap_or(0),
+                        ),
+                        &mut cumulative_cost,
+                        &mut halted,
+                    );
+                    if halted {
+                        skipped_results.push(budget_halt_result(&inst.instance_id));
+                        continue;
+                    }
+                }
                 if !retryable_resume && (!needs_patch || patch_path.exists()) {
                     let r = prior_results.get(&inst.instance_id).map_or_else(
                         || skipped_result_from_info(&inst.instance_id, &info, &patch_path),
@@ -434,7 +456,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         .count();
     let mut submitted = 0;
     let mut errored = 0;
-    let mut budget_halted = 0;
+    let mut budget_halted = results
+        .iter()
+        .filter(|r| r.exit_reason == EXIT_REASON_BUDGET_HALT)
+        .count();
     let mut with_patch = 0;
     let mut total_prompt = 0u64;
     let mut total_completion = 0u64;
@@ -699,20 +724,30 @@ fn skipped_result_from_prior_result(r: &InstanceResult) -> InstanceResult {
     out
 }
 
-fn load_prior_results_by_instance(
-    output_dir: &std::path::Path,
-) -> Result<HashMap<String, InstanceResult>, Error> {
+fn load_prior_results_by_instance(output_dir: &std::path::Path) -> HashMap<String, InstanceResult> {
     let path = output_dir.join("results.json");
     if !path.exists() {
-        return Ok(HashMap::new());
+        return HashMap::new();
     }
-    let text = std::fs::read_to_string(path)?;
-    let parsed: SweepResults = serde_json::from_str(&text)?;
-    Ok(parsed
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::warn!(path=%path.display(), error=%err, "resume: failed reading prior results.json; ignoring");
+            return HashMap::new();
+        }
+    };
+    let parsed: SweepResults = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(path=%path.display(), error=%err, "resume: malformed prior results.json; ignoring");
+            return HashMap::new();
+        }
+    };
+    parsed
         .instances
         .into_iter()
         .map(|r| (r.instance_id.clone(), r))
-        .collect())
+        .collect()
 }
 
 #[derive(Debug, Clone)]

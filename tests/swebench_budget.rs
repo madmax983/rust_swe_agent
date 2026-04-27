@@ -489,3 +489,105 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             .any(|r| r.instance_id == "fresh" && r.exit_reason == EXIT_REASON_BUDGET_HALT)
     );
 }
+
+#[tokio::test]
+async fn retry_on_resume_instances_are_precharged_before_rerun() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["retryable", "fresh"]);
+
+    let retryable_traj = Trajectory {
+        trajectory_format: FORMAT_VERSION.into(),
+        info: TrajectoryInfo {
+            outcome: Some(outcome::ERROR.into()),
+            exit_reason: Some("error".into()),
+            failure_category: Some(FailureCategory::ModelApi),
+            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+                prompt_tokens: 0,
+                completion_tokens: 100,
+            }),
+            ..Default::default()
+        },
+        messages: vec![],
+    };
+    std::fs::write(
+        output.join("retryable.traj.json"),
+        serde_json::to_string_pretty(&retryable_traj).unwrap(),
+    )
+    .unwrap();
+
+    let prior = SweepResults {
+        total: 1,
+        submitted: 0,
+        skipped: 0,
+        errored: 1,
+        failures_by_category: std::collections::BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 0,
+        total_prompt_tokens: 0,
+        total_completion_tokens: 10_000,
+        estimated_cost_usd: estimate_cost_usd(0, 10_000),
+        retries: 2,
+        retried_instances: 1,
+        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        cost_limit_usd: Some(0.10),
+        instances: vec![InstanceResult {
+            instance_id: "retryable".into(),
+            exit_reason: "error".into(),
+            outcome: Some(outcome::ERROR.into()),
+            failure_category: Some(FailureCategory::ModelApi),
+            steps: Some(2),
+            cost_usd: Some(0.15),
+            prompt_tokens: Some(0),
+            completion_tokens: Some(10_000),
+            duration_secs: Some(1.0),
+            error: None,
+            patch_present: false,
+            non_empty_patch: false,
+            attempts: 3,
+            retry_reasons: vec![FailureCategory::ModelApi, FailureCategory::ModelApi],
+        }],
+    };
+    std::fs::write(
+        output.join("results.json"),
+        serde_json::to_string_pretty(&prior).unwrap(),
+    )
+    .unwrap();
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: Some(0.10),
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        max_retries: 1,
+        retry_on: Some("model_api".into()),
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: true,
+        deterministic_responses: Some(submit_only_responses_for(1)),
+        deterministic_usage_per_call: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.budget_halted, 2);
+    assert_eq!(results.submitted, 0);
+    assert!(
+        results
+            .instances
+            .iter()
+            .any(|r| r.instance_id == "retryable" && r.exit_reason == EXIT_REASON_BUDGET_HALT)
+    );
+}
