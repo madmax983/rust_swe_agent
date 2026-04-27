@@ -11,12 +11,16 @@ that scores those artifacts using an evaluation backend and writes
 rust-swe-agent bench evaluate \
   --sweep <sweep_dir> \
   [--dataset <dataset.jsonl>] \
+  [--sb-subset swe-bench-m] \
+  [--sb-split dev] \
+  [--run-id <custom_run_id>] \
   [--backend sb-cli|none] \
   [--timeout-per-instance 600] \
   [--parallel 4]
 ```
 
-- `--backend sb-cli` shells out to `sb-cli` and parses its report.
+- `--backend sb-cli` shells out via `sb-cli submit ...` (and `get-report` as a
+  fallback) then parses the generated report JSON.
 - `--backend none` writes placeholder unresolved rows (useful where `sb-cli`
   is unavailable).
 

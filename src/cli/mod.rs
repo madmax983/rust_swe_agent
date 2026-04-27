@@ -253,6 +253,9 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         backend,
         timeout_per_instance_secs: e.timeout_per_instance,
         parallel: e.parallel,
+        sb_subset: e.sb_subset,
+        sb_split: e.sb_split,
+        run_id: e.run_id,
     };
     let eval = crate::run::evaluate::run(&args)?;
 

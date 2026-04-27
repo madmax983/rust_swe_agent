@@ -24,6 +24,9 @@ pub struct EvaluateArgs {
     pub backend: EvaluateBackend,
     pub timeout_per_instance_secs: u64,
     pub parallel: usize,
+    pub sb_subset: String,
+    pub sb_split: String,
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,13 +112,24 @@ fn run_sb_cli(
         )));
     }
 
-    let out_file = args.sweep_dir.join("sb_cli_eval_raw.json");
+    let report_dir = args.sweep_dir.join("sb_cli_reports");
+    std::fs::create_dir_all(&report_dir)?;
+    let run_id = args.run_id.clone().unwrap_or_else(generated_run_id);
+
     let mut cmd = Command::new("sb-cli");
-    cmd.arg("eval")
-        .arg("--predictions")
+    cmd.arg("submit")
+        .arg(&args.sb_subset)
+        .arg(&args.sb_split)
+        .arg("--predictions_path")
         .arg(&preds)
-        .arg("--output")
-        .arg(&out_file)
+        .arg("--run_id")
+        .arg(&run_id)
+        .arg("--output_dir")
+        .arg(&report_dir)
+        .arg("--wait_for_evaluation")
+        .arg("1")
+        .arg("--gen_report")
+        .arg("1")
         .arg("--timeout-per-instance")
         .arg(args.timeout_per_instance_secs.to_string())
         .arg("--parallel")
@@ -137,13 +151,38 @@ fn run_sb_cli(
 
     if !output.status.success() {
         return Err(Error::Trajectory(format!(
-            "bench evaluate: sb-cli failed (status={}): {}",
+            "bench evaluate: sb-cli submit failed (status={}): {}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
         )));
     }
 
-    let parsed = parse_sb_cli_results(&out_file)?;
+    let report_path = report_dir.join(format!(
+        "{}__{}__{}.json",
+        args.sb_subset, args.sb_split, run_id
+    ));
+
+    if !report_path.exists() {
+        let output = Command::new("sb-cli")
+            .arg("get-report")
+            .arg(&args.sb_subset)
+            .arg(&args.sb_split)
+            .arg(&run_id)
+            .arg("--output_dir")
+            .arg(&report_dir)
+            .arg("--overwrite")
+            .arg("1")
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::Trajectory(format!(
+                "bench evaluate: sb-cli get-report failed (status={}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+    }
+
+    let parsed = parse_sb_cli_results(&report_path)?;
     Ok(merge_with_results(results, &parsed))
 }
 
@@ -175,10 +214,70 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                     }
                 }
             }
+            // sb-cli report shape: `resolved_ids` and sometimes `submitted_ids`.
+            if map.is_empty() {
+                let resolved_ids = obj
+                    .get("resolved_ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let submitted_ids = obj
+                    .get("submitted_ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|xs| {
+                        xs.iter()
+                            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                for id in &submitted_ids {
+                    map.insert(
+                        id.clone(),
+                        InstanceEvaluation {
+                            instance_id: id.clone(),
+                            resolved: resolved_ids.contains(id),
+                            tests_passed: vec![],
+                            tests_failed: vec![],
+                            eval_exit_reason: if resolved_ids.contains(id) {
+                                EvalExitReason::Resolved
+                            } else {
+                                EvalExitReason::Unresolved
+                            },
+                            eval_log_path: None,
+                        },
+                    );
+                }
+                if submitted_ids.is_empty() {
+                    for id in resolved_ids {
+                        map.insert(
+                            id.clone(),
+                            InstanceEvaluation {
+                                instance_id: id,
+                                resolved: true,
+                                tests_passed: vec![],
+                                tests_failed: vec![],
+                                eval_exit_reason: EvalExitReason::Resolved,
+                                eval_log_path: None,
+                            },
+                        );
+                    }
+                }
+            }
         }
         _ => {}
     }
     Ok(map)
+}
+
+fn generated_run_id() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("rust_swe_agent_{secs}")
 }
 
 fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
@@ -319,5 +418,20 @@ mod tests {
             eval.instances[1].eval_exit_reason,
             EvalExitReason::SkippedNoPatch
         ));
+    }
+
+    #[test]
+    fn parses_sb_cli_report_with_resolved_and_submitted_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        let report = serde_json::json!({
+            "resolved_ids": ["inst-a"],
+            "submitted_ids": ["inst-a", "inst-b"]
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        let parsed = parse_sb_cli_results(&path).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.get("inst-a").map(|r| r.resolved), Some(true));
+        assert_eq!(parsed.get("inst-b").map(|r| r.resolved), Some(false));
     }
 }

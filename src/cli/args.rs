@@ -168,6 +168,18 @@ pub struct EvaluateCmd {
     #[arg(long)]
     pub dataset: Option<PathBuf>,
 
+    /// SWE-bench subset for sb-cli (`swe-bench-m`, `swe-bench_lite`, ...).
+    #[arg(long, default_value = "swe-bench-m")]
+    pub sb_subset: String,
+
+    /// SWE-bench split for sb-cli (`dev` or `test` depending on subset).
+    #[arg(long, default_value = "dev")]
+    pub sb_split: String,
+
+    /// Optional sb-cli run id. When unset, one is generated automatically.
+    #[arg(long)]
+    pub run_id: Option<String>,
+
     /// Evaluation backend: `sb-cli` or `none`.
     #[arg(long, default_value = "sb-cli")]
     pub backend: String,
