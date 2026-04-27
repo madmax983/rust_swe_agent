@@ -12,15 +12,37 @@ pub struct DeterministicModel {
     responses: Mutex<std::collections::VecDeque<String>>,
     call_count: Mutex<u32>,
     record: Mutex<Vec<Vec<Message>>>,
+    usage_per_call: ModelUsage,
 }
 
 impl DeterministicModel {
     pub fn new(responses: impl IntoIterator<Item = String>) -> Self {
+        Self::with_usage(
+            responses,
+            ModelUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cost_usd: Some(0.0),
+            },
+        )
+    }
+
+    /// Construct a `DeterministicModel` that reports `usage_per_call` on
+    /// every `query`. Lets sweep-budget tests trigger budget halts
+    /// deterministically by making the scripted backend look like it spent
+    /// non-zero tokens / dollars per call.
+    pub fn with_usage(
+        responses: impl IntoIterator<Item = String>,
+        usage_per_call: ModelUsage,
+    ) -> Self {
         Self {
             name: "deterministic".to_owned(),
             responses: Mutex::new(responses.into_iter().collect()),
             call_count: Mutex::new(0),
             record: Mutex::new(Vec::new()),
+            usage_per_call,
         }
     }
 
@@ -75,17 +97,13 @@ impl Model for DeterministicModel {
             })?
         };
 
-        // Zero token counts: replay runs and CI tests must produce valid
-        // trajectories without implying any real API spend.
+        // Default usage is all zeroes — replay runs and CI tests produce
+        // valid trajectories without implying any real API spend. Tests
+        // that need to exercise cost/budget paths inject non-zero usage
+        // via `with_usage`.
         Ok(ModelResponse {
             content,
-            usage: ModelUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                cost_usd: Some(0.0),
-            },
+            usage: self.usage_per_call.clone(),
             raw: serde_json::json!({"deterministic": true}),
         })
     }

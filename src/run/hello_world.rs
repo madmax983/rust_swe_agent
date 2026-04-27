@@ -19,6 +19,7 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
             "```bash\necho hello\n```".into(),
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
         ]),
+        deterministic_usage_per_call: None,
         stream_addr: None,
         patch_capture: None,
     };

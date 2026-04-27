@@ -97,7 +97,9 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         parallel: 1,
         config: cfg,
         resume: false,
+        cost_limit_usd: None,
         deterministic_responses: Some(responses),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();
@@ -167,9 +169,11 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         parallel: 1,
         config: cfg,
         resume: false,
+        cost_limit_usd: None,
         deterministic_responses: Some(vec![
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into(),
         ]),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();
@@ -223,9 +227,11 @@ async fn missing_workdir_marks_outcome_as_error() {
         parallel: 1,
         config: cfg,
         resume: false,
+        cost_limit_usd: None,
         deterministic_responses: Some(vec![
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
         ]),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();
