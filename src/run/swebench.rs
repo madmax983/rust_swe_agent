@@ -908,6 +908,7 @@ fn deterministic_for_attempt(all: &[String], attempt: u32, retry_mode: bool) -> 
     all.last().cloned().into_iter().collect()
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_one(
     inst: SweBenchInstance,
     output_dir: PathBuf,

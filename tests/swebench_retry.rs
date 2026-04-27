@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::Path;
