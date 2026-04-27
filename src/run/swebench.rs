@@ -93,6 +93,12 @@ pub struct InstanceResult {
     /// agent's working tree actually diverged from `base_commit`.
     #[serde(default)]
     pub non_empty_patch: bool,
+    /// Total attempts executed for this instance (first run + retries).
+    #[serde(default = "default_attempts")]
+    pub attempts: u32,
+    /// Failure categories that triggered retries before the terminal attempt.
+    #[serde(default)]
+    pub retry_reasons: Vec<FailureCategory>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +124,12 @@ pub struct SweepResults {
     pub total_completion_tokens: u64,
     #[serde(default)]
     pub estimated_cost_usd: f64,
+    /// Total retry attempts executed across all instances.
+    #[serde(default)]
+    pub retries: u64,
+    /// Number of instances that retried at least once.
+    #[serde(default)]
+    pub retried_instances: usize,
     /// Resolved dataset subset spec used for this run.
     #[serde(default)]
     pub filter_spec: FilterSpec,
@@ -178,6 +190,11 @@ impl SweepResults {
             s,
             "Budget-halted:      {} — never started; sweep-level USD limit reached",
             self.budget_halted
+        );
+        let _ = writeln!(
+            s,
+            "Retries:            {} over {} instances",
+            self.retries, self.retried_instances
         );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
         let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
@@ -248,6 +265,19 @@ pub struct SwebenchArgs {
     pub sample: Option<usize>,
     /// RNG seed used by `sample`.
     pub seed: Option<u64>,
+    /// Retry transiently-failed instances up to N additional attempts.
+    /// `0` preserves the historical no-retry behavior.
+    pub max_retries: u32,
+    /// Comma-separated failure-category labels to retry.
+    /// When `None`, the default transient set is used.
+    pub retry_on: Option<String>,
+    /// Exponential backoff base in milliseconds.
+    pub retry_backoff_base_ms: u64,
+    /// Exponential backoff max cap in seconds.
+    pub retry_backoff_cap_s: u64,
+    /// If true, `--resume` re-runs previously completed instances whose
+    /// stored `failure_category` is retryable.
+    pub retry_on_resume: bool,
     /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
     /// Lets sweeps run end-to-end against a scripted model without network
     /// I/O — mainly useful for tests and local smoke checks.
@@ -257,6 +287,10 @@ pub struct SwebenchArgs {
     /// deterministically. Only meaningful when `deterministic_responses`
     /// is `Some`.
     pub deterministic_usage_per_call: Option<ModelUsage>,
+}
+
+fn default_attempts() -> u32 {
+    1
 }
 
 /// Path where `run_one` writes the trajectory for an instance. Centralized so
@@ -317,6 +351,12 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
+    let retry_policy = RetryPolicy::from_args(
+        args.max_retries,
+        args.retry_on.as_deref(),
+        args.retry_backoff_base_ms,
+        args.retry_backoff_cap_s,
+    )?;
 
     let instances = load_dataset(&args.dataset_path)?;
     let (instances, filter_spec) = apply_subset(
@@ -357,7 +397,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
                 let patch_path = patch_path_for(&args.output_dir, &inst.instance_id);
                 let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
-                if !needs_patch || patch_path.exists() {
+                let retryable_resume = args.retry_on_resume
+                    && info
+                        .failure_category
+                        .is_some_and(|cat| retry_policy.should_retry(cat));
+                if !retryable_resume && (!needs_patch || patch_path.exists()) {
                     let r = skipped_result_from_info(&inst.instance_id, &info, &patch_path);
                     bump_cost(
                         estimate_cost_usd(
@@ -390,6 +434,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let mut with_patch = 0;
     let mut total_prompt = 0u64;
     let mut total_completion = 0u64;
+    let mut total_retries = 0u64;
+    let mut retried_instances = 0usize;
     let parallelism = args.parallel.max(1);
 
     // Consumer-driven dispatch: spawn at most `parallelism` tasks at a
@@ -402,7 +448,18 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         let cfg = args.config.clone();
         let deterministic = args.deterministic_responses.clone();
         let det_usage = args.deterministic_usage_per_call.clone();
-        set.spawn(async move { run_one(inst, output_dir, cfg, deterministic, det_usage).await });
+        let retry_policy = retry_policy.clone();
+        set.spawn(async move {
+            run_one(
+                inst,
+                output_dir,
+                cfg,
+                deterministic,
+                det_usage,
+                retry_policy,
+            )
+            .await
+        });
     };
 
     if halted {
@@ -433,6 +490,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 }
                 if r.non_empty_patch {
                     with_patch += 1;
+                }
+                total_retries =
+                    total_retries.saturating_add(u64::from(r.attempts.saturating_sub(1)));
+                if r.attempts > 1 {
+                    retried_instances += 1;
                 }
                 if let Some(p) = r.prompt_tokens {
                     total_prompt = total_prompt.saturating_add(p);
@@ -475,6 +537,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     error: Some(e.to_string()),
                     patch_present: false,
                     non_empty_patch: false,
+                    attempts: 1,
+                    retry_reasons: Vec::new(),
                 });
             }
         }
@@ -520,6 +584,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_prompt_tokens: total_prompt,
         total_completion_tokens: total_completion,
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
+        retries: total_retries,
+        retried_instances,
         filter_spec,
         cost_limit_usd: args.cost_limit_usd,
         instances: results,
@@ -547,6 +613,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         error: None,
         patch_present: false,
         non_empty_patch: false,
+        attempts: 1,
+        retry_reasons: Vec::new(),
     }
 }
 
@@ -615,7 +683,102 @@ fn skipped_result_from_info(
         error: None,
         patch_present,
         non_empty_patch,
+        attempts: 1,
+        retry_reasons: Vec::new(),
     }
+}
+
+#[derive(Debug, Clone)]
+struct RetryPolicy {
+    max_retries: u32,
+    retry_on: BTreeSet<FailureCategory>,
+    backoff_base_ms: u64,
+    backoff_cap_s: u64,
+}
+
+impl RetryPolicy {
+    fn from_args(
+        max_retries: u32,
+        retry_on: Option<&str>,
+        backoff_base_ms: u64,
+        backoff_cap_s: u64,
+    ) -> Result<Self, Error> {
+        let retry_on = parse_retry_on(retry_on)?;
+        Ok(Self {
+            max_retries,
+            retry_on,
+            backoff_base_ms,
+            backoff_cap_s,
+        })
+    }
+
+    fn should_retry(&self, cat: FailureCategory) -> bool {
+        self.max_retries > 0 && self.retry_on.contains(&cat)
+    }
+
+    fn backoff_for(&self, instance_id: &str, attempt: u32) -> std::time::Duration {
+        if self.backoff_base_ms == 0 {
+            return std::time::Duration::from_millis(0);
+        }
+        let factor = 1u64
+            .checked_shl(attempt.saturating_sub(1))
+            .unwrap_or(u64::MAX);
+        let exp_ms = self.backoff_base_ms.saturating_mul(factor);
+        let cap_ms = self.backoff_cap_s.saturating_mul(1000);
+        let bounded_ms = exp_ms.min(cap_ms.max(self.backoff_base_ms));
+        let jitter_seed = simple_hash(instance_id) ^ u64::from(attempt);
+        let jitter_pct = jitter_seed % 251; // 0..250 => up to +25.0%
+        let jittered = bounded_ms.saturating_mul(1000 + jitter_pct) / 1000;
+        std::time::Duration::from_millis(jittered.min(cap_ms.max(bounded_ms)))
+    }
+}
+
+fn parse_retry_on(retry_on: Option<&str>) -> Result<BTreeSet<FailureCategory>, Error> {
+    let raw = retry_on.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(list) = raw {
+        let mut set = BTreeSet::new();
+        for token in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let cat = parse_failure_category_label(token)?;
+            set.insert(cat);
+        }
+        return Ok(set);
+    }
+    Ok(BTreeSet::from([FailureCategory::ModelApi]))
+}
+
+fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
+    match s {
+        "env_setup" => Ok(FailureCategory::EnvSetup),
+        "model_api" => Ok(FailureCategory::ModelApi),
+        "model_parse" => Ok(FailureCategory::ModelParse),
+        "step_limit" => Ok(FailureCategory::StepLimit),
+        "cost_limit" => Ok(FailureCategory::CostLimit),
+        "agent_internal" => Ok(FailureCategory::AgentInternal),
+        "unknown" => Ok(FailureCategory::Unknown),
+        _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown retry category `{s}`"
+        )))),
+    }
+}
+
+fn simple_hash(s: &str) -> u64 {
+    let mut x = 0xcbf2_9ce4_8422_2325u64;
+    for b in s.bytes() {
+        x ^= u64::from(b);
+        x = x.wrapping_mul(0x1000_0000_01b3);
+    }
+    x
+}
+
+fn deterministic_for_attempt(all: &[String], attempt: u32, retry_mode: bool) -> Vec<String> {
+    if !retry_mode {
+        return all.to_vec();
+    }
+    let idx = usize::try_from(attempt.saturating_sub(1)).unwrap_or(usize::MAX);
+    if idx < all.len() {
+        return vec![all[idx].clone()];
+    }
+    all.last().cloned().into_iter().collect()
 }
 
 async fn run_one(
@@ -624,6 +787,7 @@ async fn run_one(
     mut cfg: Config,
     deterministic_responses: Option<Vec<String>>,
     deterministic_usage_per_call: Option<ModelUsage>,
+    retry_policy: RetryPolicy,
 ) -> InstanceResult {
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -637,81 +801,106 @@ async fn run_one(
     }
     let workdir = PathBuf::from(cfg.root.environment.workdir.clone());
     let patch_path = patch_path_for(&output_dir, &id);
-    let patch_capture = Some(crate::run::mini::PatchCaptureSpec {
-        base_commit: inst.base_commit.clone(),
-        workdir,
-        patch_path: patch_path.clone(),
-    });
-    let args = crate::run::mini::MiniArgs {
-        task,
-        extra_context: None,
-        config: cfg,
-        output_dir: output_dir.clone(),
-        trajectory_name: id.clone(),
-        deterministic_responses,
-        deterministic_usage_per_call,
-        stream_addr: None,
-        patch_capture,
-    };
-    let run_err = crate::run::mini::run(args).await.err();
+    let base_commit = inst.base_commit.clone();
+    let mut attempts = 0u32;
+    let mut retry_reasons = Vec::new();
+    let mut total_prompt_tokens = 0u64;
+    let mut total_completion_tokens = 0u64;
+    let mut terminal: Option<InstanceResult> = None;
 
-    // Trajectory is the source of truth — `mini::run` writes it on both
-    // success and error paths, so reading it covers every outcome.
-    let traj_path = output_dir.join(format!("{id}.traj.json"));
-    let info = read_trajectory_info(&traj_path);
+    while attempts <= retry_policy.max_retries {
+        attempts += 1;
+        let det_for_attempt = deterministic_responses
+            .as_ref()
+            .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
+        let args = crate::run::mini::MiniArgs {
+            task: task.clone(),
+            extra_context: None,
+            config: cfg.clone(),
+            output_dir: output_dir.clone(),
+            trajectory_name: id.clone(),
+            deterministic_responses: det_for_attempt,
+            deterministic_usage_per_call: deterministic_usage_per_call.clone(),
+            stream_addr: None,
+            patch_capture: Some(crate::run::mini::PatchCaptureSpec {
+                base_commit: base_commit.clone(),
+                workdir: workdir.clone(),
+                patch_path: patch_path.clone(),
+            }),
+        };
+        let run_err = crate::run::mini::run(args).await.err();
+        let traj_path = output_dir.join(format!("{id}.traj.json"));
+        let info = read_trajectory_info(&traj_path);
+        let outcome_str = info
+            .as_ref()
+            .and_then(|i| i.outcome.clone())
+            .or_else(|| run_err.as_ref().map(|_| outcome::ERROR.to_owned()))
+            .unwrap_or_else(|| outcome::ERROR.to_owned());
+        let exit_reason = info
+            .as_ref()
+            .and_then(|i| i.exit_reason.clone())
+            .unwrap_or_else(|| outcome_str.clone());
+        let (prompt_tokens, completion_tokens) = info
+            .as_ref()
+            .and_then(|i| i.token_usage.as_ref())
+            .map_or((0, 0), |t| (t.prompt_tokens, t.completion_tokens));
+        total_prompt_tokens = total_prompt_tokens.saturating_add(prompt_tokens);
+        total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
 
-    let outcome_str = info
-        .as_ref()
-        .and_then(|i| i.outcome.clone())
-        .or_else(|| run_err.as_ref().map(|_| outcome::ERROR.to_owned()))
-        .unwrap_or_else(|| outcome::ERROR.to_owned());
-
-    let exit_reason = info
-        .as_ref()
-        .and_then(|i| i.exit_reason.clone())
-        .unwrap_or_else(|| outcome_str.clone());
-
-    let (prompt_tokens, completion_tokens) = info
-        .as_ref()
-        .and_then(|i| i.token_usage.as_ref())
-        .map_or((None, None), |t| {
-            (Some(t.prompt_tokens), Some(t.completion_tokens))
-        });
-
-    let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
-        Ok(m) => (true, m.len() > 0),
-        Err(_) => (false, false),
-    };
-
-    let failure_category = if outcome_str == outcome::SUBMITTED {
-        None
-    } else {
-        info.as_ref()
-            .and_then(|i| i.failure_category)
-            .or_else(|| match exit_reason.as_str() {
-                "step_limit" => Some(FailureCategory::StepLimit),
-                "cost_limit" => Some(FailureCategory::CostLimit),
-                _ => run_err
-                    .as_ref()
-                    .map(classify_error)
-                    .or(Some(FailureCategory::Unknown)),
-            })
-    };
-
-    InstanceResult {
-        instance_id: id,
-        exit_reason,
-        outcome: Some(outcome_str),
-        failure_category,
-        steps: info.as_ref().and_then(|i| i.steps),
-        cost_usd: info.as_ref().and_then(|i| i.total_cost_usd),
-        prompt_tokens,
-        completion_tokens,
-        duration_secs: info.as_ref().and_then(|i| i.duration_secs),
-        error: run_err.map(|e| e.to_string()),
-        patch_present,
-        non_empty_patch,
+        let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
+            Ok(m) => (true, m.len() > 0),
+            Err(_) => (false, false),
+        };
+        let failure_category = if outcome_str == outcome::SUBMITTED {
+            None
+        } else {
+            info.as_ref()
+                .and_then(|i| i.failure_category)
+                .or_else(|| match exit_reason.as_str() {
+                    "step_limit" => Some(FailureCategory::StepLimit),
+                    "cost_limit" => Some(FailureCategory::CostLimit),
+                    _ => run_err
+                        .as_ref()
+                        .map(classify_error)
+                        .or(Some(FailureCategory::Unknown)),
+                })
+        };
+        let current = InstanceResult {
+            instance_id: id.clone(),
+            exit_reason,
+            outcome: Some(outcome_str.clone()),
+            failure_category,
+            steps: info.as_ref().and_then(|i| i.steps),
+            cost_usd: Some(estimate_cost_usd(
+                total_prompt_tokens,
+                total_completion_tokens,
+            )),
+            prompt_tokens: Some(total_prompt_tokens),
+            completion_tokens: Some(total_completion_tokens),
+            duration_secs: info.as_ref().and_then(|i| i.duration_secs),
+            error: run_err.map(|e| e.to_string()),
+            patch_present,
+            non_empty_patch,
+            attempts,
+            retry_reasons: retry_reasons.clone(),
+        };
+        let retryable = current
+            .failure_category
+            .is_some_and(|cat| retry_policy.should_retry(cat))
+            && attempts <= retry_policy.max_retries;
+        if !retryable {
+            terminal = Some(current);
+            break;
+        }
+        if let Some(cat) = current.failure_category {
+            retry_reasons.push(cat);
+            tracing::warn!(instance=%id, attempt=attempts, failure_category=%failure_category_label(cat), "retrying transient failure");
+        }
+        tokio::time::sleep(retry_policy.backoff_for(&id, attempts)).await;
+        terminal = Some(current);
     }
+
+    terminal.unwrap_or_else(|| budget_halt_result(&id))
 }
 
 fn classify_error(err: &Error) -> FailureCategory {
@@ -923,6 +1112,8 @@ mod tests {
             total_prompt_tokens: 250_000,
             total_completion_tokens: 50_000,
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
+            retries: 0,
+            retried_instances: 0,
             filter_spec: FilterSpec {
                 original_count: 10,
                 selected_count: 10,
@@ -970,6 +1161,8 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
+            retries: 0,
+            retried_instances: 0,
             filter_spec: FilterSpec {
                 original_count: 5,
                 selected_count: 5,
@@ -1019,6 +1212,37 @@ mod tests {
     fn existing_trajectory_info_returns_none_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         assert!(existing_trajectory_info(dir.path(), "no-such-id").is_none());
+    }
+
+    #[test]
+    fn retry_on_parser_accepts_known_labels() {
+        let parsed = parse_retry_on(Some("model_api,step_limit")).unwrap();
+        assert!(parsed.contains(&FailureCategory::ModelApi));
+        assert!(parsed.contains(&FailureCategory::StepLimit));
+    }
+
+    #[test]
+    fn retry_on_parser_rejects_unknown_label() {
+        let err = parse_retry_on(Some("not_a_category")).err();
+        assert!(err.is_some());
+    }
+
+    #[test]
+    fn deterministic_attempt_script_shifts_after_first_attempt() {
+        let seq = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        assert_eq!(deterministic_for_attempt(&seq, 1, false), seq);
+        assert_eq!(
+            deterministic_for_attempt(&seq, 1, true),
+            vec!["a".to_owned()]
+        );
+        assert_eq!(
+            deterministic_for_attempt(&seq, 2, true),
+            vec!["b".to_owned()]
+        );
+        assert_eq!(
+            deterministic_for_attempt(&seq, 99, true),
+            vec!["c".to_owned()]
+        );
     }
 
     #[test]

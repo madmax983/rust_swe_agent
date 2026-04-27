@@ -101,6 +101,11 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         limit: None,
         sample: None,
         seed: None,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
     })
