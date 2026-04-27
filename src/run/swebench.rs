@@ -59,20 +59,27 @@ pub struct SweBenchInstance {
     pub other: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceResult {
     pub instance_id: String,
     pub exit_reason: String,
     /// Coarse outcome from the trajectory: `submitted` | `step_limit_reached`
     /// | `error`. `None` when the trajectory file could not be read.
+    #[serde(default)]
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_category: Option<FailureCategory>,
+    #[serde(default)]
     pub steps: Option<u32>,
+    #[serde(default)]
     pub cost_usd: Option<f64>,
+    #[serde(default)]
     pub prompt_tokens: Option<u64>,
+    #[serde(default)]
     pub completion_tokens: Option<u64>,
+    #[serde(default)]
     pub duration_secs: Option<f64>,
+    #[serde(default)]
     pub error: Option<String>,
     /// `true` once the runner persisted a `.patch` artifact for this
     /// instance — even an empty diff. Submitted instances missing a
@@ -88,7 +95,7 @@ pub struct InstanceResult {
     pub non_empty_patch: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepResults {
     pub total: usize,
     pub submitted: usize,
@@ -99,18 +106,24 @@ pub struct SweepResults {
     /// Tasks that never started because the sweep-level USD budget was
     /// exhausted before they could acquire a worker permit. Counted in
     /// `total` but excluded from `submitted` and `errored`.
+    #[serde(default)]
     pub budget_halted: usize,
     /// Submitted instances whose captured patch had non-zero length.
     /// Equal to `submitted` minus the count of empty-diff submissions.
+    #[serde(default)]
     pub with_patch: usize,
+    #[serde(default)]
     pub total_prompt_tokens: u64,
+    #[serde(default)]
     pub total_completion_tokens: u64,
+    #[serde(default)]
     pub estimated_cost_usd: f64,
     /// The USD ceiling enforced for this sweep, echoed from
     /// `SwebenchArgs::cost_limit_usd`. `None` when no limit was set —
     /// distinguishes "ran without a budget" from "budget was infinite".
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_limit_usd: Option<f64>,
+    #[serde(default)]
     pub instances: Vec<InstanceResult>,
 }
 
