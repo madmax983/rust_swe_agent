@@ -284,13 +284,11 @@ fn render_summary_text(report: &SummaryReport) -> String {
             "{} | {} | {} | {} | {}",
             row.instance_id,
             row.outcome.as_deref().unwrap_or("?"),
-            row.failure_category.map(failure_label).unwrap_or("none"),
+            row.failure_category.map_or("none", failure_label),
             row.cost_usd
-                .map(|c| format!("{c:.4}"))
-                .unwrap_or_else(|| "?".into()),
+                .map_or_else(|| "?".into(), |c| format!("{c:.4}")),
             row.resolved
-                .map(|v| if v { "true" } else { "false" })
-                .unwrap_or("?")
+                .map_or("?", |v| if v { "true" } else { "false" })
         );
     }
     s
@@ -318,27 +316,24 @@ fn render_instance_text(report: &InspectReport) -> String {
     let _ = writeln!(
         s,
         "failure_category: {}",
-        report.failure_category.map(failure_label).unwrap_or("none")
+        report.failure_category.map_or("none", failure_label)
     );
     let _ = writeln!(
         s,
         "total_cost_usd:   {}",
         report
             .total_cost_usd
-            .map(|v| format!("{v:.6}"))
-            .unwrap_or_else(|| "?".into())
+            .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
     );
     let _ = writeln!(
         s,
         "tokens:           prompt={} completion={}",
         report
             .prompt_tokens
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "?".into()),
+            .map_or_else(|| "?".into(), |v| v.to_string()),
         report
             .completion_tokens
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "?".into()),
+            .map_or_else(|| "?".into(), |v| v.to_string()),
     );
     if let Some(r) = report.resolved {
         let _ = writeln!(s, "resolved:         {r}");
@@ -411,10 +406,8 @@ fn maybe_truncate(text: &str, full: bool, step_index: usize) -> (String, Option<
     }
     let shown_lines = truncated.lines().count();
     let more_lines = line_count.saturating_sub(shown_lines);
-    let note = format!(
-        "[{} more lines, full output at trajectory.json#/steps/{}]",
-        more_lines, step_index
-    );
+    let note =
+        format!("[{more_lines} more lines, full output at trajectory.json#/steps/{step_index}]");
     (truncated, Some(note), true)
 }
 
@@ -458,8 +451,7 @@ impl FilterSpec {
             }
             "failure_category" => row
                 .failure_category
-                .map(|c| failure_label(c) == self.value)
-                .unwrap_or(false),
+                .is_some_and(|c| failure_label(c) == self.value),
             _ => false,
         }
     }
