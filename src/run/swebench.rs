@@ -10,7 +10,7 @@
 //! cumulative cost — which would silently overshoot the cap by one
 //! task's worth of API spend per worker.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -351,6 +351,7 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
+    let prior_results = load_prior_results_by_instance(&args.output_dir)?;
     let retry_policy = RetryPolicy::from_args(
         args.max_retries,
         args.retry_on.as_deref(),
@@ -402,7 +403,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         .failure_category
                         .is_some_and(|cat| retry_policy.is_retry_category(cat));
                 if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                    let r = skipped_result_from_info(&inst.instance_id, &info, &patch_path);
+                    let r = prior_results.get(&inst.instance_id).map_or_else(
+                        || skipped_result_from_info(&inst.instance_id, &info, &patch_path),
+                        skipped_result_from_prior_result,
+                    );
                     bump_cost(
                         estimate_cost_usd(
                             r.prompt_tokens.unwrap_or(0),
@@ -686,6 +690,29 @@ fn skipped_result_from_info(
         attempts: 1,
         retry_reasons: Vec::new(),
     }
+}
+
+fn skipped_result_from_prior_result(r: &InstanceResult) -> InstanceResult {
+    let mut out = r.clone();
+    out.exit_reason = "skipped_resume".into();
+    out.error = None;
+    out
+}
+
+fn load_prior_results_by_instance(
+    output_dir: &std::path::Path,
+) -> Result<HashMap<String, InstanceResult>, Error> {
+    let path = output_dir.join("results.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = std::fs::read_to_string(path)?;
+    let parsed: SweepResults = serde_json::from_str(&text)?;
+    Ok(parsed
+        .instances
+        .into_iter()
+        .map(|r| (r.instance_id.clone(), r))
+        .collect())
 }
 
 #[derive(Debug, Clone)]

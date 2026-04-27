@@ -18,9 +18,11 @@ use std::process::Command;
 use rust_swe_agent::Config;
 use rust_swe_agent::ModelUsage;
 use rust_swe_agent::run::swebench::{
-    EXIT_REASON_BUDGET_HALT, SwebenchArgs, estimate_cost_usd, run,
+    EXIT_REASON_BUDGET_HALT, InstanceResult, SwebenchArgs, SweepResults, estimate_cost_usd, run,
 };
-use rust_swe_agent::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
+use rust_swe_agent::trajectory::{
+    FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
+};
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
     let mut s = String::new();
@@ -370,5 +372,120 @@ async fn resume_skipped_costs_count_against_budget() {
         results.budget_halted >= 1,
         "resume-skipped cost should have driven cumulative past the limit, \
          halting at least one fresh task; got: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["already-on-disk", "fresh"]);
+
+    // Trajectory only reflects a terminal attempt with small usage.
+    let traj = Trajectory {
+        trajectory_format: FORMAT_VERSION.into(),
+        info: TrajectoryInfo {
+            outcome: Some(outcome::SUBMITTED.into()),
+            exit_reason: Some("submitted".into()),
+            steps: Some(1),
+            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+                prompt_tokens: 0,
+                completion_tokens: 1_000,
+            }),
+            total_cost_usd: Some(0.015),
+            ..Default::default()
+        },
+        messages: vec![],
+    };
+    std::fs::write(
+        output.join("already-on-disk.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(output.join("already-on-disk.patch"), b"").unwrap();
+
+    // Prior results.json preserves cumulative retry usage/costs.
+    let prior = SweepResults {
+        total: 1,
+        submitted: 1,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: std::collections::BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 0,
+        total_prompt_tokens: 0,
+        total_completion_tokens: 8_000,
+        estimated_cost_usd: estimate_cost_usd(0, 8_000),
+        retries: 1,
+        retried_instances: 1,
+        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        cost_limit_usd: Some(0.10),
+        instances: vec![InstanceResult {
+            instance_id: "already-on-disk".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: Some(FailureCategory::ModelApi),
+            steps: Some(2),
+            cost_usd: Some(0.12),
+            prompt_tokens: Some(0),
+            completion_tokens: Some(8_000),
+            duration_secs: Some(1.0),
+            error: None,
+            patch_present: true,
+            non_empty_patch: false,
+            attempts: 2,
+            retry_reasons: vec![FailureCategory::ModelApi],
+        }],
+    };
+    std::fs::write(
+        output.join("results.json"),
+        serde_json::to_string_pretty(&prior).unwrap(),
+    )
+    .unwrap();
+
+    let usage = ModelUsage {
+        input_tokens: 0,
+        output_tokens: 4_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: Some(0.06),
+    };
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: Some(0.10),
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses_for(1)),
+        deterministic_usage_per_call: Some(usage),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.skipped, 1);
+    assert_eq!(results.budget_halted, 1);
+    assert!(
+        results
+            .instances
+            .iter()
+            .any(|r| r.instance_id == "fresh" && r.exit_reason == EXIT_REASON_BUDGET_HALT)
     );
 }
