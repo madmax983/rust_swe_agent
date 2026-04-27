@@ -149,6 +149,7 @@ async fn run_one(inst: SweBenchInstance, output_dir: PathBuf, mut cfg: Config) -
         output_dir: output_dir.clone(),
         trajectory_name: id.clone(),
         deterministic_responses: None,
+        stream_addr: None,
     };
     match crate::run::mini::run(args).await {
         Ok(()) => InstanceResult {

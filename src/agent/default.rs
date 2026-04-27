@@ -18,6 +18,7 @@ use crate::config::Config;
 use crate::env::{Environment, RunRequest};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
+use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::Trajectory;
 
@@ -30,6 +31,9 @@ pub struct DefaultAgent {
     pub trajectory: Trajectory,
     pub steps: u32,
     pub total_cost_usd: f64,
+    /// Real-time event sink. Defaults to `NullSink` so non-streaming
+    /// callers pay no cost beyond a vtable call.
+    pub stream: Arc<dyn StreamSink>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -39,6 +43,7 @@ pub struct DefaultAgentBuilder {
     pub task: String,
     pub extra_context: Option<String>,
     pub renderer: Option<Arc<Renderer>>,
+    pub stream: Option<Arc<dyn StreamSink>>,
 }
 
 impl DefaultAgentBuilder {
@@ -65,13 +70,21 @@ impl DefaultAgentBuilder {
             Message::user(instance_rendered),
         ];
 
+        let started_at = chrono::Utc::now().to_rfc3339();
         let mut trajectory = Trajectory::new();
         trajectory.info.task = Some(self.task.clone());
         trajectory.info.model_name = Some(self.model.name().to_owned());
-        trajectory.info.started_at = Some(chrono::Utc::now().to_rfc3339());
+        trajectory.info.started_at = Some(started_at.clone());
         for m in &history {
             trajectory.record_message(m);
         }
+
+        let stream: Arc<dyn StreamSink> = self.stream.unwrap_or_else(|| Arc::new(NullSink));
+        stream.emit(StreamEvent::RunStarted {
+            task: self.task.clone(),
+            model: self.model.name().to_owned(),
+            started_at,
+        });
 
         Ok(DefaultAgent {
             config: self.config,
@@ -82,6 +95,7 @@ impl DefaultAgentBuilder {
             trajectory,
             steps: 0,
             total_cost_usd: 0.0,
+            stream,
         })
     }
 }
@@ -111,11 +125,17 @@ pub fn retag_cache_hints(history: &mut [Message]) {
 
 #[async_trait]
 impl Agent for DefaultAgent {
+    // The step body walks through 7 sequential phases (limit checks →
+    // model query → action parse → bash → observation → trajectory
+    // record → bump). Splitting it out would obscure the linear flow
+    // for no real reuse benefit.
+    #[allow(clippy::too_many_lines)]
     async fn step(&mut self) -> Result<StepOutcome, Error> {
         // 1. Limit checks.
         if self.steps >= self.config.root.agent.step_limit {
             self.trajectory.info.exit_reason = Some("step_limit".into());
             self.trajectory.info.steps = Some(self.steps);
+            self.emit_run_ended("step_limit", None);
             return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
                 limit: self.config.root.agent.step_limit,
             }));
@@ -125,6 +145,7 @@ impl Agent for DefaultAgent {
                 self.trajectory.info.exit_reason = Some("cost_limit".into());
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.emit_run_ended("cost_limit", None);
                 return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
                     limit_usd: limit,
                     spent_usd: self.total_cost_usd,
@@ -145,10 +166,18 @@ impl Agent for DefaultAgent {
         self.total_cost_usd += resp.usage.cost_usd.unwrap_or(0.0);
 
         // Record assistant message in trajectory with raw + cost.
+        let asst_ts = chrono::Utc::now().to_rfc3339();
         let mut asst = Message::assistant(resp.content.clone());
         asst.extra.cost = resp.usage.cost_usd;
         asst.extra.response = Some(resp.raw.clone());
-        asst.extra.timestamp = Some(chrono::Utc::now().to_rfc3339());
+        asst.extra.timestamp = Some(asst_ts.clone());
+
+        self.stream.emit(StreamEvent::AssistantMessage {
+            step: self.steps,
+            content: resp.content.clone(),
+            cost_usd: resp.usage.cost_usd,
+            timestamp: asst_ts,
+        });
 
         // 4. Parse action.
         let action = extract_action(&resp.content);
@@ -162,6 +191,7 @@ impl Agent for DefaultAgent {
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                 self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.emit_run_ended("submitted", Some(output.clone()));
                 return Ok(StepOutcome::Terminate(ExitReason::Submitted {
                     final_output: output.clone(),
                 }));
@@ -179,6 +209,11 @@ impl Agent for DefaultAgent {
                     &self.config.root.agent.format_error_template,
                     &serde_json::json!({}),
                 )?;
+                self.stream.emit(StreamEvent::FormatError {
+                    step: self.steps,
+                    content: err.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
                 let obs = Message::user(err);
                 self.history.push(obs.clone());
                 self.trajectory.record_message(&obs);
@@ -191,10 +226,23 @@ impl Agent for DefaultAgent {
         let Action::Bash(cmd) = action else {
             unreachable!("Submit and None handled above");
         };
+        self.stream.emit(StreamEvent::BashStart {
+            step: self.steps,
+            command: cmd.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
         let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
             self.config.root.environment.timeout_secs,
         ));
         let result = self.env.run(run_req).await?;
+        self.stream.emit(StreamEvent::BashResult {
+            step: self.steps,
+            exit_code: result.exit_code,
+            stdout: result.stdout.clone(),
+            stderr: result.stderr.clone(),
+            timed_out: result.timed_out,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
 
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
@@ -213,18 +261,37 @@ impl Agent for DefaultAgent {
         self.trajectory.record_message(&asst);
 
         // Record user observation.
-        let obs_msg = Message::user(obs_text);
+        let obs_ts = chrono::Utc::now().to_rfc3339();
+        let obs_msg = Message::user(obs_text.clone());
         self.history.push(obs_msg.clone());
         let mut obs_extra = MessageExtra::default();
         obs_extra.other.insert(
             "run_result".into(),
             serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
         );
-        obs_extra.timestamp = Some(chrono::Utc::now().to_rfc3339());
+        obs_extra.timestamp = Some(obs_ts.clone());
         self.trajectory.record_with_extra(&obs_msg, obs_extra);
+
+        self.stream.emit(StreamEvent::Observation {
+            step: self.steps,
+            content: obs_text,
+            timestamp: obs_ts,
+        });
 
         self.steps += 1;
         Ok(StepOutcome::Continue)
+    }
+}
+
+impl DefaultAgent {
+    fn emit_run_ended(&self, exit_reason: &str, final_output: Option<String>) {
+        self.stream.emit(StreamEvent::RunEnded {
+            exit_reason: exit_reason.to_owned(),
+            final_output,
+            steps: self.steps,
+            total_cost_usd: self.total_cost_usd,
+            ended_at: chrono::Utc::now().to_rfc3339(),
+        });
     }
 }
 
@@ -247,6 +314,7 @@ mod tests {
             task: "test".into(),
             extra_context: None,
             renderer: None,
+            stream: None,
         }
         .build()
         .unwrap()

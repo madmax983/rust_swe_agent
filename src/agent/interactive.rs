@@ -72,6 +72,7 @@ mod tests {
             task: "t".into(),
             extra_context: None,
             renderer: None,
+            stream: None,
         }
         .build()
         .unwrap();

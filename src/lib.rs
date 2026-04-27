@@ -10,6 +10,7 @@ pub mod error;
 pub mod ids;
 pub mod model;
 pub mod run;
+pub mod stream;
 pub mod template;
 pub mod trajectory;
 
@@ -23,4 +24,5 @@ pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
     ModelResponse, ModelUsage, QueryOpts, Role,
 };
+pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo};
