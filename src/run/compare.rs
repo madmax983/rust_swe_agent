@@ -671,6 +671,7 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
         };
@@ -732,6 +733,7 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
             cost_limit_usd: None,
             instances: vec![submitted("a")],
         };

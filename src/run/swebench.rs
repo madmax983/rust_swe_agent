@@ -10,7 +10,7 @@
 //! cumulative cost — which would silently overshoot the cap by one
 //! task's worth of API spend per worker.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -118,6 +118,9 @@ pub struct SweepResults {
     pub total_completion_tokens: u64,
     #[serde(default)]
     pub estimated_cost_usd: f64,
+    /// Resolved dataset subset spec used for this run.
+    #[serde(default)]
+    pub filter_spec: FilterSpec,
     /// The USD ceiling enforced for this sweep, echoed from
     /// `SwebenchArgs::cost_limit_usd`. `None` when no limit was set —
     /// distinguishes "ran without a budget" from "budget was infinite".
@@ -125,6 +128,22 @@ pub struct SweepResults {
     pub cost_limit_usd: Option<f64>,
     #[serde(default)]
     pub instances: Vec<InstanceResult>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FilterSpec {
+    #[serde(default)]
+    pub original_count: usize,
+    #[serde(default)]
+    pub selected_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl SweepResults {
@@ -220,6 +239,15 @@ pub struct SwebenchArgs {
     /// tasks contribute to the running total at their stored cost so a
     /// resumed sweep cannot blow past the limit.
     pub cost_limit_usd: Option<f64>,
+    /// Dataset subset selector. Either comma-separated ids or
+    /// `@path/to/file.txt` (one id per line).
+    pub instance_ids: Option<String>,
+    /// Keep at most N instances after filtering + sampling.
+    pub limit: Option<usize>,
+    /// Reproducibly random-subset to N instances. Requires `seed`.
+    pub sample: Option<usize>,
+    /// RNG seed used by `sample`.
+    pub seed: Option<u64>,
     /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
     /// Lets sweeps run end-to-end against a scripted model without network
     /// I/O — mainly useful for tests and local smoke checks.
@@ -291,6 +319,13 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
     let instances = load_dataset(&args.dataset_path)?;
+    let (instances, filter_spec) = apply_subset(
+        instances,
+        args.instance_ids.as_deref(),
+        args.limit,
+        args.sample,
+        args.seed,
+    )?;
     let total = instances.len();
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
@@ -485,6 +520,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_prompt_tokens: total_prompt,
         total_completion_tokens: total_completion,
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
+        filter_spec,
         cost_limit_usd: args.cost_limit_usd,
         instances: results,
     };
@@ -716,6 +752,138 @@ fn read_trajectory_info(path: &std::path::Path) -> Option<crate::trajectory::Tra
     Some(traj.info)
 }
 
+fn apply_subset(
+    mut instances: Vec<SweBenchInstance>,
+    instance_ids_arg: Option<&str>,
+    limit: Option<usize>,
+    sample: Option<usize>,
+    seed: Option<u64>,
+) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
+    if seed.is_some() && sample.is_none() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--seed` requires `--sample`".into(),
+        )));
+    }
+
+    let original_count = instances.len();
+    let requested_ids = parse_instance_ids_arg(instance_ids_arg)?;
+
+    if let Some(ids) = requested_ids.as_ref() {
+        let dataset_ids: HashSet<&str> = instances.iter().map(|i| i.instance_id.as_str()).collect();
+        let unknown: BTreeSet<&str> = ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !dataset_ids.contains(id))
+            .collect();
+        if !unknown.is_empty() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--instance-ids references unknown id(s): {}",
+                unknown.into_iter().collect::<Vec<_>>().join(", ")
+            ))));
+        }
+        let include: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        instances.retain(|i| include.contains(i.instance_id.as_str()));
+    }
+
+    if let Some(n) = sample {
+        let seed_value = seed.ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(
+                "`--sample` requires `--seed`".into(),
+            ))
+        })?;
+        if n < instances.len() {
+            let mut rng = XorShift64::new(seed_value);
+            for i in (1..instances.len()).rev() {
+                let j = (rng.next_u64() % ((i + 1) as u64)) as usize;
+                instances.swap(i, j);
+            }
+            instances.truncate(n);
+        }
+    }
+
+    if let Some(n) = limit {
+        if n < instances.len() {
+            instances.truncate(n);
+        }
+    }
+
+    if instances.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "dataset subset produced zero instances; refusing to run".into(),
+        )));
+    }
+
+    let spec = FilterSpec {
+        original_count,
+        selected_count: instances.len(),
+        instance_ids: requested_ids,
+        limit,
+        sample,
+        seed,
+    };
+    Ok((instances, spec))
+}
+
+fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<String>>, Error> {
+    let Some(raw) = instance_ids_arg.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let text = if let Some(path) = raw.strip_prefix('@') {
+        std::fs::read_to_string(path).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "failed to read --instance-ids file `{path}`: {e}"
+            )))
+        })?
+    } else {
+        raw.to_owned()
+    };
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for part in text.split([',', '\n']) {
+        let id = part.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if seen.insert(id.to_owned()) {
+            ids.push(id.to_owned());
+        }
+    }
+    if ids.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--instance-ids resolved to an empty list".into(),
+        )));
+    }
+    Ok(Some(ids))
+}
+
+/// Tiny deterministic RNG for dataset shuffling. This is intentionally local
+/// so we can keep sampling reproducible without adding a new dependency.
+#[derive(Clone, Copy)]
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        // Avoid the all-zero absorbing state.
+        let state = if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        };
+        Self { state }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -743,6 +911,11 @@ mod tests {
             total_prompt_tokens: 250_000,
             total_completion_tokens: 50_000,
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
+            filter_spec: FilterSpec {
+                original_count: 10,
+                selected_count: 10,
+                ..FilterSpec::default()
+            },
             cost_limit_usd: None,
             instances: vec![],
         };
@@ -785,6 +958,11 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
+            filter_spec: FilterSpec {
+                original_count: 5,
+                selected_count: 5,
+                ..FilterSpec::default()
+            },
             cost_limit_usd: Some(1.0),
             instances: vec![],
         };
@@ -843,5 +1021,95 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].instance_id, "a");
         assert_eq!(got[1].image.as_deref(), Some("ubuntu:22.04"));
+    }
+
+    #[test]
+    fn subset_instance_ids_filters_and_rejects_unknowns() {
+        let instances = vec![
+            SweBenchInstance {
+                instance_id: "a".into(),
+                repo: None,
+                base_commit: None,
+                problem_statement: None,
+                image: None,
+                other: serde_json::Map::new(),
+            },
+            SweBenchInstance {
+                instance_id: "b".into(),
+                repo: None,
+                base_commit: None,
+                problem_statement: None,
+                image: None,
+                other: serde_json::Map::new(),
+            },
+        ];
+        let (filtered, spec) =
+            apply_subset(instances.clone(), Some("b"), None, None, None).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].instance_id, "b");
+        assert_eq!(spec.original_count, 2);
+        assert_eq!(spec.selected_count, 1);
+
+        let err = apply_subset(instances, Some("missing"), None, None, None).unwrap_err();
+        assert!(err.to_string().contains("unknown id(s): missing"), "{err}");
+    }
+
+    #[test]
+    fn subset_sample_is_reproducible_with_fixed_seed() {
+        let mk = |id: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: None,
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
+        let (a, _) = apply_subset(instances.clone(), None, None, Some(3), Some(42)).unwrap();
+        let (b, _) = apply_subset(instances, None, None, Some(3), Some(42)).unwrap();
+        let a_ids: Vec<_> = a.into_iter().map(|i| i.instance_id).collect();
+        let b_ids: Vec<_> = b.into_iter().map(|i| i.instance_id).collect();
+        assert_eq!(a_ids, b_ids);
+    }
+
+    #[test]
+    fn subset_composition_order_is_ids_then_sample_then_limit() {
+        let mk = |id: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: None,
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
+        let (filtered, spec) =
+            apply_subset(instances, Some("a,b,c,d,e"), Some(2), Some(4), Some(7)).unwrap();
+        assert_eq!(spec.original_count, 6);
+        assert_eq!(spec.selected_count, 2);
+        assert_eq!(spec.limit, Some(2));
+        assert_eq!(spec.sample, Some(4));
+        assert_eq!(spec.seed, Some(7));
+        assert_eq!(filtered.len(), 2);
+        for inst in filtered {
+            assert!(["a", "b", "c", "d", "e"].contains(&inst.instance_id.as_str()));
+        }
+    }
+
+    #[test]
+    fn subset_empty_set_errors() {
+        let instances = vec![SweBenchInstance {
+            instance_id: "a".into(),
+            repo: None,
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        }];
+        let err = apply_subset(instances, Some("a"), Some(0), None, None).unwrap_err();
+        assert!(
+            err.to_string().contains("produced zero instances"),
+            "unexpected err: {err}"
+        );
     }
 }

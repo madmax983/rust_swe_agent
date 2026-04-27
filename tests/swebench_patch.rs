@@ -98,6 +98,10 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(responses),
         deterministic_usage_per_call: None,
     })
@@ -170,6 +174,10 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(vec![
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into(),
         ]),
@@ -228,6 +236,10 @@ async fn missing_workdir_marks_outcome_as_error() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(vec![
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
         ]),
