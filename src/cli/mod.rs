@@ -60,6 +60,32 @@ fn export_cmd(e: &args::ExportCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(all(test, feature = "exporter"))]
+mod export_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_export_cmd() {
+        let mut t = crate::trajectory::Trajectory::new();
+        let mut msg = crate::model::Message::assistant("Hello");
+        msg.extra.actions = Some(vec!["echo hi".into()]);
+        t.record_with_extra(&msg, msg.extra.clone());
+
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        let json = serde_json::to_string(&t).unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let e = args::ExportCmd {
+            trajectory_path: temp_file.path().to_path_buf(),
+        };
+
+        let res = export_cmd(&e);
+        assert!(res.is_ok());
+    }
+}
+
 fn init_logging(level: &str) {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
