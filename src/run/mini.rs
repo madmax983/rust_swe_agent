@@ -5,16 +5,36 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
 use crate::config::{Config, EnvKind};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
-use crate::env::{Environment, LocalEnvironment};
+use crate::env::{Environment, LocalEnvironment, RunRequest};
 use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, Model};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
+
+/// How a runner should snapshot the agent's working tree as a unified diff
+/// after submission. Optional on `MiniArgs` because patch capture only
+/// makes sense for benchmark sweeps; the standalone `bench mini` CLI run
+/// has no baseline to diff against.
+pub struct PatchCaptureSpec {
+    /// The dataset's stated baseline. When `None`, diff is taken against
+    /// `HEAD`. SWE-bench instances typically carry the resolved SHA.
+    pub base_commit: Option<String>,
+    /// Working tree where `git diff` runs. For docker envs this matches
+    /// the container's `-w`; for local envs it must point at a real git
+    /// checkout.
+    pub workdir: PathBuf,
+    /// Where to write the `.patch` artifact. Empty diffs are still
+    /// persisted (zero-byte file) so downstream tooling can distinguish
+    /// "agent ran and changed nothing" from "agent never reached this
+    /// instance".
+    pub patch_path: PathBuf,
+}
 
 pub struct MiniArgs {
     pub task: String,
@@ -26,6 +46,11 @@ pub struct MiniArgs {
     /// Optional SSE stream endpoint to bind. When `Some`, the runner
     /// starts a server before the agent runs and shuts it down after.
     pub stream_addr: Option<SocketAddr>,
+    /// When `Some` and the agent submits, the runner captures a `git
+    /// diff` of `workdir` against `base_commit` and writes it to
+    /// `patch_path`. Capture failures downgrade the run's recorded
+    /// outcome to `error` rather than crashing the runner.
+    pub patch_capture: Option<PatchCaptureSpec>,
 }
 
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
@@ -83,6 +108,41 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
     }
 
+    // Patch capture happens before the trajectory is saved so any
+    // capture failure can be reflected as `outcome: "error"` rather
+    // than leaving a stale `submitted` record on disk.
+    let mut patch_written = false;
+    if let (Ok(crate::agent::ExitReason::Submitted { .. }), Some(spec)) =
+        (run_result.as_ref(), args.patch_capture.as_ref())
+    {
+        match capture_patch(agent.env.as_ref(), spec).await {
+            Ok(diff) => {
+                if diff.is_empty() {
+                    tracing::warn!(
+                        instance = %args.trajectory_name,
+                        "agent submitted but produced an empty diff"
+                    );
+                }
+                std::fs::write(&spec.patch_path, &diff)?;
+                patch_written = true;
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    instance = %args.trajectory_name,
+                    error = %reason,
+                    "patch capture failed; downgrading outcome to error"
+                );
+                agent.trajectory.info.exit_reason = Some("error".into());
+                agent
+                    .trajectory
+                    .info
+                    .other
+                    .insert("patch_error".into(), serde_json::Value::String(reason));
+                agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+            }
+        }
+    }
+
     agent.trajectory.save_pretty(&traj_path)?;
 
     let exit = run_result?;
@@ -94,12 +154,66 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         std::fs::write(&out_path, final_output)?;
     }
 
-    tracing::info!(?traj_path, "trajectory written");
+    tracing::info!(?traj_path, patch_written, "trajectory written");
 
     if let Some(server) = server {
         server.shutdown().await;
     }
     Ok(())
+}
+
+/// Snapshot the working tree at `spec.workdir` as a unified diff against
+/// `spec.base_commit` (or `HEAD`). Returns the diff text on success or a
+/// human-readable reason string on failure. Pure: writes nothing.
+///
+/// We use `--no-color`, `--binary`, and `--unified=3` to match the format
+/// the SWE-bench evaluator (`sb-cli`) consumes and `git apply` accepts.
+async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result<String, String> {
+    // `git -C <workdir>` keeps us independent of the env's idea of cwd
+    // (the local env inherits the process cwd, the docker env uses `-w`).
+    // The `--` ensures the trailing argument is a pathspec rather than a
+    // ref, which matters when the workdir is empty or unborn.
+    let base = spec.base_commit.as_deref().unwrap_or("HEAD");
+    // Quote `base` to defuse hostile dataset values; SWE-bench commits are
+    // hex SHAs but a malformed instance shouldn't be able to inject shell.
+    let cmd = format!(
+        "git -C {workdir} diff --no-color --binary --unified=3 {base} -- .",
+        workdir = shell_quote(&spec.workdir.to_string_lossy()),
+        base = shell_quote(base),
+    );
+    let req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    let result = env
+        .run(req)
+        .await
+        .map_err(|e| format!("env exec failed: {e}"))?;
+    if result.timed_out {
+        return Err(format!("git diff timed out: {}", result.stderr.trim()));
+    }
+    if result.exit_code != 0 {
+        return Err(format!(
+            "git diff exited {} ({})",
+            result.exit_code,
+            result.stderr.trim()
+        ));
+    }
+    Ok(result.stdout)
+}
+
+/// Single-quote-escape a string for safe inclusion in a `bash -c` argv.
+/// Closes the quote, emits an escaped literal `'`, reopens — the standard
+/// POSIX shell idiom.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 fn build_model(cfg: &Config, deterministic: Option<Vec<String>>) -> Arc<dyn Model> {
@@ -164,5 +278,14 @@ mod tests {
         assert_eq!(slugify("Hello, World!"), "hello-world");
         assert_eq!(slugify("   "), "task");
         assert_eq!(slugify("A/B/C"), "a-b-c");
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("a"), "'a'");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+        // Already-quoted-looking strings round-trip safely.
+        assert_eq!(shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
     }
 }

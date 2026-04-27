@@ -107,6 +107,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         trajectory_name,
         deterministic_responses: None,
         stream_addr,
+        patch_capture: None,
     };
     crate::run::mini::run(args).await
 }

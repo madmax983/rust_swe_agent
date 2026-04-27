@@ -20,6 +20,7 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
         ]),
         stream_addr: None,
+        patch_capture: None,
     };
     run(args).await
 }
