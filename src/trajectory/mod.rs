@@ -12,6 +12,21 @@ use crate::model::{Message, MessageExtra};
 
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 
+/// Coarse run outcome. Exactly one of three values, suitable for computing
+/// pass@1-style metrics from trajectory files alone:
+/// `"submitted"` | `"step_limit_reached"` | `"error"`.
+pub mod outcome {
+    pub const SUBMITTED: &str = "submitted";
+    pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
+    pub const ERROR: &str = "error";
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21,9 +36,15 @@ pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,6 +175,43 @@ mod tests {
             back.messages[1].extra.actions.as_deref(),
             Some(&["echo hi".to_owned()][..])
         );
+    }
+
+    #[test]
+    fn outcome_token_usage_duration_round_trip() {
+        let mut t = Trajectory::new();
+        t.info.outcome = Some(outcome::SUBMITTED.into());
+        t.info.token_usage = Some(TokenUsage {
+            prompt_tokens: 1234,
+            completion_tokens: 56,
+        });
+        t.info.duration_secs = Some(12.5);
+
+        let json = t.to_json_pretty().unwrap();
+        assert!(json.contains("\"outcome\": \"submitted\""));
+        assert!(json.contains("\"prompt_tokens\": 1234"));
+        assert!(json.contains("\"completion_tokens\": 56"));
+        assert!(json.contains("\"duration_secs\": 12.5"));
+
+        let back: Trajectory = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.info.outcome.as_deref(), Some("submitted"));
+        assert_eq!(
+            back.info.token_usage,
+            Some(TokenUsage {
+                prompt_tokens: 1234,
+                completion_tokens: 56
+            })
+        );
+        assert_eq!(back.info.duration_secs, Some(12.5));
+    }
+
+    #[test]
+    fn new_fields_optional_omitted_when_none() {
+        let t = Trajectory::new();
+        let json = t.to_json_pretty().unwrap();
+        assert!(!json.contains("outcome"));
+        assert!(!json.contains("token_usage"));
+        assert!(!json.contains("duration_secs"));
     }
 
     #[test]

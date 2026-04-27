@@ -75,13 +75,16 @@ impl Model for DeterministicModel {
             })?
         };
 
+        // Zero token counts: replay runs and CI tests must produce valid
+        // trajectories without implying any real API spend.
         Ok(ModelResponse {
             content,
             usage: ModelUsage {
-                input_tokens: 1,
-                output_tokens: 1,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
                 cost_usd: Some(0.0),
-                ..ModelUsage::default()
             },
             raw: serde_json::json!({"deterministic": true}),
         })
