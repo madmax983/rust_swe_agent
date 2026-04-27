@@ -15,6 +15,9 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 /// Coarse run outcome. Exactly one of three values, suitable for computing
 /// pass@1-style metrics from trajectory files alone:
 /// `"submitted"` | `"step_limit_reached"` | `"error"`.
+#[cfg(feature = "exporter")]
+pub mod export;
+
 pub mod outcome {
     pub const SUBMITTED: &str = "submitted";
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";

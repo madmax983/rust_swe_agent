@@ -1,6 +1,6 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use crate::config::Config;
 use crate::error::Error;
@@ -15,28 +15,11 @@ pub mod args;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: args::Command,
 
     /// Global log level.
     #[arg(long, default_value = "info", env = "RUST_SWE_AGENT_LOG")]
     pub log: String,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Command {
-    /// Run one task end-to-end and write a trajectory.
-    Mini(args::MiniCmd),
-    /// Smoke-test: scripted model + local env writes a trajectory.
-    HelloWorld(args::HelloWorldCmd),
-    /// Replay an existing trajectory using a deterministic model.
-    Replay(args::ReplayCmd),
-    /// SWE-bench parallel sweep.
-    Bench {
-        #[command(subcommand)]
-        cmd: args::BenchCmd,
-    },
-    /// Reap any leftover `rust-swe-agent=1` labeled containers.
-    Cleanup,
 }
 
 pub async fn run() -> Result<(), Error> {
@@ -44,26 +27,37 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&cli.log);
 
     match cli.command {
-        Command::Mini(m) => mini_cmd(m).await,
-        Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
-        Command::Replay(r) => replay_cmd(r).await,
-        Command::Bench {
+        args::Command::Mini(m) => mini_cmd(m).await,
+        args::Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
+        args::Command::Replay(r) => replay_cmd(r).await,
+        args::Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
-        Command::Bench {
+        args::Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
-        Command::Bench {
+        args::Command::Bench {
             cmd: args::BenchCmd::Evaluate(e),
         } => bench_evaluate(e),
-        Command::Bench {
+        args::Command::Bench {
             cmd: args::BenchCmd::Inspect(i),
         } => bench_inspect(i),
         #[cfg(feature = "docker")]
-        Command::Cleanup => cleanup_cmd().await,
+        args::Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
-        Command::Cleanup => cleanup_cmd(),
+        args::Command::Cleanup => cleanup_cmd(),
+        #[cfg(feature = "exporter")]
+        args::Command::Export(e) => export_cmd(&e),
     }
+}
+
+#[cfg(feature = "exporter")]
+fn export_cmd(e: &args::ExportCmd) -> Result<(), Error> {
+    let json = std::fs::read_to_string(&e.trajectory_path)?;
+    let trajectory: crate::trajectory::Trajectory = serde_json::from_str(&json)?;
+    let script = crate::trajectory::export::to_bash_script(&trajectory);
+    print!("{script}");
+    Ok(())
 }
 
 fn init_logging(level: &str) {

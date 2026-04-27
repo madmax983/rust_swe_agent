@@ -95,6 +95,34 @@ pub enum BenchCmd {
     Inspect(InspectCmd),
 }
 
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run one task end-to-end and write a trajectory.
+    Mini(MiniCmd),
+    /// Smoke-test: scripted model + local env writes a trajectory.
+    HelloWorld(HelloWorldCmd),
+    /// Replay an existing trajectory using a deterministic model.
+    Replay(ReplayCmd),
+    /// SWE-bench parallel sweep.
+    Bench {
+        #[command(subcommand)]
+        cmd: BenchCmd,
+    },
+    /// Reap any leftover `rust-swe-agent=1` labeled containers.
+    Cleanup,
+    /// Export trajectory to bash script
+    #[cfg(feature = "exporter")]
+    Export(ExportCmd),
+}
+
+#[cfg(feature = "exporter")]
+#[derive(Debug, Args)]
+pub struct ExportCmd {
+    /// Path to the trajectory file
+    #[arg(long)]
+    pub trajectory_path: PathBuf,
+}
+
 #[derive(Debug, Args)]
 pub struct CompareCmd {
     /// Sweep output directory written by a prior `bench swebench` run
