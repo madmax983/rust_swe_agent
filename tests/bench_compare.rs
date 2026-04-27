@@ -100,7 +100,11 @@ fn help_lists_compare_subcommand() {
         .args(["bench", "--help"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("compare"),
@@ -128,7 +132,11 @@ fn cli_text_output_lists_regressions() {
 
     write_results(
         baseline_dir.path(),
-        vec![submitted("a"), submitted("b"), errored("c", FailureCategory::ModelApi)],
+        vec![
+            submitted("a"),
+            submitted("b"),
+            errored("c", FailureCategory::ModelApi),
+        ],
     );
     write_results(
         candidate_dir.path(),
@@ -151,9 +159,16 @@ fn cli_text_output_lists_regressions() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(stdout.contains("=== bench compare ==="), "got: {stdout}");
-    assert!(stdout.contains("Resolved:           2 -> 2 (+0)"), "got: {stdout}");
+    assert!(
+        stdout.contains("Resolved:           2 -> 2 (+0)"),
+        "got: {stdout}"
+    );
     assert!(stdout.contains("pass->fail"), "got: {stdout}");
     assert!(stdout.contains("Regressions (1):"), "got: {stdout}");
     assert!(stdout.contains("- b"), "got: {stdout}");
@@ -165,10 +180,7 @@ fn cli_json_output_is_machine_readable() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
 
-    write_results(
-        baseline_dir.path(),
-        vec![submitted("a"), submitted("b")],
-    );
+    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
     write_results(
         candidate_dir.path(),
         vec![submitted("a"), errored("b", FailureCategory::AgentInternal)],
@@ -187,7 +199,11 @@ fn cli_json_output_is_machine_readable() {
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
         panic!("expected valid JSON; err={e}; got:\n{stdout}");

@@ -39,9 +39,7 @@ pub struct CompareArgs {
 /// Per-task transition between baseline and candidate. `pass` is defined
 /// as `outcome == "submitted"` AND `failure_category` is `None`, which
 /// matches what `run::swebench::run_one` writes for a clean submission.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
     PassPass,
@@ -203,9 +201,7 @@ impl CompareReport {
         } else {
             let _ = writeln!(s, "\nRegressions ({}):", self.regressions.len());
             for r in &self.regressions {
-                let cat = r
-                    .candidate_failure_category
-                    .map_or("none", failure_label);
+                let cat = r.candidate_failure_category.map_or("none", failure_label);
                 let exit = r.candidate_exit_reason.as_deref().unwrap_or("?");
                 let old = r.baseline_outcome.as_deref().unwrap_or("?");
                 let new = r.candidate_outcome.as_deref().unwrap_or("?");
@@ -358,20 +354,10 @@ pub fn diff<S: std::hash::BuildHasher>(
         .keys()
         .chain(failure_category_candidate.keys())
     {
-        let b = i64::try_from(
-            failure_category_baseline
-                .get(cat)
-                .copied()
-                .unwrap_or(0),
-        )
-        .unwrap_or(i64::MAX);
-        let c = i64::try_from(
-            failure_category_candidate
-                .get(cat)
-                .copied()
-                .unwrap_or(0),
-        )
-        .unwrap_or(i64::MAX);
+        let b = i64::try_from(failure_category_baseline.get(cat).copied().unwrap_or(0))
+            .unwrap_or(i64::MAX);
+        let c = i64::try_from(failure_category_candidate.get(cat).copied().unwrap_or(0))
+            .unwrap_or(i64::MAX);
         failure_category_delta.insert(*cat, c - b);
     }
 
@@ -415,9 +401,7 @@ fn is_pass(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.failure_category.is_none()
 }
 
-fn mean_steps<S: std::hash::BuildHasher>(
-    map: &HashMap<String, InstanceResult, S>,
-) -> Option<f64> {
+fn mean_steps<S: std::hash::BuildHasher>(map: &HashMap<String, InstanceResult, S>) -> Option<f64> {
     let xs: Vec<u32> = map.values().filter_map(|r| r.steps).collect();
     if xs.is_empty() {
         return None;
@@ -532,12 +516,7 @@ mod tests {
             errored("ff", FailureCategory::AgentInternal),
             submitted("mp"),
         ]);
-        let r = diff(
-            Path::new("/b"),
-            Path::new("/c"),
-            &baseline,
-            &candidate,
-        );
+        let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         assert_eq!(r.transitions[&TransitionKind::PassPass], 1);
         assert_eq!(r.transitions[&TransitionKind::PassFail], 1);
         assert_eq!(r.transitions[&TransitionKind::FailPass], 1);
@@ -548,7 +527,11 @@ mod tests {
 
     #[test]
     fn regressions_list_only_pass_fail() {
-        let baseline = map_of([submitted("a"), submitted("b"), errored("c", FailureCategory::ModelApi)]);
+        let baseline = map_of([
+            submitted("a"),
+            submitted("b"),
+            errored("c", FailureCategory::ModelApi),
+        ]);
         let candidate = map_of([
             submitted("a"),
             errored("b", FailureCategory::StepLimit),
@@ -569,7 +552,11 @@ mod tests {
 
     #[test]
     fn aggregates_resolved_and_cost_deltas() {
-        let baseline = map_of([submitted("a"), submitted("b"), errored("c", FailureCategory::ModelApi)]);
+        let baseline = map_of([
+            submitted("a"),
+            submitted("b"),
+            errored("c", FailureCategory::ModelApi),
+        ]);
         let candidate = map_of([submitted("a"), submitted("b"), submitted("c")]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         assert_eq!(r.baseline_resolved, 2);
