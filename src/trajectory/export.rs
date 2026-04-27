@@ -73,4 +73,18 @@ mod tests {
         let expected = "";
         assert_eq!(script, expected);
     }
+
+    #[test]
+    fn test_to_bash_script_no_content_with_action() {
+        let mut t = Trajectory::new();
+
+        let mut msg1 = Message::assistant("");
+        msg1.extra.actions = Some(vec!["echo hi\n".to_string()]);
+        t.record_with_extra(&msg1, msg1.extra.clone());
+
+        let script = to_bash_script(&t);
+
+        let expected = "echo hi\n\n";
+        assert_eq!(script, expected);
+    }
 }
