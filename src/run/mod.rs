@@ -4,6 +4,7 @@
 pub mod compare;
 pub mod evaluate;
 pub mod hello_world;
+pub mod inspect;
 pub mod mini;
 pub mod replay;
 pub mod swebench;

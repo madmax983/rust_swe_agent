@@ -91,6 +91,8 @@ pub enum BenchCmd {
     Compare(CompareCmd),
     /// Evaluate a completed sweep with an evaluation backend (e.g. sb-cli).
     Evaluate(EvaluateCmd),
+    /// Inspect a single trajectory or list filtered instance summaries.
+    Inspect(InspectCmd),
 }
 
 #[derive(Debug, Args)]
@@ -191,4 +193,27 @@ pub struct EvaluateCmd {
     /// Parallel worker count for evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct InspectCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// One specific instance id to render as a human-readable transcript.
+    #[arg(long)]
+    pub instance: Option<String>,
+
+    /// Filter mode: `resolved=false` or `failure_category=patch_apply_failed`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Disable stdout/stderr truncation in transcript mode.
+    #[arg(long, default_value_t = false)]
+    pub full: bool,
 }

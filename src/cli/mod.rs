@@ -56,6 +56,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Evaluate(e),
         } => bench_evaluate(e),
+        Command::Bench {
+            cmd: args::BenchCmd::Inspect(i),
+        } => bench_inspect(i),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -266,5 +269,32 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
+    Ok(())
+}
+
+fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    let format = match i.format.as_str() {
+        "text" => crate::run::inspect::InspectFormat::Text,
+        "json" => crate::run::inspect::InspectFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let out = crate::run::inspect::run(&crate::run::inspect::InspectArgs {
+        sweep: i.sweep,
+        instance: i.instance,
+        filter: i.filter,
+        full: i.full,
+    })?;
+    match format {
+        crate::run::inspect::InspectFormat::Text => {
+            print!("{}", crate::run::inspect::render_text(&out));
+        }
+        crate::run::inspect::InspectFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+    }
     Ok(())
 }
