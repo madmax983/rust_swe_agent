@@ -400,7 +400,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 let retryable_resume = args.retry_on_resume
                     && info
                         .failure_category
-                        .is_some_and(|cat| retry_policy.should_retry(cat));
+                        .is_some_and(|cat| retry_policy.is_retry_category(cat));
                 if !retryable_resume && (!needs_patch || patch_path.exists()) {
                     let r = skipped_result_from_info(&inst.instance_id, &info, &patch_path);
                     bump_cost(
@@ -713,7 +713,11 @@ impl RetryPolicy {
     }
 
     fn should_retry(&self, cat: FailureCategory) -> bool {
-        self.max_retries > 0 && self.retry_on.contains(&cat)
+        self.max_retries > 0 && self.is_retry_category(cat)
+    }
+
+    fn is_retry_category(&self, cat: FailureCategory) -> bool {
+        self.retry_on.contains(&cat)
     }
 
     fn backoff_for(&self, instance_id: &str, attempt: u32) -> std::time::Duration {
@@ -806,6 +810,7 @@ async fn run_one(
     let mut retry_reasons = Vec::new();
     let mut total_prompt_tokens = 0u64;
     let mut total_completion_tokens = 0u64;
+    let mut total_recorded_cost_usd = Some(0.0f64);
     let mut terminal: Option<InstanceResult> = None;
 
     while attempts <= retry_policy.max_retries {
@@ -846,6 +851,11 @@ async fn run_one(
             .map_or((0, 0), |t| (t.prompt_tokens, t.completion_tokens));
         total_prompt_tokens = total_prompt_tokens.saturating_add(prompt_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
+        let attempt_recorded_cost = info.as_ref().and_then(|i| i.total_cost_usd);
+        total_recorded_cost_usd = match (total_recorded_cost_usd, attempt_recorded_cost) {
+            (Some(total), Some(attempt)) => Some(total + attempt),
+            _ => None,
+        };
 
         let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
             Ok(m) => (true, m.len() > 0),
@@ -871,10 +881,7 @@ async fn run_one(
             outcome: Some(outcome_str.clone()),
             failure_category,
             steps: info.as_ref().and_then(|i| i.steps),
-            cost_usd: Some(estimate_cost_usd(
-                total_prompt_tokens,
-                total_completion_tokens,
-            )),
+            cost_usd: total_recorded_cost_usd,
             prompt_tokens: Some(total_prompt_tokens),
             completion_tokens: Some(total_completion_tokens),
             duration_secs: info.as_ref().and_then(|i| i.duration_secs),

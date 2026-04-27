@@ -58,6 +58,50 @@ fn malformed_action_response() -> String {
 }
 
 #[tokio::test]
+async fn instance_cost_prefers_recorded_trajectory_cost() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["a"]);
+
+    let usage = ModelUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: Some(0.1234),
+    };
+
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        config: cfg(&repo),
+        resume: false,
+        cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![submit_response()]),
+        deterministic_usage_per_call: Some(usage),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.instances[0].cost_usd, Some(0.1234));
+}
+
+#[tokio::test]
 async fn retries_on_injected_transient_category_then_recovers() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
@@ -284,7 +328,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         limit: None,
         sample: None,
         seed: None,
-        max_retries: 1,
+        max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
         retry_backoff_cap_s: 0,
@@ -307,7 +351,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         limit: None,
         sample: None,
         seed: None,
-        max_retries: 1,
+        max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
         retry_backoff_cap_s: 0,
