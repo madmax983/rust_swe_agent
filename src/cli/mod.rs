@@ -160,8 +160,12 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         total = results.total,
         submitted = results.submitted,
         errored = results.errored,
+        prompt_tokens = results.total_prompt_tokens,
+        completion_tokens = results.total_completion_tokens,
+        estimated_cost_usd = results.estimated_cost_usd,
         "sweep complete"
     );
+    print!("{}", results.summary_table());
     Ok(())
 }
 

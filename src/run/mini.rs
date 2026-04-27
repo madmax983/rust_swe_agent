@@ -60,12 +60,32 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
     .build()?;
 
-    let exit = agent.run().await?;
-
     let traj_path = args
         .output_dir
         .join(format!("{}.traj.json", args.trajectory_name));
+
+    // Run the agent. On error, finalize the trajectory with
+    // `outcome="error"` so the partial run is still a self-contained
+    // record of what happened — then propagate.
+    let run_result = agent.run().await;
+    if let Err(e) = &run_result {
+        agent
+            .trajectory
+            .info
+            .exit_reason
+            .get_or_insert_with(|| "error".into());
+        agent
+            .trajectory
+            .info
+            .other
+            .entry("error_message".into())
+            .or_insert_with(|| serde_json::Value::String(e.to_string()));
+        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+    }
+
     agent.trajectory.save_pretty(&traj_path)?;
+
+    let exit = run_result?;
 
     if let crate::agent::ExitReason::Submitted { final_output } = &exit {
         let out_path = args

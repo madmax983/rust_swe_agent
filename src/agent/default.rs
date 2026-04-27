@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::Config;
@@ -20,7 +20,7 @@ use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
-use crate::trajectory::Trajectory;
+use crate::trajectory::{TokenUsage, Trajectory, outcome};
 
 pub struct DefaultAgent {
     pub config: Config,
@@ -31,6 +31,13 @@ pub struct DefaultAgent {
     pub trajectory: Trajectory,
     pub steps: u32,
     pub total_cost_usd: f64,
+    /// Wall-clock start, used to compute `duration_secs` on terminate.
+    pub started_at_instant: Instant,
+    /// Accumulated prompt tokens across every model call in this run.
+    /// Sum of `input_tokens + cache_read_tokens + cache_creation_tokens`.
+    pub prompt_tokens: u64,
+    /// Accumulated completion tokens across every model call in this run.
+    pub completion_tokens: u64,
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
@@ -95,6 +102,9 @@ impl DefaultAgentBuilder {
             trajectory,
             steps: 0,
             total_cost_usd: 0.0,
+            started_at_instant: Instant::now(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
             stream,
         })
     }
@@ -135,6 +145,7 @@ impl Agent for DefaultAgent {
         if self.steps >= self.config.root.agent.step_limit {
             self.trajectory.info.exit_reason = Some("step_limit".into());
             self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
             self.emit_run_ended("step_limit", None);
             return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
                 limit: self.config.root.agent.step_limit,
@@ -145,6 +156,9 @@ impl Agent for DefaultAgent {
                 self.trajectory.info.exit_reason = Some("cost_limit".into());
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                // Cost limit is also a resource limit; map to the same
+                // coarse outcome as step limit per the three-value spec.
+                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
                 self.emit_run_ended("cost_limit", None);
                 return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
                     limit_usd: limit,
@@ -164,6 +178,14 @@ impl Agent for DefaultAgent {
         };
         let resp = self.model.query(&self.history, &opts).await?;
         self.total_cost_usd += resp.usage.cost_usd.unwrap_or(0.0);
+        self.prompt_tokens = self.prompt_tokens.saturating_add(
+            resp.usage.input_tokens
+                + resp.usage.cache_read_tokens
+                + resp.usage.cache_creation_tokens,
+        );
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(resp.usage.output_tokens);
 
         // Record assistant message in trajectory with raw + cost.
         let asst_ts = chrono::Utc::now().to_rfc3339();
@@ -191,6 +213,7 @@ impl Agent for DefaultAgent {
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                 self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.finalize_run_metadata(outcome::SUBMITTED);
                 self.emit_run_ended("submitted", Some(output.clone()));
                 return Ok(StepOutcome::Terminate(ExitReason::Submitted {
                     final_output: output.clone(),
@@ -293,6 +316,20 @@ impl DefaultAgent {
             ended_at: chrono::Utc::now().to_rfc3339(),
         });
     }
+
+    /// Stamp the trajectory with the coarse `outcome`, accumulated
+    /// `token_usage`, and wall-clock `duration_secs`. Call from every
+    /// terminal path so every `.traj.json` carries these first-class
+    /// fields without callers needing to remember.
+    pub fn finalize_run_metadata(&mut self, outcome_label: &str) {
+        self.trajectory.info.outcome = Some(outcome_label.to_owned());
+        self.trajectory.info.token_usage = Some(TokenUsage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+        });
+        self.trajectory.info.duration_secs =
+            Some(self.started_at_instant.elapsed().as_secs_f64());
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +379,42 @@ mod tests {
         assert!(matches!(exit, ExitReason::Submitted { .. }));
         // History: [system, instance, asst(bash), user(obs), asst(submit)]
         assert!(a.history.iter().any(|m| m.content.contains("xyz")));
+    }
+
+    #[tokio::test]
+    async fn submit_records_outcome_and_token_usage() {
+        let mut a = make_agent(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+        ]);
+        let _ = a.run().await.unwrap();
+        assert_eq!(
+            a.trajectory.info.outcome.as_deref(),
+            Some(crate::trajectory::outcome::SUBMITTED)
+        );
+        // DeterministicModel zeroes its usage, so the totals are exactly 0/0.
+        let usage = a.trajectory.info.token_usage.clone().unwrap();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert!(a.trajectory.info.duration_secs.unwrap() >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn step_limit_records_outcome() {
+        let mut a = make_agent(vec![
+            "```bash\necho 1\n```".into(),
+            "```bash\necho 2\n```".into(),
+            "```bash\necho 3\n```".into(),
+            "```bash\necho 4\n```".into(),
+            "```bash\necho 5\n```".into(),
+            "```bash\necho 6\n```".into(),
+        ]);
+        let _ = a.run().await.unwrap();
+        assert_eq!(
+            a.trajectory.info.outcome.as_deref(),
+            Some(crate::trajectory::outcome::STEP_LIMIT_REACHED)
+        );
+        assert!(a.trajectory.info.token_usage.is_some());
+        assert!(a.trajectory.info.duration_secs.is_some());
     }
 
     #[tokio::test]
