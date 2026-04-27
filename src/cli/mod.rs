@@ -84,6 +84,29 @@ mod export_tests {
         let res = export_cmd(&e);
         assert!(res.is_ok());
     }
+
+    #[test]
+    fn test_export_cmd_invalid_json() {
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.write_all(b"not json").unwrap();
+
+        let e = args::ExportCmd {
+            trajectory_path: temp_file.path().to_path_buf(),
+        };
+
+        let res = export_cmd(&e);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_export_cmd_missing_file() {
+        let e = args::ExportCmd {
+            trajectory_path: std::path::PathBuf::from("does_not_exist.json"),
+        };
+
+        let res = export_cmd(&e);
+        assert!(res.is_err());
+    }
 }
 
 fn init_logging(level: &str) {
