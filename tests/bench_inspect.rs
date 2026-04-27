@@ -62,6 +62,35 @@ fn write_traj(dir: &Path, instance_id: &str, huge_stderr: bool) {
     .unwrap();
 }
 
+fn write_traj_with_stderr(dir: &Path, instance_id: &str, stderr: &str) {
+    let mut t = Trajectory::new();
+    t.info.model_name = Some("deterministic-test".into());
+    t.info.outcome = Some(outcome::ERROR.into());
+    t.info.failure_category = Some(FailureCategory::StepLimit);
+
+    let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho hi\n```");
+    asst.extra.actions = Some(vec!["echo hi".into()]);
+    t.record_message(&asst);
+
+    let mut obs = rust_swe_agent::model::Message::user("Exit code: 0\nOutput:\nhi");
+    obs.extra.other.insert(
+        "run_result".into(),
+        serde_json::json!({
+            "stdout": "hi\n",
+            "stderr": stderr,
+            "exit_code": 0,
+            "timed_out": false
+        }),
+    );
+    t.record_message(&obs);
+
+    std::fs::write(
+        dir.join(format!("{instance_id}.traj.json")),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn help_lists_inspect_subcommand_and_flags() {
     let out = Command::new(binary_path())
@@ -144,6 +173,19 @@ fn truncates_long_output_unless_full() {
         stdout.contains("full output at trajectory.json#/steps/1"),
         "{stdout}"
     );
+    let stderr_block = stdout
+        .split("stderr:\n")
+        .nth(1)
+        .and_then(|s| s.split("\n… [").next())
+        .unwrap_or_default();
+    let stderr_lines = stderr_block
+        .lines()
+        .filter(|l| l.starts_with("line-"))
+        .count();
+    assert!(
+        stderr_lines <= 40,
+        "expected at most 40 lines of stderr, got {stderr_lines}\n{stdout}"
+    );
 
     let out = Command::new(binary_path())
         .args([
@@ -164,6 +206,35 @@ fn truncates_long_output_unless_full() {
         "{stdout}"
     );
     assert!(stdout.contains("line-89"), "{stdout}");
+}
+
+#[test]
+fn truncation_is_utf8_safe_for_multibyte_logs() {
+    let sweep = tempfile::tempdir().unwrap();
+    let stderr: String = (0..300).map(|_| "测试🙂").collect();
+    write_traj_with_stderr(sweep.path(), "utf8", &stderr);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "utf8",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "expected success for UTF-8 logs; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("full output at trajectory.json#/steps/1"),
+        "{stdout}"
+    );
 }
 
 #[test]

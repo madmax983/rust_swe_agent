@@ -399,16 +399,50 @@ fn maybe_truncate(text: &str, full: bool, step_index: usize) -> (String, Option<
         return (text.to_owned(), None, false);
     }
 
-    let max_bytes = TRUNCATE_MAX_BYTES.min(text.len());
-    let mut truncated = text[..max_bytes].to_owned();
-    if let Some(last_newline) = truncated.rfind('\n') {
-        truncated.truncate(last_newline);
+    let mut truncated = String::new();
+    let mut consumed_bytes = 0usize;
+    let mut shown_lines = 0usize;
+    for line in text.split_inclusive('\n') {
+        if shown_lines >= TRUNCATE_MAX_LINES || consumed_bytes >= TRUNCATE_MAX_BYTES {
+            break;
+        }
+        let remaining = TRUNCATE_MAX_BYTES - consumed_bytes;
+        let head = utf8_prefix_within_bytes(line, remaining);
+        if head.is_empty() {
+            break;
+        }
+        truncated.push_str(head);
+        consumed_bytes += head.len();
+        shown_lines += 1;
+        if head.len() < line.len() {
+            break;
+        }
     }
-    let shown_lines = truncated.lines().count();
+    while truncated.ends_with('\n') {
+        truncated.pop();
+    }
+    if shown_lines == 0 && !truncated.is_empty() {
+        shown_lines = truncated.lines().count();
+    }
     let more_lines = line_count.saturating_sub(shown_lines);
     let note =
         format!("[{more_lines} more lines, full output at trajectory.json#/steps/{step_index}]");
     (truncated, Some(note), true)
+}
+
+fn utf8_prefix_within_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &s[..end]
 }
 
 fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
