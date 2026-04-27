@@ -117,6 +117,10 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
     })
@@ -190,6 +194,10 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
     })
@@ -232,6 +240,10 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
     })

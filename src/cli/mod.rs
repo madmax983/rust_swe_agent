@@ -166,6 +166,10 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         config: cfg,
         resume: s.resume,
         cost_limit_usd: s.sweep_cost_limit_usd,
+        instance_ids: s.instance_ids,
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
     })

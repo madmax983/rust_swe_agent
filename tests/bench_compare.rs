@@ -84,6 +84,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         cost_limit_usd: None,
         instances,
     };
