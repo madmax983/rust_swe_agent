@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod compare;
+pub mod evaluate;
 pub mod hello_world;
 pub mod mini;
 pub mod replay;

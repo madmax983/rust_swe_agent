@@ -53,6 +53,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
+        Command::Bench {
+            cmd: args::BenchCmd::Evaluate(e),
+        } => bench_evaluate(e),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -71,7 +74,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
-    cfg.root.model.name = m.model.clone();
+    cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
     if let Some(kind) = &m.env {
         cfg.root.environment.kind = match kind.as_str() {
@@ -150,7 +153,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
-    cfg.root.model.name = s.model.clone();
+    cfg.root.model.name.clone_from(&s.model);
     cfg.root.agent.step_limit = s.step_limit;
 
     let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
@@ -231,4 +234,37 @@ fn cleanup_cmd() -> Result<(), Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "docker feature not compiled in".into(),
     )))
+}
+
+fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
+    let backend = match e.backend.as_str() {
+        "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
+        "none" => crate::run::evaluate::EvaluateBackend::None,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --backend `{other}` (expected `sb-cli` or `none`)"
+            ))));
+        }
+    };
+
+    let args = crate::run::evaluate::EvaluateArgs {
+        sweep_dir: e.sweep.clone(),
+        dataset_path: e.dataset,
+        backend,
+        timeout_per_instance_secs: e.timeout_per_instance,
+        parallel: e.parallel,
+        sb_subset: e.sb_subset,
+        sb_split: e.sb_split,
+        run_id: e.run_id,
+    };
+    let eval = crate::run::evaluate::run(&args)?;
+
+    let resolved = eval.instances.iter().filter(|x| x.resolved).count();
+    tracing::info!(
+        instances = eval.instances.len(),
+        resolved,
+        evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
+        "evaluation complete"
+    );
+    Ok(())
 }
