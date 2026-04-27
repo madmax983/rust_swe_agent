@@ -10,6 +10,7 @@
 //! cumulative cost — which would silently overshoot the cap by one
 //! task's worth of API spend per worker.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::error::Error;
 use crate::model::ModelUsage;
-use crate::trajectory::{Trajectory, outcome};
+use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
 /// sweep-level USD budget was exhausted. Distinct from `error` and
@@ -65,6 +66,8 @@ pub struct InstanceResult {
     /// Coarse outcome from the trajectory: `submitted` | `step_limit_reached`
     /// | `error`. `None` when the trajectory file could not be read.
     pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<FailureCategory>,
     pub steps: Option<u32>,
     pub cost_usd: Option<f64>,
     pub prompt_tokens: Option<u64>,
@@ -91,6 +94,8 @@ pub struct SweepResults {
     pub submitted: usize,
     pub skipped: usize,
     pub errored: usize,
+    #[serde(default)]
+    pub failures_by_category: BTreeMap<FailureCategory, usize>,
     /// Tasks that never started because the sweep-level USD budget was
     /// exhausted before they could acquire a worker permit. Counted in
     /// `total` but excluded from `submitted` and `errored`.
@@ -160,6 +165,26 @@ impl SweepResults {
                     self.estimated_cost_usd, limit, self.budget_halted
                 );
             }
+        }
+        let mut nonzero: Vec<(FailureCategory, usize)> = self
+            .failures_by_category
+            .iter()
+            .filter_map(|(k, v)| (*v > 0).then_some((*k, *v)))
+            .collect();
+        nonzero.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if !nonzero.is_empty() {
+            s.push_str("Failures by category:\n");
+            for (k, v) in nonzero {
+                let _ = writeln!(s, "  - {}: {}", failure_category_label(k), v);
+            }
+        }
+        let unclassified_legacy = self
+            .instances
+            .iter()
+            .filter(|r| is_failed_instance(r) && r.failure_category.is_none())
+            .count();
+        if unclassified_legacy > 0 {
+            let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
         }
         s
     }
@@ -329,9 +354,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         let cfg = args.config.clone();
         let deterministic = args.deterministic_responses.clone();
         let det_usage = args.deterministic_usage_per_call.clone();
-        set.spawn(async move {
-            run_one(inst, output_dir, cfg, deterministic, det_usage).await
-        });
+        set.spawn(async move { run_one(inst, output_dir, cfg, deterministic, det_usage).await });
     };
 
     if halted {
@@ -395,6 +418,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     instance_id: "<join_error>".into(),
                     exit_reason: "error".into(),
                     outcome: Some(outcome::ERROR.into()),
+                    failure_category: Some(FailureCategory::AgentInternal),
                     steps: None,
                     cost_usd: None,
                     prompt_tokens: None,
@@ -428,6 +452,12 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             with_patch += 1;
         }
     }
+    let mut failures_by_category: BTreeMap<FailureCategory, usize> = BTreeMap::new();
+    for r in &results {
+        if let Some(cat) = r.failure_category {
+            *failures_by_category.entry(cat).or_insert(0) += 1;
+        }
+    }
 
     write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
@@ -436,6 +466,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         submitted,
         skipped,
         errored,
+        failures_by_category,
         budget_halted,
         with_patch,
         total_prompt_tokens: total_prompt,
@@ -458,6 +489,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         instance_id: instance_id.to_owned(),
         exit_reason: EXIT_REASON_BUDGET_HALT.into(),
         outcome: None,
+        failure_category: None,
         steps: None,
         cost_usd: None,
         prompt_tokens: None,
@@ -525,6 +557,7 @@ fn skipped_result_from_info(
         instance_id: instance_id.to_owned(),
         exit_reason: "skipped_resume".into(),
         outcome: info.outcome.clone(),
+        failure_category: info.failure_category,
         steps: info.steps,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
@@ -601,10 +634,26 @@ async fn run_one(
         Err(_) => (false, false),
     };
 
+    let failure_category = if outcome_str == outcome::SUBMITTED {
+        None
+    } else {
+        info.as_ref()
+            .and_then(|i| i.failure_category)
+            .or_else(|| match exit_reason.as_str() {
+                "step_limit" => Some(FailureCategory::StepLimit),
+                "cost_limit" => Some(FailureCategory::CostLimit),
+                _ => run_err
+                    .as_ref()
+                    .map(classify_error)
+                    .or(Some(FailureCategory::Unknown)),
+            })
+    };
+
     InstanceResult {
         instance_id: id,
         exit_reason,
         outcome: Some(outcome_str),
+        failure_category,
         steps: info.as_ref().and_then(|i| i.steps),
         cost_usd: info.as_ref().and_then(|i| i.total_cost_usd),
         prompt_tokens,
@@ -613,6 +662,38 @@ async fn run_one(
         error: run_err.map(|e| e.to_string()),
         patch_present,
         non_empty_patch,
+    }
+}
+
+fn classify_error(err: &Error) -> FailureCategory {
+    match err {
+        // Docker build/start/exec or local command execution plumbing.
+        Error::Env(_) => FailureCategory::EnvSetup,
+        // Model transport/auth/rate-limit/5xx style failures.
+        Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        Error::Model(_) => FailureCategory::ModelApi,
+        // Any remaining typed error in the runner/agent.
+        _ => FailureCategory::AgentInternal,
+    }
+}
+
+fn is_failed_instance(r: &InstanceResult) -> bool {
+    r.outcome.as_deref() == Some(outcome::ERROR)
+        || matches!(
+            r.failure_category,
+            Some(FailureCategory::StepLimit | FailureCategory::CostLimit)
+        )
+}
+
+fn failure_category_label(cat: FailureCategory) -> &'static str {
+    match cat {
+        FailureCategory::EnvSetup => "env_setup",
+        FailureCategory::ModelApi => "model_api",
+        FailureCategory::ModelParse => "model_parse",
+        FailureCategory::StepLimit => "step_limit",
+        FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::Unknown => "unknown",
     }
 }
 
@@ -643,6 +724,7 @@ mod tests {
             submitted: 4,
             skipped: 3,
             errored: 1,
+            failures_by_category: BTreeMap::new(),
             budget_halted: 0,
             with_patch: 3,
             total_prompt_tokens: 250_000,
@@ -663,9 +745,7 @@ mod tests {
             "missing skipped row in: {t}"
         );
         assert!(
-            t.contains(
-                "Budget-halted:      0 — never started; sweep-level USD limit reached"
-            ),
+            t.contains("Budget-halted:      0 — never started; sweep-level USD limit reached"),
             "missing budget_halted row in: {t}"
         );
         assert!(t.contains("Submit rate:        40.00%"));
@@ -686,6 +766,7 @@ mod tests {
             submitted: 3,
             skipped: 0,
             errored: 0,
+            failures_by_category: BTreeMap::new(),
             budget_halted: 2,
             with_patch: 0,
             total_prompt_tokens: 0,

@@ -60,7 +60,10 @@ async fn broadcast_sink_receives_step_outcomes() {
         events.push(e);
     }
 
-    assert!(matches!(events.first(), Some(StreamEvent::RunStarted { .. })));
+    assert!(matches!(
+        events.first(),
+        Some(StreamEvent::RunStarted { .. })
+    ));
 
     let saw_bash_start = events
         .iter()
@@ -83,7 +86,11 @@ async fn broadcast_sink_receives_step_outcomes() {
 
     let last = events.last().unwrap();
     match last {
-        StreamEvent::RunEnded { exit_reason, final_output, .. } => {
+        StreamEvent::RunEnded {
+            exit_reason,
+            final_output,
+            ..
+        } => {
             assert_eq!(exit_reason, "submitted");
             assert_eq!(final_output.as_deref(), Some("final"));
         }

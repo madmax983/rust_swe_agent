@@ -71,6 +71,8 @@ pub enum StreamEvent {
     /// Agent loop ended.
     RunEnded {
         exit_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_category: Option<crate::trajectory::FailureCategory>,
         final_output: Option<String>,
         steps: u32,
         total_cost_usd: f64,

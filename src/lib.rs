@@ -25,4 +25,6 @@ pub use model::{
     ModelResponse, ModelUsage, QueryOpts, Role,
 };
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
-pub use trajectory::{FORMAT_VERSION, MessageRecord, TokenUsage, Trajectory, TrajectoryInfo};
+pub use trajectory::{
+    FORMAT_VERSION, FailureCategory, MessageRecord, TokenUsage, Trajectory, TrajectoryInfo,
+};
