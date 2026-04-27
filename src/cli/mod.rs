@@ -159,6 +159,17 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     cfg.root.model.name.clone_from(&s.model);
     cfg.root.agent.step_limit = s.step_limit;
 
+    let instance_ids = match s.instance_ids.as_deref() {
+        Some(arg) => Some(crate::run::filter::parse_instance_ids_arg(arg)?),
+        None => None,
+    };
+    let filter = crate::run::filter::FilterArgs {
+        instance_ids,
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
+    };
+
     let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
@@ -166,6 +177,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         config: cfg,
         resume: s.resume,
         cost_limit_usd: s.sweep_cost_limit_usd,
+        filter,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
     })

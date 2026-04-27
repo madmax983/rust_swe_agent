@@ -111,6 +111,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         config: cfg,
         resume: false,
         cost_limit_usd: Some(limit),
+        filter: Default::default(),
         deterministic_responses: Some(submit_only_responses_for(5)),
         deterministic_usage_per_call: Some(usage),
     })
@@ -258,6 +259,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        filter: Default::default(),
         deterministic_responses: Some(submit_only_responses_for(3)),
         deterministic_usage_per_call: Some(usage),
     })
@@ -331,6 +333,7 @@ async fn resume_skipped_costs_count_against_budget() {
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
+        filter: Default::default(),
         deterministic_responses: Some(submit_only_responses_for(2)),
         deterministic_usage_per_call: Some(usage),
     })

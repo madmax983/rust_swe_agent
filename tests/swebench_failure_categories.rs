@@ -97,6 +97,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        filter: Default::default(),
         deterministic_responses: None,
         deterministic_usage_per_call: None,
     })

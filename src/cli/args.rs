@@ -158,6 +158,29 @@ pub struct SwebenchCmd {
     /// `submitted` / `errored`. When unset, behavior is unchanged.
     #[arg(long)]
     pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Subset the dataset to a comma-separated list of instance ids, or
+    /// `@path/to/file.txt` with one id per line. Unknown ids cause the
+    /// runner to exit non-zero before launching any task. Composes
+    /// before `--sample` and `--limit`.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most the first N instances after the id filter and
+    /// `--sample` have run. Useful with `--instance-ids @file` for a
+    /// "first 5 of this list" smoke check.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset the dataset to N instances. Requires
+    /// `--seed`; same seed + same dataset → identical subset. Applied
+    /// after `--instance-ids` and before `--limit`.
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed for `--sample`. Must be provided whenever `--sample` is.
+    #[arg(long)]
+    pub seed: Option<u64>,
 }
 
 #[derive(Debug, Args)]

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::error::Error;
 use crate::model::ModelUsage;
+use crate::run::filter::{FilterArgs, FilterSpec};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
@@ -123,6 +124,12 @@ pub struct SweepResults {
     /// distinguishes "ran without a budget" from "budget was infinite".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_limit_usd: Option<f64>,
+    /// Resolved dataset-subsetting spec from `--instance-ids` / `--limit`
+    /// / `--sample` / `--seed`. Always present on new runs (records the
+    /// original-vs-selected counts even for unfiltered sweeps); absent
+    /// when reading a pre-#22 `results.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_spec: Option<FilterSpec>,
     #[serde(default)]
     pub instances: Vec<InstanceResult>,
 }
@@ -220,6 +227,9 @@ pub struct SwebenchArgs {
     /// tasks contribute to the running total at their stored cost so a
     /// resumed sweep cannot blow past the limit.
     pub cost_limit_usd: Option<f64>,
+    /// Dataset subsetting controls. Default (`FilterArgs::default()`)
+    /// runs the full dataset.
+    pub filter: FilterArgs,
     /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
     /// Lets sweeps run end-to-end against a scripted model without network
     /// I/O — mainly useful for tests and local smoke checks.
@@ -290,7 +300,24 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
-    let instances = load_dataset(&args.dataset_path)?;
+    let raw_instances = load_dataset(&args.dataset_path)?;
+    // Filter is applied before any worker spawns or output is written,
+    // so an unknown id / empty subset short-circuits to a non-zero exit
+    // without leaving a half-populated output dir behind. The `total`
+    // tracked through the rest of the run reflects post-filter size,
+    // per the issue spec.
+    let (instances, filter_spec) = crate::run::filter::apply_filter(raw_instances, &args.filter)?;
+    if args.filter.is_active() {
+        tracing::info!(
+            original = filter_spec.original_count,
+            selected = filter_spec.selected_count,
+            instance_ids = filter_spec.instance_ids.as_ref().map(Vec::len),
+            limit = ?filter_spec.limit,
+            sample = ?filter_spec.sample,
+            seed = ?filter_spec.seed,
+            "dataset filter applied"
+        );
+    }
     let total = instances.len();
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
@@ -486,6 +513,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_completion_tokens: total_completion,
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
         cost_limit_usd: args.cost_limit_usd,
+        filter_spec: Some(filter_spec),
         instances: results,
     };
     let summary_path = args.output_dir.join("results.json");
@@ -744,6 +772,7 @@ mod tests {
             total_completion_tokens: 50_000,
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
             cost_limit_usd: None,
+            filter_spec: None,
             instances: vec![],
         };
         let t = s.summary_table();
@@ -786,6 +815,7 @@ mod tests {
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
             cost_limit_usd: Some(1.0),
+            filter_spec: None,
             instances: vec![],
         };
         let t = s.summary_table();

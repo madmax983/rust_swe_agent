@@ -672,6 +672,7 @@ mod tests {
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
             cost_limit_usd: None,
+            filter_spec: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
         };
         let candidate_sweep = SweepResults {
@@ -733,6 +734,7 @@ mod tests {
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
             cost_limit_usd: None,
+            filter_spec: None,
             instances: vec![submitted("a")],
         };
         let candidate_sweep = baseline_sweep.clone();
