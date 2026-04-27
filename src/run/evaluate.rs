@@ -59,11 +59,11 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
     sweep_dir.join("evaluation.json")
 }
 
-pub async fn run(args: EvaluateArgs) -> Result<EvaluationResults, Error> {
+pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let results = load_run(&args.sweep_dir)?;
     let eval = match args.backend {
         EvaluateBackend::None => build_none_eval(&results),
-        EvaluateBackend::SbCli => run_sb_cli(&args, &results)?,
+        EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
     std::fs::write(
         evaluation_path(&args.sweep_dir),
@@ -144,7 +144,7 @@ fn run_sb_cli(
     }
 
     let parsed = parse_sb_cli_results(&out_file)?;
-    Ok(merge_with_results(results, parsed))
+    Ok(merge_with_results(results, &parsed))
 }
 
 fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluation>, Error> {
@@ -234,7 +234,7 @@ fn as_string_vec(v: Option<&serde_json::Value>) -> Vec<String> {
 
 fn merge_with_results(
     results: &HashMap<String, InstanceResult>,
-    parsed: HashMap<String, InstanceEvaluation>,
+    parsed: &HashMap<String, InstanceEvaluation>,
 ) -> EvaluationResults {
     let mut instances: Vec<InstanceEvaluation> = Vec::new();
     for (id, r) in results {
