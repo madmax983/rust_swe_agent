@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -354,7 +355,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let prior_results = if args.resume {
         load_prior_results_by_instance(&args.output_dir)
     } else {
-        HashMap::new()
+        PriorResults::default()
     };
     let retry_policy = RetryPolicy::from_args(
         args.max_retries,
@@ -407,9 +408,12 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         .failure_category
                         .is_some_and(|cat| retry_policy.is_retry_category(cat));
                 if retryable_resume {
-                    let prior = prior_results.get(&inst.instance_id).map_or_else(
-                        || skipped_result_from_info(&inst.instance_id, &info, &patch_path),
-                        skipped_result_from_prior_result,
+                    let prior = resume_snapshot_for_instance(
+                        &args.output_dir,
+                        &inst.instance_id,
+                        &info,
+                        &patch_path,
+                        &prior_results,
                     );
                     bump_cost(
                         estimate_cost_usd(
@@ -425,9 +429,12 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     }
                 }
                 if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                    let r = prior_results.get(&inst.instance_id).map_or_else(
-                        || skipped_result_from_info(&inst.instance_id, &info, &patch_path),
-                        skipped_result_from_prior_result,
+                    let r = resume_snapshot_for_instance(
+                        &args.output_dir,
+                        &inst.instance_id,
+                        &info,
+                        &patch_path,
+                        &prior_results,
                     );
                     bump_cost(
                         estimate_cost_usd(
@@ -724,30 +731,84 @@ fn skipped_result_from_prior_result(r: &InstanceResult) -> InstanceResult {
     out
 }
 
-fn load_prior_results_by_instance(output_dir: &std::path::Path) -> HashMap<String, InstanceResult> {
+#[derive(Default)]
+struct PriorResults {
+    by_id: HashMap<String, InstanceResult>,
+    results_mtime: Option<SystemTime>,
+}
+
+fn load_prior_results_by_instance(output_dir: &std::path::Path) -> PriorResults {
     let path = output_dir.join("results.json");
     if !path.exists() {
-        return HashMap::new();
+        return PriorResults::default();
     }
+    let results_mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(err) => {
             tracing::warn!(path=%path.display(), error=%err, "resume: failed reading prior results.json; ignoring");
-            return HashMap::new();
+            return PriorResults::default();
         }
     };
     let parsed: SweepResults = match serde_json::from_str(&text) {
         Ok(p) => p,
         Err(err) => {
             tracing::warn!(path=%path.display(), error=%err, "resume: malformed prior results.json; ignoring");
-            return HashMap::new();
+            return PriorResults::default();
         }
     };
-    parsed
-        .instances
-        .into_iter()
-        .map(|r| (r.instance_id.clone(), r))
-        .collect()
+    PriorResults {
+        by_id: parsed
+            .instances
+            .into_iter()
+            .map(|r| (r.instance_id.clone(), r))
+            .collect(),
+        results_mtime,
+    }
+}
+
+fn resume_snapshot_for_instance(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    info: &crate::trajectory::TrajectoryInfo,
+    patch_path: &std::path::Path,
+    prior: &PriorResults,
+) -> InstanceResult {
+    let traj_based = skipped_result_from_info(instance_id, info, patch_path);
+    let Some(prior_result) = prior.by_id.get(instance_id) else {
+        return traj_based;
+    };
+    if !prior_result_matches_trajectory(output_dir, instance_id, prior_result, &traj_based, prior) {
+        return traj_based;
+    }
+    skipped_result_from_prior_result(prior_result)
+}
+
+fn prior_result_matches_trajectory(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    prior_result: &InstanceResult,
+    traj_result: &InstanceResult,
+    prior: &PriorResults,
+) -> bool {
+    if prior_result.outcome != traj_result.outcome
+        || prior_result.failure_category != traj_result.failure_category
+        || prior_result.steps != traj_result.steps
+    {
+        return false;
+    }
+    let Some(results_mtime) = prior.results_mtime else {
+        return false;
+    };
+    let traj_mtime = std::fs::metadata(trajectory_path_for(output_dir, instance_id))
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let Some(traj_mtime) = traj_mtime else {
+        return false;
+    };
+    results_mtime >= traj_mtime
 }
 
 #[derive(Debug, Clone)]
