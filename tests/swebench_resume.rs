@@ -116,7 +116,9 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         parallel: 2,
         config: cfg,
         resume: true,
+        cost_limit_usd: None,
         deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();
@@ -187,7 +189,9 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         parallel: 1,
         config: cfg,
         resume: true,
+        cost_limit_usd: None,
         deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();
@@ -227,7 +231,9 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         parallel: 1,
         config: cfg,
         resume: false,
+        cost_limit_usd: None,
         deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
     })
     .await
     .unwrap();

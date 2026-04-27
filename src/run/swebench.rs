@@ -1,17 +1,29 @@
-//! SWE-bench sweep runner. Minimum-viable full parity: load JSONL, shard
-//! across workers with a `JoinSet` + `Semaphore`, emit per-instance
-//! trajectory + patch files, summarize in `results.json`.
+//! SWE-bench sweep runner. Minimum-viable full parity: load JSONL, dispatch
+//! tasks across `parallel` workers via a consumer-driven `JoinSet`, emit
+//! per-instance trajectory + patch files, summarize in `results.json`.
+//!
+//! Dispatch is consumer-driven (rather than a `Semaphore` + spawn-all
+//! pattern) so the sweep-level cost cap can be checked synchronously
+//! against the just-finished task before a new task is launched. With
+//! a semaphore, a fresh task could acquire its permit after the
+//! previous one frees it but before the consumer has updated the
+//! cumulative cost — which would silently overshoot the cap by one
+//! task's worth of API spend per worker.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::error::Error;
+use crate::model::ModelUsage;
 use crate::trajectory::{Trajectory, outcome};
+
+/// Sentinel `exit_reason` for tasks that never started because the
+/// sweep-level USD budget was exhausted. Distinct from `error` and
+/// `submitted` so summary tooling can attribute the halt correctly.
+pub const EXIT_REASON_BUDGET_HALT: &str = "budget_halt";
 
 /// Standard `claude-3-5-sonnet` USD pricing per 1M tokens. Used for the
 /// summary's cost estimate; per-instance trajectories carry only token
@@ -79,12 +91,21 @@ pub struct SweepResults {
     pub submitted: usize,
     pub skipped: usize,
     pub errored: usize,
+    /// Tasks that never started because the sweep-level USD budget was
+    /// exhausted before they could acquire a worker permit. Counted in
+    /// `total` but excluded from `submitted` and `errored`.
+    pub budget_halted: usize,
     /// Submitted instances whose captured patch had non-zero length.
     /// Equal to `submitted` minus the count of empty-diff submissions.
     pub with_patch: usize,
     pub total_prompt_tokens: u64,
     pub total_completion_tokens: u64,
     pub estimated_cost_usd: f64,
+    /// The USD ceiling enforced for this sweep, echoed from
+    /// `SwebenchArgs::cost_limit_usd`. `None` when no limit was set —
+    /// distinguishes "ran without a budget" from "budget was infinite".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_limit_usd: Option<f64>,
     pub instances: Vec<InstanceResult>,
 }
 
@@ -116,6 +137,11 @@ impl SweepResults {
             "Skipped:            {} — trajectory already on disk",
             self.skipped
         );
+        let _ = writeln!(
+            s,
+            "Budget-halted:      {} — never started; sweep-level USD limit reached",
+            self.budget_halted
+        );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
         let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
         let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
@@ -125,6 +151,16 @@ impl SweepResults {
             "Estimated cost:     ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
             self.estimated_cost_usd
         );
+        if let Some(limit) = self.cost_limit_usd {
+            let _ = writeln!(s, "Sweep cost limit:   ${limit:.4}");
+            if self.budget_halted > 0 {
+                let _ = writeln!(
+                    s,
+                    "BUDGET HALT at ${:.4} of ${:.4} — {} task(s) never started",
+                    self.estimated_cost_usd, limit, self.budget_halted
+                );
+            }
+        }
         s
     }
 }
@@ -138,10 +174,23 @@ pub struct SwebenchArgs {
     /// valid JSON are skipped before any agent (or Docker container, or
     /// model API call) is launched for them.
     pub resume: bool,
+    /// Optional sweep-level USD spend ceiling. When `Some(limit)`, the
+    /// runner stops dequeuing new tasks once cumulative cost (summed
+    /// from each finished task's `estimate_cost_usd`) reaches `limit`.
+    /// In-flight tasks are allowed to finish; tasks that never started
+    /// are recorded with `exit_reason: "budget_halt"`. Resume-skipped
+    /// tasks contribute to the running total at their stored cost so a
+    /// resumed sweep cannot blow past the limit.
+    pub cost_limit_usd: Option<f64>,
     /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
     /// Lets sweeps run end-to-end against a scripted model without network
     /// I/O — mainly useful for tests and local smoke checks.
     pub deterministic_responses: Option<Vec<String>>,
+    /// Optional fixed `ModelUsage` reported by the scripted backend on
+    /// every call. Lets sweep-budget tests trigger budget halts
+    /// deterministically. Only meaningful when `deterministic_responses`
+    /// is `Some`.
+    pub deterministic_usage_per_call: Option<ModelUsage>,
 }
 
 /// Path where `run_one` writes the trajectory for an instance. Centralized so
@@ -205,25 +254,47 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     let instances = load_dataset(&args.dataset_path)?;
     let total = instances.len();
-    let sem = Arc::new(Semaphore::new(args.parallel.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
+    let mut pending: std::collections::VecDeque<SweBenchInstance> =
+        std::collections::VecDeque::new();
+
+    // Sweep-level cumulative USD spend, computed via `estimate_cost_usd`
+    // from each task's prompt/completion tokens. Resume-skipped tasks
+    // contribute their stored cost up front so a resumed sweep cannot
+    // blow past the limit by re-summing only freshly-run tasks.
+    let mut cumulative_cost = 0.0f64;
+    let mut halted = false;
+    let limit = args.cost_limit_usd;
+    let bump_cost = |cost: f64, cumulative: &mut f64, halted: &mut bool| {
+        *cumulative += cost;
+        if let Some(l) = limit {
+            if *cumulative >= l {
+                *halted = true;
+            }
+        }
+    };
 
     for inst in instances {
         // Resume short-circuit: a valid on-disk trajectory + (when the run
         // was submitted) a patch file mean this task is fully archived
-        // from a prior sweep. Skip it before we spawn — no semaphore slot,
-        // no Docker container, no model API call.
+        // from a prior sweep. Skip it before we even consider dispatch —
+        // no worker slot, no Docker container, no model API call.
         if args.resume {
             if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
                 let patch_path = patch_path_for(&args.output_dir, &inst.instance_id);
                 let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
                 if !needs_patch || patch_path.exists() {
-                    skipped_results.push(skipped_result_from_info(
-                        &inst.instance_id,
-                        &info,
-                        &patch_path,
-                    ));
+                    let r = skipped_result_from_info(&inst.instance_id, &info, &patch_path);
+                    bump_cost(
+                        estimate_cost_usd(
+                            r.prompt_tokens.unwrap_or(0),
+                            r.completion_tokens.unwrap_or(0),
+                        ),
+                        &mut cumulative_cost,
+                        &mut halted,
+                    );
+                    skipped_results.push(r);
                     continue;
                 }
                 tracing::info!(
@@ -232,43 +303,55 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 );
             }
         }
-
-        let permit_sem = Arc::clone(&sem);
-        let output_dir = args.output_dir.clone();
-        let cfg = args.config.clone();
-        let deterministic = args.deterministic_responses.clone();
-        set.spawn(async move {
-            let _permit = match permit_sem.acquire_owned().await {
-                Ok(p) => p,
-                Err(e) => {
-                    return InstanceResult {
-                        instance_id: inst.instance_id.clone(),
-                        exit_reason: "error".into(),
-                        outcome: Some(outcome::ERROR.into()),
-                        steps: None,
-                        cost_usd: None,
-                        prompt_tokens: None,
-                        completion_tokens: None,
-                        duration_secs: None,
-                        error: Some(e.to_string()),
-                        patch_present: false,
-                        non_empty_patch: false,
-                    };
-                }
-            };
-            run_one(inst, output_dir, cfg, deterministic).await
-        });
+        pending.push_back(inst);
     }
 
     let mut results = skipped_results;
-    let skipped = results.len();
+    let skipped = results
+        .iter()
+        .filter(|r| r.exit_reason == "skipped_resume")
+        .count();
     let mut submitted = 0;
     let mut errored = 0;
+    let mut budget_halted = 0;
     let mut with_patch = 0;
     let mut total_prompt = 0u64;
     let mut total_completion = 0u64;
-    // Skipped tasks are excluded from token totals: those API calls were
-    // billed in the original sweep and shouldn't be counted again here.
+    let parallelism = args.parallel.max(1);
+
+    // Consumer-driven dispatch: spawn at most `parallelism` tasks at a
+    // time, and only launch a fresh task once the consumer has processed
+    // the previous result and (re-)checked the halt flag. A semaphore
+    // would close the same race only after the new permit was claimed —
+    // by which time another agent has already started an API call.
+    let spawn_one = |inst: SweBenchInstance, set: &mut tokio::task::JoinSet<InstanceResult>| {
+        let output_dir = args.output_dir.clone();
+        let cfg = args.config.clone();
+        let deterministic = args.deterministic_responses.clone();
+        let det_usage = args.deterministic_usage_per_call.clone();
+        set.spawn(async move {
+            run_one(inst, output_dir, cfg, deterministic, det_usage).await
+        });
+    };
+
+    if halted {
+        // Resume already exhausted the budget; everything that was queued
+        // never starts.
+        while let Some(inst) = pending.pop_front() {
+            results.push(budget_halt_result(&inst.instance_id));
+            budget_halted += 1;
+        }
+    } else {
+        // Initial fill.
+        for _ in 0..parallelism {
+            if let Some(inst) = pending.pop_front() {
+                spawn_one(inst, &mut set);
+            } else {
+                break;
+            }
+        }
+    }
+
     while let Some(j) = set.join_next().await {
         match j {
             Ok(r) => {
@@ -285,6 +368,24 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 }
                 if let Some(c) = r.completion_tokens {
                     total_completion = total_completion.saturating_add(c);
+                }
+                // Sweep-level budget bookkeeping. Tasks that completed
+                // (whether submitted or errored) consumed real API budget
+                // and count toward the cap.
+                let cost = estimate_cost_usd(
+                    r.prompt_tokens.unwrap_or(0),
+                    r.completion_tokens.unwrap_or(0),
+                );
+                let was_halted = halted;
+                bump_cost(cost, &mut cumulative_cost, &mut halted);
+                if halted && !was_halted {
+                    if let Some(l) = limit {
+                        tracing::warn!(
+                            cumulative_usd = cumulative_cost,
+                            limit_usd = l,
+                            "sweep cost limit reached — halting new task launches"
+                        );
+                    }
                 }
                 results.push(r);
             }
@@ -305,6 +406,19 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 });
             }
         }
+
+        // Decide what to do with the next pending task. If the budget is
+        // exhausted, drain the queue into `budget_halt` results without
+        // spawning. Otherwise, dispatch one — keeping the in-flight
+        // count at `parallelism` until the queue drains.
+        if halted {
+            while let Some(inst) = pending.pop_front() {
+                results.push(budget_halt_result(&inst.instance_id));
+                budget_halted += 1;
+            }
+        } else if let Some(inst) = pending.pop_front() {
+            spawn_one(inst, &mut set);
+        }
     }
 
     // Skipped instances loaded from disk also contribute to the patch
@@ -322,16 +436,37 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         submitted,
         skipped,
         errored,
+        budget_halted,
         with_patch,
         total_prompt_tokens: total_prompt,
         total_completion_tokens: total_completion,
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
+        cost_limit_usd: args.cost_limit_usd,
         instances: results,
     };
     let summary_path = args.output_dir.join("results.json");
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
     Ok(sweep)
+}
+
+/// Build the `InstanceResult` returned for a task that never started
+/// because the sweep-level budget was already exhausted by the time
+/// its permit became available.
+fn budget_halt_result(instance_id: &str) -> InstanceResult {
+    InstanceResult {
+        instance_id: instance_id.to_owned(),
+        exit_reason: EXIT_REASON_BUDGET_HALT.into(),
+        outcome: None,
+        steps: None,
+        cost_usd: None,
+        prompt_tokens: None,
+        completion_tokens: None,
+        duration_secs: None,
+        error: None,
+        patch_present: false,
+        non_empty_patch: false,
+    }
 }
 
 /// Write `all_preds.jsonl` containing one line per *submitted* instance
@@ -406,6 +541,7 @@ async fn run_one(
     output_dir: PathBuf,
     mut cfg: Config,
     deterministic_responses: Option<Vec<String>>,
+    deterministic_usage_per_call: Option<ModelUsage>,
 ) -> InstanceResult {
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -431,6 +567,7 @@ async fn run_one(
         output_dir: output_dir.clone(),
         trajectory_name: id.clone(),
         deterministic_responses,
+        deterministic_usage_per_call,
         stream_addr: None,
         patch_capture,
     };
@@ -506,10 +643,12 @@ mod tests {
             submitted: 4,
             skipped: 3,
             errored: 1,
+            budget_halted: 0,
             with_patch: 3,
             total_prompt_tokens: 250_000,
             total_completion_tokens: 50_000,
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
+            cost_limit_usd: None,
             instances: vec![],
         };
         let t = s.summary_table();
@@ -523,9 +662,45 @@ mod tests {
             t.contains("Skipped:            3 — trajectory already on disk"),
             "missing skipped row in: {t}"
         );
+        assert!(
+            t.contains(
+                "Budget-halted:      0 — never started; sweep-level USD limit reached"
+            ),
+            "missing budget_halted row in: {t}"
+        );
         assert!(t.contains("Submit rate:        40.00%"));
         assert!(t.contains("Total tokens:       300000"));
         assert!(t.contains("Estimated cost:     $1.5000"));
+        // Without a configured limit, the summary should not advertise one.
+        assert!(
+            !t.contains("Sweep cost limit:"),
+            "limit row leaked in unconstrained sweep: {t}"
+        );
+        assert!(!t.contains("BUDGET HALT"));
+    }
+
+    #[test]
+    fn summary_table_includes_budget_halt_line_when_triggered() {
+        let s = SweepResults {
+            total: 5,
+            submitted: 3,
+            skipped: 0,
+            errored: 0,
+            budget_halted: 2,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 100_000,
+            estimated_cost_usd: 1.5,
+            cost_limit_usd: Some(1.0),
+            instances: vec![],
+        };
+        let t = s.summary_table();
+        assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
+        assert!(
+            t.contains("BUDGET HALT at $1.5000 of $1.0000"),
+            "missing budget halt line: {t}"
+        );
+        assert!(t.contains("2 task(s) never started"));
     }
 
     #[test]

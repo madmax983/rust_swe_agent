@@ -106,6 +106,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         output_dir: m.output,
         trajectory_name,
         deterministic_responses: None,
+        deterministic_usage_per_call: None,
         stream_addr,
         patch_capture: None,
     };
@@ -155,7 +156,9 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         parallel: s.parallel,
         config: cfg,
         resume: s.resume,
+        cost_limit_usd: s.sweep_cost_limit_usd,
         deterministic_responses: None,
+        deterministic_usage_per_call: None,
     })
     .await?;
 
@@ -164,9 +167,11 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         submitted = results.submitted,
         skipped = results.skipped,
         errored = results.errored,
+        budget_halted = results.budget_halted,
         prompt_tokens = results.total_prompt_tokens,
         completion_tokens = results.total_completion_tokens,
         estimated_cost_usd = results.estimated_cost_usd,
+        cost_limit_usd = ?results.cost_limit_usd,
         "sweep complete"
     );
     print!("{}", results.summary_table());

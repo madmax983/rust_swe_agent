@@ -14,7 +14,7 @@ use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment, RunRequest};
 use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
-use crate::model::{DeterministicModel, Model};
+use crate::model::{DeterministicModel, Model, ModelUsage};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 
 /// How a runner should snapshot the agent's working tree as a unified diff
@@ -43,6 +43,10 @@ pub struct MiniArgs {
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
+    /// Optional fixed `ModelUsage` reported by the deterministic backend
+    /// on every call. Only meaningful when `deterministic_responses` is
+    /// `Some`. Lets tests drive cost/budget logic without a real API.
+    pub deterministic_usage_per_call: Option<ModelUsage>,
     /// Optional SSE stream endpoint to bind. When `Some`, the runner
     /// starts a server before the agent runs and shuts it down after.
     pub stream_addr: Option<SocketAddr>,
@@ -56,7 +60,11 @@ pub struct MiniArgs {
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
-    let model = build_model(&args.config, args.deterministic_responses);
+    let model = build_model(
+        &args.config,
+        args.deterministic_responses,
+        args.deterministic_usage_per_call.clone(),
+    );
     let env = build_env(&args.config).await?;
 
     // Bring up the SSE server first so any client that connects right
@@ -216,9 +224,17 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
-fn build_model(cfg: &Config, deterministic: Option<Vec<String>>) -> Arc<dyn Model> {
+fn build_model(
+    cfg: &Config,
+    deterministic: Option<Vec<String>>,
+    deterministic_usage_per_call: Option<ModelUsage>,
+) -> Arc<dyn Model> {
     if let Some(responses) = deterministic {
-        return Arc::new(DeterministicModel::new(responses));
+        let model = match deterministic_usage_per_call {
+            Some(usage) => DeterministicModel::with_usage(responses, usage),
+            None => DeterministicModel::new(responses),
+        };
+        return Arc::new(model);
     }
     // `LitellmBackend` dispatches by model prefix; credentials come from
     // the usual provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,

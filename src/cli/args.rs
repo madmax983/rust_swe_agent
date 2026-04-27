@@ -115,4 +115,13 @@ pub struct SwebenchCmd {
     /// absent and re-run.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// Maximum total USD spend for the entire sweep. When set, the runner
+    /// stops dequeuing new tasks once cumulative cost reaches the limit;
+    /// in-flight tasks are allowed to finish so trajectories and patch
+    /// artifacts are not corrupted. Tasks that never started are
+    /// recorded with `exit_reason: "budget_halt"` and excluded from
+    /// `submitted` / `errored`. When unset, behavior is unchanged.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
 }
