@@ -431,7 +431,7 @@ fn build_breakdown(
                         results
                             .get(&row.instance_id)
                             .and_then(|r| r.failure_category)
-                            .map_or("unknown", failure_label)
+                            .map_or("none", failure_label)
                             .to_owned()
                     }
                 }
@@ -605,5 +605,27 @@ mod tests {
             Some("django/django".into())
         );
         assert_eq!(parse_repo_from_instance_id("invalid"), None);
+    }
+
+    #[test]
+    fn failure_category_breakdown_uses_none_for_missing_category() {
+        let results = HashMap::from([("a".to_string(), submitted("a"))]);
+        let evals = vec![InstanceEvaluation {
+            instance_id: "a".into(),
+            resolved: false,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: EvalExitReason::Unresolved,
+            eval_log_path: None,
+        }];
+        let rows = build_breakdown(
+            &evals,
+            &results,
+            &BreakdownSelection {
+                axes: vec![BreakdownAxis::FailureCategory],
+            },
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].bucket_value, "none");
     }
 }
