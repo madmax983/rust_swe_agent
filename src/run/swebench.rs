@@ -947,6 +947,8 @@ async fn run_one(
         let det_for_attempt = deterministic_responses
             .as_ref()
             .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
+        let traj_path = output_dir.join(format!("{id}.traj.json"));
+        let before_fp = trajectory_fingerprint(&traj_path);
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
@@ -963,8 +965,7 @@ async fn run_one(
             }),
         };
         let run_err = crate::run::mini::run(args).await.err();
-        let traj_path = output_dir.join(format!("{id}.traj.json"));
-        let info = read_trajectory_info(&traj_path);
+        let info = load_fresh_trajectory_info(&traj_path, before_fp);
         let outcome_str = info
             .as_ref()
             .and_then(|i| i.outcome.clone())
@@ -1075,6 +1076,21 @@ fn read_trajectory_info(path: &std::path::Path) -> Option<crate::trajectory::Tra
     let text = std::fs::read_to_string(path).ok()?;
     let traj: Trajectory = serde_json::from_str(&text).ok()?;
     Some(traj.info)
+}
+
+fn trajectory_fingerprint(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    Some((mtime, meta.len()))
+}
+
+fn load_fresh_trajectory_info(
+    path: &std::path::Path,
+    before: Option<(SystemTime, u64)>,
+) -> Option<crate::trajectory::TrajectoryInfo> {
+    let after = trajectory_fingerprint(path);
+    (after != before).then_some(())?;
+    read_trajectory_info(path)
 }
 
 fn apply_subset(
