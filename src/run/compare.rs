@@ -760,7 +760,8 @@ fn subset_warnings(baseline: Option<&FilterSpec>, candidate: Option<&FilterSpec>
     let (Some(b), Some(c)) = (baseline, candidate) else {
         return Vec::new();
     };
-    if b.instance_ids == c.instance_ids
+    if b.instance_ids.as_deref().map(normalize_instance_ids)
+        == c.instance_ids.as_deref().map(normalize_instance_ids)
         && b.sample == c.sample
         && b.seed == c.seed
         && b.limit == c.limit
@@ -771,6 +772,10 @@ fn subset_warnings(baseline: Option<&FilterSpec>, candidate: Option<&FilterSpec>
         "dataset subset differs (baseline selected_count={}, candidate selected_count={})",
         b.selected_count, c.selected_count
     )]
+}
+
+fn normalize_instance_ids(ids: &[String]) -> BTreeSet<&str> {
+    ids.iter().map(String::as_str).collect()
 }
 
 fn build_breakdown_delta<S: std::hash::BuildHasher>(
@@ -1135,6 +1140,27 @@ mod tests {
                 .any(|d| d.contains("prompt_template.sha256 changed"))
         );
         b.clear();
+    }
+
+    #[test]
+    fn subset_warning_ignores_instance_id_order() {
+        let baseline = crate::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: Some(vec!["a".into(), "b".into()]),
+            limit: None,
+            sample: None,
+            seed: None,
+        };
+        let candidate = crate::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: Some(vec!["b".into(), "a".into()]),
+            limit: None,
+            sample: None,
+            seed: None,
+        };
+        assert!(subset_warnings(Some(&baseline), Some(&candidate)).is_empty());
     }
 
     #[test]
