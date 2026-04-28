@@ -11,16 +11,16 @@ use std::time::Duration;
 
 use crate::error::EnvError;
 
-#[cfg(feature = "docker")]
-pub mod docker;
 #[cfg(feature = "chaos")]
 pub mod chaos;
+#[cfg(feature = "docker")]
+pub mod docker;
 pub mod local;
 
-#[cfg(feature = "docker")]
-pub use docker::DockerEnvironment;
 #[cfg(feature = "chaos")]
 pub use chaos::ChaosEnvironment;
+#[cfg(feature = "docker")]
+pub use docker::DockerEnvironment;
 pub use local::LocalEnvironment;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
