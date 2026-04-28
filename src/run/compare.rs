@@ -308,7 +308,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
 }
 
 fn manifest_indicates_resume(manifest: &ProvenanceManifest) -> bool {
-    manifest.cli.argv.iter().any(|arg| arg == "--resume")
+    manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|arg| arg == "--resume")
 }
 
 fn scan_trajectory_instances(
@@ -933,6 +933,7 @@ mod tests {
                 started_at_utc: "s".into(),
                 finished_at_utc: None,
                 host_os: "linux".into(),
+                resume_mode: false,
                 rust_version: None,
             },
             cli: crate::run::swebench::CliManifest { argv: Vec::new() },
@@ -1107,6 +1108,7 @@ mod tests {
                     started_at_utc: "s".into(),
                     finished_at_utc: None,
                     host_os: "linux".into(),
+                    resume_mode: false,
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
@@ -1203,6 +1205,7 @@ mod tests {
                     started_at_utc: started.to_rfc3339(),
                     finished_at_utc: None,
                     host_os: "linux".into(),
+                    resume_mode: false,
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
@@ -1285,10 +1288,11 @@ mod tests {
                     started_at_utc: started.to_rfc3339(),
                     finished_at_utc: None,
                     host_os: "linux".into(),
+                    resume_mode: true,
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest {
-                    argv: vec!["rust-swe-agent".into(), "--resume".into()],
+                    argv: vec!["rust-swe-agent".into()],
                 },
             }),
             cost_limit_usd: None,

@@ -228,6 +228,8 @@ pub struct RuntimeManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_utc: Option<String>,
     pub host_os: String,
+    #[serde(default)]
+    pub resume_mode: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust_version: Option<String>,
 }
@@ -819,6 +821,7 @@ fn build_manifest(
             started_at_utc: started_at_utc.to_owned(),
             finished_at_utc,
             host_os: std::env::consts::OS.into(),
+            resume_mode: args.resume,
             rust_version: rust_version(),
         },
         cli: CliManifest {
@@ -1836,6 +1839,39 @@ mod tests {
         );
         assert!(manifest.config.resolved.contains("step_limit: 7"));
         assert!(manifest.config.resolved.contains("name: override-model"));
+    }
+
+    #[test]
+    fn manifest_records_resume_mode_from_args() {
+        let args = SwebenchArgs {
+            dataset_path: PathBuf::from("dataset.jsonl"),
+            output_dir: PathBuf::from("out"),
+            parallel: 1,
+            config: Config::defaults().unwrap(),
+            resume: true,
+            cost_limit_usd: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 1,
+            retry_backoff_cap_s: 1,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+        };
+        let manifest = build_manifest(
+            &args,
+            "dataset",
+            1,
+            &FilterSpec::default(),
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        assert!(manifest.runtime.resume_mode);
     }
 
     #[test]
