@@ -101,7 +101,7 @@ pub struct SummaryReport {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InspectOutput {
     Instance(InspectReport),
-    Summary(SummaryReport),
+    Summary(Box<SummaryReport>),
 }
 
 pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
@@ -126,7 +126,7 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     }
 
     if let Some(filter) = &args.filter {
-        return build_summary(&args.sweep, filter).map(InspectOutput::Summary);
+        return build_summary(&args.sweep, filter).map(|r| InspectOutput::Summary(Box::new(r)));
     }
 
     let instance_id = args.instance.clone().unwrap_or_default();

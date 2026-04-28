@@ -601,31 +601,33 @@ fn manifest_delta_lines(
 
 fn diff_config_keys(
     prefix: &str,
-    a: &serde_json::Value,
-    b: &serde_json::Value,
+    left_value: &serde_json::Value,
+    right_value: &serde_json::Value,
     out: &mut Vec<String>,
 ) {
-    match (a, b) {
-        (serde_json::Value::Object(ma), serde_json::Value::Object(mb)) => {
-            let keys: BTreeSet<&str> = ma
+    match (left_value, right_value) {
+        (serde_json::Value::Object(left_map), serde_json::Value::Object(right_map)) => {
+            let keys: BTreeSet<&str> = left_map
                 .keys()
                 .map(String::as_str)
-                .chain(mb.keys().map(String::as_str))
+                .chain(right_map.keys().map(String::as_str))
                 .collect();
             for k in keys {
-                let p = if prefix.is_empty() {
+                let path = if prefix.is_empty() {
                     k.to_owned()
                 } else {
                     format!("{prefix}.{k}")
                 };
-                match (ma.get(k), mb.get(k)) {
-                    (Some(x), Some(y)) => diff_config_keys(&p, x, y, out),
-                    _ => out.push(p),
+                match (left_map.get(k), right_map.get(k)) {
+                    (Some(left_child), Some(right_child)) => {
+                        diff_config_keys(&path, left_child, right_child, out);
+                    }
+                    _ => out.push(path),
                 }
             }
         }
         _ => {
-            if a != b {
+            if left_value != right_value {
                 out.push(prefix.to_owned());
             }
         }

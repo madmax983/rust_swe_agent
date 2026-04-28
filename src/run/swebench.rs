@@ -495,9 +495,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&initial)?)?;
     #[cfg(test)]
-    if PANIC_AFTER_INITIAL_MANIFEST_WRITE.load(Ordering::Relaxed) {
-        panic!("test panic after initial manifest write");
-    }
+    assert!(
+        !PANIC_AFTER_INITIAL_MANIFEST_WRITE.load(Ordering::Relaxed),
+        "test panic after initial manifest write"
+    );
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
     let mut pending: std::collections::VecDeque<SweBenchInstance> =
@@ -980,13 +981,12 @@ fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]
                 redact_json_secrets_inner(x, secret_values);
             }
         }
-        serde_json::Value::String(s) => {
+        serde_json::Value::String(s)
             if secret_values
                 .iter()
-                .any(|secret| !secret.is_empty() && s.contains(secret))
-            {
-                *s = "<redacted>".into();
-            }
+                .any(|secret| !secret.is_empty() && s.contains(secret)) =>
+        {
+            *s = "<redacted>".into();
         }
         _ => {}
     }
