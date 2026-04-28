@@ -305,7 +305,7 @@ fn parse_breakdown_selection(
     }
     let mut axes = Vec::new();
     for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let axis = match tok {
+        let axis_kind = match tok {
             "repo" => crate::run::evaluate::BreakdownAxis::Repo,
             "failure_category" => crate::run::evaluate::BreakdownAxis::FailureCategory,
             other => {
@@ -314,8 +314,8 @@ fn parse_breakdown_selection(
                 ))));
             }
         };
-        if !axes.contains(&axis) {
-            axes.push(axis);
+        if !axes.contains(&axis_kind) {
+            axes.push(axis_kind);
         }
     }
     if axes.is_empty() && allow_default {

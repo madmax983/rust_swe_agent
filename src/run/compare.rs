@@ -159,14 +159,7 @@ impl CompareReport {
             self.candidate_total,
             self.transitions.values().sum::<usize>()
         );
-        if self.manifest_deltas.is_empty() {
-            s.push_str("Manifest delta:     none\n");
-        } else {
-            s.push_str("Manifest delta:\n");
-            for d in &self.manifest_deltas {
-                let _ = writeln!(s, "  - {d}");
-            }
-        }
+        write_manifest_delta_section(&mut s, &self.manifest_deltas);
         let _ = writeln!(
             s,
             "Resolved:           {} -> {} ({:+})",
@@ -189,86 +182,118 @@ impl CompareReport {
                 s.push_str("Mean steps:         n/a\n");
             }
         }
-
-        s.push_str("\nTransition matrix:\n");
-        for kind in [
-            TransitionKind::PassPass,
-            TransitionKind::PassFail,
-            TransitionKind::FailPass,
-            TransitionKind::FailFail,
-            TransitionKind::MissingPresent,
-            TransitionKind::PresentMissing,
-        ] {
-            let n = self.transitions.get(&kind).copied().unwrap_or(0);
-            let _ = writeln!(s, "  {:<18} {n}", kind.label());
-        }
-
-        let nonzero: Vec<(FailureCategory, i64)> = self
-            .failure_category_delta
-            .iter()
-            .filter(|(_, v)| **v != 0)
-            .map(|(k, v)| (*k, *v))
-            .collect();
-        if !nonzero.is_empty() {
-            s.push_str("\nFailure category delta (candidate - baseline):\n");
-            for (cat, d) in nonzero {
-                let b = self
-                    .failure_category_baseline
-                    .get(&cat)
-                    .copied()
-                    .unwrap_or(0);
-                let c = self
-                    .failure_category_candidate
-                    .get(&cat)
-                    .copied()
-                    .unwrap_or(0);
-                let _ = writeln!(s, "  {:<14} {b} -> {c} ({d:+})", failure_label(cat));
-            }
-        }
-        if !self.subset_warnings.is_empty() {
-            s.push_str("\nSubset warnings:\n");
-            for w in &self.subset_warnings {
-                let _ = writeln!(s, "  ! {w}");
-            }
-        }
-        if !self.breakdown_delta.is_empty() {
-            s.push_str("\nBreakdown deltas:\n");
-            for row in &self.breakdown_delta {
-                let _ = writeln!(
-                    s,
-                    "  {} {}={}  n: {} -> {}  resolved_rate: {:.1}% -> {:.1}%  delta={:+.1}pp",
-                    if row.exceeds_threshold { "*" } else { "-" },
-                    match row.bucket_axis {
-                        BreakdownAxis::Repo => "repo",
-                        BreakdownAxis::FailureCategory => "failure_category",
-                    },
-                    row.bucket_value,
-                    row.baseline_n,
-                    row.candidate_n,
-                    row.baseline_resolved_rate * 100.0,
-                    row.candidate_resolved_rate * 100.0,
-                    row.delta_resolved_rate * 100.0
-                );
-            }
-        }
-
-        if self.regressions.is_empty() {
-            s.push_str("\nRegressions:        none\n");
-        } else {
-            let _ = writeln!(s, "\nRegressions ({}):", self.regressions.len());
-            for r in &self.regressions {
-                let cat = r.candidate_failure_category.map_or("none", failure_label);
-                let exit = r.candidate_exit_reason.as_deref().unwrap_or("?");
-                let old = r.baseline_outcome.as_deref().unwrap_or("?");
-                let new = r.candidate_outcome.as_deref().unwrap_or("?");
-                let _ = writeln!(
-                    s,
-                    "  - {id}  {old} -> {new}  category={cat}  exit_reason={exit}",
-                    id = r.instance_id
-                );
-            }
-        }
+        write_transition_matrix(&mut s, &self.transitions);
+        write_failure_delta_section(
+            &mut s,
+            &self.failure_category_baseline,
+            &self.failure_category_candidate,
+            &self.failure_category_delta,
+        );
+        write_subset_warnings(&mut s, &self.subset_warnings);
+        write_breakdown_delta_section(&mut s, &self.breakdown_delta);
+        write_regressions(&mut s, &self.regressions);
         s
+    }
+}
+
+fn write_manifest_delta_section(s: &mut String, manifest_deltas: &[String]) {
+    if manifest_deltas.is_empty() {
+        s.push_str("Manifest delta:     none\n");
+    } else {
+        s.push_str("Manifest delta:\n");
+        for d in manifest_deltas {
+            let _ = writeln!(s, "  - {d}");
+        }
+    }
+}
+
+fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind, usize>) {
+    s.push_str("\nTransition matrix:\n");
+    for kind in [
+        TransitionKind::PassPass,
+        TransitionKind::PassFail,
+        TransitionKind::FailPass,
+        TransitionKind::FailFail,
+        TransitionKind::MissingPresent,
+        TransitionKind::PresentMissing,
+    ] {
+        let n = transitions.get(&kind).copied().unwrap_or(0);
+        let _ = writeln!(s, "  {:<18} {n}", kind.label());
+    }
+}
+
+fn write_failure_delta_section(
+    s: &mut String,
+    baseline: &BTreeMap<FailureCategory, usize>,
+    candidate: &BTreeMap<FailureCategory, usize>,
+    delta: &BTreeMap<FailureCategory, i64>,
+) {
+    let nonzero: Vec<(FailureCategory, i64)> = delta
+        .iter()
+        .filter(|(_, v)| **v != 0)
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    if nonzero.is_empty() {
+        return;
+    }
+    s.push_str("\nFailure category delta (candidate - baseline):\n");
+    for (cat, d) in nonzero {
+        let b = baseline.get(&cat).copied().unwrap_or(0);
+        let c = candidate.get(&cat).copied().unwrap_or(0);
+        let _ = writeln!(s, "  {:<14} {b} -> {c} ({d:+})", failure_label(cat));
+    }
+}
+
+fn write_subset_warnings(s: &mut String, warnings: &[String]) {
+    if warnings.is_empty() {
+        return;
+    }
+    s.push_str("\nSubset warnings:\n");
+    for w in warnings {
+        let _ = writeln!(s, "  ! {w}");
+    }
+}
+
+fn write_breakdown_delta_section(s: &mut String, rows: &[BreakdownDeltaRow]) {
+    if rows.is_empty() {
+        return;
+    }
+    s.push_str("\nBreakdown deltas:\n");
+    for row in rows {
+        let _ = writeln!(
+            s,
+            "  {} {}={}  n: {} -> {}  resolved_rate: {:.1}% -> {:.1}%  delta={:+.1}pp",
+            if row.exceeds_threshold { "*" } else { "-" },
+            match row.bucket_axis {
+                BreakdownAxis::Repo => "repo",
+                BreakdownAxis::FailureCategory => "failure_category",
+            },
+            row.bucket_value,
+            row.baseline_n,
+            row.candidate_n,
+            row.baseline_resolved_rate * 100.0,
+            row.candidate_resolved_rate * 100.0,
+            row.delta_resolved_rate * 100.0
+        );
+    }
+}
+
+fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
+    if regressions.is_empty() {
+        s.push_str("\nRegressions:        none\n");
+        return;
+    }
+    let _ = writeln!(s, "\nRegressions ({}):", regressions.len());
+    for r in regressions {
+        let cat = r.candidate_failure_category.map_or("none", failure_label);
+        let exit = r.candidate_exit_reason.as_deref().unwrap_or("?");
+        let old = r.baseline_outcome.as_deref().unwrap_or("?");
+        let new = r.candidate_outcome.as_deref().unwrap_or("?");
+        let _ = writeln!(
+            s,
+            "  - {id}  {old} -> {new}  category={cat}  exit_reason={exit}",
+            id = r.instance_id
+        );
     }
 }
 
@@ -804,8 +829,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
                 .unwrap_or_else(|| "unknown".to_owned()),
             BreakdownAxis::FailureCategory => r
                 .failure_category
-                .map(crate::run::evaluate::failure_label)
-                .unwrap_or("none")
+                .map_or("none", crate::run::evaluate::failure_label)
                 .to_owned(),
         };
         let entry = out.entry(key).or_insert((0, 0));

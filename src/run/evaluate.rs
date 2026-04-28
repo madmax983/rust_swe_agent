@@ -1,6 +1,7 @@
 //! `bench evaluate`: score an existing sweep by real resolved-rate.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -415,13 +416,14 @@ fn build_breakdown(
         let mut unknown_repo = 0usize;
         for row in evals {
             let bucket_value = match axis {
-                BreakdownAxis::Repo => match parse_repo_from_instance_id(&row.instance_id) {
-                    Some(repo) => repo,
-                    None => {
+                BreakdownAxis::Repo => {
+                    if let Some(repo) = parse_repo_from_instance_id(&row.instance_id) {
+                        repo
+                    } else {
                         unknown_repo += 1;
                         "unknown".to_owned()
                     }
-                },
+                }
                 BreakdownAxis::FailureCategory => {
                     if row.resolved {
                         "resolved".to_owned()
@@ -429,8 +431,7 @@ fn build_breakdown(
                         results
                             .get(&row.instance_id)
                             .and_then(|r| r.failure_category)
-                            .map(failure_label)
-                            .unwrap_or("unknown")
+                            .map_or("unknown", failure_label)
                             .to_owned()
                     }
                 }
@@ -508,10 +509,11 @@ pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
             BreakdownAxis::Repo => "repo",
             BreakdownAxis::FailureCategory => "failure_category",
         };
-        out.push_str(&format!(
-            "{axis},{},{},{},{:.4}\n",
+        let _ = writeln!(
+            out,
+            "{axis},{},{},{},{:.4}",
             row.bucket_value, row.n, row.resolved, row.resolved_rate
-        ));
+        );
     }
     out
 }
