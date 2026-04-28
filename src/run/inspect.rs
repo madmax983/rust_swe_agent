@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::run::evaluate::EvaluationResults;
-use crate::run::swebench::InstanceResult;
+use crate::run::swebench::{InstanceResult, ProvenanceManifest};
 use crate::trajectory::{FailureCategory, Trajectory};
 
 const TRUNCATE_MAX_LINES: usize = 40;
@@ -92,6 +92,8 @@ pub struct SummaryRow {
 pub struct SummaryReport {
     pub sweep_dir: PathBuf,
     pub filter: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<ProvenanceManifest>,
     pub rows: Vec<SummaryRow>,
 }
 
@@ -99,7 +101,7 @@ pub struct SummaryReport {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InspectOutput {
     Instance(InspectReport),
-    Summary(SummaryReport),
+    Summary(Box<SummaryReport>),
 }
 
 pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
@@ -124,7 +126,7 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     }
 
     if let Some(filter) = &args.filter {
-        return build_summary(&args.sweep, filter).map(InspectOutput::Summary);
+        return build_summary(&args.sweep, filter).map(|r| InspectOutput::Summary(Box::new(r)));
     }
 
     let instance_id = args.instance.clone().unwrap_or_default();
@@ -137,9 +139,9 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
 fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     let filter = parse_filter(filter)?;
     let mut rows: Vec<SummaryRow> = Vec::new();
-    let run = crate::run::compare::load_run(sweep)?;
+    let loaded = crate::run::compare::load_sweep(sweep)?;
     let resolved = load_resolved_overrides(sweep)?.unwrap_or_default();
-    for r in run.values() {
+    for r in loaded.instances.values() {
         let res = resolved.get(&r.instance_id).copied();
         if !filter.matches(r, res) {
             continue;
@@ -156,6 +158,7 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     Ok(SummaryReport {
         sweep_dir: sweep.to_path_buf(),
         filter: filter.raw,
+        manifest: loaded.manifest,
         rows,
     })
 }
@@ -276,6 +279,18 @@ fn render_summary_text(report: &SummaryReport) -> String {
     s.push_str("\n=== bench inspect summary ===\n");
     let _ = writeln!(s, "Sweep:   {}", report.sweep_dir.display());
     let _ = writeln!(s, "Filter:  {}", report.filter);
+    if let Some(m) = &report.manifest {
+        let _ = writeln!(
+            s,
+            "Manifest: harness_sha={} prompt_sha={} dataset_sha={} model={}",
+            m.harness.git_sha.as_deref().unwrap_or("unavailable"),
+            m.prompt_template.sha256,
+            m.dataset.sha256,
+            m.model.name
+        );
+    } else {
+        s.push_str("Manifest: unavailable\n");
+    }
     s.push_str("\ninstance_id | outcome | failure_category | cost_usd | resolved\n");
     s.push_str("----------------------------------------------------------------\n");
     for row in &report.rows {

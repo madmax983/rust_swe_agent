@@ -128,6 +128,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -210,6 +211,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -261,6 +263,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -312,6 +315,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -392,6 +396,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();

@@ -94,6 +94,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         retry_on_resume: false,
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -130,6 +131,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         retry_on_resume: false,
         deterministic_responses: Some(vec![malformed_action_response(), submit_response()]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -173,6 +175,7 @@ async fn max_retries_zero_disables_retry() {
         retry_on_resume: false,
         deterministic_responses: Some(vec![malformed_action_response()]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -220,6 +223,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
             malformed_action_response(),
         ]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -245,6 +249,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         retry_on_resume: false,
         deterministic_responses: Some(vec![malformed_action_response()]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -288,6 +293,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         retry_on_resume: false,
         deterministic_responses: Some(vec![malformed_action_response(), submit_response()]),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -335,6 +341,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         retry_on_resume: false,
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -358,6 +365,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         retry_on_resume: true,
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();

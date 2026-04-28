@@ -12,12 +12,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::evaluate::EvaluationResults;
-use crate::run::swebench::{InstanceResult, SweepResults};
+use crate::run::swebench::{InstanceResult, ProvenanceManifest, SweepResults};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Output format for the compare report.
@@ -108,6 +109,8 @@ pub struct CompareReport {
     pub failure_category_baseline: BTreeMap<FailureCategory, usize>,
     pub failure_category_candidate: BTreeMap<FailureCategory, usize>,
     pub failure_category_delta: BTreeMap<FailureCategory, i64>,
+    #[serde(default)]
+    pub manifest_deltas: Vec<String>,
     /// Tasks that passed in the baseline but failed in the candidate.
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
@@ -138,6 +141,14 @@ impl CompareReport {
             self.candidate_total,
             self.transitions.values().sum::<usize>()
         );
+        if self.manifest_deltas.is_empty() {
+            s.push_str("Manifest delta:     none\n");
+        } else {
+            s.push_str("Manifest delta:\n");
+            for d in &self.manifest_deltas {
+                let _ = writeln!(s, "  - {d}");
+            }
+        }
         let _ = writeln!(
             s,
             "Resolved:           {} -> {} ({:+})",
@@ -224,15 +235,63 @@ impl CompareReport {
 /// exists, reconstructing minimal `InstanceResult`s. Tolerant of missing
 /// newer fields: defaults flow through serde.
 pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
+    Ok(load_sweep(dir)?.instances)
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedSweep {
+    pub instances: HashMap<String, InstanceResult>,
+    pub manifest: Option<ProvenanceManifest>,
+}
+
+pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     let results_path = dir.join("results.json");
     if results_path.exists() {
         let text = std::fs::read_to_string(&results_path)?;
         let sweep: SweepResults = serde_json::from_str(&text)?;
-        return Ok(sweep
-            .instances
-            .into_iter()
-            .map(|r| (r.instance_id.clone(), r))
-            .collect());
+        let partial_incomplete = sweep
+            .manifest
+            .as_ref()
+            .is_some_and(|m| m.runtime.finished_at_utc.is_none());
+        if partial_incomplete {
+            let resume_mode = sweep
+                .manifest
+                .as_ref()
+                .is_some_and(manifest_indicates_resume);
+            let min_mtime = if resume_mode {
+                None
+            } else {
+                sweep
+                    .manifest
+                    .as_ref()
+                    .and_then(|m| {
+                        chrono::DateTime::parse_from_rfc3339(&m.runtime.started_at_utc).ok()
+                    })
+                    .map(std::convert::Into::into)
+            };
+            let scanned = scan_trajectory_instances(dir, min_mtime)?;
+            let manifest = sweep.manifest;
+            return Ok(LoadedSweep {
+                instances: if scanned.is_empty() {
+                    sweep
+                        .instances
+                        .into_iter()
+                        .map(|r| (r.instance_id.clone(), r))
+                        .collect()
+                } else {
+                    scanned
+                },
+                manifest,
+            });
+        }
+        return Ok(LoadedSweep {
+            instances: sweep
+                .instances
+                .into_iter()
+                .map(|r| (r.instance_id.clone(), r))
+                .collect(),
+            manifest: sweep.manifest,
+        });
     }
     if !dir.exists() {
         return Err(Error::Trajectory(format!(
@@ -241,9 +300,32 @@ pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
         )));
     }
 
+    let out = scan_trajectory_instances(dir, None)?;
+    Ok(LoadedSweep {
+        instances: out,
+        manifest: None,
+    })
+}
+
+fn manifest_indicates_resume(manifest: &ProvenanceManifest) -> bool {
+    manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|arg| arg == "--resume")
+}
+
+fn scan_trajectory_instances(
+    dir: &Path,
+    min_mtime: Option<SystemTime>,
+) -> Result<HashMap<String, InstanceResult>, Error> {
     let mut out = HashMap::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if let Some(min) = min_mtime {
+            let Some(modified) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+                continue;
+            };
+            if modified < min {
+                continue;
+            }
+        }
         let name = entry.file_name();
         let Some(name_str) = name.to_str() else {
             continue;
@@ -287,17 +369,18 @@ pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
 
 /// Compute a `CompareReport` from two on-disk sweep directories.
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
-    let baseline = load_run(&args.baseline)?;
-    let candidate = load_run(&args.candidate)?;
+    let baseline = load_sweep(&args.baseline)?;
+    let candidate = load_sweep(&args.candidate)?;
     let baseline_eval = load_resolved_overrides(&args.baseline)?;
     let candidate_eval = load_resolved_overrides(&args.candidate)?;
     Ok(diff_with_overrides(
         &args.baseline,
         &args.candidate,
-        &baseline,
-        &candidate,
+        &baseline.instances,
+        &candidate.instances,
         baseline_eval.as_ref(),
         candidate_eval.as_ref(),
+        manifest_delta_lines(baseline.manifest.as_ref(), candidate.manifest.as_ref()),
     ))
 }
 
@@ -310,7 +393,15 @@ pub fn diff<S: std::hash::BuildHasher>(
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
 ) -> CompareReport {
-    diff_with_overrides(baseline_dir, candidate_dir, baseline, candidate, None, None)
+    diff_with_overrides(
+        baseline_dir,
+        candidate_dir,
+        baseline,
+        candidate,
+        None,
+        None,
+        Vec::new(),
+    )
 }
 
 fn diff_with_overrides<S: std::hash::BuildHasher>(
@@ -320,6 +411,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     candidate: &HashMap<String, InstanceResult, S>,
     baseline_resolved_override: Option<&HashMap<String, bool>>,
     candidate_resolved_override: Option<&HashMap<String, bool>>,
+    manifest_deltas: Vec<String>,
 ) -> CompareReport {
     let mut all_ids: BTreeSet<&str> = BTreeSet::new();
     all_ids.extend(baseline.keys().map(String::as_str));
@@ -415,6 +507,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         failure_category_baseline,
         failure_category_candidate,
         failure_category_delta,
+        manifest_deltas,
         regressions,
     }
 }
@@ -468,6 +561,77 @@ fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, 
             .map(|row| (row.instance_id, row.resolved))
             .collect(),
     ))
+}
+
+fn manifest_delta_lines(
+    baseline: Option<&ProvenanceManifest>,
+    candidate: Option<&ProvenanceManifest>,
+) -> Vec<String> {
+    let (Some(b), Some(c)) = (baseline, candidate) else {
+        return vec!["manifest unavailable".into()];
+    };
+    let mut out = Vec::new();
+    if b.harness.git_sha != c.harness.git_sha {
+        out.push(format!(
+            "harness.git_sha: {:?} -> {:?}",
+            b.harness.git_sha, c.harness.git_sha
+        ));
+    }
+    if b.prompt_template.sha256 != c.prompt_template.sha256 {
+        out.push("prompt_template.sha256 changed".into());
+    }
+    if b.dataset.sha256 != c.dataset.sha256 {
+        out.push("dataset.sha256 changed".into());
+    }
+    if b.model.name != c.model.name {
+        out.push(format!("model.name: {} -> {}", b.model.name, c.model.name));
+    }
+    let b_cfg: serde_json::Value = serde_yaml::from_str(&b.config.resolved).unwrap_or_default();
+    let c_cfg: serde_json::Value = serde_yaml::from_str(&c.config.resolved).unwrap_or_default();
+    let mut changed = Vec::new();
+    diff_config_keys("", &b_cfg, &c_cfg, &mut changed);
+    if !changed.is_empty() {
+        out.push(format!(
+            "config.resolved keys changed: {}",
+            changed.join(", ")
+        ));
+    }
+    out
+}
+
+fn diff_config_keys(
+    prefix: &str,
+    left_value: &serde_json::Value,
+    right_value: &serde_json::Value,
+    out: &mut Vec<String>,
+) {
+    match (left_value, right_value) {
+        (serde_json::Value::Object(left_map), serde_json::Value::Object(right_map)) => {
+            let keys: BTreeSet<&str> = left_map
+                .keys()
+                .map(String::as_str)
+                .chain(right_map.keys().map(String::as_str))
+                .collect();
+            for k in keys {
+                let path = if prefix.is_empty() {
+                    k.to_owned()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                match (left_map.get(k), right_map.get(k)) {
+                    (Some(left_child), Some(right_child)) => {
+                        diff_config_keys(&path, left_child, right_child, out);
+                    }
+                    _ => out.push(path),
+                }
+            }
+        }
+        _ => {
+            if left_value != right_value {
+                out.push(prefix.to_owned());
+            }
+        }
+    }
 }
 fn mean_steps<S: std::hash::BuildHasher>(map: &HashMap<String, InstanceResult, S>) -> Option<f64> {
     let xs: Vec<u32> = map.values().filter_map(|r| r.steps).collect();
@@ -682,6 +846,7 @@ mod tests {
             retries: 0,
             retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
         };
@@ -729,6 +894,63 @@ mod tests {
     }
 
     #[test]
+    fn compare_reports_manifest_delta_when_prompt_hash_changes() {
+        let mut b = map_of([submitted("a")]);
+        let c = b.clone();
+        let mut report = diff(Path::new("/b"), Path::new("/c"), &b, &c);
+        assert!(report.manifest_deltas.is_empty());
+        // sanity: direct helper detects prompt hash-only changes
+        let baseline = ProvenanceManifest {
+            harness: crate::run::swebench::HarnessManifest {
+                name: "x".into(),
+                version: "1".into(),
+                git_sha: Some("a".into()),
+                git_dirty: Some(false),
+                git_resolution: "ok".into(),
+            },
+            dataset: crate::run::swebench::DatasetManifest {
+                path: "d".into(),
+                sha256: "d1".into(),
+                instance_count: 1,
+                filter_spec: None,
+            },
+            prompt_template: crate::run::swebench::PromptTemplateManifest {
+                source: "builtin".into(),
+                path: None,
+                sha256: "p1".into(),
+            },
+            config: crate::run::swebench::ConfigManifest {
+                resolved: "{}".into(),
+                overlay_paths: Vec::new(),
+            },
+            model: crate::run::swebench::ModelManifest {
+                name: "m".into(),
+                backend: "litellm".into(),
+                backend_version: None,
+                base_url: None,
+            },
+            runtime: crate::run::swebench::RuntimeManifest {
+                started_at_utc: "s".into(),
+                finished_at_utc: None,
+                host_os: "linux".into(),
+                resume_mode: false,
+                rust_version: None,
+            },
+            cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+        };
+        let mut candidate = baseline.clone();
+        candidate.prompt_template.sha256 = "p2".into();
+        report.manifest_deltas = manifest_delta_lines(Some(&baseline), Some(&candidate));
+        assert!(
+            report
+                .manifest_deltas
+                .iter()
+                .any(|d| d.contains("prompt_template.sha256 changed"))
+        );
+        b.clear();
+    }
+
+    #[test]
     fn prefers_evaluation_json_resolved_over_submission_proxy() {
         let dir_b = tempfile::tempdir().unwrap();
         let dir_c = tempfile::tempdir().unwrap();
@@ -746,6 +968,7 @@ mod tests {
             retries: 0,
             retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a")],
         };
@@ -832,5 +1055,255 @@ mod tests {
         let r = map.get("inst-1").unwrap();
         assert_eq!(r.outcome.as_deref(), Some(outcome::SUBMITTED));
         assert_eq!(r.steps, Some(3));
+    }
+
+    #[test]
+    fn incomplete_results_json_falls_back_to_trajectory_scan() {
+        use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: Some(ProvenanceManifest {
+                harness: crate::run::swebench::HarnessManifest {
+                    name: "h".into(),
+                    version: "v".into(),
+                    git_sha: None,
+                    git_dirty: None,
+                    git_resolution: "unavailable".into(),
+                },
+                dataset: crate::run::swebench::DatasetManifest {
+                    path: "d".into(),
+                    sha256: "x".into(),
+                    instance_count: 1,
+                    filter_spec: None,
+                },
+                prompt_template: crate::run::swebench::PromptTemplateManifest {
+                    source: "builtin".into(),
+                    path: None,
+                    sha256: "p".into(),
+                },
+                config: crate::run::swebench::ConfigManifest {
+                    resolved: "{}".into(),
+                    overlay_paths: Vec::new(),
+                },
+                model: crate::run::swebench::ModelManifest {
+                    name: "m".into(),
+                    backend: "litellm".into(),
+                    backend_version: None,
+                    base_url: None,
+                },
+                runtime: crate::run::swebench::RuntimeManifest {
+                    started_at_utc: "s".into(),
+                    finished_at_utc: None,
+                    host_os: "linux".into(),
+                    resume_mode: false,
+                    rust_version: None,
+                },
+                cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            }),
+            cost_limit_usd: None,
+            instances: Vec::new(),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let traj = Trajectory {
+            trajectory_format: FORMAT_VERSION.into(),
+            info: TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        std::fs::write(
+            dir.path().join("x.traj.json"),
+            serde_json::to_string_pretty(&traj).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(loaded.instances.contains_key("x"));
+    }
+
+    #[test]
+    fn incomplete_results_json_ignores_stale_trajectories_before_started_at() {
+        use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
+        let dir = tempfile::tempdir().unwrap();
+        let traj = Trajectory {
+            trajectory_format: FORMAT_VERSION.into(),
+            info: TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        std::fs::write(
+            dir.path().join("old.traj.json"),
+            serde_json::to_string_pretty(&traj).unwrap(),
+        )
+        .unwrap();
+        let started = chrono::Utc::now() + chrono::Duration::seconds(10);
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: Some(ProvenanceManifest {
+                harness: crate::run::swebench::HarnessManifest {
+                    name: "h".into(),
+                    version: "v".into(),
+                    git_sha: None,
+                    git_dirty: None,
+                    git_resolution: "unavailable".into(),
+                },
+                dataset: crate::run::swebench::DatasetManifest {
+                    path: "d".into(),
+                    sha256: "x".into(),
+                    instance_count: 1,
+                    filter_spec: None,
+                },
+                prompt_template: crate::run::swebench::PromptTemplateManifest {
+                    source: "builtin".into(),
+                    path: None,
+                    sha256: "p".into(),
+                },
+                config: crate::run::swebench::ConfigManifest {
+                    resolved: "{}".into(),
+                    overlay_paths: Vec::new(),
+                },
+                model: crate::run::swebench::ModelManifest {
+                    name: "m".into(),
+                    backend: "litellm".into(),
+                    backend_version: None,
+                    base_url: None,
+                },
+                runtime: crate::run::swebench::RuntimeManifest {
+                    started_at_utc: started.to_rfc3339(),
+                    finished_at_utc: None,
+                    host_os: "linux".into(),
+                    resume_mode: false,
+                    rust_version: None,
+                },
+                cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            }),
+            cost_limit_usd: None,
+            instances: Vec::new(),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(!loaded.instances.contains_key("old"));
+    }
+
+    #[test]
+    fn incomplete_resume_results_include_preexisting_trajectories() {
+        use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
+        let dir = tempfile::tempdir().unwrap();
+        let traj = Trajectory {
+            trajectory_format: FORMAT_VERSION.into(),
+            info: TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        std::fs::write(
+            dir.path().join("resume-old.traj.json"),
+            serde_json::to_string_pretty(&traj).unwrap(),
+        )
+        .unwrap();
+        let started = chrono::Utc::now() + chrono::Duration::seconds(10);
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: Some(ProvenanceManifest {
+                harness: crate::run::swebench::HarnessManifest {
+                    name: "h".into(),
+                    version: "v".into(),
+                    git_sha: None,
+                    git_dirty: None,
+                    git_resolution: "unavailable".into(),
+                },
+                dataset: crate::run::swebench::DatasetManifest {
+                    path: "d".into(),
+                    sha256: "x".into(),
+                    instance_count: 1,
+                    filter_spec: None,
+                },
+                prompt_template: crate::run::swebench::PromptTemplateManifest {
+                    source: "builtin".into(),
+                    path: None,
+                    sha256: "p".into(),
+                },
+                config: crate::run::swebench::ConfigManifest {
+                    resolved: "{}".into(),
+                    overlay_paths: Vec::new(),
+                },
+                model: crate::run::swebench::ModelManifest {
+                    name: "m".into(),
+                    backend: "litellm".into(),
+                    backend_version: None,
+                    base_url: None,
+                },
+                runtime: crate::run::swebench::RuntimeManifest {
+                    started_at_utc: started.to_rfc3339(),
+                    finished_at_utc: None,
+                    host_os: "linux".into(),
+                    resume_mode: true,
+                    rust_version: None,
+                },
+                cli: crate::run::swebench::CliManifest {
+                    argv: vec!["rust-swe-agent".into()],
+                },
+            }),
+            cost_limit_usd: None,
+            instances: Vec::new(),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(loaded.instances.contains_key("resume-old"));
     }
 }

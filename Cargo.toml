@@ -51,6 +51,7 @@ litellm-rs = { version = "*", default-features = false }
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
 
 # NOTE on model backend:
 # `litellm-rs` ships a library API (`completion`, message constructors,
