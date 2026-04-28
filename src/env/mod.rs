@@ -13,10 +13,14 @@ use crate::error::EnvError;
 
 #[cfg(feature = "docker")]
 pub mod docker;
+#[cfg(feature = "chaos")]
+pub mod chaos;
 pub mod local;
 
 #[cfg(feature = "docker")]
 pub use docker::DockerEnvironment;
+#[cfg(feature = "chaos")]
+pub use chaos::ChaosEnvironment;
 pub use local::LocalEnvironment;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
