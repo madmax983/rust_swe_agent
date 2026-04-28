@@ -225,11 +225,14 @@ impl CompareReport {
                 let _ = writeln!(s, "  {:<14} {b} -> {c} ({d:+})", failure_label(cat));
             }
         }
-        if !self.breakdown_delta.is_empty() {
-            s.push_str("\nBreakdown deltas:\n");
+        if !self.subset_warnings.is_empty() {
+            s.push_str("\nSubset warnings:\n");
             for w in &self.subset_warnings {
                 let _ = writeln!(s, "  ! {w}");
             }
+        }
+        if !self.breakdown_delta.is_empty() {
+            s.push_str("\nBreakdown deltas:\n");
             for row in &self.breakdown_delta {
                 let _ = writeln!(
                     s,
@@ -1039,6 +1042,18 @@ mod tests {
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
         assert!(t.contains("- b"), "got:\n{t}");
         assert!(t.contains("category=step_limit"), "got:\n{t}");
+    }
+
+    #[test]
+    fn human_table_shows_subset_warnings_without_breakdown_rows() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let mut r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        r.subset_warnings = vec!["dataset subset differs".into()];
+        r.breakdown_delta.clear();
+        let t = r.human_table();
+        assert!(t.contains("Subset warnings:"), "got:\n{t}");
+        assert!(t.contains("dataset subset differs"), "got:\n{t}");
     }
 
     #[test]
