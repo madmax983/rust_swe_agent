@@ -120,6 +120,14 @@ pub struct CompareCmd {
     /// fails on any regression.
     #[arg(long)]
     pub max_regressions: Option<usize>,
+
+    /// Optional metric breakdown axes (`repo,failure_category`) or `none`.
+    #[arg(long, default_value = "none")]
+    pub breakdown: String,
+
+    /// Threshold in percentage points used to highlight large breakdown deltas.
+    #[arg(long = "breakdown-min-delta-pp", default_value_t = 5.0)]
+    pub breakdown_min_delta_pp: f64,
 }
 
 #[derive(Debug, Args)]
@@ -233,6 +241,10 @@ pub struct EvaluateCmd {
     /// Parallel worker count for evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+
+    /// Optional metric breakdown axes (`repo,failure_category`) or `none`.
+    #[arg(long, default_value = "repo,failure_category")]
+    pub breakdown: String,
 }
 
 #[derive(Debug, Args)]

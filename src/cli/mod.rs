@@ -209,11 +209,14 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             ))));
         }
     };
+    let breakdown = parse_breakdown_selection(&c.breakdown, false)?;
     let report = crate::run::compare::compute(&crate::run::compare::CompareArgs {
         baseline: c.baseline,
         candidate: c.candidate,
         format,
         max_regressions: c.max_regressions,
+        breakdown,
+        min_delta_pp: c.breakdown_min_delta_pp / 100.0,
     })?;
     match format {
         crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
@@ -262,6 +265,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         }
     };
 
+    let breakdown = parse_breakdown_selection(&e.breakdown, true)?;
     let args = crate::run::evaluate::EvaluateArgs {
         sweep_dir: e.sweep.clone(),
         dataset_path: e.dataset,
@@ -271,6 +275,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         sb_subset: e.sb_subset,
         sb_split: e.sb_split,
         run_id: e.run_id,
+        breakdown,
     };
     let eval = crate::run::evaluate::run(&args)?;
 
@@ -281,7 +286,42 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
+    println!("resolved: {resolved}");
+    if !eval.breakdown.is_empty() {
+        print!(
+            "{}",
+            crate::run::evaluate::render_breakdown_table(&eval.breakdown)
+        );
+    }
     Ok(())
+}
+
+fn parse_breakdown_selection(
+    raw: &str,
+    allow_default: bool,
+) -> Result<crate::run::evaluate::BreakdownSelection, Error> {
+    if raw == "none" {
+        return Ok(crate::run::evaluate::BreakdownSelection::none());
+    }
+    let mut axes = Vec::new();
+    for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let axis = match tok {
+            "repo" => crate::run::evaluate::BreakdownAxis::Repo,
+            "failure_category" => crate::run::evaluate::BreakdownAxis::FailureCategory,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "unknown --breakdown axis `{other}`"
+                ))));
+            }
+        };
+        if !axes.contains(&axis) {
+            axes.push(axis);
+        }
+    }
+    if axes.is_empty() && allow_default {
+        return Ok(crate::run::evaluate::BreakdownSelection::default_axes());
+    }
+    Ok(crate::run::evaluate::BreakdownSelection { axes })
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {

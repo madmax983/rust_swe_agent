@@ -495,3 +495,77 @@ fn evaluate_none_backend_writes_evaluation_json() {
         serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
     assert_eq!(v["instances"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn evaluate_breakdown_none_is_headline_only() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("resolved: 0"), "{stdout}");
+    assert!(
+        !stdout.contains("axis,bucket,n,resolved,resolved_rate"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compare_breakdown_json_includes_all_buckets_and_threshold_flag() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(
+        baseline_dir.path(),
+        vec![submitted("django__django-1"), submitted("psf__requests-2")],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![
+            errored("django__django-1", FailureCategory::StepLimit),
+            submitted("psf__requests-2"),
+        ],
+    );
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--breakdown",
+            "repo",
+            "--breakdown-min-delta-pp",
+            "5",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["breakdown_delta"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "expected both repos, got: {rows:?}");
+    assert!(rows.iter().any(|r| {
+        r["bucket_value"] == "django/django"
+            && r["delta_resolved_rate"] == -1.0
+            && r["exceeds_threshold"] == true
+    }));
+    assert!(rows.iter().any(|r| {
+        r["bucket_value"] == "psf/requests"
+            && r["delta_resolved_rate"] == 0.0
+            && r["exceeds_threshold"] == false
+    }));
+}

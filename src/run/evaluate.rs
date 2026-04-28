@@ -1,6 +1,6 @@
 //! `bench evaluate`: score an existing sweep by real resolved-rate.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::run::compare::load_run;
 use crate::run::swebench::{self, InstanceResult};
-use crate::trajectory::outcome;
+use crate::trajectory::{FailureCategory, outcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvaluateBackend {
@@ -27,6 +27,33 @@ pub struct EvaluateArgs {
     pub sb_subset: String,
     pub sb_split: String,
     pub run_id: Option<String>,
+    pub breakdown: BreakdownSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BreakdownAxis {
+    Repo,
+    FailureCategory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakdownSelection {
+    pub axes: Vec<BreakdownAxis>,
+}
+
+impl BreakdownSelection {
+    #[must_use]
+    pub fn none() -> Self {
+        Self { axes: Vec::new() }
+    }
+
+    #[must_use]
+    pub fn default_axes() -> Self {
+        Self {
+            axes: vec![BreakdownAxis::Repo, BreakdownAxis::FailureCategory],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +82,17 @@ pub struct InstanceEvaluation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breakdown: Vec<BreakdownBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BreakdownBucket {
+    pub bucket_axis: BreakdownAxis,
+    pub bucket_value: String,
+    pub n: usize,
+    pub resolved: usize,
+    pub resolved_rate: f64,
 }
 
 #[must_use]
@@ -64,10 +102,11 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
 
 pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let results = load_run(&args.sweep_dir)?;
-    let eval = match args.backend {
+    let mut eval = match args.backend {
         EvaluateBackend::None => build_none_eval(&results),
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
+    eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown);
     std::fs::write(
         evaluation_path(&args.sweep_dir),
         serde_json::to_string_pretty(&eval)?,
@@ -81,7 +120,10 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         .map(|(id, r)| none_eval_for_result(id, r))
         .collect();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
-    EvaluationResults { instances }
+    EvaluationResults {
+        instances,
+        breakdown: Vec::new(),
+    }
 }
 
 fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
@@ -356,7 +398,122 @@ fn merge_with_results(
         });
     }
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
-    EvaluationResults { instances }
+    EvaluationResults {
+        instances,
+        breakdown: Vec::new(),
+    }
+}
+
+fn build_breakdown(
+    evals: &[InstanceEvaluation],
+    results: &HashMap<String, InstanceResult>,
+    selection: &BreakdownSelection,
+) -> Vec<BreakdownBucket> {
+    let mut out = Vec::new();
+    for axis in &selection.axes {
+        let mut buckets: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut unknown_repo = 0usize;
+        for row in evals {
+            let bucket_value = match axis {
+                BreakdownAxis::Repo => match parse_repo_from_instance_id(&row.instance_id) {
+                    Some(repo) => repo,
+                    None => {
+                        unknown_repo += 1;
+                        "unknown".to_owned()
+                    }
+                },
+                BreakdownAxis::FailureCategory => {
+                    if row.resolved {
+                        "resolved".to_owned()
+                    } else {
+                        results
+                            .get(&row.instance_id)
+                            .and_then(|r| r.failure_category)
+                            .map(failure_label)
+                            .unwrap_or("unknown")
+                            .to_owned()
+                    }
+                }
+            };
+            let entry = buckets.entry(bucket_value).or_insert((0, 0));
+            entry.0 += 1;
+            if row.resolved {
+                entry.1 += 1;
+            }
+        }
+        if matches!(axis, BreakdownAxis::Repo) && unknown_repo > 0 {
+            tracing::warn!(
+                unknown_repo_instances = unknown_repo,
+                "bench evaluate: repo parse failed for some ids; using repo=unknown"
+            );
+        }
+        let mut rows: Vec<BreakdownBucket> = buckets
+            .into_iter()
+            .map(|(bucket_value, (n, resolved))| BreakdownBucket {
+                bucket_axis: *axis,
+                bucket_value,
+                n,
+                resolved,
+                resolved_rate: pct(resolved, n),
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.n.cmp(&a.n)
+                .then_with(|| a.bucket_value.cmp(&b.bucket_value))
+        });
+        out.extend(rows);
+    }
+    out
+}
+
+#[must_use]
+pub fn parse_repo_from_instance_id(instance_id: &str) -> Option<String> {
+    let (owner, rest) = instance_id.split_once("__")?;
+    let (repo, _) = rest.rsplit_once('-')?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+#[must_use]
+pub fn failure_label(cat: FailureCategory) -> &'static str {
+    match cat {
+        FailureCategory::EnvSetup => "env_setup",
+        FailureCategory::ModelApi => "model_api",
+        FailureCategory::ModelParse => "model_parse",
+        FailureCategory::StepLimit => "step_limit",
+        FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::Unknown => "unknown",
+    }
+}
+
+#[must_use]
+pub fn pct(numer: usize, denom: usize) -> f64 {
+    if denom == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        numer as f64 / denom as f64
+    }
+}
+
+#[must_use]
+pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
+    let mut out = String::from("axis,bucket,n,resolved,resolved_rate\n");
+    for row in rows {
+        let axis = match row.bucket_axis {
+            BreakdownAxis::Repo => "repo",
+            BreakdownAxis::FailureCategory => "failure_category",
+        };
+        out.push_str(&format!(
+            "{axis},{},{},{},{:.4}\n",
+            row.bucket_value, row.n, row.resolved, row.resolved_rate
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -437,5 +594,14 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed.get("inst-a").map(|r| r.resolved), Some(true));
         assert_eq!(parsed.get("inst-b").map(|r| r.resolved), Some(false));
+    }
+
+    #[test]
+    fn parses_repo_from_instance_id() {
+        assert_eq!(
+            parse_repo_from_instance_id("django__django-10087"),
+            Some("django/django".into())
+        );
+        assert_eq!(parse_repo_from_instance_id("invalid"), None);
     }
 }

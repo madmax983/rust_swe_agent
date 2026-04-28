@@ -17,8 +17,8 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::evaluate::EvaluationResults;
-use crate::run::swebench::{InstanceResult, ProvenanceManifest, SweepResults};
+use crate::run::evaluate::{BreakdownAxis, EvaluationResults, pct};
+use crate::run::swebench::{FilterSpec, InstanceResult, ProvenanceManifest, SweepResults};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Output format for the compare report.
@@ -36,6 +36,8 @@ pub struct CompareArgs {
     /// When `Some(n)`, the binary exits non-zero if regressed-task count
     /// strictly exceeds `n`. `None` is informational only.
     pub max_regressions: Option<usize>,
+    pub breakdown: crate::run::evaluate::BreakdownSelection,
+    pub min_delta_pp: f64,
 }
 
 /// Per-task transition between baseline and candidate. `pass` is defined
@@ -111,10 +113,26 @@ pub struct CompareReport {
     pub failure_category_delta: BTreeMap<FailureCategory, i64>,
     #[serde(default)]
     pub manifest_deltas: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subset_warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breakdown_delta: Vec<BreakdownDeltaRow>,
     /// Tasks that passed in the baseline but failed in the candidate.
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
     pub regressions: Vec<TaskTransition>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BreakdownDeltaRow {
+    pub bucket_axis: BreakdownAxis,
+    pub bucket_value: String,
+    pub baseline_n: usize,
+    pub baseline_resolved_rate: f64,
+    pub candidate_n: usize,
+    pub candidate_resolved_rate: f64,
+    pub delta_resolved_rate: f64,
+    pub exceeds_threshold: bool,
 }
 
 impl CompareReport {
@@ -207,6 +225,29 @@ impl CompareReport {
                 let _ = writeln!(s, "  {:<14} {b} -> {c} ({d:+})", failure_label(cat));
             }
         }
+        if !self.breakdown_delta.is_empty() {
+            s.push_str("\nBreakdown deltas:\n");
+            for w in &self.subset_warnings {
+                let _ = writeln!(s, "  ! {w}");
+            }
+            for row in &self.breakdown_delta {
+                let _ = writeln!(
+                    s,
+                    "  {} {}={}  n: {} -> {}  resolved_rate: {:.1}% -> {:.1}%  delta={:+.1}pp",
+                    if row.exceeds_threshold { "*" } else { "-" },
+                    match row.bucket_axis {
+                        BreakdownAxis::Repo => "repo",
+                        BreakdownAxis::FailureCategory => "failure_category",
+                    },
+                    row.bucket_value,
+                    row.baseline_n,
+                    row.candidate_n,
+                    row.baseline_resolved_rate * 100.0,
+                    row.candidate_resolved_rate * 100.0,
+                    row.delta_resolved_rate * 100.0
+                );
+            }
+        }
 
         if self.regressions.is_empty() {
             s.push_str("\nRegressions:        none\n");
@@ -242,6 +283,7 @@ pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
 pub struct LoadedSweep {
     pub instances: HashMap<String, InstanceResult>,
     pub manifest: Option<ProvenanceManifest>,
+    pub filter_spec: Option<FilterSpec>,
 }
 
 pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
@@ -282,6 +324,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                     scanned
                 },
                 manifest,
+                filter_spec: Some(sweep.filter_spec),
             });
         }
         return Ok(LoadedSweep {
@@ -291,6 +334,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 .map(|r| (r.instance_id.clone(), r))
                 .collect(),
             manifest: sweep.manifest,
+            filter_spec: Some(sweep.filter_spec),
         });
     }
     if !dir.exists() {
@@ -304,6 +348,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     Ok(LoadedSweep {
         instances: out,
         manifest: None,
+        filter_spec: None,
     })
 }
 
@@ -373,7 +418,7 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let candidate = load_sweep(&args.candidate)?;
     let baseline_eval = load_resolved_overrides(&args.baseline)?;
     let candidate_eval = load_resolved_overrides(&args.candidate)?;
-    Ok(diff_with_overrides(
+    let mut report = diff_with_overrides(
         &args.baseline,
         &args.candidate,
         &baseline.instances,
@@ -381,7 +426,20 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         baseline_eval.as_ref(),
         candidate_eval.as_ref(),
         manifest_delta_lines(baseline.manifest.as_ref(), candidate.manifest.as_ref()),
-    ))
+    );
+    report.subset_warnings = subset_warnings(
+        baseline.filter_spec.as_ref(),
+        candidate.filter_spec.as_ref(),
+    );
+    report.breakdown_delta = build_breakdown_delta(
+        &baseline.instances,
+        &candidate.instances,
+        baseline_eval.as_ref(),
+        candidate_eval.as_ref(),
+        &args.breakdown.axes,
+        args.min_delta_pp,
+    );
+    Ok(report)
 }
 
 /// Pure diff over two already-loaded id->result maps. Split out so tests
@@ -508,6 +566,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         failure_category_candidate,
         failure_category_delta,
         manifest_deltas,
+        subset_warnings: Vec::new(),
+        breakdown_delta: Vec::new(),
         regressions,
     }
 }
@@ -666,6 +726,92 @@ fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::Unknown => "unknown",
     }
+}
+
+fn subset_warnings(baseline: Option<&FilterSpec>, candidate: Option<&FilterSpec>) -> Vec<String> {
+    let (Some(b), Some(c)) = (baseline, candidate) else {
+        return Vec::new();
+    };
+    if b.instance_ids == c.instance_ids
+        && b.sample == c.sample
+        && b.seed == c.seed
+        && b.limit == c.limit
+    {
+        return Vec::new();
+    }
+    vec![format!(
+        "dataset subset differs (baseline selected_count={}, candidate selected_count={})",
+        b.selected_count, c.selected_count
+    )]
+}
+
+fn build_breakdown_delta<S: std::hash::BuildHasher>(
+    baseline: &HashMap<String, InstanceResult, S>,
+    candidate: &HashMap<String, InstanceResult, S>,
+    baseline_override: Option<&HashMap<String, bool>>,
+    candidate_override: Option<&HashMap<String, bool>>,
+    axes: &[BreakdownAxis],
+    min_delta_pp: f64,
+) -> Vec<BreakdownDeltaRow> {
+    let mut out = Vec::new();
+    for axis in axes {
+        let b = breakdown_map(baseline, baseline_override, *axis);
+        let c = breakdown_map(candidate, candidate_override, *axis);
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        keys.extend(b.keys().cloned());
+        keys.extend(c.keys().cloned());
+        for key in keys {
+            let (bn, br) = b.get(&key).copied().unwrap_or((0, 0));
+            let (cn, cr) = c.get(&key).copied().unwrap_or((0, 0));
+            let b_rate = pct(br, bn);
+            let c_rate = pct(cr, cn);
+            let delta = c_rate - b_rate;
+            out.push(BreakdownDeltaRow {
+                bucket_axis: *axis,
+                bucket_value: key,
+                baseline_n: bn,
+                baseline_resolved_rate: b_rate,
+                candidate_n: cn,
+                candidate_resolved_rate: c_rate,
+                delta_resolved_rate: delta,
+                exceeds_threshold: delta.abs() >= min_delta_pp,
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        b.delta_resolved_rate
+            .abs()
+            .partial_cmp(&a.delta_resolved_rate.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.bucket_axis.cmp(&b.bucket_axis))
+            .then_with(|| a.bucket_value.cmp(&b.bucket_value))
+    });
+    out
+}
+
+fn breakdown_map<S: std::hash::BuildHasher>(
+    items: &HashMap<String, InstanceResult, S>,
+    resolved_override: Option<&HashMap<String, bool>>,
+    axis: BreakdownAxis,
+) -> HashMap<String, (usize, usize)> {
+    let mut out = HashMap::new();
+    for (id, r) in items {
+        let key = match axis {
+            BreakdownAxis::Repo => crate::run::evaluate::parse_repo_from_instance_id(id)
+                .unwrap_or_else(|| "unknown".to_owned()),
+            BreakdownAxis::FailureCategory => r
+                .failure_category
+                .map(crate::run::evaluate::failure_label)
+                .unwrap_or("none")
+                .to_owned(),
+        };
+        let entry = out.entry(key).or_insert((0, 0));
+        entry.0 += 1;
+        if resolved_for(id, r, resolved_override) {
+            entry.1 += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -870,6 +1016,8 @@ mod tests {
             candidate: dir_c.path().to_path_buf(),
             format: CompareFormat::Json,
             max_regressions: None,
+            breakdown: crate::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
         })
         .unwrap();
         assert_eq!(r.regressions.len(), 1);
@@ -993,6 +1141,7 @@ mod tests {
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
                 eval_log_path: None,
             }],
+            breakdown: Vec::new(),
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -1003,6 +1152,7 @@ mod tests {
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
                 eval_log_path: None,
             }],
+            breakdown: Vec::new(),
         };
 
         std::fs::write(
@@ -1021,6 +1171,8 @@ mod tests {
             candidate: dir_c.path().to_path_buf(),
             format: CompareFormat::Json,
             max_regressions: None,
+            breakdown: crate::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 1);
