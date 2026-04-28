@@ -176,6 +176,28 @@ pub struct SwebenchCmd {
     /// RNG seed used by `--sample`.
     #[arg(long)]
     pub seed: Option<u64>,
+
+    /// Retry transiently-failed instances up to N additional attempts.
+    /// `0` disables retries entirely.
+    #[arg(long, default_value_t = 2)]
+    pub max_retries: u32,
+
+    /// Comma-separated failure categories to retry (defaults to transient set).
+    #[arg(long)]
+    pub retry_on: Option<String>,
+
+    /// Exponential backoff base delay in milliseconds between retries.
+    #[arg(long, default_value_t = 1000)]
+    pub retry_backoff_base_ms: u64,
+
+    /// Exponential backoff max delay cap in seconds.
+    #[arg(long, default_value_t = 60)]
+    pub retry_backoff_cap_s: u64,
+
+    /// With `--resume`, re-run previously completed instances whose stored
+    /// `failure_category` is retryable instead of skipping them.
+    #[arg(long, default_value_t = false)]
+    pub retry_on_resume: bool,
 }
 
 #[derive(Debug, Args)]

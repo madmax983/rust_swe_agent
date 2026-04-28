@@ -277,6 +277,8 @@ pub fn load_run(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
                 error: None,
                 patch_present: false,
                 non_empty_patch: false,
+                attempts: 1,
+                retry_reasons: Vec::new(),
             },
         );
     }
@@ -521,6 +523,8 @@ mod tests {
             error: None,
             patch_present: true,
             non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
         }
     }
 
@@ -538,6 +542,8 @@ mod tests {
             error: Some("boom".into()),
             patch_present: false,
             non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
         }
     }
 
@@ -557,6 +563,8 @@ mod tests {
             error: None,
             patch_present: false,
             non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
         }
     }
 
@@ -671,6 +679,8 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
@@ -733,6 +743,8 @@ mod tests {
             total_prompt_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             cost_limit_usd: None,
             instances: vec![submitted("a")],

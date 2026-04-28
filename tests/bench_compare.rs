@@ -46,6 +46,8 @@ fn submitted(id: &str) -> InstanceResult {
         error: None,
         patch_present: true,
         non_empty_patch: true,
+        attempts: 1,
+        retry_reasons: Vec::new(),
     }
 }
 
@@ -63,6 +65,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         error: Some("stub".into()),
         patch_present: false,
         non_empty_patch: false,
+        attempts: 1,
+        retry_reasons: Vec::new(),
     }
 }
 
@@ -84,6 +88,8 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        retries: 0,
+        retried_instances: 0,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         cost_limit_usd: None,
         instances,

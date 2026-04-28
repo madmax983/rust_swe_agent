@@ -380,6 +380,8 @@ mod tests {
             error: None,
             patch_present: true,
             non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
         }
     }
 
@@ -397,6 +399,8 @@ mod tests {
             error: Some("boom".into()),
             patch_present: false,
             non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
         }
     }
 
