@@ -915,7 +915,7 @@ fn redact_argv(argv: Vec<String>) -> Vec<String> {
             redact_next = false;
             continue;
         }
-        if lower.starts_with("--") && (lower.contains("-key") || lower.contains("-token")) {
+        if lower.starts_with("--") && flag_name_is_sensitive(&arg) {
             if let Some((k, _)) = arg.split_once('=') {
                 out.push(format!("{k}=<redacted>"));
             } else {
@@ -949,8 +949,7 @@ fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]
     match v {
         serde_json::Value::Object(m) => {
             for (k, val) in m.iter_mut() {
-                let key = k.to_ascii_lowercase();
-                if key.contains("key") || key.contains("token") || key.contains("secret") {
+                if json_key_is_sensitive(k) {
                     *val = serde_json::Value::String("<redacted>".into());
                 } else {
                     redact_json_secrets_inner(val, secret_values);
@@ -972,6 +971,49 @@ fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]
         }
         _ => {}
     }
+}
+
+fn json_key_is_sensitive(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    matches!(
+        k.as_str(),
+        "api_key"
+            | "apikey"
+            | "key"
+            | "token"
+            | "secret"
+            | "password"
+            | "access_token"
+            | "auth_token"
+            | "bearer_token"
+    ) || k.ends_with("_key")
+        || k.ends_with("_token")
+        || k.ends_with("_secret")
+        || k.ends_with("_password")
+}
+
+fn flag_name_is_sensitive(flag: &str) -> bool {
+    let body = flag
+        .trim_start_matches('-')
+        .split('=')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        body.as_str(),
+        "api-key"
+            | "apikey"
+            | "key"
+            | "token"
+            | "secret"
+            | "password"
+            | "access-token"
+            | "auth-token"
+            | "bearer-token"
+    ) || body.ends_with("-key")
+        || body.ends_with("-token")
+        || body.ends_with("-secret")
+        || body.ends_with("-password")
 }
 
 fn litellm_rs_version() -> Option<String> {
@@ -1713,10 +1755,31 @@ mod tests {
     }
 
     #[test]
+    fn redact_argv_does_not_mask_max_tokens_flag() {
+        let redacted = redact_argv(vec![
+            "rust-swe-agent".into(),
+            "--max-tokens".into(),
+            "4096".into(),
+        ]);
+        assert_eq!(redacted[1], "--max-tokens");
+        assert_eq!(redacted[2], "4096");
+    }
+
+    #[test]
     fn dataset_sha256_is_stable_for_identical_bytes() {
         let a = sha256_hex(br#"{"instance_id":"x"}"#);
         let b = sha256_hex(br#"{"instance_id":"x"}"#);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn json_redaction_preserves_max_tokens_knob() {
+        let mut cfg = serde_json::json!({
+            "model": { "max_tokens": 4096, "api_key": "sk-test" }
+        });
+        redact_json_secrets(&mut cfg);
+        assert_eq!(cfg["model"]["max_tokens"], 4096);
+        assert_eq!(cfg["model"]["api_key"], "<redacted>");
     }
 
     #[test]

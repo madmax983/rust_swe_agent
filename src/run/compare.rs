@@ -248,6 +248,26 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     if results_path.exists() {
         let text = std::fs::read_to_string(&results_path)?;
         let sweep: SweepResults = serde_json::from_str(&text)?;
+        let partial_incomplete = sweep
+            .manifest
+            .as_ref()
+            .is_some_and(|m| m.runtime.finished_at_utc.is_none());
+        if partial_incomplete {
+            let scanned = scan_trajectory_instances(dir)?;
+            let manifest = sweep.manifest;
+            return Ok(LoadedSweep {
+                instances: if scanned.is_empty() {
+                    sweep
+                        .instances
+                        .into_iter()
+                        .map(|r| (r.instance_id.clone(), r))
+                        .collect()
+                } else {
+                    scanned
+                },
+                manifest,
+            });
+        }
         return Ok(LoadedSweep {
             instances: sweep
                 .instances
@@ -264,6 +284,14 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         )));
     }
 
+    let out = scan_trajectory_instances(dir)?;
+    Ok(LoadedSweep {
+        instances: out,
+        manifest: None,
+    })
+}
+
+fn scan_trajectory_instances(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
     let mut out = HashMap::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -305,10 +333,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             },
         );
     }
-    Ok(LoadedSweep {
-        instances: out,
-        manifest: None,
-    })
+    Ok(out)
 }
 
 /// Compute a `CompareReport` from two on-disk sweep directories.
@@ -996,5 +1021,86 @@ mod tests {
         let r = map.get("inst-1").unwrap();
         assert_eq!(r.outcome.as_deref(), Some(outcome::SUBMITTED));
         assert_eq!(r.steps, Some(3));
+    }
+
+    #[test]
+    fn incomplete_results_json_falls_back_to_trajectory_scan() {
+        use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: Some(ProvenanceManifest {
+                harness: crate::run::swebench::HarnessManifest {
+                    name: "h".into(),
+                    version: "v".into(),
+                    git_sha: None,
+                    git_dirty: None,
+                    git_resolution: "unavailable".into(),
+                },
+                dataset: crate::run::swebench::DatasetManifest {
+                    path: "d".into(),
+                    sha256: "x".into(),
+                    instance_count: 1,
+                    filter_spec: None,
+                },
+                prompt_template: crate::run::swebench::PromptTemplateManifest {
+                    source: "builtin".into(),
+                    path: None,
+                    sha256: "p".into(),
+                },
+                config: crate::run::swebench::ConfigManifest {
+                    resolved: "{}".into(),
+                    overlay_paths: Vec::new(),
+                },
+                model: crate::run::swebench::ModelManifest {
+                    name: "m".into(),
+                    backend: "litellm".into(),
+                    backend_version: None,
+                    base_url: None,
+                },
+                runtime: crate::run::swebench::RuntimeManifest {
+                    started_at_utc: "s".into(),
+                    finished_at_utc: None,
+                    host_os: "linux".into(),
+                    rust_version: None,
+                },
+                cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            }),
+            cost_limit_usd: None,
+            instances: Vec::new(),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let traj = Trajectory {
+            trajectory_format: FORMAT_VERSION.into(),
+            info: TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        std::fs::write(
+            dir.path().join("x.traj.json"),
+            serde_json::to_string_pretty(&traj).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(loaded.instances.contains_key("x"));
     }
 }
