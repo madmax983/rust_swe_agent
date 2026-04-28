@@ -12,10 +12,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::error::Error;
@@ -134,6 +138,8 @@ pub struct SweepResults {
     /// Resolved dataset subset spec used for this run.
     #[serde(default)]
     pub filter_spec: FilterSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<ProvenanceManifest>,
     /// The USD ceiling enforced for this sweep, echoed from
     /// `SwebenchArgs::cost_limit_usd`. `None` when no limit was set —
     /// distinguishes "ran without a budget" from "budget was infinite".
@@ -157,6 +163,78 @@ pub struct FilterSpec {
     pub sample: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvenanceManifest {
+    pub harness: HarnessManifest,
+    pub dataset: DatasetManifest,
+    pub prompt_template: PromptTemplateManifest,
+    pub config: ConfigManifest,
+    pub model: ModelManifest,
+    pub runtime: RuntimeManifest,
+    pub cli: CliManifest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessManifest {
+    pub name: String,
+    pub version: String,
+    pub git_sha: Option<String>,
+    pub git_dirty: Option<bool>,
+    pub git_resolution: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetManifest {
+    pub path: String,
+    pub sha256: String,
+    pub instance_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_spec: Option<FilterSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTemplateManifest {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigManifest {
+    pub resolved: String,
+    #[serde(default)]
+    pub overlay_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelManifest {
+    pub name: String,
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+#[cfg(test)]
+static PANIC_AFTER_INITIAL_MANIFEST_WRITE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeManifest {
+    pub started_at_utc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_utc: Option<String>,
+    pub host_os: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliManifest {
+    pub argv: Vec<String>,
 }
 
 impl SweepResults {
@@ -288,6 +366,8 @@ pub struct SwebenchArgs {
     /// deterministically. Only meaningful when `deterministic_responses`
     /// is `Some`.
     pub deterministic_usage_per_call: Option<ModelUsage>,
+    /// CLI-provided config overlay paths used to construct `config`.
+    pub config_overlay_paths: Vec<PathBuf>,
 }
 
 fn default_attempts() -> u32 {
@@ -330,6 +410,16 @@ pub fn existing_trajectory_info(
 
 pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Error> {
     let text = std::fs::read_to_string(path)?;
+    parse_dataset_lines(&text)
+}
+
+fn load_dataset_from_bytes(bytes: &[u8]) -> Result<Vec<SweBenchInstance>, Error> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| Error::Trajectory(format!("dataset utf8 decode: {e}")))?;
+    parse_dataset_lines(text)
+}
+
+fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -352,6 +442,7 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
+    let started_at_utc = chrono::Utc::now().to_rfc3339();
     let prior_results = if args.resume {
         load_prior_results_by_instance(&args.output_dir)
     } else {
@@ -364,7 +455,9 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         args.retry_backoff_cap_s,
     )?;
 
-    let instances = load_dataset(&args.dataset_path)?;
+    let dataset_bytes = std::fs::read(&args.dataset_path)?;
+    let dataset_sha = sha256_hex(&dataset_bytes);
+    let instances = load_dataset_from_bytes(&dataset_bytes)?;
     let (instances, filter_spec) = apply_subset(
         instances,
         args.instance_ids.as_deref(),
@@ -373,6 +466,38 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         args.seed,
     )?;
     let total = instances.len();
+    let summary_path = args.output_dir.join("results.json");
+    let initial_manifest = build_manifest(
+        &args,
+        &dataset_sha,
+        total,
+        &filter_spec,
+        &started_at_utc,
+        None,
+    );
+    let initial = SweepResults {
+        total,
+        submitted: 0,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 0,
+        total_prompt_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        retries: 0,
+        retried_instances: 0,
+        filter_spec: filter_spec.clone(),
+        manifest: Some(initial_manifest),
+        cost_limit_usd: args.cost_limit_usd,
+        instances: Vec::new(),
+    };
+    std::fs::write(&summary_path, serde_json::to_string_pretty(&initial)?)?;
+    #[cfg(test)]
+    if PANIC_AFTER_INITIAL_MANIFEST_WRITE.load(Ordering::Relaxed) {
+        panic!("test panic after initial manifest write");
+    }
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<InstanceResult> = Vec::new();
     let mut pending: std::collections::VecDeque<SweBenchInstance> =
@@ -623,13 +748,253 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         retries: total_retries,
         retried_instances,
         filter_spec,
+        manifest: Some(build_manifest(
+            &args,
+            &dataset_sha,
+            total,
+            &initial.filter_spec,
+            &started_at_utc,
+            Some(chrono::Utc::now().to_rfc3339()),
+        )),
         cost_limit_usd: args.cost_limit_usd,
         instances: results,
     };
-    let summary_path = args.output_dir.join("results.json");
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
     Ok(sweep)
+}
+
+fn build_manifest(
+    args: &SwebenchArgs,
+    dataset_sha: &str,
+    dataset_instance_count: usize,
+    filter_spec: &FilterSpec,
+    started_at_utc: &str,
+    finished_at_utc: Option<String>,
+) -> ProvenanceManifest {
+    let prompt_source = format!(
+        "{}\n---\n{}",
+        args.config.root.prompts.system, args.config.root.prompts.instance
+    );
+    let mut config_raw = args.config.raw.clone();
+    redact_json_secrets(&mut config_raw);
+    let resolved = serde_yaml::to_string(&config_raw).unwrap_or_else(|_| "--- {}\n".to_owned());
+    ProvenanceManifest {
+        harness: resolve_harness_manifest(),
+        dataset: DatasetManifest {
+            path: args.dataset_path.display().to_string(),
+            sha256: dataset_sha.to_owned(),
+            instance_count: dataset_instance_count,
+            filter_spec: Some(filter_spec.clone()),
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "builtin".into(),
+            path: None,
+            sha256: sha256_hex(prompt_source.as_bytes()),
+        },
+        config: ConfigManifest {
+            resolved,
+            overlay_paths: args
+                .config_overlay_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+        },
+        model: ModelManifest {
+            name: args.config.root.model.name.clone(),
+            backend: if args.deterministic_responses.is_some() {
+                "deterministic".into()
+            } else {
+                "litellm".into()
+            },
+            backend_version: if args.deterministic_responses.is_some() {
+                None
+            } else {
+                litellm_rs_version()
+            },
+            base_url: model_base_url(),
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: started_at_utc.to_owned(),
+            finished_at_utc,
+            host_os: std::env::consts::OS.into(),
+            rust_version: rust_version(),
+        },
+        cli: CliManifest {
+            argv: redact_argv(std::env::args().collect()),
+        },
+    }
+}
+
+fn resolve_harness_manifest() -> HarnessManifest {
+    resolve_harness_manifest_for_dir(None)
+}
+
+fn resolve_harness_manifest_for_dir(cwd: Option<&Path>) -> HarnessManifest {
+    let name = env!("CARGO_PKG_NAME").to_owned();
+    let version = env!("CARGO_PKG_VERSION").to_owned();
+    let sha_res = run_git(cwd, &["rev-parse", "HEAD"], false);
+    let status_res = run_git(cwd, &["status", "--porcelain"], true);
+    let sha = sha_res.as_ref().ok().cloned();
+    let dirty = status_res.as_ref().ok().map(|s| !s.trim().is_empty());
+    let git_resolution = match (&sha_res, &status_res) {
+        (Ok(_), Ok(_)) => "ok".to_owned(),
+        (Err(a), Err(b)) => format!("rev_parse_failed:{a};status_failed:{b}"),
+        (Err(a), Ok(_)) => format!("rev_parse_failed:{a}"),
+        (Ok(_), Err(b)) => format!("status_failed:{b}"),
+    };
+    HarnessManifest {
+        name,
+        version,
+        git_sha: sha,
+        git_dirty: dirty,
+        git_resolution,
+    }
+}
+
+fn run_git(cwd: Option<&Path>, args: &[&str], allow_empty: bool) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8(out.stderr).unwrap_or_else(|_| "non-utf8 stderr".into());
+        return Err(stderr.trim().to_owned());
+    }
+    let text = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
+    let trimmed = text.trim().to_owned();
+    if trimmed.is_empty() && !allow_empty {
+        return Err("empty output".into());
+    }
+    Ok(trimmed)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
+}
+
+fn rust_version() -> Option<String> {
+    Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| o.status.success().then_some(o.stdout))
+        .and_then(|s| String::from_utf8(s).ok())
+        .map(|s| s.trim().to_owned())
+}
+
+fn model_base_url() -> Option<String> {
+    let base = std::env::var("LITELLM_BASE_URL")
+        .ok()
+        .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
+    base.and_then(|b| {
+        let lb = b.trim().to_ascii_lowercase();
+        (lb != "https://api.openai.com/v1").then_some(b)
+    })
+}
+
+fn redact_argv(argv: Vec<String>) -> Vec<String> {
+    let secret_values: Vec<String> = std::env::vars()
+        .filter_map(|(k, v)| {
+            let key = k.to_ascii_lowercase();
+            ((key.ends_with("_key") || key.ends_with("_token") || key.ends_with("_secret"))
+                && !v.is_empty())
+            .then_some(v)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(argv.len());
+    let mut redact_next = false;
+    for arg in argv {
+        let lower = arg.to_ascii_lowercase();
+        if redact_next {
+            out.push("<redacted>".into());
+            redact_next = false;
+            continue;
+        }
+        if lower.starts_with("--") && (lower.contains("-key") || lower.contains("-token")) {
+            if let Some((k, _)) = arg.split_once('=') {
+                out.push(format!("{k}=<redacted>"));
+            } else {
+                out.push(arg);
+                redact_next = true;
+            }
+            continue;
+        }
+        if secret_values.iter().any(|s| arg.contains(s)) {
+            out.push("<redacted>".into());
+            continue;
+        }
+        out.push(arg);
+    }
+    out
+}
+
+fn redact_json_secrets(v: &mut serde_json::Value) {
+    let secret_values: Vec<String> = std::env::vars()
+        .filter_map(|(k, v)| {
+            let key = k.to_ascii_lowercase();
+            ((key.ends_with("_key") || key.ends_with("_token") || key.ends_with("_secret"))
+                && !v.is_empty())
+            .then_some(v)
+        })
+        .collect();
+    redact_json_secrets_inner(v, &secret_values);
+}
+
+fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]) {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, val) in m.iter_mut() {
+                let key = k.to_ascii_lowercase();
+                if key.contains("key") || key.contains("token") || key.contains("secret") {
+                    *val = serde_json::Value::String("<redacted>".into());
+                } else {
+                    redact_json_secrets_inner(val, secret_values);
+                }
+            }
+        }
+        serde_json::Value::Array(xs) => {
+            for x in xs {
+                redact_json_secrets_inner(x, secret_values);
+            }
+        }
+        serde_json::Value::String(s) => {
+            if secret_values
+                .iter()
+                .any(|secret| !secret.is_empty() && s.contains(secret))
+            {
+                *s = "<redacted>".into();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn litellm_rs_version() -> Option<String> {
+    let lock = include_str!("../../Cargo.lock");
+    let mut lines = lock.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() == "name = \"litellm-rs\"" {
+            while let Some(next) = lines.peek() {
+                let n = next.trim();
+                if n.starts_with("version = \"") {
+                    return n
+                        .strip_prefix("version = \"")
+                        .and_then(|s| s.strip_suffix('"'))
+                        .map(ToOwned::to_owned);
+                }
+                if n.starts_with("name = ") || n == "[[package]]" {
+                    break;
+                }
+                lines.next();
+            }
+        }
+    }
+    None
 }
 
 /// Build the `InstanceResult` returned for a task that never started
@@ -1241,6 +1606,7 @@ impl XorShift64 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use futures::FutureExt;
 
     #[test]
     fn cost_estimate_uses_sonnet_pricing() {
@@ -1271,6 +1637,7 @@ mod tests {
                 selected_count: 10,
                 ..FilterSpec::default()
             },
+            manifest: None,
             cost_limit_usd: None,
             instances: vec![],
         };
@@ -1320,6 +1687,7 @@ mod tests {
                 selected_count: 5,
                 ..FilterSpec::default()
             },
+            manifest: None,
             cost_limit_usd: Some(1.0),
             instances: vec![],
         };
@@ -1330,6 +1698,157 @@ mod tests {
             "missing budget halt line: {t}"
         );
         assert!(t.contains("2 task(s) never started"));
+    }
+
+    #[test]
+    fn redact_argv_masks_secret_flags() {
+        let redacted = redact_argv(vec![
+            "rust-swe-agent".into(),
+            "--anthropic-api-key".into(),
+            "sk-test".into(),
+            "--github-token=ghp_123".into(),
+        ]);
+        assert_eq!(redacted[2], "<redacted>");
+        assert_eq!(redacted[3], "--github-token=<redacted>");
+    }
+
+    #[test]
+    fn dataset_sha256_is_stable_for_identical_bytes() {
+        let a = sha256_hex(br#"{"instance_id":"x"}"#);
+        let b = sha256_hex(br#"{"instance_id":"x"}"#);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn prompt_template_hash_changes_when_overlay_edits_prompt() {
+        let cfg_a = Config::from_yaml_str(
+            r#"
+prompts:
+  system: "sys-a"
+  instance: "inst"
+"#,
+        )
+        .unwrap();
+        let cfg_b = Config::from_yaml_str(
+            r#"
+prompts:
+  system: "sys-b"
+  instance: "inst"
+"#,
+        )
+        .unwrap();
+        let args_a = SwebenchArgs {
+            dataset_path: PathBuf::from("dataset.jsonl"),
+            output_dir: PathBuf::from("out"),
+            parallel: 1,
+            config: cfg_a,
+            resume: false,
+            cost_limit_usd: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 1,
+            retry_backoff_cap_s: 1,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+        };
+        let filter = FilterSpec::default();
+        let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
+        let args_b = SwebenchArgs {
+            config: cfg_b,
+            ..args_a
+        };
+        let m_b = build_manifest(&args_b, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
+        assert_ne!(m_a.prompt_template.sha256, m_b.prompt_template.sha256);
+    }
+
+    #[test]
+    fn harness_dirty_flag_detects_uncommitted_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::write(p.join("a.txt"), "v1\n").unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(p)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "tester"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "tester@example.com"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "a.txt"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        std::fs::write(p.join("a.txt"), "dirty\n").unwrap();
+        let m = resolve_harness_manifest_for_dir(Some(p));
+        assert_eq!(m.git_resolution, "ok");
+        assert_eq!(m.git_dirty, Some(true));
+        assert!(m.git_sha.is_some());
+    }
+
+    #[tokio::test]
+    async fn panic_after_initial_manifest_still_leaves_manifest_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataset = tmp.path().join("d.jsonl");
+        std::fs::write(&dataset, r#"{"instance_id":"x"}"#).unwrap();
+        let out = tmp.path().join("out");
+        let args = SwebenchArgs {
+            dataset_path: dataset,
+            output_dir: out.clone(),
+            parallel: 1,
+            config: Config::defaults().unwrap(),
+            resume: false,
+            cost_limit_usd: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 1,
+            retry_backoff_cap_s: 1,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+        };
+        PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
+        let panicked = std::panic::AssertUnwindSafe(run(args))
+            .catch_unwind()
+            .await
+            .is_err();
+        PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(false, Ordering::Relaxed);
+        assert!(panicked);
+        let text = std::fs::read_to_string(out.join("results.json")).unwrap();
+        let parsed: SweepResults = serde_json::from_str(&text).unwrap();
+        assert!(parsed.manifest.is_some());
+        assert!(
+            parsed
+                .manifest
+                .as_ref()
+                .unwrap()
+                .runtime
+                .finished_at_utc
+                .is_none()
+        );
     }
 
     #[test]

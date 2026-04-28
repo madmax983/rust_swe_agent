@@ -109,6 +109,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         retry_on_resume: false,
         deterministic_responses: Some(responses),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -192,6 +193,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into(),
         ]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -259,6 +261,7 @@ async fn missing_workdir_marks_outcome_as_error() {
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
         ]),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();

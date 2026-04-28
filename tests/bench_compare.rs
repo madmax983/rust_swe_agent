@@ -91,6 +91,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         retries: 0,
         retried_instances: 0,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        manifest: None,
         cost_limit_usd: None,
         instances,
     };

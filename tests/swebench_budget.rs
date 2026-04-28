@@ -124,6 +124,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses_for(5)),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -280,6 +281,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses_for(3)),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -362,6 +364,7 @@ async fn resume_skipped_costs_count_against_budget() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses_for(2)),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -425,6 +428,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         retries: 1,
         retried_instances: 1,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
             instance_id: "already-on-disk".into(),
@@ -476,6 +480,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -535,6 +540,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         retries: 2,
         retried_instances: 1,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
             instance_id: "retryable".into(),
@@ -578,6 +584,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         retry_on_resume: true,
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();
@@ -618,6 +625,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         retries: 2,
         retried_instances: 1,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
             instance_id: "already-on-disk".into(),
@@ -685,6 +693,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         retry_on_resume: false,
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
     })
     .await
     .unwrap();

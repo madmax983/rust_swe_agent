@@ -177,6 +177,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         retry_on_resume: s.retry_on_resume,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
+        config_overlay_paths: s.config.into_iter().collect(),
     })
     .await?;
 
