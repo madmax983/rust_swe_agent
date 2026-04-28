@@ -724,10 +724,15 @@ fn skipped_result_from_info(
     }
 }
 
-fn skipped_result_from_prior_result(r: &InstanceResult) -> InstanceResult {
+fn skipped_result_from_prior_result(
+    r: &InstanceResult,
+    traj_based: &InstanceResult,
+) -> InstanceResult {
     let mut out = r.clone();
     out.exit_reason = "skipped_resume".into();
     out.error = None;
+    out.patch_present = traj_based.patch_present;
+    out.non_empty_patch = traj_based.non_empty_patch;
     out
 }
 
@@ -783,7 +788,7 @@ fn resume_snapshot_for_instance(
     if !prior_result_matches_trajectory(output_dir, instance_id, prior_result, &traj_based, prior) {
         return traj_based;
     }
-    skipped_result_from_prior_result(prior_result)
+    skipped_result_from_prior_result(prior_result, &traj_based)
 }
 
 fn prior_result_matches_trajectory(
@@ -852,11 +857,11 @@ impl RetryPolicy {
             .unwrap_or(u64::MAX);
         let exp_ms = self.backoff_base_ms.saturating_mul(factor);
         let cap_ms = self.backoff_cap_s.saturating_mul(1000);
-        let bounded_ms = exp_ms.min(cap_ms.max(self.backoff_base_ms));
+        let bounded_ms = if cap_ms == 0 { 0 } else { exp_ms.min(cap_ms) };
         let jitter_seed = simple_hash(instance_id) ^ u64::from(attempt);
         let jitter_pct = jitter_seed % 251; // 0..250 => up to +25.0%
         let jittered = bounded_ms.saturating_mul(1000 + jitter_pct) / 1000;
-        std::time::Duration::from_millis(jittered.min(cap_ms.max(bounded_ms)))
+        std::time::Duration::from_millis(if cap_ms == 0 { 0 } else { jittered.min(cap_ms) })
     }
 }
 
@@ -1373,6 +1378,31 @@ mod tests {
         assert_eq!(
             deterministic_for_attempt(&seq, 99, true),
             vec!["c".to_owned()]
+        );
+    }
+
+    #[test]
+    fn backoff_cap_can_shrink_below_base_or_disable_waits() {
+        let policy = RetryPolicy {
+            max_retries: 2,
+            retry_on: BTreeSet::from([FailureCategory::ModelApi]),
+            backoff_base_ms: 2_000,
+            backoff_cap_s: 1,
+        };
+        assert!(
+            policy.backoff_for("inst", 1) <= std::time::Duration::from_secs(1),
+            "cap below base should be honored"
+        );
+
+        let disabled = RetryPolicy {
+            max_retries: 2,
+            retry_on: BTreeSet::from([FailureCategory::ModelApi]),
+            backoff_base_ms: 1_000,
+            backoff_cap_s: 0,
+        };
+        assert_eq!(
+            disabled.backoff_for("inst", 3),
+            std::time::Duration::from_millis(0)
         );
     }
 

@@ -320,3 +320,83 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
     assert_eq!(results.submitted, 1);
     assert!(output.join("one.traj.json").exists());
 }
+
+#[tokio::test]
+async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["one"]);
+
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some(outcome::SUBMITTED.into());
+    traj.info.exit_reason = Some("submitted".into());
+    traj.info.steps = Some(1);
+    std::fs::write(
+        output.join("one.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(output.join("one.patch"), b"diff --git a/x b/x\n").unwrap();
+
+    // Older/stale-style summary claims no patch even though `.patch` exists.
+    let stale = serde_json::json!({
+        "total": 1,
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "budget_halted": 0,
+        "with_patch": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "filter_spec": {"original_count": 1, "selected_count": 1},
+        "instances": [{
+            "instance_id": "one",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "patch_present": false,
+            "non_empty_patch": false
+        }]
+    });
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    std::fs::write(
+        output.join("results.json"),
+        serde_json::to_string_pretty(&stale).unwrap(),
+    )
+    .unwrap();
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.skipped, 1);
+    let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert_eq!(preds.lines().count(), 1, "{preds}");
+}
