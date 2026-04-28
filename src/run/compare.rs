@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -253,7 +254,12 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             .as_ref()
             .is_some_and(|m| m.runtime.finished_at_utc.is_none());
         if partial_incomplete {
-            let scanned = scan_trajectory_instances(dir)?;
+            let min_mtime = sweep
+                .manifest
+                .as_ref()
+                .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.runtime.started_at_utc).ok())
+                .map(std::convert::Into::into);
+            let scanned = scan_trajectory_instances(dir, min_mtime)?;
             let manifest = sweep.manifest;
             return Ok(LoadedSweep {
                 instances: if scanned.is_empty() {
@@ -284,17 +290,28 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         )));
     }
 
-    let out = scan_trajectory_instances(dir)?;
+    let out = scan_trajectory_instances(dir, None)?;
     Ok(LoadedSweep {
         instances: out,
         manifest: None,
     })
 }
 
-fn scan_trajectory_instances(dir: &Path) -> Result<HashMap<String, InstanceResult>, Error> {
+fn scan_trajectory_instances(
+    dir: &Path,
+    min_mtime: Option<SystemTime>,
+) -> Result<HashMap<String, InstanceResult>, Error> {
     let mut out = HashMap::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if let Some(min) = min_mtime {
+            let Some(modified) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+                continue;
+            };
+            if modified < min {
+                continue;
+            }
+        }
         let name = entry.file_name();
         let Some(name_str) = name.to_str() else {
             continue;
@@ -1102,5 +1119,87 @@ mod tests {
         .unwrap();
         let loaded = load_sweep(dir.path()).unwrap();
         assert!(loaded.instances.contains_key("x"));
+    }
+
+    #[test]
+    fn incomplete_results_json_ignores_stale_trajectories_before_started_at() {
+        use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
+        let dir = tempfile::tempdir().unwrap();
+        let traj = Trajectory {
+            trajectory_format: FORMAT_VERSION.into(),
+            info: TrajectoryInfo {
+                outcome: Some(outcome::SUBMITTED.into()),
+                exit_reason: Some("submitted".into()),
+                ..Default::default()
+            },
+            messages: vec![],
+        };
+        std::fs::write(
+            dir.path().join("old.traj.json"),
+            serde_json::to_string_pretty(&traj).unwrap(),
+        )
+        .unwrap();
+        let started = chrono::Utc::now() + chrono::Duration::seconds(10);
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: Some(ProvenanceManifest {
+                harness: crate::run::swebench::HarnessManifest {
+                    name: "h".into(),
+                    version: "v".into(),
+                    git_sha: None,
+                    git_dirty: None,
+                    git_resolution: "unavailable".into(),
+                },
+                dataset: crate::run::swebench::DatasetManifest {
+                    path: "d".into(),
+                    sha256: "x".into(),
+                    instance_count: 1,
+                    filter_spec: None,
+                },
+                prompt_template: crate::run::swebench::PromptTemplateManifest {
+                    source: "builtin".into(),
+                    path: None,
+                    sha256: "p".into(),
+                },
+                config: crate::run::swebench::ConfigManifest {
+                    resolved: "{}".into(),
+                    overlay_paths: Vec::new(),
+                },
+                model: crate::run::swebench::ModelManifest {
+                    name: "m".into(),
+                    backend: "litellm".into(),
+                    backend_version: None,
+                    base_url: None,
+                },
+                runtime: crate::run::swebench::RuntimeManifest {
+                    started_at_utc: started.to_rfc3339(),
+                    finished_at_utc: None,
+                    host_os: "linux".into(),
+                    rust_version: None,
+                },
+                cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            }),
+            cost_limit_usd: None,
+            instances: Vec::new(),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(!loaded.instances.contains_key("old"));
     }
 }

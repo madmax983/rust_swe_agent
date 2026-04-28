@@ -776,7 +776,7 @@ fn build_manifest(
         "{}\n---\n{}",
         args.config.root.prompts.system, args.config.root.prompts.instance
     );
-    let mut config_raw = args.config.raw.clone();
+    let mut config_raw = effective_runtime_config(&args.config);
     redact_json_secrets(&mut config_raw);
     let resolved = serde_yaml::to_string(&config_raw).unwrap_or_else(|_| "--- {}\n".to_owned());
     ProvenanceManifest {
@@ -824,6 +824,25 @@ fn build_manifest(
             argv: redact_argv(std::env::args().collect()),
         },
     }
+}
+
+fn effective_runtime_config(cfg: &Config) -> serde_json::Value {
+    let mut raw = cfg.raw.clone();
+    if let serde_json::Value::Object(ref mut m) = raw {
+        if let Ok(agent) = serde_json::to_value(&cfg.root.agent) {
+            m.insert("agent".into(), agent);
+        }
+        if let Ok(model) = serde_json::to_value(&cfg.root.model) {
+            m.insert("model".into(), model);
+        }
+        if let Ok(environment) = serde_json::to_value(&cfg.root.environment) {
+            m.insert("environment".into(), environment);
+        }
+        if let Ok(prompts) = serde_json::to_value(&cfg.root.prompts) {
+            m.insert("prompts".into(), prompts);
+        }
+    }
+    raw
 }
 
 fn resolve_harness_manifest() -> HarnessManifest {
@@ -1780,6 +1799,43 @@ mod tests {
         redact_json_secrets(&mut cfg);
         assert_eq!(cfg["model"]["max_tokens"], 4096);
         assert_eq!(cfg["model"]["api_key"], "<redacted>");
+    }
+
+    #[test]
+    fn manifest_config_uses_effective_runtime_overrides() {
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 7;
+        cfg.root.model.name = "override-model".into();
+        let args = SwebenchArgs {
+            dataset_path: PathBuf::from("dataset.jsonl"),
+            output_dir: PathBuf::from("out"),
+            parallel: 1,
+            config: cfg,
+            resume: false,
+            cost_limit_usd: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 1,
+            retry_backoff_cap_s: 1,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+        };
+        let manifest = build_manifest(
+            &args,
+            "dataset",
+            1,
+            &FilterSpec::default(),
+            "2026-01-01T00:00:00Z",
+            None,
+        );
+        assert!(manifest.config.resolved.contains("step_limit: 7"));
+        assert!(manifest.config.resolved.contains("name: override-model"));
     }
 
     #[test]
