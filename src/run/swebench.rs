@@ -483,7 +483,9 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         print_preflight_report(&report, &args.preflight_format, &args.preflight_mode)?;
     }
     if args.dry_run {
-        println!("preflight checks passed");
+        if args.preflight_format != "json" {
+            println!("preflight checks passed");
+        }
         return Ok(SweepResults {
             total: 0,
             submitted: 0,
@@ -866,16 +868,10 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         name: "dataset.parse",
         message: format!("valid jsonl, selected {} instances", subset.len()),
     });
-    if let Some(parent) = args.output_dir.parent().filter(|p| !p.exists()) {
-        return Err(Error::Trajectory(format!(
-            "output parent does not exist: {}",
-            parent.display()
-        )));
-    }
     checks.push(CheckResult {
         status: CheckStatus::Ok,
         name: "output.parent",
-        message: "parent exists".into(),
+        message: "will be created if missing".into(),
     });
     if args.output_dir.join("results.json").exists() && !args.resume {
         checks.push(CheckResult {
@@ -910,17 +906,25 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         }
         crate::config::EnvKind::Docker => {
             #[cfg(feature = "docker")]
-            tokio::time::timeout(
-                Duration::from_secs(args.preflight_check_timeout_s),
-                crate::env::docker::preflight(),
-            )
-            .await
-            .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
-            checks.push(CheckResult {
-                status: CheckStatus::Ok,
-                name: "env.docker",
-                message: "docker daemon reachable".into(),
-            });
+            {
+                tokio::time::timeout(
+                    Duration::from_secs(args.preflight_check_timeout_s),
+                    crate::env::docker::preflight(),
+                )
+                .await
+                .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
+                checks.push(CheckResult {
+                    status: CheckStatus::Ok,
+                    name: "env.docker",
+                    message: "docker daemon reachable".into(),
+                });
+            }
+            #[cfg(not(feature = "docker"))]
+            {
+                return Err(Error::Trajectory(
+                    "environment.kind=docker requires binary built with `docker` feature".into(),
+                ));
+            }
         }
     }
     if !args.skip_model_probe {
