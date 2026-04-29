@@ -189,19 +189,13 @@ fn classify_error(err: &Error) -> FailureCategory {
 /// We use `--no-color`, `--binary`, and `--unified=3` to match the format
 /// the SWE-bench evaluator (`sb-cli`) consumes and `git apply` accepts.
 async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result<String, String> {
-    // `git -C <workdir>` keeps us independent of the env's idea of cwd
-    // (the local env inherits the process cwd, the docker env uses `-w`).
-    // The `--` ensures the trailing argument is a pathspec rather than a
-    // ref, which matters when the workdir is empty or unborn.
-    let base = spec.base_commit.as_deref().unwrap_or("HEAD");
-    // Quote `base` to defuse hostile dataset values; SWE-bench commits are
-    // hex SHAs but a malformed instance shouldn't be able to inject shell.
-    let cmd = format!(
-        "git -C {workdir} diff --no-color --binary --unified=3 {base} -- .",
-        workdir = shell_quote(&spec.workdir.to_string_lossy()),
-        base = shell_quote(base),
-    );
-    let req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    // `cwd` keeps paths out of the shell command. That matters on Windows,
+    // where `cmd /C` receives the command string as one argv and can pass
+    // embedded quotes through to child programs.
+    let base = validate_git_rev(spec.base_commit.as_deref().unwrap_or("HEAD"))?;
+    let cmd = format!("git diff --no-color --binary --unified=3 {base} -- .");
+    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    req.cwd = Some(spec.workdir.clone());
     let result = env
         .run(req)
         .await
@@ -219,21 +213,16 @@ async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result
     Ok(result.stdout)
 }
 
-/// Single-quote-escape a string for safe inclusion in a `bash -c` argv.
-/// Closes the quote, emits an escaped literal `'`, reopens — the standard
-/// POSIX shell idiom.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(c);
-        }
+fn validate_git_rev(rev: &str) -> Result<&str, String> {
+    let valid = !rev.is_empty()
+        && rev.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/' | b'~' | b'^')
+        });
+    if valid {
+        Ok(rev)
+    } else {
+        Err(format!("invalid git revision for diff base: {rev:?}"))
     }
-    out.push('\'');
-    out
 }
 
 fn build_model(
@@ -309,11 +298,10 @@ mod tests {
     }
 
     #[test]
-    fn shell_quote_escapes_single_quotes() {
-        assert_eq!(shell_quote("a"), "'a'");
-        assert_eq!(shell_quote("a b"), "'a b'");
-        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
-        // Already-quoted-looking strings round-trip safely.
-        assert_eq!(shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+    fn validate_git_rev_rejects_shell_metacharacters() {
+        assert_eq!(validate_git_rev("HEAD"), Ok("HEAD"));
+        assert_eq!(validate_git_rev("abc123"), Ok("abc123"));
+        assert!(validate_git_rev("HEAD && rm -rf /").is_err());
+        assert!(validate_git_rev("").is_err());
     }
 }

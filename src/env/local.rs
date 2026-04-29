@@ -137,7 +137,12 @@ mod tests {
     #[tokio::test]
     async fn env_var_passthrough() {
         let env = LocalEnvironment::new();
-        let mut req = RunRequest::new("echo $RSA_TEST_VAR");
+        let command = if cfg!(windows) {
+            "echo %RSA_TEST_VAR%"
+        } else {
+            "echo $RSA_TEST_VAR"
+        };
+        let mut req = RunRequest::new(command);
         req.env.insert("RSA_TEST_VAR".into(), "from_test".into());
         let r = env.run(req).await.unwrap();
         assert_eq!(r.stdout.trim(), "from_test");
@@ -146,7 +151,12 @@ mod tests {
     #[tokio::test]
     async fn timeout_flags_timed_out() {
         let env = LocalEnvironment::new();
-        let req = RunRequest::new("sleep 5").with_timeout(Duration::from_millis(100));
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command Start-Sleep -Seconds 5"
+        } else {
+            "sleep 5"
+        };
+        let req = RunRequest::new(command).with_timeout(Duration::from_millis(100));
         let r = env.run(req).await.unwrap();
         assert!(r.timed_out);
     }

@@ -112,7 +112,8 @@ pub struct CompareCmd {
     pub candidate: PathBuf,
 
     /// Output format: `text` (default, terminal-friendly) or `json`
-    /// (machine-readable diff document).
+    /// (machine-readable report). `unified` is accepted with
+    /// `--inspect-diff`.
     #[arg(long, default_value = "text")]
     pub format: String,
 
@@ -130,6 +131,21 @@ pub struct CompareCmd {
     /// Threshold in percentage points used to highlight large breakdown deltas.
     #[arg(long = "breakdown-min-delta-pp", default_value_t = 5.0)]
     pub breakdown_min_delta_pp: f64,
+
+    /// Render `bench inspect --diff` for this instance id by locating both
+    /// trajectory files inside the baseline and candidate sweep directories.
+    #[arg(long)]
+    pub inspect_diff: Option<String>,
+
+    /// Write a shell script with one `bench inspect --diff` command per
+    /// regressed instance. The script is not executed automatically.
+    #[arg(long)]
+    pub emit_diff_script: Option<PathBuf>,
+
+    /// Include whitespace-only and timestamp-only trajectory differences in
+    /// inspect-diff output.
+    #[arg(long, default_value_t = false)]
+    pub show_noise: bool,
 }
 
 #[derive(Debug, Args)]
@@ -278,7 +294,7 @@ pub struct EvaluateCmd {
 pub struct InspectCmd {
     /// Completed sweep directory produced by `bench swebench`.
     #[arg(long)]
-    pub sweep: PathBuf,
+    pub sweep: Option<PathBuf>,
 
     /// One specific instance id to render as a human-readable transcript.
     #[arg(long)]
@@ -288,7 +304,15 @@ pub struct InspectCmd {
     #[arg(long)]
     pub filter: Option<String>,
 
-    /// Output format: `text` (default) or `json`.
+    /// Diff two trajectory JSON files for the same instance.
+    #[arg(long, value_names = ["BASELINE", "CANDIDATE"], num_args = 2)]
+    pub diff: Vec<PathBuf>,
+
+    /// Include whitespace-only and timestamp-only differences in diff mode.
+    #[arg(long, default_value_t = false)]
+    pub show_noise: bool,
+
+    /// Output format: `text` (default), `json`, or `unified` in diff mode.
     #[arg(long, default_value = "text")]
     pub format: String,
 

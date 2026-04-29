@@ -8,3 +8,4 @@ pub mod inspect;
 pub mod mini;
 pub mod replay;
 pub mod swebench;
+pub mod trajectory_diff;

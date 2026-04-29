@@ -302,7 +302,7 @@ async fn sweep_without_limit_runs_all_tasks() {
 
     assert_eq!(results.total, 3);
     assert_eq!(results.budget_halted, 0);
-    assert_eq!(results.submitted, 3);
+    assert_eq!(results.submitted, 3, "results: {results:?}");
     assert!(results.cost_limit_usd.is_none());
 }
 
@@ -741,5 +741,5 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
     .unwrap();
 
     assert_eq!(results.budget_halted, 0);
-    assert_eq!(results.submitted, 1);
+    assert_eq!(results.submitted, 1, "results: {results:?}");
 }

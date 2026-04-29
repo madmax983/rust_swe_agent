@@ -482,6 +482,49 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     Ok(report)
 }
 
+pub fn write_diff_script(report: &CompareReport, out_path: &Path) -> Result<(), Error> {
+    let exe = std::env::current_exe().ok().map_or_else(
+        || "rust-swe-agent".into(),
+        |path| path.display().to_string(),
+    );
+    let mut script = String::new();
+    script.push_str("#!/usr/bin/env sh\n");
+    script.push_str("set -eu\n\n");
+    for regression in &report.regressions {
+        let baseline = crate::run::trajectory_diff::resolve_trajectory_path(
+            &report.baseline_dir,
+            &regression.instance_id,
+        )
+        .ok_or_else(|| {
+            Error::Trajectory(format!(
+                "compare: baseline trajectory not found for `{}` in {}",
+                regression.instance_id,
+                report.baseline_dir.display()
+            ))
+        })?;
+        let candidate = crate::run::trajectory_diff::resolve_trajectory_path(
+            &report.candidate_dir,
+            &regression.instance_id,
+        )
+        .ok_or_else(|| {
+            Error::Trajectory(format!(
+                "compare: candidate trajectory not found for `{}` in {}",
+                regression.instance_id,
+                report.candidate_dir.display()
+            ))
+        })?;
+        let _ = writeln!(
+            script,
+            "{} bench inspect --diff {} {}",
+            sh_quote(&exe),
+            sh_quote_path(&baseline),
+            sh_quote_path(&candidate)
+        );
+    }
+    std::fs::write(out_path, script)?;
+    Ok(())
+}
+
 /// Pure diff over two already-loaded id->result maps. Split out so tests
 /// can drive it without touching the filesystem.
 #[must_use]
@@ -610,6 +653,23 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         breakdown_delta: Vec::new(),
         regressions,
     }
+}
+
+fn sh_quote_path(path: &Path) -> String {
+    sh_quote(&path.display().to_string())
+}
+
+fn sh_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 fn classify(
