@@ -483,8 +483,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         print_preflight_report(&report, &args.preflight_format, &args.preflight_mode)?;
     }
     if args.dry_run {
-        if args.preflight_format != "json" {
+        if !args.skip_preflight && args.preflight_format != "json" {
             println!("preflight checks passed");
+        } else if args.skip_preflight && args.preflight_format != "json" {
+            println!("preflight skipped");
         }
         return Ok(SweepResults {
             total: 0,
@@ -935,13 +937,13 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
             max_tokens: Some(1),
             ..crate::model::QueryOpts::default()
         };
-        let _ = tokio::time::timeout(
-            Duration::from_secs(args.preflight_check_timeout_s),
-            backend.query(&msgs, &opts),
-        )
-        .await
-        .map_err(|_| Error::Trajectory("model probe timed out".into()))?
-        .map_err(|e| Error::Trajectory(format!("model probe failed: {e}")))?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let per_check = Duration::from_secs(args.preflight_check_timeout_s);
+        let budget = remaining.min(per_check);
+        let _ = tokio::time::timeout(budget, backend.query(&msgs, &opts))
+            .await
+            .map_err(|_| Error::Trajectory("model probe timed out".into()))?
+            .map_err(|e| Error::Trajectory(format!("model probe failed: {e}")))?;
         checks.push(CheckResult {
             status: CheckStatus::Ok,
             name: "model.probe",
