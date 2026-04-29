@@ -70,6 +70,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 [features]
 default = []
 docker = []
+chaos = []
 live-anthropic = []
 
 [lints.clippy]
