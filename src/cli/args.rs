@@ -133,6 +133,7 @@ pub struct CompareCmd {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchCmd {
     #[arg(long)]
     pub dataset_path: PathBuf,

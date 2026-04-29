@@ -321,6 +321,7 @@ impl SweepResults {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchArgs {
     pub dataset_path: PathBuf,
     pub output_dir: PathBuf,
@@ -384,7 +385,6 @@ pub struct SwebenchArgs {
 enum CheckStatus {
     Ok,
     Warn,
-    Fail,
 }
 
 #[derive(Debug, Clone)]
@@ -831,6 +831,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     Ok(sweep)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let deadline = Instant::now() + Duration::from_secs(args.preflight_total_timeout_s);
     let mut checks = Vec::new();
@@ -993,7 +994,6 @@ fn render_preflight_report(
                     status: match c.status {
                         CheckStatus::Ok => "ok",
                         CheckStatus::Warn => "warn",
-                        CheckStatus::Fail => "fail",
                     }
                     .into(),
                     name: c.name.into(),
@@ -1009,7 +1009,6 @@ fn render_preflight_report(
         let s = match c.status {
             CheckStatus::Ok => "ok",
             CheckStatus::Warn => "warn",
-            CheckStatus::Fail => "fail",
         };
         let _ = writeln!(out, "[{s}] {} — {}", c.name, c.message);
     }
