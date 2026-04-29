@@ -2574,7 +2574,9 @@ prompts:
 
     #[test]
     fn ensure_total_deadline_errors_when_expired() {
-        let deadline = Instant::now() - Duration::from_millis(1);
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
         let err = ensure_total_deadline(deadline).unwrap_err();
         assert!(err.to_string().contains("total timeout exceeded"));
     }
