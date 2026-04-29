@@ -758,7 +758,10 @@ fn failure_label(cat: FailureCategory) -> &'static str {
 
 fn subset_warnings(baseline: Option<&FilterSpec>, candidate: Option<&FilterSpec>) -> Vec<String> {
     let (Some(b), Some(c)) = (baseline, candidate) else {
-        return Vec::new();
+        return vec![
+            "subset metadata unavailable (missing filter_spec for baseline and/or candidate)"
+                .into(),
+        ];
     };
     if b.instance_ids.as_deref().map(normalize_instance_ids)
         == c.instance_ids.as_deref().map(normalize_instance_ids)
@@ -1166,6 +1169,32 @@ mod tests {
             seed: None,
         };
         assert!(subset_warnings(Some(&baseline), Some(&candidate)).is_empty());
+    }
+
+    #[test]
+    fn subset_warning_when_filter_spec_missing() {
+        let present = crate::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: Some(vec!["a".into(), "b".into()]),
+            limit: None,
+            sample: None,
+            seed: None,
+        };
+        let missing_baseline = subset_warnings(None, Some(&present));
+        assert!(
+            missing_baseline
+                .iter()
+                .any(|w| w.contains("subset metadata unavailable")),
+            "{missing_baseline:?}"
+        );
+        let missing_candidate = subset_warnings(Some(&present), None);
+        assert!(
+            missing_candidate
+                .iter()
+                .any(|w| w.contains("subset metadata unavailable")),
+            "{missing_candidate:?}"
+        );
     }
 
     #[test]
