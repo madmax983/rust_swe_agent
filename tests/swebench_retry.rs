@@ -95,6 +95,13 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -132,6 +139,13 @@ async fn retries_on_injected_transient_category_then_recovers() {
         deterministic_responses: Some(vec![malformed_action_response(), submit_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -176,6 +190,13 @@ async fn max_retries_zero_disables_retry() {
         deterministic_responses: Some(vec![malformed_action_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -224,6 +245,13 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         ]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -250,6 +278,13 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         deterministic_responses: Some(vec![malformed_action_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -294,6 +329,13 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         deterministic_responses: Some(vec![malformed_action_response(), submit_response()]),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -342,6 +384,13 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -366,6 +415,13 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         deterministic_responses: Some(vec![submit_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();

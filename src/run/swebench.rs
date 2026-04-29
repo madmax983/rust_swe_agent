@@ -17,13 +17,14 @@ use std::process::Command;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::error::Error;
-use crate::model::ModelUsage;
+use crate::model::{Model, ModelUsage};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
@@ -320,6 +321,7 @@ impl SweepResults {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchArgs {
     pub dataset_path: PathBuf,
     pub output_dir: PathBuf,
@@ -370,6 +372,39 @@ pub struct SwebenchArgs {
     pub deterministic_usage_per_call: Option<ModelUsage>,
     /// CLI-provided config overlay paths used to construct `config`.
     pub config_overlay_paths: Vec<PathBuf>,
+    pub dry_run: bool,
+    pub skip_preflight: bool,
+    pub preflight_format: String,
+    pub skip_model_probe: bool,
+    pub preflight_check_timeout_s: u64,
+    pub preflight_total_timeout_s: u64,
+    pub preflight_mode: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckStatus {
+    Ok,
+    Warn,
+}
+
+#[derive(Debug, Clone)]
+struct CheckResult {
+    status: CheckStatus,
+    name: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PreflightReport {
+    mode: String,
+    checks: Vec<CheckResultOut>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CheckResultOut {
+    status: String,
+    name: String,
+    message: String,
 }
 
 fn default_attempts() -> u32 {
@@ -443,6 +478,35 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // without yielding reusable pieces.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
+    if !args.skip_preflight {
+        let report = run_preflight(&args).await?;
+        print_preflight_report(&report, &args.preflight_format, &args.preflight_mode)?;
+    }
+    if args.dry_run {
+        if !args.skip_preflight && args.preflight_format != "json" {
+            println!("preflight checks passed");
+        } else if args.skip_preflight && args.preflight_format != "json" {
+            println!("preflight skipped");
+        }
+        return Ok(SweepResults {
+            total: 0,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: args.cost_limit_usd,
+            instances: Vec::new(),
+        });
+    }
     std::fs::create_dir_all(&args.output_dir)?;
     let started_at_utc = chrono::Utc::now().to_rfc3339();
     let prior_results = if args.resume {
@@ -765,6 +829,228 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
     Ok(sweep)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
+    let deadline = Instant::now() + Duration::from_secs(args.preflight_total_timeout_s);
+    let mut checks = Vec::new();
+    let dataset_path = args.dataset_path.clone();
+    let dataset_bytes = timed_sync(
+        "dataset.read",
+        args.preflight_check_timeout_s,
+        deadline,
+        move || std::fs::read(&dataset_path),
+    )
+    .await?;
+    checks.push(CheckResult {
+        status: CheckStatus::Ok,
+        name: "dataset.read",
+        message: format!("readable: {}", args.dataset_path.display()),
+    });
+    let instances = timed_sync(
+        "dataset.parse",
+        args.preflight_check_timeout_s,
+        deadline,
+        move || load_dataset_from_bytes(&dataset_bytes),
+    )
+    .await?;
+    let instance_ids = args.instance_ids.clone();
+    let limit = args.limit;
+    let sample = args.sample;
+    let seed = args.seed;
+    let (subset, _) = timed_sync(
+        "dataset.subset",
+        args.preflight_check_timeout_s,
+        deadline,
+        move || apply_subset(instances, instance_ids.as_deref(), limit, sample, seed),
+    )
+    .await?;
+    checks.push(CheckResult {
+        status: CheckStatus::Ok,
+        name: "dataset.parse",
+        message: format!("valid jsonl, selected {} instances", subset.len()),
+    });
+    checks.push(CheckResult {
+        status: CheckStatus::Ok,
+        name: "output.parent",
+        message: "will be created if missing".into(),
+    });
+    if args.output_dir.join("results.json").exists() && !args.resume {
+        checks.push(CheckResult {
+            status: CheckStatus::Warn,
+            name: "output.results_json",
+            message: "results.json exists and --resume is false".into(),
+        });
+    }
+    ensure_total_deadline(deadline)?;
+    match args.config.root.environment.kind {
+        crate::config::EnvKind::Local => {
+            for bin in ["bash", "git", "patch"] {
+                ensure_total_deadline(deadline)?;
+                let ok = timed_sync(
+                    "env.local_tools",
+                    args.preflight_check_timeout_s,
+                    deadline,
+                    move || Command::new("which").arg(bin).output(),
+                )
+                .await?
+                .status
+                .success();
+                if !ok {
+                    return Err(Error::Trajectory(format!("required binary missing: {bin}")));
+                }
+            }
+            checks.push(CheckResult {
+                status: CheckStatus::Ok,
+                name: "env.local_tools",
+                message: "bash/git/patch are on PATH".into(),
+            });
+        }
+        crate::config::EnvKind::Docker => {
+            #[cfg(feature = "docker")]
+            {
+                ensure_total_deadline(deadline)?;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let per_check = Duration::from_secs(args.preflight_check_timeout_s);
+                let budget = remaining.min(per_check);
+                tokio::time::timeout(budget, crate::env::docker::preflight())
+                    .await
+                    .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
+                checks.push(CheckResult {
+                    status: CheckStatus::Ok,
+                    name: "env.docker",
+                    message: "docker daemon reachable".into(),
+                });
+            }
+            #[cfg(not(feature = "docker"))]
+            {
+                return Err(Error::Trajectory(
+                    "environment.kind=docker requires binary built with `docker` feature".into(),
+                ));
+            }
+        }
+    }
+    if !args.skip_model_probe {
+        ensure_total_deadline(deadline)?;
+        let backend = crate::model::LitellmBackend::new(args.config.root.model.name.clone());
+        let msgs = vec![crate::model::Message::user("Reply with exactly: ok")];
+        let opts = crate::model::QueryOpts {
+            max_tokens: Some(1),
+            ..crate::model::QueryOpts::default()
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let per_check = Duration::from_secs(args.preflight_check_timeout_s);
+        let budget = remaining.min(per_check);
+        let _ = tokio::time::timeout(budget, backend.query(&msgs, &opts))
+            .await
+            .map_err(|_| Error::Trajectory("model probe timed out".into()))?
+            .map_err(|e| Error::Trajectory(format!("model probe failed: {e}")))?;
+        checks.push(CheckResult {
+            status: CheckStatus::Ok,
+            name: "model.probe",
+            message: "litellm 1-token probe succeeded".into(),
+        });
+    }
+    let renderer = crate::template::Renderer::new();
+    let fixture =
+        serde_json::json!({"task":"demo","instance_id":"x","repo":"r","base_commit":"abc"});
+    let _ = renderer.render_str(&args.config.root.prompts.system, &fixture)?;
+    let _ = renderer.render_str(&args.config.root.prompts.instance, &fixture)?;
+    checks.push(CheckResult {
+        status: CheckStatus::Ok,
+        name: "prompt.templates",
+        message: "system/instance templates parse + render".into(),
+    });
+    ensure_total_deadline(deadline)?;
+    if let Some(obj) = args.config.raw.as_object() {
+        let known: std::collections::HashSet<&str> =
+            ["agent", "model", "environment", "prompts", "extends"]
+                .into_iter()
+                .collect();
+        for k in obj.keys() {
+            if !known.contains(k.as_str()) {
+                checks.push(CheckResult {
+                    status: CheckStatus::Warn,
+                    name: "config.unknown_top_level",
+                    message: format!("unknown top-level key: {k}"),
+                });
+            }
+        }
+    }
+    Ok(checks)
+}
+
+fn render_preflight_report(
+    checks: &[CheckResult],
+    format: &str,
+    mode: &str,
+) -> Result<String, Error> {
+    if format == "json" {
+        let payload = PreflightReport {
+            mode: mode.into(),
+            checks: checks
+                .iter()
+                .map(|c| CheckResultOut {
+                    status: match c.status {
+                        CheckStatus::Ok => "ok",
+                        CheckStatus::Warn => "warn",
+                    }
+                    .into(),
+                    name: c.name.into(),
+                    message: c.message.clone(),
+                })
+                .collect(),
+        };
+        return serde_json::to_string_pretty(&payload)
+            .map_err(|e| Error::Trajectory(format!("preflight json encode: {e}")));
+    }
+    let mut out = String::new();
+    for c in checks {
+        let s = match c.status {
+            CheckStatus::Ok => "ok",
+            CheckStatus::Warn => "warn",
+        };
+        let _ = writeln!(out, "[{s}] {} — {}", c.name, c.message);
+    }
+    Ok(out)
+}
+
+fn print_preflight_report(checks: &[CheckResult], format: &str, mode: &str) -> Result<(), Error> {
+    print!("{}", render_preflight_report(checks, format, mode)?);
+    Ok(())
+}
+
+async fn timed_sync<T, E, F>(
+    name: &str,
+    timeout_s: u64,
+    deadline: Instant,
+    f: F,
+) -> Result<T, Error>
+where
+    T: Send + 'static,
+    E: Send + 'static + std::fmt::Display,
+    F: Send + 'static + FnOnce() -> Result<T, E>,
+{
+    ensure_total_deadline(deadline)?;
+    let rem = deadline.saturating_duration_since(Instant::now());
+    let per = Duration::from_secs(timeout_s);
+    let budget = rem.min(per);
+    let h = tokio::task::spawn_blocking(f);
+    let out = tokio::time::timeout(budget, h)
+        .await
+        .map_err(|_| Error::Trajectory(format!("{name}: timeout exceeded")))?
+        .map_err(|e| Error::Trajectory(format!("{name}: join error: {e}")))?
+        .map_err(|e| Error::Trajectory(format!("{name}: {e}")))?;
+    ensure_total_deadline(deadline)?;
+    Ok(out)
+}
+
+fn ensure_total_deadline(deadline: Instant) -> Result<(), Error> {
+    if Instant::now() > deadline {
+        return Err(Error::Trajectory("preflight total timeout exceeded".into()));
+    }
+    Ok(())
 }
 
 fn build_manifest(
@@ -1828,6 +2114,13 @@ mod tests {
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
         };
         let manifest = build_manifest(
             &args,
@@ -1862,6 +2155,13 @@ mod tests {
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
         };
         let manifest = build_manifest(
             &args,
@@ -1911,6 +2211,13 @@ prompts:
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -1984,6 +2291,13 @@ prompts:
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))
@@ -2198,5 +2512,92 @@ prompts:
             err.to_string().contains("produced zero instances"),
             "unexpected err: {err}"
         );
+    }
+
+    #[test]
+    fn doctor_and_dry_run_report_render_identical_for_same_checks() {
+        let checks = vec![
+            CheckResult {
+                status: CheckStatus::Ok,
+                name: "dataset.read",
+                message: "readable".into(),
+            },
+            CheckResult {
+                status: CheckStatus::Warn,
+                name: "config.unknown_top_level",
+                message: "unknown key".into(),
+            },
+        ];
+        let doctor = render_preflight_report(&checks, "text", "doctor").unwrap();
+        let dry = render_preflight_report(&checks, "text", "dry_run").unwrap();
+        assert_eq!(doctor, dry);
+    }
+
+    #[test]
+    fn preflight_json_schema_has_stable_top_level_fields() {
+        let checks = vec![CheckResult {
+            status: CheckStatus::Ok,
+            name: "dataset.read",
+            message: "readable".into(),
+        }];
+        let payload = render_preflight_report(&checks, "json", "doctor").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(v.get("mode").is_some());
+        assert!(v.get("checks").is_some());
+        let c0 = &v["checks"][0];
+        assert!(c0.get("status").is_some());
+        assert!(c0.get("name").is_some());
+        assert!(c0.get("message").is_some());
+    }
+
+    #[tokio::test]
+    async fn timed_sync_succeeds_within_budget() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let out = timed_sync("ok", 1, deadline, || -> Result<u32, std::io::Error> {
+            Ok(7)
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, 7);
+    }
+
+    #[tokio::test]
+    async fn timed_sync_times_out() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let err = timed_sync("slow", 0, deadline, || -> Result<(), std::io::Error> {
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("timeout exceeded"));
+    }
+
+    #[test]
+    fn ensure_total_deadline_errors_when_expired() {
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
+        let err = ensure_total_deadline(deadline).unwrap_err();
+        assert!(err.to_string().contains("total timeout exceeded"));
+    }
+
+    #[test]
+    fn render_preflight_text_mode_is_line_oriented() {
+        let checks = vec![
+            CheckResult {
+                status: CheckStatus::Ok,
+                name: "a",
+                message: "x".into(),
+            },
+            CheckResult {
+                status: CheckStatus::Warn,
+                name: "b",
+                message: "y".into(),
+            },
+        ];
+        let out = render_preflight_report(&checks, "text", "doctor").unwrap();
+        assert!(out.contains("[ok] a"));
+        assert!(out.contains("[warn] b"));
     }
 }

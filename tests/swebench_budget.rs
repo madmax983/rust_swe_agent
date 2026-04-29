@@ -125,6 +125,13 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         deterministic_responses: Some(submit_only_responses_for(5)),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -282,6 +289,13 @@ async fn sweep_without_limit_runs_all_tasks() {
         deterministic_responses: Some(submit_only_responses_for(3)),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -365,6 +379,13 @@ async fn resume_skipped_costs_count_against_budget() {
         deterministic_responses: Some(submit_only_responses_for(2)),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -481,6 +502,13 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: Some(usage),
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -585,6 +613,13 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -694,6 +729,13 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         deterministic_responses: Some(submit_only_responses_for(1)),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();

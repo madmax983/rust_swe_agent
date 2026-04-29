@@ -83,7 +83,7 @@ impl DockerEnvironment {
     }
 }
 
-async fn preflight() -> Result<(), EnvError> {
+pub async fn preflight() -> Result<(), EnvError> {
     match Command::new("docker")
         .arg("version")
         .stdin(StdStdio::null())
