@@ -318,6 +318,10 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     let results_path = dir.join("results.json");
     if results_path.exists() {
         let text = std::fs::read_to_string(&results_path)?;
+        let filter_spec_present = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("filter_spec").cloned())
+            .is_some();
         let sweep: SweepResults = serde_json::from_str(&text)?;
         let partial_incomplete = sweep
             .manifest
@@ -352,7 +356,11 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                     scanned
                 },
                 manifest,
-                filter_spec: Some(sweep.filter_spec),
+                filter_spec: if filter_spec_present {
+                    Some(sweep.filter_spec)
+                } else {
+                    None
+                },
             });
         }
         return Ok(LoadedSweep {
@@ -362,7 +370,11 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 .map(|r| (r.instance_id.clone(), r))
                 .collect(),
             manifest: sweep.manifest,
-            filter_spec: Some(sweep.filter_spec),
+            filter_spec: if filter_spec_present {
+                Some(sweep.filter_spec)
+            } else {
+                None
+            },
         });
     }
     if !dir.exists() {
@@ -1413,6 +1425,38 @@ mod tests {
         .unwrap();
         let loaded = load_sweep(dir.path()).unwrap();
         assert!(loaded.instances.contains_key("x"));
+    }
+
+    #[test]
+    fn legacy_results_json_without_filter_spec_preserves_unavailable_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            filter_spec: crate::run::swebench::FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![submitted("a")],
+        };
+        let mut value = serde_json::to_value(&sweep).unwrap();
+        value.as_object_mut().unwrap().remove("filter_spec");
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        assert!(loaded.filter_spec.is_none());
     }
 
     #[test]
