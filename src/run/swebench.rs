@@ -2548,4 +2548,53 @@ prompts:
         assert!(c0.get("name").is_some());
         assert!(c0.get("message").is_some());
     }
+
+    #[tokio::test]
+    async fn timed_sync_succeeds_within_budget() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let out = timed_sync("ok", 1, deadline, || -> Result<u32, std::io::Error> {
+            Ok(7)
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, 7);
+    }
+
+    #[tokio::test]
+    async fn timed_sync_times_out() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let err = timed_sync("slow", 0, deadline, || -> Result<(), std::io::Error> {
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("timeout exceeded"));
+    }
+
+    #[test]
+    fn ensure_total_deadline_errors_when_expired() {
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let err = ensure_total_deadline(deadline).unwrap_err();
+        assert!(err.to_string().contains("total timeout exceeded"));
+    }
+
+    #[test]
+    fn render_preflight_text_mode_is_line_oriented() {
+        let checks = vec![
+            CheckResult {
+                status: CheckStatus::Ok,
+                name: "a",
+                message: "x".into(),
+            },
+            CheckResult {
+                status: CheckStatus::Warn,
+                name: "b",
+                message: "y".into(),
+            },
+        ];
+        let out = render_preflight_report(&checks, "text", "doctor").unwrap();
+        assert!(out.contains("[ok] a"));
+        assert!(out.contains("[warn] b"));
+    }
 }
