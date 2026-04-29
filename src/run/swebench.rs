@@ -910,12 +910,13 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         crate::config::EnvKind::Docker => {
             #[cfg(feature = "docker")]
             {
-                tokio::time::timeout(
-                    Duration::from_secs(args.preflight_check_timeout_s),
-                    crate::env::docker::preflight(),
-                )
-                .await
-                .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
+                ensure_total_deadline(deadline)?;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let per_check = Duration::from_secs(args.preflight_check_timeout_s);
+                let budget = remaining.min(per_check);
+                tokio::time::timeout(budget, crate::env::docker::preflight())
+                    .await
+                    .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
                 checks.push(CheckResult {
                     status: CheckStatus::Ok,
                     name: "env.docker",

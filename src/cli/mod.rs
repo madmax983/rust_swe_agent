@@ -211,6 +211,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
 
 async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
+    let output_format = s.format.clone();
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
@@ -245,7 +246,9 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
         preflight_mode: "doctor".into(),
     })
     .await?;
-    print!("{}", results.summary_table());
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
     Ok(())
 }
 
