@@ -832,10 +832,15 @@ fn breakdown_map<S: std::hash::BuildHasher>(
         let key = match axis {
             BreakdownAxis::Repo => crate::run::evaluate::parse_repo_from_instance_id(id)
                 .unwrap_or_else(|| "unknown".to_owned()),
-            BreakdownAxis::FailureCategory => r
-                .failure_category
-                .map_or("none", crate::run::evaluate::failure_label)
-                .to_owned(),
+            BreakdownAxis::FailureCategory => {
+                if resolved_for(id, r, resolved_override) {
+                    "resolved".to_owned()
+                } else {
+                    r.failure_category
+                        .map_or("none", crate::run::evaluate::failure_label)
+                        .to_owned()
+                }
+            }
         };
         let entry = out.entry(key).or_insert((0, 0));
         entry.0 += 1;
@@ -1161,6 +1166,31 @@ mod tests {
             seed: None,
         };
         assert!(subset_warnings(Some(&baseline), Some(&candidate)).is_empty());
+    }
+
+    #[test]
+    fn failure_category_breakdown_keeps_resolved_separate_from_none() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let baseline_override = HashMap::from([("a".to_string(), true)]);
+        let candidate_override = HashMap::from([("a".to_string(), false)]);
+
+        let rows = build_breakdown_delta(
+            &baseline,
+            &candidate,
+            Some(&baseline_override),
+            Some(&candidate_override),
+            &[BreakdownAxis::FailureCategory],
+            0.0,
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.bucket_value == "resolved" && r.baseline_n == 1 && r.candidate_n == 0)
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.bucket_value == "none" && r.baseline_n == 0 && r.candidate_n == 1)
+        );
     }
 
     #[test]
