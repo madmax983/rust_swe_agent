@@ -86,6 +86,8 @@ pub struct ReplayCmd {
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
     Swebench(SwebenchCmd),
+    /// Validate sweep inputs without launching tasks.
+    Doctor(SwebenchCmd),
     /// Diff two completed sweep runs by instance id; surfaces regressions
     /// and (with `--max-regressions`) gates CI on prompt/harness changes.
     Compare(CompareCmd),
@@ -206,6 +208,30 @@ pub struct SwebenchCmd {
     /// `failure_category` is retryable instead of skipping them.
     #[arg(long, default_value_t = false)]
     pub retry_on_resume: bool,
+
+    /// Run preflight checks and exit without launching tasks.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
+    /// Skip startup preflight checks before launching a sweep.
+    #[arg(long, default_value_t = false)]
+    pub skip_preflight: bool,
+
+    /// Doctor/dry-run output format.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Skip model backend probe during preflight.
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
+
+    /// Max seconds per preflight check.
+    #[arg(long, default_value_t = 10)]
+    pub preflight_check_timeout_s: u64,
+
+    /// Max total seconds for all preflight checks.
+    #[arg(long, default_value_t = 60)]
+    pub preflight_total_timeout_s: u64,
 }
 
 #[derive(Debug, Args)]

@@ -51,6 +51,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
         Command::Bench {
+            cmd: args::BenchCmd::Doctor(s),
+        } => bench_doctor(s).await,
+        Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
         Command::Bench {
@@ -178,6 +181,13 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         config_overlay_paths: s.config.into_iter().collect(),
+        dry_run: s.dry_run,
+        skip_preflight: s.skip_preflight,
+        preflight_format: s.format,
+        skip_model_probe: s.skip_model_probe,
+        preflight_check_timeout_s: s.preflight_check_timeout_s,
+        preflight_total_timeout_s: s.preflight_total_timeout_s,
+        preflight_mode: if s.dry_run { "dry_run" } else { "sweep" }.into(),
     })
     .await?;
 
@@ -195,6 +205,46 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         cost_limit_usd = ?results.cost_limit_usd,
         "sweep complete"
     );
+    print!("{}", results.summary_table());
+    Ok(())
+}
+
+async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
+    s.dry_run = true;
+    let mut cfg = match &s.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+    cfg.root.model.name.clone_from(&s.model);
+    cfg.root.agent.step_limit = s.step_limit;
+    let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
+        dataset_path: s.dataset_path,
+        output_dir: s.output,
+        parallel: s.parallel,
+        config: cfg,
+        resume: s.resume,
+        cost_limit_usd: s.sweep_cost_limit_usd,
+        instance_ids: s.instance_ids,
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
+        max_retries: s.max_retries,
+        retry_on: s.retry_on,
+        retry_backoff_base_ms: s.retry_backoff_base_ms,
+        retry_backoff_cap_s: s.retry_backoff_cap_s,
+        retry_on_resume: s.retry_on_resume,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        config_overlay_paths: s.config.into_iter().collect(),
+        dry_run: true,
+        skip_preflight: s.skip_preflight,
+        preflight_format: s.format,
+        skip_model_probe: s.skip_model_probe,
+        preflight_check_timeout_s: s.preflight_check_timeout_s,
+        preflight_total_timeout_s: s.preflight_total_timeout_s,
+        preflight_mode: "doctor".into(),
+    })
+    .await?;
     print!("{}", results.summary_table());
     Ok(())
 }

@@ -109,6 +109,13 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();

@@ -110,6 +110,13 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         deterministic_responses: Some(responses),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -194,6 +201,13 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         ]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
@@ -262,6 +276,13 @@ async fn missing_workdir_marks_outcome_as_error() {
         ]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
     })
     .await
     .unwrap();
