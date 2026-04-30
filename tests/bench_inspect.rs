@@ -179,6 +179,54 @@ fn write_prompted_diff_traj(
     std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
 }
 
+fn write_orphan_tool_alignment_traj(path: &Path, instance_id: &str, include_orphan_tool: bool) {
+    let mut t = Trajectory::new();
+    t.info
+        .other
+        .insert("instance_id".into(), serde_json::json!(instance_id));
+    t.info.outcome = Some(outcome::SUBMITTED.into());
+    t.info.total_cost_usd = Some(0.10);
+    t.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+    });
+    t.info.steps = Some(2);
+
+    record_assistant_tool_step(&mut t, "```bash\necho one\n```", "echo one", "one\n");
+    if include_orphan_tool {
+        record_tool_result(&mut t, "orphan\n");
+    }
+    record_assistant_tool_step(&mut t, "```bash\necho two\n```", "echo two", "two\n");
+
+    std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+}
+
+fn record_assistant_tool_step(
+    trajectory: &mut Trajectory,
+    assistant: &str,
+    command: &str,
+    stdout: &str,
+) {
+    let mut asst = rust_swe_agent::model::Message::assistant(assistant);
+    asst.extra.actions = Some(vec![command.into()]);
+    trajectory.record_message(&asst);
+    record_tool_result(trajectory, stdout);
+}
+
+fn record_tool_result(trajectory: &mut Trajectory, stdout: &str) {
+    let mut obs = rust_swe_agent::model::Message::user("tool result");
+    obs.extra.other.insert(
+        "run_result".into(),
+        serde_json::json!({
+            "stdout": stdout,
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        }),
+    );
+    trajectory.record_message(&obs);
+}
+
 #[test]
 fn help_lists_inspect_subcommand_and_flags() {
     let out = Command::new(binary_path())
@@ -431,6 +479,55 @@ fn diff_groups_initial_prompt_assistant_and_tool_result_as_one_role_keyed_step()
     );
     assert_eq!(steps[0]["baseline"]["bash"], "pytest -q");
     assert_eq!(steps[0]["baseline"]["stdout"], "1 failed\n");
+}
+
+#[test]
+fn diff_orphan_tool_record_does_not_shift_later_assistant_indices() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("baseline.traj.json");
+    let candidate = dir.path().join("candidate.traj.json");
+    write_orphan_tool_alignment_traj(&baseline, "abc", true);
+    write_orphan_tool_alignment_traj(&candidate, "abc", false);
+
+    let out = Command::new(binary_path())
+        .arg("bench")
+        .arg("inspect")
+        .arg("--diff")
+        .arg(&baseline)
+        .arg(&candidate)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let steps = v["steps"].as_array().unwrap();
+    let assistant_one = steps
+        .iter()
+        .find(|step| step["role"] == "assistant" && step["index"] == 1)
+        .unwrap_or_else(|| panic!("missing assistant index 1 in {v:#}"));
+    assert_eq!(assistant_one["status"], "match", "{v:#}");
+    assert_eq!(assistant_one["baseline"]["bash"], "echo two");
+    assert_eq!(assistant_one["candidate"]["bash"], "echo two");
+    assert!(
+        steps.iter().any(|step| {
+            step["role"] == "tool"
+                && step["status"] == "baseline_only"
+                && step["baseline"]["stdout"] == "orphan\n"
+        }),
+        "orphan tool should be isolated as a tool-only diff: {v:#}"
+    );
+    assert!(
+        !steps.iter().any(|step| {
+            step["role"] == "assistant"
+                && (step["status"] == "baseline_only" || step["status"] == "candidate_only")
+        }),
+        "orphan tool must not turn matching assistant turns into tails: {v:#}"
+    );
 }
 
 #[test]

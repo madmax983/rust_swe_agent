@@ -73,9 +73,9 @@ error.
 The diff aligns by an explicit `(role, logical_step_index)` key, not by raw
 message position. A normal action turn groups the pending `system`/`user`
 prompt, assistant message, and following tool result into one `assistant`
-step. Orphan prompt/tool records are retained under `prompt`/`tool` roles so
-length mismatches show as `baseline_only` or `candidate_only` tails instead of
-silently shifting later steps. Matching steps are collapsed as:
+step. Step indices are role-local: orphan `prompt`/`tool` records are retained
+under their own roles, but they do not consume assistant turn indices, so later
+assistant turns still align. Matching steps are collapsed as:
 
 ```text
 [step 0 - identical] role=assistant

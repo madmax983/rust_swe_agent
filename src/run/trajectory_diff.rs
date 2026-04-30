@@ -451,13 +451,15 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
     let mut steps = Vec::new();
     let mut pending_prompt = Vec::new();
     let mut message_index = 0usize;
-    let mut step_index = 0usize;
+    let mut assistant_index = 0usize;
+    let mut tool_index = 0usize;
+    let prompt_index = 0usize;
     while message_index < trajectory.messages.len() {
         let message = &trajectory.messages[message_index];
         if let Some(run_result) = run_result(message) {
             push_keyed_step(
                 &mut steps,
-                step_index,
+                tool_index,
                 "tool",
                 SemanticStep {
                     prompt: take_prompt(&mut pending_prompt),
@@ -468,7 +470,7 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
                     stderr: Some(run_result.stderr),
                 },
             );
-            step_index += 1;
+            tool_index += 1;
             message_index += 1;
             continue;
         }
@@ -496,8 +498,8 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
                     message_index += 1;
                 }
             }
-            push_keyed_step(&mut steps, step_index, "assistant", step);
-            step_index += 1;
+            push_keyed_step(&mut steps, assistant_index, "assistant", step);
+            assistant_index += 1;
         }
         message_index += 1;
     }
@@ -505,7 +507,7 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
     if let Some(prompt) = take_prompt(&mut pending_prompt) {
         push_keyed_step(
             &mut steps,
-            step_index,
+            prompt_index,
             "prompt",
             SemanticStep {
                 prompt: Some(prompt),
