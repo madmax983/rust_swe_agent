@@ -218,7 +218,7 @@ fn validate_git_rev(rev: &str) -> Result<&str, String> {
     let valid = !rev.is_empty()
         && rev
             .chars()
-            .all(|ch| !ch.is_control() && !matches!(ch, '"' | '%') && !ch.is_whitespace());
+            .all(|ch| !ch.is_control() && !ch.is_whitespace());
     if valid {
         Ok(rev)
     } else {
@@ -239,7 +239,7 @@ fn quote_git_rev_for_cmd(rev: &str) -> String {
     for ch in rev.chars() {
         match ch {
             '^' => out.push_str("^^"),
-            '&' | '|' | '<' | '>' | '(' | ')' => {
+            '&' | '|' | '<' | '>' | '(' | ')' | '%' | '"' => {
                 out.push('^');
                 out.push(ch);
             }
@@ -335,6 +335,14 @@ mod tests {
         assert_eq!(validate_git_rev("abc123"), Ok("abc123"));
         assert_eq!(validate_git_rev("HEAD@{1}"), Ok("HEAD@{1}"));
         assert_eq!(validate_git_rev("v1.2^{commit}"), Ok("v1.2^{commit}"));
+        assert_eq!(
+            validate_git_rev("refs/heads/feat%test"),
+            Ok("refs/heads/feat%test")
+        );
+        assert_eq!(
+            validate_git_rev("refs/heads/feat\"test"),
+            Ok("refs/heads/feat\"test")
+        );
         assert!(validate_git_rev("HEAD && rm -rf /").is_err());
         assert!(validate_git_rev("").is_err());
     }
@@ -390,23 +398,99 @@ mod tests {
         assert!(diff.contains("+after"), "{diff}");
     }
 
+    #[tokio::test]
+    async fn capture_patch_accepts_percent_ref_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["branch", "feat%test"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("refs/heads/feat%test".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_quoted_ref_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        write_packed_ref(&repo, "refs/heads/feat\"test");
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("refs/heads/feat\"test".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
     fn init_repo(dir: &Path) {
         git(dir, &["init"]);
         git(dir, &["config", "user.email", "test@example.invalid"]);
         git(dir, &["config", "user.name", "Test User"]);
     }
 
+    fn write_packed_ref(dir: &Path, ref_name: &str) {
+        let hash = git_stdout(dir, &["rev-parse", "HEAD"]);
+        std::fs::write(
+            dir.join(".git").join("packed-refs"),
+            format!("{} {}\n", hash.trim(), ref_name),
+        )
+        .unwrap();
+        let resolved = git_stdout(dir, &["rev-parse", ref_name]);
+        assert_eq!(resolved.trim(), hash.trim());
+    }
+
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        let out = git_raw(dir, args);
         assert!(
             out.status.success(),
             "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let out = git_raw(dir, args);
+        assert!(
+            out.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn git_raw(dir: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
     }
 }
