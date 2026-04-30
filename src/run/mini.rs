@@ -18,6 +18,8 @@ use crate::model::{DeterministicModel, Model, ModelUsage};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 use crate::trajectory::FailureCategory;
 
+const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
+
 /// How a runner should snapshot the agent's working tree as a unified diff
 /// after submission. Optional on `MiniArgs` because patch capture only
 /// makes sense for benchmark sweeps; the standalone `bench mini` CLI run
@@ -189,14 +191,14 @@ fn classify_error(err: &Error) -> FailureCategory {
 /// We use `--no-color`, `--binary`, and `--unified=3` to match the format
 /// the SWE-bench evaluator (`sb-cli`) consumes and `git apply` accepts.
 async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result<String, String> {
-    // `cwd` keeps paths out of the shell command. That matters on Windows,
-    // where `cmd /C` receives the command string as one argv and can pass
-    // embedded quotes through to child programs.
+    // Keep paths in `cwd` and the base revision in the environment so valid
+    // revspec punctuation does not become shell syntax.
     let base = validate_git_rev(spec.base_commit.as_deref().unwrap_or("HEAD"))?;
-    let base_arg = quote_git_rev_for_shell(base);
+    let base_arg = patch_base_shell_arg(base);
     let cmd = format!("git diff --no-color --binary --unified=3 --end-of-options {base_arg} -- .");
     let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
     req.cwd = Some(spec.workdir.clone());
+    req.env.insert(PATCH_BASE_ENV.into(), base.to_owned());
     let result = env
         .run(req)
         .await
@@ -215,10 +217,7 @@ async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result
 }
 
 fn validate_git_rev(rev: &str) -> Result<&str, String> {
-    let valid = !rev.is_empty()
-        && rev
-            .chars()
-            .all(|ch| !ch.is_control() && !ch.is_whitespace());
+    let valid = !rev.is_empty() && rev.chars().all(|ch| !ch.is_control());
     if valid {
         Ok(rev)
     } else {
@@ -226,31 +225,39 @@ fn validate_git_rev(rev: &str) -> Result<&str, String> {
     }
 }
 
-fn quote_git_rev_for_shell(rev: &str) -> String {
+fn patch_base_shell_arg(rev: &str) -> String {
     if cfg!(windows) {
-        quote_git_rev_for_cmd(rev)
+        if rev.contains('"') {
+            quote_git_rev_for_cmd(rev)
+        } else {
+            format!("\"%{PATCH_BASE_ENV}%\"")
+        }
     } else {
-        quote_git_rev_for_sh(rev)
+        format!("\"${PATCH_BASE_ENV}\"")
     }
 }
 
 fn quote_git_rev_for_cmd(rev: &str) -> String {
-    let mut out = String::with_capacity(rev.len());
+    let needs_quotes = rev.chars().any(char::is_whitespace);
+    let mut out = String::with_capacity(rev.len() + usize::from(needs_quotes) * 2);
+    if needs_quotes {
+        out.push('"');
+    }
     for ch in rev.chars() {
-        match ch {
-            '^' => out.push_str("^^"),
-            '&' | '|' | '<' | '>' | '(' | ')' | '%' | '"' => {
+        match (needs_quotes, ch) {
+            (_, '"') => out.push_str("\\\""),
+            (false, '^') => out.push_str("^^"),
+            (false, '&' | '|' | '<' | '>' | '(' | ')' | '%') => {
                 out.push('^');
                 out.push(ch);
             }
             _ => out.push(ch),
         }
     }
+    if needs_quotes {
+        out.push('"');
+    }
     out
-}
-
-fn quote_git_rev_for_sh(rev: &str) -> String {
-    format!("'{}'", rev.replace('\'', "'\\''"))
 }
 
 fn build_model(
@@ -330,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_git_rev_rejects_shell_metacharacters() {
+    fn validate_git_rev_accepts_revspec_chars_and_rejects_empty_or_control() {
         assert_eq!(validate_git_rev("HEAD"), Ok("HEAD"));
         assert_eq!(validate_git_rev("abc123"), Ok("abc123"));
         assert_eq!(validate_git_rev("HEAD@{1}"), Ok("HEAD@{1}"));
@@ -343,7 +350,12 @@ mod tests {
             validate_git_rev("refs/heads/feat\"test"),
             Ok("refs/heads/feat\"test")
         );
-        assert!(validate_git_rev("HEAD && rm -rf /").is_err());
+        assert_eq!(validate_git_rev("HEAD^{/foo bar}"), Ok("HEAD^{/foo bar}"));
+        assert_eq!(
+            validate_git_rev("HEAD^{/foo && bar}"),
+            Ok("HEAD^{/foo && bar}")
+        );
+        assert!(validate_git_rev("HEAD\nmain").is_err());
         assert!(validate_git_rev("").is_err());
     }
 
@@ -446,6 +458,51 @@ mod tests {
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
         assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_commit_message_search_revision_with_space() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "foo bar base"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD^{/foo bar}".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_quotes_shell_metacharacters_in_revision_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD && echo injected > injected.txt".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let result = capture_patch(&LocalEnvironment::new(), &spec).await;
+        assert!(result.is_err(), "{result:?}");
+        assert!(!repo.join("injected.txt").exists());
     }
 
     fn init_repo(dir: &Path) {

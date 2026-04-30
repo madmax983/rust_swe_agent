@@ -58,6 +58,7 @@ pub struct TrajectoryDiffHeader {
     pub baseline_total_steps: usize,
     pub candidate_total_steps: usize,
     pub first_divergent_step_index: Option<usize>,
+    pub first_divergent_step_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -214,10 +215,7 @@ pub fn render_text(report: &TrajectoryDiffReport) -> String {
     let _ = writeln!(
         s,
         "first_divergent_step: {}",
-        report
-            .header
-            .first_divergent_step_index
-            .map_or_else(|| "none".into(), |v| v.to_string())
+        first_divergent_step_label(&report.header)
     );
 
     for step in &report.steps {
@@ -340,10 +338,11 @@ fn diff_trajectories(
         });
     }
 
-    let first_divergent_step_index = steps
+    let first_divergent_step = steps
         .iter()
-        .find(|step| step.status != TrajectoryDiffStatus::Match)
-        .map(|step| step.index);
+        .find(|step| step.status != TrajectoryDiffStatus::Match);
+    let first_divergent_step_index = first_divergent_step.map(|step| step.index);
+    let first_divergent_step_role = first_divergent_step.map(|step| step.role.clone());
 
     TrajectoryDiffReport {
         instance_id: baseline.instance_id.clone(),
@@ -353,6 +352,7 @@ fn diff_trajectories(
             baseline_steps.len(),
             candidate_steps.len(),
             first_divergent_step_index,
+            first_divergent_step_role,
         ),
         steps,
     }
@@ -364,6 +364,7 @@ fn build_header(
     baseline_step_count: usize,
     candidate_step_count: usize,
     first_divergent_step_index: Option<usize>,
+    first_divergent_step_role: Option<String>,
 ) -> TrajectoryDiffHeader {
     TrajectoryDiffHeader {
         baseline_path: baseline.path.clone(),
@@ -411,6 +412,18 @@ fn build_header(
             .steps
             .map_or(candidate_step_count, usize_from_u32),
         first_divergent_step_index,
+        first_divergent_step_role,
+    }
+}
+
+fn first_divergent_step_label(header: &TrajectoryDiffHeader) -> String {
+    match (
+        header.first_divergent_step_index,
+        header.first_divergent_step_role.as_deref(),
+    ) {
+        (Some(index), Some(role)) => format!("{index} role={role}"),
+        (Some(index), None) => index.to_string(),
+        _ => "none".into(),
     }
 }
 

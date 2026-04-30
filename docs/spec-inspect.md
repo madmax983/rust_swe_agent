@@ -98,7 +98,7 @@ same filtered field-diff semantics.
 
 The text header summarizes `instance_id`, both paths, baseline/candidate
 failure categories, attempts, cost, token counts, total steps, and the first
-divergent step. `--format json` emits:
+divergent step with its role. `--format json` emits:
 
 ```json
 {
@@ -106,7 +106,8 @@ divergent step. `--format json` emits:
   "header": {
     "baseline_failure_category": "none",
     "candidate_failure_category": "step_limit",
-    "first_divergent_step_index": 3
+    "first_divergent_step_index": 3,
+    "first_divergent_step_role": "assistant"
   },
   "steps": [
     {

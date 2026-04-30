@@ -47,7 +47,7 @@ impl Environment for LocalEnvironment {
     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
         let mut cmd = if cfg!(windows) {
             let mut c = Command::new(&self.shell);
-            c.arg("/C").arg(&req.command);
+            c.raw_arg("/C").raw_arg(&req.command);
             c
         } else {
             let mut c = Command::new(&self.shell);

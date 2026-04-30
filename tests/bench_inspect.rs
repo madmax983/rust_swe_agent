@@ -529,6 +529,8 @@ fn diff_orphan_tool_record_does_not_shift_later_assistant_indices() {
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["header"]["first_divergent_step_index"], 0, "{v:#}");
+    assert_eq!(v["header"]["first_divergent_step_role"], "tool", "{v:#}");
     let steps = v["steps"].as_array().unwrap();
     let assistant_one = steps
         .iter()
@@ -579,6 +581,7 @@ fn diff_trailing_prompt_tail_uses_next_logical_step_index() {
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["header"]["first_divergent_step_index"], 2, "{v:#}");
+    assert_eq!(v["header"]["first_divergent_step_role"], "prompt", "{v:#}");
     let prompt_tail = v["steps"]
         .as_array()
         .unwrap()
@@ -672,6 +675,7 @@ fn diff_json_output_schema_is_stable() {
     assert_eq!(v["header"]["baseline_total_steps"], 1);
     assert_eq!(v["header"]["candidate_total_steps"], 1);
     assert_eq!(v["header"]["first_divergent_step_index"], 0);
+    assert_eq!(v["header"]["first_divergent_step_role"], "assistant");
     assert_eq!(v["steps"][0]["index"], 0);
     assert_eq!(v["steps"][0]["role"], "assistant");
     assert_eq!(v["steps"][0]["status"], "diverge");
