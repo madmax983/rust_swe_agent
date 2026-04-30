@@ -11,7 +11,7 @@ use crate::trajectory::{Trajectory, outcome};
 
 /// Inputs for a forecast run.
 pub struct ForecastArgs {
-    /// Base sweep arguments. Forecast overrides output, sample, seed, and
+    /// Base sweep arguments. Forecast overrides output, subset selection, and
     /// calibration cost-limit handling before delegating to the sweep runner.
     pub sweep: swebench::SwebenchArgs,
     /// Number of instances to run in the calibration slice.
@@ -175,12 +175,16 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastReport, Error> {
     };
     let limit = args.sweep.cost_limit_usd;
     let parallel = args.sweep.parallel.max(1);
+    let calibration_instance_ids =
+        calibration_instance_ids(&args.sweep, args.calibration_n, args.seed)?;
 
     let mut sweep = args.sweep;
     sweep.output_dir = calibration_dir.clone();
     sweep.resume = false;
-    sweep.sample = Some(args.calibration_n);
-    sweep.seed = Some(args.seed);
+    sweep.instance_ids = Some(calibration_instance_ids.join(","));
+    sweep.limit = None;
+    sweep.sample = None;
+    sweep.seed = None;
     sweep.cost_limit_usd = None;
     sweep.preflight_format = "silent".into();
     sweep.preflight_mode = "forecast".into();
@@ -371,6 +375,26 @@ pub fn render_text(report: &ForecastReport) -> String {
 }
 
 fn target_count(args: &swebench::SwebenchArgs) -> Result<usize, Error> {
+    Ok(planned_instances(args)?.len())
+}
+
+fn calibration_instance_ids(
+    args: &swebench::SwebenchArgs,
+    calibration_n: usize,
+    seed: u64,
+) -> Result<Vec<String>, Error> {
+    let planned = planned_instances(args)?;
+    let (calibration, _) =
+        swebench::apply_subset(planned, None, None, Some(calibration_n), Some(seed))?;
+    Ok(calibration
+        .into_iter()
+        .map(|inst| inst.instance_id)
+        .collect())
+}
+
+fn planned_instances(
+    args: &swebench::SwebenchArgs,
+) -> Result<Vec<swebench::SweBenchInstance>, Error> {
     let instances = swebench::load_dataset(&args.dataset_path)?;
     let (filtered, _) = swebench::apply_subset(
         instances,
@@ -379,7 +403,7 @@ fn target_count(args: &swebench::SwebenchArgs) -> Result<usize, Error> {
         args.sample,
         args.seed,
     )?;
-    Ok(filtered.len())
+    Ok(filtered)
 }
 
 fn mark_forecast_manifest(results: &mut SweepResults, calibration_dir: &Path) -> Result<(), Error> {
