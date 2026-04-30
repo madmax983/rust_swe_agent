@@ -376,8 +376,8 @@ fn target_count(args: &swebench::SwebenchArgs) -> Result<usize, Error> {
         instances,
         args.instance_ids.as_deref(),
         args.limit,
-        None,
-        None,
+        args.sample,
+        args.seed,
     )?;
     Ok(filtered.len())
 }

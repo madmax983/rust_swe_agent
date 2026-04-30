@@ -227,12 +227,15 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 async fn run_forecast_from_cmd(
-    s: args::SwebenchCmd,
+    mut s: args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastReport, Error> {
     let calibration_n = s.calibration_n;
     let seed = s.seed.unwrap_or(42);
     let target_n = s.target_n;
     let confidence_pct = s.confidence;
+    if s.sample.is_none() {
+        s.seed = None;
+    }
     let cfg = swebench_config_from_cmd(&s)?;
     let sweep = swebench_args_from_cmd(s, cfg, "forecast");
     crate::run::forecast::run(crate::run::forecast::ForecastArgs {
