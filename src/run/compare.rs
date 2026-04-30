@@ -1173,6 +1173,7 @@ mod tests {
         assert!(report.manifest_deltas.is_empty());
         // sanity: direct helper detects prompt hash-only changes
         let baseline = ProvenanceManifest {
+            purpose: None,
             harness: crate::run::swebench::HarnessManifest {
                 name: "x".into(),
                 version: "1".into(),
@@ -1424,6 +1425,7 @@ mod tests {
             retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
+                purpose: None,
                 harness: crate::run::swebench::HarnessManifest {
                     name: "h".into(),
                     version: "v".into(),
@@ -1553,6 +1555,7 @@ mod tests {
             retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
+                purpose: None,
                 harness: crate::run::swebench::HarnessManifest {
                     name: "h".into(),
                     version: "v".into(),
@@ -1636,6 +1639,7 @@ mod tests {
             retried_instances: 0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
+                purpose: None,
                 harness: crate::run::swebench::HarnessManifest {
                     name: "h".into(),
                     version: "v".into(),

@@ -3,6 +3,7 @@
 
 pub mod compare;
 pub mod evaluate;
+pub mod forecast;
 pub mod hello_world;
 pub mod inspect;
 pub mod mini;
