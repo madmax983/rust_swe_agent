@@ -201,6 +201,30 @@ fn write_orphan_tool_alignment_traj(path: &Path, instance_id: &str, include_orph
     std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
 }
 
+fn write_trailing_prompt_traj(path: &Path, instance_id: &str, include_trailing_prompt: bool) {
+    let mut t = Trajectory::new();
+    t.info
+        .other
+        .insert("instance_id".into(), serde_json::json!(instance_id));
+    t.info.outcome = Some(outcome::SUBMITTED.into());
+    t.info.total_cost_usd = Some(0.10);
+    t.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+    });
+    t.info.steps = Some(2);
+
+    record_assistant_tool_step(&mut t, "```bash\necho one\n```", "echo one", "one\n");
+    record_assistant_tool_step(&mut t, "```bash\necho two\n```", "echo two", "two\n");
+    if include_trailing_prompt {
+        t.record_message(&rust_swe_agent::model::Message::user(
+            "continue with next check",
+        ));
+    }
+
+    std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+}
+
 fn record_assistant_tool_step(
     trajectory: &mut Trajectory,
     assistant: &str,
@@ -531,6 +555,45 @@ fn diff_orphan_tool_record_does_not_shift_later_assistant_indices() {
 }
 
 #[test]
+fn diff_trailing_prompt_tail_uses_next_logical_step_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("baseline.traj.json");
+    let candidate = dir.path().join("candidate.traj.json");
+    write_trailing_prompt_traj(&baseline, "abc", false);
+    write_trailing_prompt_traj(&candidate, "abc", true);
+
+    let out = Command::new(binary_path())
+        .arg("bench")
+        .arg("inspect")
+        .arg("--diff")
+        .arg(&baseline)
+        .arg(&candidate)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["header"]["first_divergent_step_index"], 2, "{v:#}");
+    let prompt_tail = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["role"] == "prompt")
+        .unwrap_or_else(|| panic!("missing prompt tail in {v:#}"));
+    assert_eq!(prompt_tail["index"], 2);
+    assert_eq!(prompt_tail["status"], "candidate_only");
+    assert_eq!(
+        prompt_tail["candidate"]["prompt"],
+        "user: continue with next check"
+    );
+}
+
+#[test]
 fn diff_instance_id_mismatch_fails_fast() {
     let dir = tempfile::tempdir().unwrap();
     let baseline = dir.path().join("baseline.traj.json");
@@ -708,6 +771,53 @@ fn diff_suppresses_timestamp_noise_by_default() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("[step 0 - identical]"), "{stdout}");
+}
+
+#[test]
+fn diff_unified_format_suppresses_noise_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("baseline.traj.json");
+    let candidate = dir.path().join("candidate.traj.json");
+    write_diff_traj(
+        &baseline,
+        "abc",
+        None,
+        0.10,
+        &[(
+            "hello world",
+            "cat log",
+            "finished_at=2026-04-27T12:00:00Z\n",
+            "",
+            0,
+        )],
+    );
+    write_diff_traj(
+        &candidate,
+        "abc",
+        None,
+        0.10,
+        &[(
+            "hello   world",
+            "cat log",
+            "finished_at=2026-04-27T12:00:01Z\n",
+            "",
+            0,
+        )],
+    );
+
+    let out = Command::new(binary_path())
+        .arg("bench")
+        .arg("inspect")
+        .arg("--diff")
+        .arg(&baseline)
+        .arg(&candidate)
+        .arg("--format")
+        .arg("unified")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout, "--- baseline\n+++ candidate\n", "{stdout}");
 }
 
 #[test]

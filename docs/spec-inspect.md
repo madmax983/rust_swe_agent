@@ -93,7 +93,8 @@ labels are highlighted with ANSI color. The compared fields are:
 * `tool.stderr`
 
 Whitespace-only and timestamp-only differences are suppressed by default.
-`--show-noise` re-enables them.
+`--show-noise` re-enables them. Text, JSON, and unified formats all use the
+same filtered field-diff semantics.
 
 The text header summarizes `instance_id`, both paths, baseline/candidate
 failure categories, attempts, cost, token counts, total steps, and the first

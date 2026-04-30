@@ -11,6 +11,15 @@ use crate::env::RunResult;
 use crate::error::Error;
 use crate::trajectory::{FailureCategory, MessageRecord, Trajectory};
 
+const DIFF_FIELD_ORDER: [&str; 6] = [
+    "prompt.content",
+    "assistant.content",
+    "bash.command",
+    "tool.exit_code",
+    "tool.stdout",
+    "tool.stderr",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrajectoryDiffFormat {
     Text,
@@ -453,7 +462,6 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
     let mut message_index = 0usize;
     let mut assistant_index = 0usize;
     let mut tool_index = 0usize;
-    let prompt_index = 0usize;
     while message_index < trajectory.messages.len() {
         let message = &trajectory.messages[message_index];
         if let Some(run_result) = run_result(message) {
@@ -507,7 +515,7 @@ fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
     if let Some(prompt) = take_prompt(&mut pending_prompt) {
         push_keyed_step(
             &mut steps,
-            prompt_index,
+            assistant_index,
             "prompt",
             SemanticStep {
                 prompt: Some(prompt),
@@ -580,14 +588,7 @@ fn parse_bash_fence(content: &str) -> Option<String> {
 
 fn diff_fields(left: &SemanticStep, right: &SemanticStep, show_noise: bool) -> Vec<String> {
     let mut fields = Vec::new();
-    for field in [
-        "prompt.content",
-        "assistant.content",
-        "bash.command",
-        "tool.exit_code",
-        "tool.stdout",
-        "tool.stderr",
-    ] {
+    for field in DIFF_FIELD_ORDER {
         if !field_equal(left, right, field, show_noise) {
             fields.push(field.to_owned());
         }
@@ -846,21 +847,55 @@ fn canonical_side_lines(report: &TrajectoryDiffReport, baseline: bool) -> Vec<St
             step.candidate.as_ref()
         };
         lines.push(format!("step {} role={}", step.index, step.role));
-        if let Some(side) = side {
-            for field in present_fields(side) {
-                let value = if field == "tool.exit_code" {
-                    side.exit_code
-                        .map_or_else(|| "<missing>".into(), |code| code.to_string())
-                } else {
-                    side.field_value(field).unwrap_or("<missing>").to_owned()
-                };
-                push_canonical_field_lines(&mut lines, field, &value);
-            }
-        } else {
+        if side.is_none() {
             lines.push("<missing>".into());
+            continue;
+        }
+        for field in canonical_fields(step) {
+            let Some(value) = canonical_field_value(step, field, baseline) else {
+                continue;
+            };
+            push_canonical_field_lines(&mut lines, field, &value);
         }
     }
     lines
+}
+
+fn canonical_fields(step: &TrajectoryDiffStep) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    for field in DIFF_FIELD_ORDER {
+        let present = step
+            .baseline
+            .as_ref()
+            .is_some_and(|side| side.field_display_value(field).is_some())
+            || step
+                .candidate
+                .as_ref()
+                .is_some_and(|side| side.field_display_value(field).is_some());
+        if present {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+fn canonical_field_value(step: &TrajectoryDiffStep, field: &str, baseline: bool) -> Option<String> {
+    let is_diff_field = step.diff_fields.iter().any(|name| name == field);
+    let source = if is_diff_field {
+        if baseline {
+            step.baseline.as_ref()
+        } else {
+            step.candidate.as_ref()
+        }
+    } else {
+        step.baseline.as_ref().or(step.candidate.as_ref())
+    }?;
+
+    Some(
+        source
+            .field_display_value(field)
+            .map_or_else(|| "<missing>".into(), Cow::into_owned),
+    )
 }
 
 fn push_canonical_field_lines(lines: &mut Vec<String>, field: &str, value: &str) {
