@@ -45,15 +45,7 @@ fn default_shell() -> String {
 #[async_trait]
 impl Environment for LocalEnvironment {
     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new(&self.shell);
-            c.raw_arg("/C").raw_arg(&req.command);
-            c
-        } else {
-            let mut c = Command::new(&self.shell);
-            c.arg("-c").arg(&req.command);
-            c
-        };
+        let mut cmd = shell_command(&self.shell, &req.command);
 
         if let Some(cwd) = req.cwd.as_ref() {
             cmd.current_dir(cwd);
@@ -110,6 +102,20 @@ impl Environment for LocalEnvironment {
             }),
         }
     }
+}
+
+#[cfg(windows)]
+fn shell_command(shell: &str, command: &str) -> Command {
+    let mut cmd = Command::new(shell);
+    cmd.raw_arg("/C").raw_arg(command);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn shell_command(shell: &str, command: &str) -> Command {
+    let mut cmd = Command::new(shell);
+    cmd.arg("-c").arg(command);
+    cmd
 }
 
 #[cfg(test)]
