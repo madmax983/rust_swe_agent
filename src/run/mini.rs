@@ -18,6 +18,8 @@ use crate::model::{DeterministicModel, Model, ModelUsage};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 use crate::trajectory::FailureCategory;
 
+const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
+
 /// How a runner should snapshot the agent's working tree as a unified diff
 /// after submission. Optional on `MiniArgs` because patch capture only
 /// makes sense for benchmark sweeps; the standalone `bench mini` CLI run
@@ -189,19 +191,14 @@ fn classify_error(err: &Error) -> FailureCategory {
 /// We use `--no-color`, `--binary`, and `--unified=3` to match the format
 /// the SWE-bench evaluator (`sb-cli`) consumes and `git apply` accepts.
 async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result<String, String> {
-    // `git -C <workdir>` keeps us independent of the env's idea of cwd
-    // (the local env inherits the process cwd, the docker env uses `-w`).
-    // The `--` ensures the trailing argument is a pathspec rather than a
-    // ref, which matters when the workdir is empty or unborn.
-    let base = spec.base_commit.as_deref().unwrap_or("HEAD");
-    // Quote `base` to defuse hostile dataset values; SWE-bench commits are
-    // hex SHAs but a malformed instance shouldn't be able to inject shell.
-    let cmd = format!(
-        "git -C {workdir} diff --no-color --binary --unified=3 {base} -- .",
-        workdir = shell_quote(&spec.workdir.to_string_lossy()),
-        base = shell_quote(base),
-    );
-    let req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    // Keep paths in `cwd` and the base revision in the environment so valid
+    // revspec punctuation does not become shell syntax.
+    let base = validate_git_rev(spec.base_commit.as_deref().unwrap_or("HEAD"))?;
+    let base_arg = patch_base_shell_arg(base);
+    let cmd = format!("git diff --no-color --binary --unified=3 --end-of-options {base_arg} -- .");
+    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    req.cwd = Some(spec.workdir.clone());
+    req.env.insert(PATCH_BASE_ENV.into(), base.to_owned());
     let result = env
         .run(req)
         .await
@@ -219,20 +216,47 @@ async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result
     Ok(result.stdout)
 }
 
-/// Single-quote-escape a string for safe inclusion in a `bash -c` argv.
-/// Closes the quote, emits an escaped literal `'`, reopens — the standard
-/// POSIX shell idiom.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for c in s.chars() {
-        if c == '\'' {
-            out.push_str("'\\''");
+fn validate_git_rev(rev: &str) -> Result<&str, String> {
+    let valid = !rev.is_empty() && rev.chars().all(|ch| !ch.is_control());
+    if valid {
+        Ok(rev)
+    } else {
+        Err(format!("invalid git revision for diff base: {rev:?}"))
+    }
+}
+
+fn patch_base_shell_arg(rev: &str) -> String {
+    if cfg!(windows) {
+        if rev.contains('"') {
+            quote_git_rev_for_cmd(rev)
         } else {
-            out.push(c);
+            format!("\"%{PATCH_BASE_ENV}%\"")
+        }
+    } else {
+        format!("\"${PATCH_BASE_ENV}\"")
+    }
+}
+
+fn quote_git_rev_for_cmd(rev: &str) -> String {
+    let needs_quotes = rev.chars().any(char::is_whitespace);
+    let mut out = String::with_capacity(rev.len() + usize::from(needs_quotes) * 2);
+    if needs_quotes {
+        out.push('"');
+    }
+    for ch in rev.chars() {
+        match (needs_quotes, ch) {
+            (_, '"') => out.push_str("\\\""),
+            (false, '^') => out.push_str("^^"),
+            (false, '&' | '|' | '<' | '>' | '(' | ')' | '%') => {
+                out.push('^');
+                out.push(ch);
+            }
+            _ => out.push(ch),
         }
     }
-    out.push('\'');
+    if needs_quotes {
+        out.push('"');
+    }
     out
 }
 
@@ -299,7 +323,11 @@ pub fn slugify(task: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn slugify_basic() {
@@ -309,11 +337,217 @@ mod tests {
     }
 
     #[test]
-    fn shell_quote_escapes_single_quotes() {
-        assert_eq!(shell_quote("a"), "'a'");
-        assert_eq!(shell_quote("a b"), "'a b'");
-        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
-        // Already-quoted-looking strings round-trip safely.
-        assert_eq!(shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+    fn validate_git_rev_accepts_revspec_chars_and_rejects_empty_or_control() {
+        assert_eq!(validate_git_rev("HEAD"), Ok("HEAD"));
+        assert_eq!(validate_git_rev("abc123"), Ok("abc123"));
+        assert_eq!(validate_git_rev("HEAD@{1}"), Ok("HEAD@{1}"));
+        assert_eq!(validate_git_rev("v1.2^{commit}"), Ok("v1.2^{commit}"));
+        assert_eq!(
+            validate_git_rev("refs/heads/feat%test"),
+            Ok("refs/heads/feat%test")
+        );
+        assert_eq!(
+            validate_git_rev("refs/heads/feat\"test"),
+            Ok("refs/heads/feat\"test")
+        );
+        assert_eq!(validate_git_rev("HEAD^{/foo bar}"), Ok("HEAD^{/foo bar}"));
+        assert_eq!(
+            validate_git_rev("HEAD^{/foo && bar}"),
+            Ok("HEAD^{/foo && bar}")
+        );
+        assert!(validate_git_rev("HEAD\nmain").is_err());
+        assert!(validate_git_rev("").is_err());
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_reflog_revision_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        std::fs::write(repo.join("hello.txt"), "committed\n").unwrap();
+        git(&repo, &["commit", "-am", "advance"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD@{1}".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_peeled_tag_revision_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["tag", "-a", "v1.2", "-m", "v1.2"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("v1.2^{commit}".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_percent_ref_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["branch", "feat%test"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("refs/heads/feat%test".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_quoted_ref_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        write_packed_ref(&repo, "refs/heads/feat\"test");
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("refs/heads/feat\"test".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_accepts_commit_message_search_revision_with_space() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "foo bar base"]);
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD^{/foo bar}".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"), "{diff}");
+        assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn capture_patch_quotes_shell_metacharacters_in_revision_base() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD && echo injected > injected.txt".into()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+        };
+
+        let result = capture_patch(&LocalEnvironment::new(), &spec).await;
+        assert!(result.is_err(), "{result:?}");
+        assert!(!repo.join("injected.txt").exists());
+    }
+
+    fn init_repo(dir: &Path) {
+        git(dir, &["init"]);
+        git(dir, &["config", "user.email", "test@example.invalid"]);
+        git(dir, &["config", "user.name", "Test User"]);
+    }
+
+    fn write_packed_ref(dir: &Path, ref_name: &str) {
+        let hash = git_stdout(dir, &["rev-parse", "HEAD"]);
+        std::fs::write(
+            dir.join(".git").join("packed-refs"),
+            format!("{} {}\n", hash.trim(), ref_name),
+        )
+        .unwrap();
+        let resolved = git_stdout(dir, &["rev-parse", ref_name]);
+        assert_eq!(resolved.trim(), hash.trim());
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = git_raw(dir, args);
+        assert!(
+            out.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let out = git_raw(dir, args);
+        assert!(
+            out.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn git_raw(dir: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
     }
 }

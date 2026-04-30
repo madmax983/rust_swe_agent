@@ -45,15 +45,7 @@ fn default_shell() -> String {
 #[async_trait]
 impl Environment for LocalEnvironment {
     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new(&self.shell);
-            c.arg("/C").arg(&req.command);
-            c
-        } else {
-            let mut c = Command::new(&self.shell);
-            c.arg("-c").arg(&req.command);
-            c
-        };
+        let mut cmd = shell_command(&self.shell, &req.command);
 
         if let Some(cwd) = req.cwd.as_ref() {
             cmd.current_dir(cwd);
@@ -112,6 +104,20 @@ impl Environment for LocalEnvironment {
     }
 }
 
+#[cfg(windows)]
+fn shell_command(shell: &str, command: &str) -> Command {
+    let mut cmd = Command::new(shell);
+    cmd.raw_arg("/C").raw_arg(command);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn shell_command(shell: &str, command: &str) -> Command {
+    let mut cmd = Command::new(shell);
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -137,7 +143,12 @@ mod tests {
     #[tokio::test]
     async fn env_var_passthrough() {
         let env = LocalEnvironment::new();
-        let mut req = RunRequest::new("echo $RSA_TEST_VAR");
+        let command = if cfg!(windows) {
+            "echo %RSA_TEST_VAR%"
+        } else {
+            "echo $RSA_TEST_VAR"
+        };
+        let mut req = RunRequest::new(command);
         req.env.insert("RSA_TEST_VAR".into(), "from_test".into());
         let r = env.run(req).await.unwrap();
         assert_eq!(r.stdout.trim(), "from_test");
@@ -146,7 +157,12 @@ mod tests {
     #[tokio::test]
     async fn timeout_flags_timed_out() {
         let env = LocalEnvironment::new();
-        let req = RunRequest::new("sleep 5").with_timeout(Duration::from_millis(100));
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command Start-Sleep -Seconds 5"
+        } else {
+            "sleep 5"
+        };
+        let req = RunRequest::new(command).with_timeout(Duration::from_millis(100));
         let r = env.run(req).await.unwrap();
         assert!(r.timed_out);
     }

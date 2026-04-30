@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{FailureCategory, outcome};
+use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
 fn binary_path() -> std::path::PathBuf {
     // CARGO_BIN_EXE_<name> is set by cargo when running integration tests.
@@ -102,6 +102,54 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
     .unwrap();
 }
 
+fn write_diff_traj(
+    dir: &Path,
+    instance_id: &str,
+    failure_category: Option<FailureCategory>,
+    assistant: &str,
+    command: &str,
+    stdout: &str,
+) {
+    let mut t = Trajectory::new();
+    t.info
+        .other
+        .insert("instance_id".into(), serde_json::json!(instance_id));
+    t.info.outcome = Some(if failure_category.is_some() {
+        outcome::ERROR.into()
+    } else {
+        outcome::SUBMITTED.into()
+    });
+    t.info.failure_category = failure_category;
+    t.info.total_cost_usd = Some(0.10);
+    t.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+    });
+    t.info.steps = Some(1);
+
+    let mut asst = rust_swe_agent::model::Message::assistant(assistant);
+    asst.extra.actions = Some(vec![command.into()]);
+    t.record_message(&asst);
+
+    let mut obs = rust_swe_agent::model::Message::user("tool result");
+    obs.extra.other.insert(
+        "run_result".into(),
+        serde_json::json!({
+            "stdout": stdout,
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        }),
+    );
+    t.record_message(&obs);
+
+    std::fs::write(
+        dir.join(format!("{instance_id}.traj.json")),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn help_lists_compare_subcommand() {
     let out = Command::new(binary_path())
@@ -125,12 +173,177 @@ fn help_lists_compare_subcommand() {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--baseline", "--candidate", "--format", "--max-regressions"] {
+    for flag in [
+        "--baseline",
+        "--candidate",
+        "--format",
+        "--max-regressions",
+        "--inspect-diff",
+        "--emit-diff-script",
+    ] {
         assert!(
             stdout.contains(flag),
             "expected `{flag}` in compare --help, got:\n{stdout}"
         );
     }
+}
+
+#[test]
+fn compare_inspect_diff_sugar_renders_one_instance_diff() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![submitted("a")]);
+    write_results(
+        candidate_dir.path(),
+        vec![errored("a", FailureCategory::StepLimit)],
+    );
+    write_diff_traj(
+        baseline_dir.path(),
+        "a",
+        None,
+        "```bash\npytest -q\n```",
+        "pytest -q",
+        "1 failed\n",
+    );
+    write_diff_traj(
+        candidate_dir.path(),
+        "a",
+        Some(FailureCategory::StepLimit),
+        "```bash\npytest tests\n```",
+        "pytest tests",
+        "2 failed\n",
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--inspect-diff",
+            "a",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("=== bench inspect diff ==="), "{stdout}");
+    assert!(stdout.contains("instance_id: a"), "{stdout}");
+    assert!(stdout.contains("[step 0 - diverge]"), "{stdout}");
+    assert!(stdout.contains("pytest tests"), "{stdout}");
+}
+
+#[test]
+fn compare_emit_diff_script_executes_generated_script_for_all_regressions() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let script = tempfile::NamedTempFile::new().unwrap();
+    let script_path = script.path().to_path_buf();
+    write_results(
+        baseline_dir.path(),
+        vec![
+            submitted("regressed-one"),
+            submitted("regressed-two"),
+            submitted("stable"),
+        ],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![
+            errored("regressed-one", FailureCategory::StepLimit),
+            errored("regressed-two", FailureCategory::ModelParse),
+            submitted("stable"),
+        ],
+    );
+    write_diff_traj(
+        baseline_dir.path(),
+        "regressed-one",
+        None,
+        "```bash\npytest -q\n```",
+        "pytest -q",
+        "1 failed\n",
+    );
+    write_diff_traj(
+        candidate_dir.path(),
+        "regressed-one",
+        Some(FailureCategory::StepLimit),
+        "```bash\npytest tests\n```",
+        "pytest tests",
+        "2 failed\n",
+    );
+    write_diff_traj(
+        baseline_dir.path(),
+        "regressed-two",
+        None,
+        "```bash\ncargo test\n```",
+        "cargo test",
+        "ok\n",
+    );
+    write_diff_traj(
+        candidate_dir.path(),
+        "regressed-two",
+        Some(FailureCategory::ModelParse),
+        "```bash\ncargo test --all\n```",
+        "cargo test --all",
+        "parse error\n",
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--emit-diff-script",
+            script_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let script_text = std::fs::read_to_string(&script_path).unwrap();
+    assert!(
+        script_text.contains("bench inspect --diff"),
+        "{script_text}"
+    );
+    assert!(
+        script_text.contains("regressed-one.traj.json"),
+        "{script_text}"
+    );
+    assert!(
+        script_text.contains("regressed-two.traj.json"),
+        "{script_text}"
+    );
+    assert!(!script_text.contains("stable.traj.json"), "{script_text}");
+
+    let out = Command::new("sh").arg(&script_path).output().unwrap();
+    assert!(
+        out.status.success(),
+        "generated script should exit zero; stdout:\n{}\nstderr:\n{}\nscript:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        script_text
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.matches("=== bench inspect diff ===").count(), 2);
+    assert!(stdout.contains("instance_id: regressed-one"), "{stdout}");
+    assert!(stdout.contains("instance_id: regressed-two"), "{stdout}");
+    assert!(
+        !stdout.contains("instance_id: stable"),
+        "script should only inspect regressions:\n{stdout}"
+    );
 }
 
 #[test]

@@ -253,19 +253,29 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
-    let format = match c.format.as_str() {
-        "text" => crate::run::compare::CompareFormat::Text,
-        "json" => crate::run::compare::CompareFormat::Json,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
-            ))));
-        }
-    };
+    if c.inspect_diff.is_some() && c.emit_diff_script.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "compare: pass only one of --inspect-diff or --emit-diff-script".into(),
+        )));
+    }
+
+    if let Some(instance_id) = c.inspect_diff {
+        let format = parse_trajectory_diff_format(&c.format)?;
+        let report = crate::run::trajectory_diff::diff_sweep_instance(
+            &c.baseline,
+            &c.candidate,
+            &instance_id,
+            c.show_noise,
+        )?;
+        print_trajectory_diff(&report, format)?;
+        return Ok(());
+    }
+
+    let format = parse_compare_format(&c.format)?;
     let breakdown = parse_breakdown_selection(&c.breakdown, false)?;
     let report = crate::run::compare::compute(&crate::run::compare::CompareArgs {
-        baseline: c.baseline,
-        candidate: c.candidate,
+        baseline: c.baseline.clone(),
+        candidate: c.candidate.clone(),
         format,
         max_regressions: c.max_regressions,
         breakdown,
@@ -277,6 +287,9 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             println!("{}", report.to_json_pretty()?);
         }
     }
+    if let Some(path) = c.emit_diff_script {
+        crate::run::compare::write_diff_script(&report, &path)?;
+    }
     if let Some(max) = c.max_regressions {
         if report.regression_count() > max {
             tracing::error!(
@@ -285,6 +298,47 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 "compare: regression count exceeds --max-regressions threshold"
             );
             std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn parse_compare_format(raw: &str) -> Result<crate::run::compare::CompareFormat, Error> {
+    match raw {
+        "text" => Ok(crate::run::compare::CompareFormat::Text),
+        "json" => Ok(crate::run::compare::CompareFormat::Json),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text` or `json`)"
+        )))),
+    }
+}
+
+fn parse_trajectory_diff_format(
+    raw: &str,
+) -> Result<crate::run::trajectory_diff::TrajectoryDiffFormat, Error> {
+    match raw {
+        "text" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Text),
+        "json" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Json),
+        "unified" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Unified),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text`, `json`, or `unified`)"
+        )))),
+    }
+}
+
+fn print_trajectory_diff(
+    report: &crate::run::trajectory_diff::TrajectoryDiffReport,
+    format: crate::run::trajectory_diff::TrajectoryDiffFormat,
+) -> Result<(), Error> {
+    match format {
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Text => {
+            print!("{}", crate::run::trajectory_diff::render_text(report));
+        }
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(report)?);
+        }
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Unified => {
+            print!("{}", crate::run::trajectory_diff::render_unified(report));
         }
     }
     Ok(())
@@ -378,6 +432,29 @@ fn parse_breakdown_selection(
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    if !i.diff.is_empty() {
+        if i.instance.is_some() || i.filter.is_some() || i.sweep.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --diff cannot be combined with --sweep, --instance, or --filter".into(),
+            )));
+        }
+        if i.diff.len() != 2 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --diff expects exactly two trajectory paths".into(),
+            )));
+        }
+        let format = parse_trajectory_diff_format(&i.format)?;
+        let report = crate::run::trajectory_diff::diff_paths(
+            &crate::run::trajectory_diff::TrajectoryDiffArgs {
+                baseline: i.diff[0].clone(),
+                candidate: i.diff[1].clone(),
+                show_noise: i.show_noise,
+            },
+        )?;
+        print_trajectory_diff(&report, format)?;
+        return Ok(());
+    }
+
     let format = match i.format.as_str() {
         "text" => crate::run::inspect::InspectFormat::Text,
         "json" => crate::run::inspect::InspectFormat::Json,
@@ -387,8 +464,13 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
             ))));
         }
     };
+    let sweep = i.sweep.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --sweep is required unless --diff is used".into(),
+        ))
+    })?;
     let out = crate::run::inspect::run(&crate::run::inspect::InspectArgs {
-        sweep: i.sweep,
+        sweep,
         instance: i.instance,
         filter: i.filter,
         full: i.full,

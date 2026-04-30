@@ -330,7 +330,20 @@ mod tests {
             .unwrap();
         let addr = server.local_addr();
         server.shutdown().await;
-        // Port should be reusable.
-        let _again = TcpListener::bind(addr).await.unwrap();
+        // Windows can report AddrInUse briefly after close; poll the
+        // condition instead of turning socket cleanup timing into a race.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match TcpListener::bind(addr).await {
+                Ok(_again) => break,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AddrInUse
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(e) => panic!("failed to rebind {addr}: {e}"),
+            }
+        }
     }
 }

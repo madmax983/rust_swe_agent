@@ -1,0 +1,1119 @@
+//! Pairwise semantic diffs for mini-swe-agent trajectory files.
+
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use crate::env::RunResult;
+use crate::error::Error;
+use crate::trajectory::{FailureCategory, MessageRecord, Trajectory};
+
+const DIFF_FIELD_ORDER: [&str; 6] = [
+    "prompt.content",
+    "assistant.content",
+    "bash.command",
+    "tool.exit_code",
+    "tool.stdout",
+    "tool.stderr",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrajectoryDiffFormat {
+    Text,
+    Json,
+    Unified,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrajectoryDiffArgs {
+    pub baseline: PathBuf,
+    pub candidate: PathBuf,
+    pub show_noise: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrajectoryDiffReport {
+    pub instance_id: String,
+    pub header: TrajectoryDiffHeader,
+    pub steps: Vec<TrajectoryDiffStep>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrajectoryDiffHeader {
+    pub baseline_path: PathBuf,
+    pub candidate_path: PathBuf,
+    pub baseline_failure_category: String,
+    pub candidate_failure_category: String,
+    pub baseline_attempts: u64,
+    pub candidate_attempts: u64,
+    pub baseline_cost_usd: Option<f64>,
+    pub candidate_cost_usd: Option<f64>,
+    pub baseline_prompt_tokens: Option<u64>,
+    pub candidate_prompt_tokens: Option<u64>,
+    pub baseline_completion_tokens: Option<u64>,
+    pub candidate_completion_tokens: Option<u64>,
+    pub baseline_total_steps: usize,
+    pub candidate_total_steps: usize,
+    pub first_divergent_step_index: Option<usize>,
+    pub first_divergent_step_role: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrajectoryDiffStatus {
+    #[serde(rename = "match")]
+    Match,
+    Diverge,
+    BaselineOnly,
+    CandidateOnly,
+}
+
+impl TrajectoryDiffStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Match => "identical",
+            Self::Diverge => "diverge",
+            Self::BaselineOnly => "baseline_only",
+            Self::CandidateOnly => "candidate_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SemanticStep {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrajectoryDiffStep {
+    pub index: usize,
+    pub role: String,
+    pub status: TrajectoryDiffStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<SemanticStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<SemanticStep>,
+    pub diff_fields: Vec<String>,
+}
+
+struct NamedTrajectory {
+    path: PathBuf,
+    instance_id: String,
+    trajectory: Trajectory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct StepKey {
+    index: usize,
+    role: String,
+}
+
+#[derive(Debug, Clone)]
+struct KeyedSemanticStep {
+    key: StepKey,
+    step: SemanticStep,
+}
+
+pub fn diff_paths(args: &TrajectoryDiffArgs) -> Result<TrajectoryDiffReport, Error> {
+    let baseline = load_named_trajectory(&args.baseline)?;
+    let candidate = load_named_trajectory(&args.candidate)?;
+    if baseline.instance_id != candidate.instance_id {
+        return Err(Error::Trajectory(format!(
+            "inspect diff: instance_id mismatch: baseline `{}` candidate `{}`",
+            baseline.instance_id, candidate.instance_id
+        )));
+    }
+    Ok(diff_trajectories(&baseline, &candidate, args.show_noise))
+}
+
+pub fn diff_sweep_instance(
+    baseline_sweep: &Path,
+    candidate_sweep: &Path,
+    instance_id: &str,
+    show_noise: bool,
+) -> Result<TrajectoryDiffReport, Error> {
+    let baseline = resolve_trajectory_path(baseline_sweep, instance_id).ok_or_else(|| {
+        Error::Trajectory(format!(
+            "inspect diff: baseline trajectory not found for `{instance_id}` in {}",
+            baseline_sweep.display()
+        ))
+    })?;
+    let candidate = resolve_trajectory_path(candidate_sweep, instance_id).ok_or_else(|| {
+        Error::Trajectory(format!(
+            "inspect diff: candidate trajectory not found for `{instance_id}` in {}",
+            candidate_sweep.display()
+        ))
+    })?;
+    diff_paths(&TrajectoryDiffArgs {
+        baseline,
+        candidate,
+        show_noise,
+    })
+}
+
+pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
+    let nested = sweep.join(instance_id).join("trajectory.json");
+    if nested.exists() {
+        return Some(nested);
+    }
+    let flat = sweep.join(format!("{instance_id}.traj.json"));
+    flat.exists().then_some(flat)
+}
+
+pub fn render_text(report: &TrajectoryDiffReport) -> String {
+    let mut s = String::new();
+    let width = terminal_width();
+    let column_width = width.saturating_sub(5).saturating_div(2).max(30);
+    let color = color_enabled();
+    s.push_str("\n=== bench inspect diff ===\n");
+    let _ = writeln!(s, "instance_id: {}", report.instance_id);
+    let _ = writeln!(s, "baseline:    {}", report.header.baseline_path.display());
+    let _ = writeln!(s, "candidate:   {}", report.header.candidate_path.display());
+    let _ = writeln!(
+        s,
+        "failure_category: {} -> {}",
+        report.header.baseline_failure_category, report.header.candidate_failure_category
+    );
+    let _ = writeln!(
+        s,
+        "attempts: {} -> {}",
+        report.header.baseline_attempts, report.header.candidate_attempts
+    );
+    let _ = writeln!(
+        s,
+        "cost_usd: {} -> {}",
+        format_cost(report.header.baseline_cost_usd),
+        format_cost(report.header.candidate_cost_usd)
+    );
+    let _ = writeln!(
+        s,
+        "tokens: prompt={} completion={} -> prompt={} completion={}",
+        format_u64(report.header.baseline_prompt_tokens),
+        format_u64(report.header.baseline_completion_tokens),
+        format_u64(report.header.candidate_prompt_tokens),
+        format_u64(report.header.candidate_completion_tokens)
+    );
+    let _ = writeln!(
+        s,
+        "steps: {} -> {}",
+        report.header.baseline_total_steps, report.header.candidate_total_steps
+    );
+    let _ = writeln!(
+        s,
+        "first_divergent_step: {}",
+        first_divergent_step_label(&report.header)
+    );
+
+    for step in &report.steps {
+        let _ = writeln!(
+            s,
+            "\n[step {} - {}] role={}",
+            step.index,
+            step.status.label(),
+            step.role
+        );
+        if step.status == TrajectoryDiffStatus::Match {
+            continue;
+        }
+        if !step.diff_fields.is_empty() {
+            let _ = writeln!(s, "fields: {}", step.diff_fields.join(", "));
+        }
+        for field in &step.diff_fields {
+            let baseline_value = step
+                .baseline
+                .as_ref()
+                .and_then(|side| side.field_display_value(field));
+            let candidate_value = step
+                .candidate
+                .as_ref()
+                .and_then(|side| side.field_display_value(field));
+            write_field_side_by_side(
+                &mut s,
+                field,
+                baseline_value.as_deref(),
+                candidate_value.as_deref(),
+                column_width,
+                color,
+            );
+        }
+        if step.diff_fields.is_empty() {
+            write_side_summary(&mut s, step.baseline.as_ref(), step.candidate.as_ref());
+        }
+    }
+    s
+}
+
+pub fn render_unified(report: &TrajectoryDiffReport) -> String {
+    let baseline = canonical_side_lines(report, true);
+    let candidate = canonical_side_lines(report, false);
+    let mut s = String::new();
+    let _ = writeln!(s, "--- baseline");
+    let _ = writeln!(s, "+++ candidate");
+    if baseline == candidate {
+        return s;
+    }
+    let _ = writeln!(
+        s,
+        "@@ -{} +{} @@",
+        unified_range(baseline.len()),
+        unified_range(candidate.len())
+    );
+    for (prefix, line) in line_diff(&baseline, &candidate) {
+        let _ = writeln!(s, "{prefix}{line}");
+    }
+    s
+}
+
+fn diff_trajectories(
+    baseline: &NamedTrajectory,
+    candidate: &NamedTrajectory,
+    show_noise: bool,
+) -> TrajectoryDiffReport {
+    let baseline_steps = semantic_steps(&baseline.trajectory);
+    let candidate_steps = semantic_steps(&candidate.trajectory);
+    let baseline_by_key: BTreeMap<StepKey, SemanticStep> = baseline_steps
+        .iter()
+        .map(|item| (item.key.clone(), item.step.clone()))
+        .collect();
+    let candidate_by_key: BTreeMap<StepKey, SemanticStep> = candidate_steps
+        .iter()
+        .map(|item| (item.key.clone(), item.step.clone()))
+        .collect();
+    let keys: BTreeSet<StepKey> = baseline_by_key
+        .keys()
+        .chain(candidate_by_key.keys())
+        .cloned()
+        .collect();
+    let mut steps = Vec::with_capacity(keys.len());
+
+    for key in keys {
+        let b = baseline_by_key.get(&key).cloned();
+        let c = candidate_by_key.get(&key).cloned();
+        let (status, diff_fields) = match (&b, &c) {
+            (Some(left), Some(right)) => {
+                let fields = diff_fields(left, right, show_noise);
+                if fields.is_empty() {
+                    (TrajectoryDiffStatus::Match, fields)
+                } else {
+                    (TrajectoryDiffStatus::Diverge, fields)
+                }
+            }
+            (Some(left), None) => (
+                TrajectoryDiffStatus::BaselineOnly,
+                present_fields(left)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            (None, Some(right)) => (
+                TrajectoryDiffStatus::CandidateOnly,
+                present_fields(right)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            (None, None) => (TrajectoryDiffStatus::Match, Vec::new()),
+        };
+        steps.push(TrajectoryDiffStep {
+            index: key.index,
+            role: key.role,
+            status,
+            baseline: b,
+            candidate: c,
+            diff_fields,
+        });
+    }
+
+    let first_divergent_step = steps
+        .iter()
+        .find(|step| step.status != TrajectoryDiffStatus::Match);
+    let first_divergent_step_index = first_divergent_step.map(|step| step.index);
+    let first_divergent_step_role = first_divergent_step.map(|step| step.role.clone());
+
+    TrajectoryDiffReport {
+        instance_id: baseline.instance_id.clone(),
+        header: build_header(
+            baseline,
+            candidate,
+            baseline_steps.len(),
+            candidate_steps.len(),
+            first_divergent_step_index,
+            first_divergent_step_role,
+        ),
+        steps,
+    }
+}
+
+fn build_header(
+    baseline: &NamedTrajectory,
+    candidate: &NamedTrajectory,
+    baseline_step_count: usize,
+    candidate_step_count: usize,
+    first_divergent_step_index: Option<usize>,
+    first_divergent_step_role: Option<String>,
+) -> TrajectoryDiffHeader {
+    TrajectoryDiffHeader {
+        baseline_path: baseline.path.clone(),
+        candidate_path: candidate.path.clone(),
+        baseline_failure_category: failure_label_opt(baseline.trajectory.info.failure_category)
+            .into(),
+        candidate_failure_category: failure_label_opt(candidate.trajectory.info.failure_category)
+            .into(),
+        baseline_attempts: attempts(&baseline.trajectory),
+        candidate_attempts: attempts(&candidate.trajectory),
+        baseline_cost_usd: baseline.trajectory.info.total_cost_usd,
+        candidate_cost_usd: candidate.trajectory.info.total_cost_usd,
+        baseline_prompt_tokens: baseline
+            .trajectory
+            .info
+            .token_usage
+            .as_ref()
+            .map(|usage| usage.prompt_tokens),
+        candidate_prompt_tokens: candidate
+            .trajectory
+            .info
+            .token_usage
+            .as_ref()
+            .map(|usage| usage.prompt_tokens),
+        baseline_completion_tokens: baseline
+            .trajectory
+            .info
+            .token_usage
+            .as_ref()
+            .map(|usage| usage.completion_tokens),
+        candidate_completion_tokens: candidate
+            .trajectory
+            .info
+            .token_usage
+            .as_ref()
+            .map(|usage| usage.completion_tokens),
+        baseline_total_steps: baseline
+            .trajectory
+            .info
+            .steps
+            .map_or(baseline_step_count, usize_from_u32),
+        candidate_total_steps: candidate
+            .trajectory
+            .info
+            .steps
+            .map_or(candidate_step_count, usize_from_u32),
+        first_divergent_step_index,
+        first_divergent_step_role,
+    }
+}
+
+fn first_divergent_step_label(header: &TrajectoryDiffHeader) -> String {
+    match (
+        header.first_divergent_step_index,
+        header.first_divergent_step_role.as_deref(),
+    ) {
+        (Some(index), Some(role)) => format!("{index} role={role}"),
+        (Some(index), None) => index.to_string(),
+        _ => "none".into(),
+    }
+}
+
+fn load_named_trajectory(path: &Path) -> Result<NamedTrajectory, Error> {
+    let text = std::fs::read_to_string(path)?;
+    let trajectory: Trajectory = serde_json::from_str(&text)?;
+    let instance_id = explicit_instance_id(&trajectory)
+        .or_else(|| derive_instance_id(path))
+        .ok_or_else(|| {
+            Error::Trajectory(format!(
+                "inspect diff: unable to infer instance_id from {}",
+                path.display()
+            ))
+        })?;
+    Ok(NamedTrajectory {
+        path: path.to_path_buf(),
+        instance_id,
+        trajectory,
+    })
+}
+
+fn explicit_instance_id(trajectory: &Trajectory) -> Option<String> {
+    trajectory
+        .info
+        .other
+        .get("instance_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+fn derive_instance_id(path: &Path) -> Option<String> {
+    let file_name = path.file_name()?.to_str()?;
+    if file_name == "trajectory.json" {
+        return path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned);
+    }
+    file_name
+        .strip_suffix(".traj.json")
+        .map(str::to_owned)
+        .or_else(|| path.file_stem()?.to_str().map(str::to_owned))
+}
+
+fn semantic_steps(trajectory: &Trajectory) -> Vec<KeyedSemanticStep> {
+    let mut steps = Vec::new();
+    let mut pending_prompt = Vec::new();
+    let mut message_index = 0usize;
+    let mut assistant_index = 0usize;
+    let mut tool_index = 0usize;
+    while message_index < trajectory.messages.len() {
+        let message = &trajectory.messages[message_index];
+        if let Some(run_result) = run_result(message) {
+            push_keyed_step(
+                &mut steps,
+                tool_index,
+                "tool",
+                SemanticStep {
+                    prompt: take_prompt(&mut pending_prompt),
+                    assistant_content: None,
+                    bash: None,
+                    exit_code: Some(run_result.exit_code),
+                    stdout: Some(run_result.stdout),
+                    stderr: Some(run_result.stderr),
+                },
+            );
+            tool_index += 1;
+            message_index += 1;
+            continue;
+        }
+
+        if message.role == "system" || message.role == "user" {
+            pending_prompt.push(format!("{}: {}", message.role, message.content));
+            message_index += 1;
+            continue;
+        }
+
+        if message.role == "assistant" {
+            let mut step = SemanticStep {
+                prompt: take_prompt(&mut pending_prompt),
+                assistant_content: Some(message.content.clone()),
+                bash: infer_bash_from_assistant(message),
+                exit_code: None,
+                stdout: None,
+                stderr: None,
+            };
+            if let Some(next) = trajectory.messages.get(message_index + 1) {
+                if let Some(run_result) = run_result(next) {
+                    step.exit_code = Some(run_result.exit_code);
+                    step.stdout = Some(run_result.stdout);
+                    step.stderr = Some(run_result.stderr);
+                    message_index += 1;
+                }
+            }
+            push_keyed_step(&mut steps, assistant_index, "assistant", step);
+            assistant_index += 1;
+        }
+        message_index += 1;
+    }
+
+    if let Some(prompt) = take_prompt(&mut pending_prompt) {
+        push_keyed_step(
+            &mut steps,
+            assistant_index,
+            "prompt",
+            SemanticStep {
+                prompt: Some(prompt),
+                assistant_content: None,
+                bash: None,
+                exit_code: None,
+                stdout: None,
+                stderr: None,
+            },
+        );
+    }
+    steps
+}
+
+fn take_prompt(prompt_parts: &mut Vec<String>) -> Option<String> {
+    (!prompt_parts.is_empty()).then(|| std::mem::take(prompt_parts).join("\n"))
+}
+
+fn push_keyed_step(
+    steps: &mut Vec<KeyedSemanticStep>,
+    index: usize,
+    role: &str,
+    step: SemanticStep,
+) {
+    steps.push(KeyedSemanticStep {
+        key: StepKey {
+            index,
+            role: role.to_owned(),
+        },
+        step,
+    });
+}
+
+fn run_result(message: &MessageRecord) -> Option<RunResult> {
+    if message.role != "user" && message.role != "tool" {
+        return None;
+    }
+    message
+        .extra
+        .other
+        .get("run_result")
+        .and_then(|value| serde_json::from_value::<RunResult>(value.clone()).ok())
+}
+
+fn infer_bash_from_assistant(message: &MessageRecord) -> Option<String> {
+    message
+        .extra
+        .actions
+        .as_ref()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action.as_str() != "__SUBMIT__")
+        })
+        .cloned()
+        .or_else(|| parse_bash_fence(&message.content))
+}
+
+fn parse_bash_fence(content: &str) -> Option<String> {
+    let start = content.find("```bash")?;
+    let after_lang = content[start..]
+        .find('\n')
+        .map(|offset| start + offset + 1)?;
+    let end = content[after_lang..]
+        .find("```")
+        .map(|offset| after_lang + offset)?;
+    let command = content[after_lang..end].trim();
+    (!command.is_empty()).then(|| command.to_owned())
+}
+
+fn diff_fields(left: &SemanticStep, right: &SemanticStep, show_noise: bool) -> Vec<String> {
+    let mut fields = Vec::new();
+    for field in DIFF_FIELD_ORDER {
+        if !field_equal(left, right, field, show_noise) {
+            fields.push(field.to_owned());
+        }
+    }
+    fields
+}
+
+fn field_equal(left: &SemanticStep, right: &SemanticStep, field: &str, show_noise: bool) -> bool {
+    match field {
+        "tool.exit_code" => left.exit_code == right.exit_code,
+        _ => option_text_equal(
+            left.field_value(field),
+            right.field_value(field),
+            show_noise,
+        ),
+    }
+}
+
+fn option_text_equal(left: Option<&str>, right: Option<&str>, show_noise: bool) -> bool {
+    match (left, right) {
+        (Some(a), Some(b)) if show_noise => a == b,
+        (Some(a), Some(b)) => canonical_noise(a) == canonical_noise(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn present_fields(step: &SemanticStep) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if step.prompt.is_some() {
+        fields.push("prompt.content");
+    }
+    if step.assistant_content.is_some() {
+        fields.push("assistant.content");
+    }
+    if step.bash.is_some() {
+        fields.push("bash.command");
+    }
+    if step.exit_code.is_some() {
+        fields.push("tool.exit_code");
+    }
+    if step.stdout.is_some() {
+        fields.push("tool.stdout");
+    }
+    if step.stderr.is_some() {
+        fields.push("tool.stderr");
+    }
+    fields
+}
+
+impl SemanticStep {
+    fn field_value(&self, field: &str) -> Option<&str> {
+        match field {
+            "prompt.content" => self.prompt.as_deref(),
+            "assistant.content" => self.assistant_content.as_deref(),
+            "bash.command" => self.bash.as_deref(),
+            "tool.stdout" => self.stdout.as_deref(),
+            "tool.stderr" => self.stderr.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn field_display_value(&self, field: &str) -> Option<Cow<'_, str>> {
+        if field == "tool.exit_code" {
+            return self.exit_code.map(|code| Cow::Owned(code.to_string()));
+        }
+        self.field_value(field).map(Cow::Borrowed)
+    }
+}
+
+fn canonical_noise(text: &str) -> String {
+    collapse_whitespace(&replace_timestamps(text))
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::new();
+    let mut previous_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !previous_space {
+                out.push(' ');
+                previous_space = true;
+            }
+        } else {
+            out.push(ch);
+            previous_space = false;
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn replace_timestamps(text: &str) -> String {
+    let mut out = String::new();
+    let mut index = 0usize;
+    while index < text.len() {
+        if let Some(end) = timestamp_end(text, index) {
+            out.push_str("<timestamp>");
+            index = end;
+            continue;
+        }
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
+fn timestamp_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if start + 10 > bytes.len() || !looks_like_date(bytes, start) {
+        return None;
+    }
+    let mut end = start + 10;
+    if end < bytes.len() && (bytes[end] == b'T' || bytes[end] == b' ') {
+        let time_start = end + 1;
+        if time_start + 8 <= bytes.len() && looks_like_time(bytes, time_start) {
+            end = time_start + 8;
+            while end < bytes.len() && is_timestamp_tail(bytes[end]) {
+                end += 1;
+            }
+        }
+    }
+    Some(end)
+}
+
+fn looks_like_date(bytes: &[u8], start: usize) -> bool {
+    is_digit(bytes[start])
+        && is_digit(bytes[start + 1])
+        && is_digit(bytes[start + 2])
+        && is_digit(bytes[start + 3])
+        && bytes[start + 4] == b'-'
+        && is_digit(bytes[start + 5])
+        && is_digit(bytes[start + 6])
+        && bytes[start + 7] == b'-'
+        && is_digit(bytes[start + 8])
+        && is_digit(bytes[start + 9])
+}
+
+fn looks_like_time(bytes: &[u8], start: usize) -> bool {
+    is_digit(bytes[start])
+        && is_digit(bytes[start + 1])
+        && bytes[start + 2] == b':'
+        && is_digit(bytes[start + 3])
+        && is_digit(bytes[start + 4])
+        && bytes[start + 5] == b':'
+        && is_digit(bytes[start + 6])
+        && is_digit(bytes[start + 7])
+}
+
+fn is_timestamp_tail(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'.' | b'Z' | b'z' | b'+' | b'-' | b':')
+}
+
+fn is_digit(byte: u8) -> bool {
+    byte.is_ascii_digit()
+}
+
+fn write_field_side_by_side(
+    s: &mut String,
+    field: &str,
+    baseline: Option<&str>,
+    candidate: Option<&str>,
+    column_width: usize,
+    color: bool,
+) {
+    if color {
+        let _ = writeln!(s, "\x1b[1;31m!= {field}\x1b[0m");
+    } else {
+        let _ = writeln!(s, "!= {field}");
+    }
+    let baseline_lines = lines_or_missing(baseline);
+    let candidate_lines = lines_or_missing(candidate);
+    let max_len = baseline_lines.len().max(candidate_lines.len());
+    for index in 0..max_len {
+        let left = baseline_lines.get(index).map_or("", String::as_str);
+        let right = candidate_lines.get(index).map_or("", String::as_str);
+        let _ = writeln!(
+            s,
+            "{:<width$} | {}",
+            truncate_for_column(left, column_width),
+            truncate_for_column(right, column_width),
+            width = column_width
+        );
+    }
+}
+
+fn color_enabled() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::env::var("CLICOLOR_FORCE").is_ok_and(|value| !value.is_empty() && value != "0")
+}
+
+fn lines_or_missing(value: Option<&str>) -> Vec<String> {
+    match value {
+        Some("") => vec![String::new()],
+        Some(text) => text.lines().map(str::to_owned).collect(),
+        None => vec!["<missing>".into()],
+    }
+}
+
+fn truncate_for_column(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if out.chars().count() >= width {
+            out.push('~');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn write_side_summary(
+    s: &mut String,
+    baseline: Option<&SemanticStep>,
+    candidate: Option<&SemanticStep>,
+) {
+    if let Some(step) = baseline {
+        let _ = writeln!(s, "baseline:  {}", compact_step_summary(step));
+    }
+    if let Some(step) = candidate {
+        let _ = writeln!(s, "candidate: {}", compact_step_summary(step));
+    }
+}
+
+fn compact_step_summary(step: &SemanticStep) -> String {
+    step.bash
+        .as_deref()
+        .or(step.assistant_content.as_deref())
+        .or(step.prompt.as_deref())
+        .unwrap_or("<empty>")
+        .lines()
+        .next()
+        .unwrap_or("<empty>")
+        .to_owned()
+}
+
+fn canonical_side_lines(report: &TrajectoryDiffReport, baseline: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("instance_id: {}", report.instance_id));
+    lines.push(format!(
+        "failure_category: {}",
+        if baseline {
+            &report.header.baseline_failure_category
+        } else {
+            &report.header.candidate_failure_category
+        }
+    ));
+    for step in &report.steps {
+        let side = if baseline {
+            step.baseline.as_ref()
+        } else {
+            step.candidate.as_ref()
+        };
+        lines.push(format!("step {} role={}", step.index, step.role));
+        if side.is_none() {
+            lines.push("<missing>".into());
+            continue;
+        }
+        for field in canonical_fields(step) {
+            let Some(value) = canonical_field_value(step, field, baseline) else {
+                continue;
+            };
+            push_canonical_field_lines(&mut lines, field, &value);
+        }
+    }
+    lines
+}
+
+fn canonical_fields(step: &TrajectoryDiffStep) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    for field in DIFF_FIELD_ORDER {
+        let present = step
+            .baseline
+            .as_ref()
+            .is_some_and(|side| side.field_display_value(field).is_some())
+            || step
+                .candidate
+                .as_ref()
+                .is_some_and(|side| side.field_display_value(field).is_some());
+        if present {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+fn canonical_field_value(step: &TrajectoryDiffStep, field: &str, baseline: bool) -> Option<String> {
+    let is_diff_field = step.diff_fields.iter().any(|name| name == field);
+    let source = if is_diff_field {
+        if baseline {
+            step.baseline.as_ref()
+        } else {
+            step.candidate.as_ref()
+        }
+    } else {
+        step.baseline.as_ref().or(step.candidate.as_ref())
+    }?;
+
+    Some(
+        source
+            .field_display_value(field)
+            .map_or_else(|| "<missing>".into(), Cow::into_owned),
+    )
+}
+
+fn push_canonical_field_lines(lines: &mut Vec<String>, field: &str, value: &str) {
+    let mut parts = value.split('\n').collect::<Vec<_>>();
+    if parts.last().is_some_and(|part| part.is_empty()) {
+        parts.pop();
+    }
+    if parts.is_empty() {
+        lines.push(format!("{field}: "));
+        return;
+    }
+    for part in parts {
+        lines.push(format!("{field}: {part}"));
+    }
+}
+
+fn unified_range(line_count: usize) -> String {
+    match line_count {
+        0 => "0,0".into(),
+        1 => "1".into(),
+        n => format!("1,{n}"),
+    }
+}
+
+fn line_diff(baseline: &[String], candidate: &[String]) -> Vec<(char, String)> {
+    let rows = baseline.len();
+    let cols = candidate.len();
+    let mut lcs = vec![vec![0usize; cols + 1]; rows + 1];
+    for i in (0..rows).rev() {
+        for j in (0..cols).rev() {
+            lcs[i][j] = if baseline[i] == candidate[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < rows || j < cols {
+        if baseline
+            .get(i)
+            .is_some_and(|line| candidate.get(j) == Some(line))
+        {
+            out.push((' ', baseline[i].clone()));
+            i += 1;
+            j += 1;
+        } else if i < rows && (j == cols || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            out.push(('-', baseline[i].clone()));
+            i += 1;
+        } else if j < cols {
+            out.push(('+', candidate[j].clone()));
+            j += 1;
+        }
+    }
+    out
+}
+
+fn terminal_width() -> usize {
+    if let Ok(columns) = std::env::var("COLUMNS") {
+        if let Ok(parsed) = columns.parse::<usize>() {
+            if parsed >= 40 {
+                return parsed;
+            }
+        }
+    }
+    std::process::Command::new("stty")
+        .arg("size")
+        .output()
+        .ok()
+        .and_then(|output| {
+            output
+                .status
+                .success()
+                .then_some(output.stdout)
+                .and_then(|bytes| {
+                    let text = String::from_utf8(bytes).ok()?;
+                    text.split_whitespace().nth(1)?.parse::<usize>().ok()
+                })
+        })
+        .filter(|width| *width >= 40)
+        .unwrap_or(160)
+}
+
+fn attempts(trajectory: &Trajectory) -> u64 {
+    trajectory
+        .info
+        .other
+        .get("attempts")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1)
+}
+
+fn failure_label_opt(category: Option<FailureCategory>) -> &'static str {
+    category.map_or("none", failure_label)
+}
+
+fn failure_label(category: FailureCategory) -> &'static str {
+    match category {
+        FailureCategory::EnvSetup => "env_setup",
+        FailureCategory::ModelApi => "model_api",
+        FailureCategory::ModelParse => "model_parse",
+        FailureCategory::StepLimit => "step_limit",
+        FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::Unknown => "unknown",
+    }
+}
+
+fn format_cost(value: Option<f64>) -> String {
+    value.map_or_else(|| "?".into(), |cost| format!("{cost:.6}"))
+}
+
+fn format_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "?".into(), |v| v.to_string())
+}
+
+fn usize_from_u32(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::time::{Duration, Instant};
+
+    use crate::model::Message;
+    use crate::trajectory::{TokenUsage, Trajectory, outcome};
+
+    use super::{TrajectoryDiffArgs, diff_paths, render_text};
+
+    #[test]
+    fn diffing_and_rendering_eighty_step_trajectories_stays_under_500ms() {
+        let dir = tempfile::tempdir().unwrap();
+        let baseline = dir.path().join("baseline.traj.json");
+        let candidate = dir.path().join("candidate.traj.json");
+        write_perf_trajectory(&baseline, "perf", 80, None);
+        write_perf_trajectory(&candidate, "perf", 80, Some(79));
+
+        let start = Instant::now();
+        let report = diff_paths(&TrajectoryDiffArgs {
+            baseline,
+            candidate,
+            show_noise: false,
+        })
+        .unwrap();
+        let rendered = render_text(&report);
+        let elapsed = start.elapsed();
+
+        assert!(rendered.contains("first_divergent_step: 79"));
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "80-step semantic diff + render took {elapsed:?}, expected <500ms"
+        );
+    }
+
+    fn write_perf_trajectory(
+        path: &std::path::Path,
+        instance_id: &str,
+        steps: usize,
+        divergent_step: Option<usize>,
+    ) {
+        let mut t = Trajectory::new();
+        t.info
+            .other
+            .insert("instance_id".into(), serde_json::json!(instance_id));
+        t.info.outcome = Some(outcome::SUBMITTED.into());
+        t.info.total_cost_usd = Some(0.10);
+        t.info.token_usage = Some(TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+        });
+        t.info.steps = Some(u32::try_from(steps).unwrap_or(u32::MAX));
+
+        for index in 0..steps {
+            let command = if divergent_step == Some(index) {
+                format!("echo changed-{index}")
+            } else {
+                format!("echo step-{index}")
+            };
+            let mut asst = Message::assistant(format!("```bash\n{command}\n```"));
+            asst.extra.actions = Some(vec![command]);
+            t.record_message(&asst);
+
+            let stdout = if divergent_step == Some(index) {
+                format!("changed-{index}\n")
+            } else {
+                format!("step-{index}\n")
+            };
+            let mut obs = Message::user("tool result");
+            obs.extra.other.insert(
+                "run_result".into(),
+                serde_json::json!({
+                    "stdout": stdout,
+                    "stderr": "",
+                    "exit_code": 0,
+                    "timed_out": false
+                }),
+            );
+            t.record_message(&obs);
+        }
+
+        std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+    }
+}
