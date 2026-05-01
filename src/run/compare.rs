@@ -206,96 +206,14 @@ impl CompareReport {
     pub fn human_table(&self) -> String {
         let mut s = String::new();
         s.push_str("\n=== bench compare ===\n");
-        let _ = writeln!(s, "Baseline:           {}", self.baseline_dir.display());
-        let _ = writeln!(s, "Candidate:          {}", self.candidate_dir.display());
-        let _ = writeln!(
-            s,
-            "Tasks (b/c/union):  {} / {} / {}",
-            self.baseline_total,
-            self.candidate_total,
-            self.transitions.values().sum::<usize>()
-        );
-        write_manifest_delta_section(&mut s, &self.manifest_deltas);
-        let _ = writeln!(
-            s,
-            "Resolved:           {} -> {} ({:+})",
-            self.baseline_resolved, self.candidate_resolved, self.resolved_delta
-        );
-        let _ = writeln!(
-            s,
-            "Resolved rate:      {:.2}% -> {:.2}% ({:+.2}pp)",
-            self.baseline_resolved_rate * 100.0,
-            self.candidate_resolved_rate * 100.0,
-            self.resolved_delta_rate * 100.0
-        );
-        let _ = writeln!(
-            s,
-            "Delta CI 95%:       [{:+.2}pp, {:+.2}pp]",
-            self.resolved_delta_ci95.lower * 100.0,
-            self.resolved_delta_ci95.upper * 100.0
-        );
-        let _ = writeln!(
-            s,
-            "Within noise:       {}",
-            if self.within_noise { "true" } else { "false" }
-        );
-        let _ = writeln!(s, "Verdict:            {}", self.verdict.label());
-        let _ = writeln!(
-            s,
-            "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
-            self.baseline_total_cost_usd, self.candidate_total_cost_usd, self.cost_delta_usd
-        );
-        let _ = writeln!(
-            s,
-            "Input tokens:       {} -> {} ({:+})",
-            self.baseline_total_input_tokens,
-            self.candidate_total_input_tokens,
-            i128::from(self.candidate_total_input_tokens)
-                - i128::from(self.baseline_total_input_tokens)
-        );
-        let _ = writeln!(
-            s,
-            "Cache read tokens:  {} -> {} ({:+})",
-            self.baseline_total_cache_read_tokens,
-            self.candidate_total_cache_read_tokens,
-            i128::from(self.candidate_total_cache_read_tokens)
-                - i128::from(self.baseline_total_cache_read_tokens)
-        );
-        let _ = writeln!(
-            s,
-            "Cache create toks:  {} -> {} ({:+})",
-            self.baseline_total_cache_creation_tokens,
-            self.candidate_total_cache_creation_tokens,
-            i128::from(self.candidate_total_cache_creation_tokens)
-                - i128::from(self.baseline_total_cache_creation_tokens)
-        );
-        let _ = writeln!(
-            s,
-            "Completion tokens:  {} -> {} ({:+})",
-            self.baseline_total_completion_tokens,
-            self.candidate_total_completion_tokens,
-            i128::from(self.candidate_total_completion_tokens)
-                - i128::from(self.baseline_total_completion_tokens)
-        );
-        let _ = writeln!(
-            s,
-            "Cache hit rate:     {:.2}% -> {:.2}% ({:+.2}pp)",
-            self.baseline_cache_hit_rate * 100.0,
-            self.candidate_cache_hit_rate * 100.0,
-            (self.candidate_cache_hit_rate - self.baseline_cache_hit_rate) * 100.0
-        );
-        match (
+        write_compare_overview(&mut s, self);
+        write_compare_cost_and_token_section(&mut s, self);
+        write_mean_steps_line(
+            &mut s,
             self.baseline_mean_steps,
             self.candidate_mean_steps,
             self.mean_steps_delta,
-        ) {
-            (Some(b), Some(c), Some(d)) => {
-                let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
-            }
-            _ => {
-                s.push_str("Mean steps:         n/a\n");
-            }
-        }
+        );
         write_transition_matrix(&mut s, &self.transitions);
         write_failure_delta_section(
             &mut s,
@@ -308,15 +226,7 @@ impl CompareReport {
             &self.cost_attribution_warnings,
             &self.cost_attribution_delta,
         );
-        let subset_warnings = if self.cost_attribution_delta.is_empty() {
-            self.subset_warnings.clone()
-        } else {
-            self.subset_warnings
-                .iter()
-                .filter(|warning| !warning.contains("dataset subset differs"))
-                .cloned()
-                .collect()
-        };
+        let subset_warnings = filtered_subset_warnings(self);
         write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
@@ -332,6 +242,113 @@ impl CompareVerdict {
             Self::WithinNoise => "within_noise",
         }
     }
+}
+
+fn write_compare_overview(s: &mut String, report: &CompareReport) {
+    let _ = writeln!(s, "Baseline:           {}", report.baseline_dir.display());
+    let _ = writeln!(s, "Candidate:          {}", report.candidate_dir.display());
+    let _ = writeln!(
+        s,
+        "Tasks (b/c/union):  {} / {} / {}",
+        report.baseline_total,
+        report.candidate_total,
+        report.transitions.values().sum::<usize>()
+    );
+    write_manifest_delta_section(s, &report.manifest_deltas);
+    let _ = writeln!(
+        s,
+        "Resolved:           {} -> {} ({:+})",
+        report.baseline_resolved, report.candidate_resolved, report.resolved_delta
+    );
+    let _ = writeln!(
+        s,
+        "Resolved rate:      {:.2}% -> {:.2}% ({:+.2}pp)",
+        report.baseline_resolved_rate * 100.0,
+        report.candidate_resolved_rate * 100.0,
+        report.resolved_delta_rate * 100.0
+    );
+    let _ = writeln!(
+        s,
+        "Delta CI 95%:       [{:+.2}pp, {:+.2}pp]",
+        report.resolved_delta_ci95.lower * 100.0,
+        report.resolved_delta_ci95.upper * 100.0
+    );
+    let _ = writeln!(
+        s,
+        "Within noise:       {}",
+        if report.within_noise { "true" } else { "false" }
+    );
+    let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
+}
+
+fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) {
+    let _ = writeln!(
+        s,
+        "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
+        report.baseline_total_cost_usd, report.candidate_total_cost_usd, report.cost_delta_usd
+    );
+    write_u64_delta_line(
+        s,
+        "Input tokens:       ",
+        report.baseline_total_input_tokens,
+        report.candidate_total_input_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Cache read tokens:  ",
+        report.baseline_total_cache_read_tokens,
+        report.candidate_total_cache_read_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Cache create toks:  ",
+        report.baseline_total_cache_creation_tokens,
+        report.candidate_total_cache_creation_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Completion tokens:  ",
+        report.baseline_total_completion_tokens,
+        report.candidate_total_completion_tokens,
+    );
+    let _ = writeln!(
+        s,
+        "Cache hit rate:     {:.2}% -> {:.2}% ({:+.2}pp)",
+        report.baseline_cache_hit_rate * 100.0,
+        report.candidate_cache_hit_rate * 100.0,
+        (report.candidate_cache_hit_rate - report.baseline_cache_hit_rate) * 100.0
+    );
+}
+
+fn write_u64_delta_line(s: &mut String, label: &str, baseline: u64, candidate: u64) {
+    let delta = i128::from(candidate) - i128::from(baseline);
+    let _ = writeln!(s, "{label}{baseline} -> {candidate} ({delta:+})");
+}
+
+fn write_mean_steps_line(
+    s: &mut String,
+    baseline: Option<f64>,
+    candidate: Option<f64>,
+    delta: Option<f64>,
+) {
+    match (baseline, candidate, delta) {
+        (Some(b), Some(c), Some(d)) => {
+            let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
+        }
+        _ => s.push_str("Mean steps:         n/a\n"),
+    }
+}
+
+fn filtered_subset_warnings(report: &CompareReport) -> Vec<String> {
+    if report.cost_attribution_delta.is_empty() {
+        return report.subset_warnings.clone();
+    }
+    report
+        .subset_warnings
+        .iter()
+        .filter(|warning| !warning.contains("dataset subset differs"))
+        .cloned()
+        .collect()
 }
 
 fn write_manifest_delta_section(s: &mut String, manifest_deltas: &[String]) {

@@ -400,12 +400,7 @@ impl SweepResults {
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
     pub fn summary_table(&self) -> String {
-        #[allow(clippy::cast_precision_loss)]
-        let submit_rate_pct = if self.total == 0 {
-            0.0
-        } else {
-            (self.submitted as f64 / self.total as f64) * 100.0
-        };
+        let submit_rate_pct = self.submit_rate_pct();
         let tokens = self.token_breakdown();
         let total_tokens = tokens.total_tokens();
         let effective_tasks = self.effective_task_count();
@@ -414,20 +409,7 @@ impl SweepResults {
         let mut s = String::new();
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
-        if effective_tasks != self.total {
-            if let Some(runs) = uniform_runs {
-                let _ = writeln!(
-                    s,
-                    "Effective tasks:    {effective_tasks} ({} instances * {runs} runs)",
-                    self.total
-                );
-            } else {
-                let _ = writeln!(
-                    s,
-                    "Effective tasks:    {effective_tasks} (sum of per-instance runs)"
-                );
-            }
-        }
+        write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
         let _ = writeln!(
             s,
@@ -507,6 +489,15 @@ impl SweepResults {
         s
     }
 
+    #[allow(clippy::cast_precision_loss)]
+    fn submit_rate_pct(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.submitted as f64 / self.total as f64) * 100.0
+        }
+    }
+
     fn effective_task_count(&self) -> usize {
         self.instances
             .iter()
@@ -518,6 +509,28 @@ impl SweepResults {
         let mut iter = self.instances.iter().map(effective_runs);
         let first = iter.next()?;
         iter.all(|runs| runs == first).then_some(first)
+    }
+}
+
+fn write_effective_task_line(
+    s: &mut String,
+    total_tasks: usize,
+    effective_tasks: usize,
+    uniform_runs: Option<u32>,
+) {
+    if effective_tasks == total_tasks {
+        return;
+    }
+    if let Some(runs) = uniform_runs {
+        let _ = writeln!(
+            s,
+            "Effective tasks:    {effective_tasks} ({total_tasks} instances * {runs} runs)"
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "Effective tasks:    {effective_tasks} (sum of per-instance runs)"
+        );
     }
 }
 
@@ -962,13 +975,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         .iter()
         .filter(|r| r.result.exit_reason == EXIT_REASON_BUDGET_HALT)
         .count();
-    let mut with_patch = 0;
-    let mut total_prompt = 0u64;
-    let mut total_cache_read = 0u64;
-    let mut total_cache_creation = 0u64;
-    let mut total_completion = 0u64;
-    let mut total_retries = 0u64;
-    let mut retried_instances = 0usize;
+    let mut accounting = SweepAccounting::default();
     let parallelism = args.parallel.max(1);
 
     // Consumer-driven dispatch: spawn at most `parallelism` tasks at a
@@ -977,16 +984,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     // would close the same race only after the new permit was claimed —
     // by which time another agent has already started an API call.
     for r in &results {
-        add_accounting_for_result(
-            &r.result,
-            &mut with_patch,
-            &mut total_prompt,
-            &mut total_cache_read,
-            &mut total_cache_creation,
-            &mut total_completion,
-            &mut total_retries,
-            &mut retried_instances,
-        );
+        accounting.add_result(&r.result);
     }
 
     let spawn_one = |run: SweepRun, set: &mut tokio::task::JoinSet<RunSlotResult>| {
@@ -1035,16 +1033,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     Some(outcome::ERROR) => errored += 1,
                     _ => {}
                 }
-                add_accounting_for_result(
-                    &r.result,
-                    &mut with_patch,
-                    &mut total_prompt,
-                    &mut total_cache_read,
-                    &mut total_cache_creation,
-                    &mut total_completion,
-                    &mut total_retries,
-                    &mut retried_instances,
-                );
+                accounting.add_result(&r.result);
                 // Sweep-level budget bookkeeping. Tasks that completed
                 // (whether submitted or errored) consumed real API budget
                 // and count toward the cap.
@@ -1122,6 +1111,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
+    let token_breakdown = accounting.tokens;
     let total_cost_usd = sum_f64(
         instance_results
             .iter()
@@ -1129,19 +1119,13 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     )
     .unwrap_or_else(|| {
         estimate_cost_usd(
-            total_prompt,
-            total_cache_read,
-            total_cache_creation,
-            total_completion,
+            token_breakdown.input_tokens,
+            token_breakdown.cache_read_tokens,
+            token_breakdown.cache_creation_tokens,
+            token_breakdown.completion_tokens,
             &model_name,
         )
     });
-    let token_breakdown = TokenBreakdown {
-        input_tokens: total_prompt,
-        cache_read_tokens: total_cache_read,
-        cache_creation_tokens: total_cache_creation,
-        completion_tokens: total_completion,
-    };
 
     let sweep = SweepResults {
         total,
@@ -1150,15 +1134,15 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         errored,
         failures_by_category,
         budget_halted,
-        with_patch,
-        total_prompt_tokens: total_prompt,
-        total_cache_read_tokens: total_cache_read,
-        total_cache_creation_tokens: total_cache_creation,
-        total_completion_tokens: total_completion,
+        with_patch: accounting.with_patch,
+        total_prompt_tokens: token_breakdown.input_tokens,
+        total_cache_read_tokens: token_breakdown.cache_read_tokens,
+        total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
+        total_completion_tokens: token_breakdown.completion_tokens,
         estimated_cost_usd: total_cost_usd,
         cache_hit_rate: token_breakdown.cache_hit_rate(),
-        retries: total_retries,
-        retried_instances,
+        retries: accounting.total_retries,
+        retried_instances: accounting.retried_instances,
         pass_at_k,
         filter_spec,
         manifest: Some(build_manifest(
@@ -1793,34 +1777,46 @@ impl RunSlotResult {
     }
 }
 
-fn add_accounting_for_result(
-    r: &InstanceResult,
-    with_patch: &mut usize,
-    total_prompt: &mut u64,
-    total_cache_read: &mut u64,
-    total_cache_creation: &mut u64,
-    total_completion: &mut u64,
-    total_retries: &mut u64,
-    retried_instances: &mut usize,
-) {
-    if r.non_empty_patch {
-        *with_patch += 1;
-    }
-    *total_retries = total_retries.saturating_add(u64::from(r.attempts.saturating_sub(1)));
-    if r.attempts > 1 {
-        *retried_instances += 1;
-    }
-    if let Some(p) = r.prompt_tokens {
-        *total_prompt = total_prompt.saturating_add(p);
-    }
-    if let Some(cache_read) = r.cache_read_tokens {
-        *total_cache_read = total_cache_read.saturating_add(cache_read);
-    }
-    if let Some(cache_creation) = r.cache_creation_tokens {
-        *total_cache_creation = total_cache_creation.saturating_add(cache_creation);
-    }
-    if let Some(c) = r.completion_tokens {
-        *total_completion = total_completion.saturating_add(c);
+#[derive(Debug, Default, Clone, Copy)]
+struct SweepAccounting {
+    with_patch: usize,
+    tokens: TokenBreakdown,
+    total_retries: u64,
+    retried_instances: usize,
+}
+
+impl SweepAccounting {
+    fn add_result(&mut self, result: &InstanceResult) {
+        if result.non_empty_patch {
+            self.with_patch += 1;
+        }
+        self.total_retries = self
+            .total_retries
+            .saturating_add(u64::from(result.attempts.saturating_sub(1)));
+        if result.attempts > 1 {
+            self.retried_instances += 1;
+        }
+        if let Some(prompt_tokens) = result.prompt_tokens {
+            self.tokens.input_tokens = self.tokens.input_tokens.saturating_add(prompt_tokens);
+        }
+        if let Some(cache_read_tokens) = result.cache_read_tokens {
+            self.tokens.cache_read_tokens = self
+                .tokens
+                .cache_read_tokens
+                .saturating_add(cache_read_tokens);
+        }
+        if let Some(cache_creation_tokens) = result.cache_creation_tokens {
+            self.tokens.cache_creation_tokens = self
+                .tokens
+                .cache_creation_tokens
+                .saturating_add(cache_creation_tokens);
+        }
+        if let Some(completion_tokens) = result.completion_tokens {
+            self.tokens.completion_tokens = self
+                .tokens
+                .completion_tokens
+                .saturating_add(completion_tokens);
+        }
     }
 }
 
