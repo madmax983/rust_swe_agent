@@ -1,12 +1,48 @@
+//! Exporting tools for trajectories.
+//!
+//! While `Trajectory` instances are natively serialized as JSON lines, offline
+//! analysis tools and human readers often prefer more accessible formats. This
+//! module provides the `TrajectoryExporter` trait and implementations to turn a
+//! machine-readable trajectory into something beautiful.
+//!
+//! Think of this module as the printing press for our agent's adventures.
+
 use super::Trajectory;
 
+/// A trait for types that can convert a `Trajectory` into a human-readable or
+/// alternate data format.
 pub trait TrajectoryExporter {
+    /// Formats the given trajectory into a string representation.
     fn export(trajectory: &Trajectory) -> String;
 }
 
+/// Exporter that formats a trajectory as a Markdown document.
+///
+/// ## Examples
+///
+/// ```rust
+/// use rust_swe_agent::trajectory::Trajectory;
+/// use rust_swe_agent::trajectory::export::{TrajectoryExporter, MarkdownExporter};
+///
+/// let traj = Trajectory::new();
+/// let md = MarkdownExporter::export(&traj);
+/// assert!(md.contains("# Trajectory Export"));
+/// ```
 pub struct MarkdownExporter;
 
 #[cfg(feature = "csv-export")]
+/// Exporter that formats a trajectory's messages as a CSV string.
+///
+/// ## Examples
+///
+/// ```rust
+/// use rust_swe_agent::trajectory::Trajectory;
+/// use rust_swe_agent::trajectory::export::{TrajectoryExporter, CsvExporter};
+///
+/// let traj = Trajectory::new();
+/// let csv = CsvExporter::export(&traj);
+/// assert!(csv.starts_with("role,content"));
+/// ```
 pub struct CsvExporter;
 
 use std::fmt::Write;

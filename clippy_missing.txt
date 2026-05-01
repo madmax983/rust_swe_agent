@@ -1,0 +1,4357 @@
+warning: missing documentation for an enum
+  --> src/agent/mod.rs:21:1
+   |
+21 | pub enum ExitReason {
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:22:5
+   |
+22 |     Submitted { final_output: String },
+   |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/mod.rs:22:17
+   |
+22 |     Submitted { final_output: String },
+   |                 ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:23:5
+   |
+23 |     StepLimit { limit: u32 },
+   |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/mod.rs:23:17
+   |
+23 |     StepLimit { limit: u32 },
+   |                 ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:24:5
+   |
+24 |     CostLimit { limit_usd: f64, spent_usd: f64 },
+   |     ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/mod.rs:24:17
+   |
+24 |     CostLimit { limit_usd: f64, spent_usd: f64 },
+   |                 ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/mod.rs:24:33
+   |
+24 |     CostLimit { limit_usd: f64, spent_usd: f64 },
+   |                                 ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:25:5
+   |
+25 |     UserInterrupt,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:26:5
+   |
+26 |     ModelRefusal { reason: String },
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/mod.rs:26:20
+   |
+26 |     ModelRefusal { reason: String },
+   |                    ^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/agent/mod.rs:30:5
+   |
+30 |     pub fn label(&self) -> &'static str {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/agent/mod.rs:42:1
+   |
+42 | pub enum StepOutcome {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:43:5
+   |
+43 |     Continue,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/mod.rs:44:5
+   |
+44 |     Terminate(ExitReason),
+   |     ^^^^^^^^^
+
+warning: missing documentation for a trait
+  --> src/agent/mod.rs:48:1
+   |
+48 | pub trait Agent: Send {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/agent/mod.rs:49:5
+   |
+49 |     async fn step(&mut self) -> Result<StepOutcome, Error>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/agent/mod.rs:47:1
+   |
+47 | #[async_trait]
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/agent/default.rs:25:1
+   |
+25 | pub struct DefaultAgent {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:26:5
+   |
+26 |     pub config: Config,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:27:5
+   |
+27 |     pub model: Arc<dyn Model>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:28:5
+   |
+28 |     pub env: Box<dyn Environment>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:29:5
+   |
+29 |     pub renderer: Arc<Renderer>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:30:5
+   |
+30 |     pub history: Vec<Message>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:31:5
+   |
+31 |     pub trajectory: Trajectory,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:32:5
+   |
+32 |     pub steps: u32,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:33:5
+   |
+33 |     pub total_cost_usd: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/agent/default.rs:46:1
+   |
+46 | pub struct DefaultAgentBuilder {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:47:5
+   |
+47 |     pub config: Config,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:48:5
+   |
+48 |     pub model: Arc<dyn Model>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:49:5
+   |
+49 |     pub env: Box<dyn Environment>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:50:5
+   |
+50 |     pub task: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:51:5
+   |
+51 |     pub extra_context: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:52:5
+   |
+52 |     pub renderer: Option<Arc<Renderer>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/default.rs:53:5
+   |
+53 |     pub stream: Option<Arc<dyn StreamSink>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/agent/default.rs:57:5
+   |
+57 |     pub fn build(self) -> Result<DefaultAgent, Error> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/agent/default.rs:350:5
+    |
+350 |     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/agent/interactive.rs:12:1
+   |
+12 | pub struct InteractiveAgent {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/interactive.rs:13:5
+   |
+13 |     pub inner: DefaultAgent,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/agent/interactive.rs:14:5
+   |
+14 |     pub yolo: bool,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/agent/interactive.rs:18:5
+   |
+18 |     pub fn new(inner: DefaultAgent, yolo: bool) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/agent/interactive.rs:22:5
+   |
+22 |     pub fn status_line(&self) -> String {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/agent/parse.rs:13:1
+   |
+13 | pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/agent/parse.rs:16:1
+   |
+16 | pub enum Action {
+   | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/parse.rs:17:5
+   |
+17 |     Bash(String),
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/parse.rs:18:5
+   |
+18 |     Submit(String),
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> src/agent/parse.rs:19:5
+   |
+19 |     None,
+   |     ^^^^
+
+warning: missing documentation for a function
+  --> src/agent/parse.rs:49:1
+   |
+49 | pub fn extract_action(content: &str) -> Action {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/cli/mod.rs:19:1
+   |
+19 | pub struct Cli {
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/cli/mod.rs:21:5
+   |
+21 |     pub command: Command,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/cli/mod.rs:29:1
+   |
+29 | pub enum Command {
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/cli/mod.rs:39:9
+   |
+39 |         cmd: args::BenchCmd,
+   |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/cli/mod.rs:45:1
+   |
+45 | pub async fn run() -> Result<(), Error> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+ --> src/cli/args.rs:8:1
+  |
+8 | pub enum StratifyByArg {
+  | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+ --> src/cli/args.rs:9:5
+  |
+9 |     Repo,
+  |     ^^^^
+
+warning: missing documentation for an enum
+  --> src/cli/args.rs:13:1
+   |
+13 | pub enum StratifyModeArg {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/cli/args.rs:14:5
+   |
+14 |     Proportional,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/cli/args.rs:15:5
+   |
+15 |     Balanced,
+   |     ^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/cli/args.rs:19:1
+   |
+19 | pub enum OnOffArg {
+   | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/cli/args.rs:20:5
+   |
+20 |     On,
+   |     ^^
+
+warning: missing documentation for a variant
+  --> src/cli/args.rs:21:5
+   |
+21 |     Off,
+   |     ^^^
+
+warning: missing documentation for a struct
+  --> src/cli/args.rs:25:1
+   |
+25 | pub struct MiniCmd {
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/cli/args.rs:75:1
+   |
+75 | pub struct HelloWorldCmd {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/cli/args.rs:77:5
+   |
+77 |     pub output: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/cli/args.rs:81:1
+   |
+81 | pub struct ReplayCmd {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/cli/args.rs:108:1
+    |
+108 | pub enum BenchCmd {
+    | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/cli/args.rs:127:1
+    |
+127 | pub struct CompareCmd {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/cli/args.rs:187:1
+    |
+187 | pub struct SwebenchCmd {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:189:5
+    |
+189 |     pub dataset_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:192:5
+    |
+192 |     pub output: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:195:5
+    |
+195 |     pub parallel: usize,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:202:5
+    |
+202 |     pub model: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:205:5
+    |
+205 |     pub step_limit: u32,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/cli/args.rs:213:5
+    |
+213 |     pub config: Option<PathBuf>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/cli/args.rs:339:1
+    |
+339 | pub struct EvaluateCmd {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/cli/args.rs:382:1
+    |
+382 | pub struct InspectCmd {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/cli/args.rs:413:1
+    |
+413 | pub struct TailCmd {
+    | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/mod.rs:19:1
+   |
+19 | pub struct Config {
+   | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/mod.rs:20:5
+   |
+20 |     pub root: RootCfg,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+ --> src/config/schema.rs:8:1
+  |
+8 | pub enum AgentKind {
+  | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/config/schema.rs:10:5
+   |
+10 |     Default,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/config/schema.rs:11:5
+   |
+11 |     Interactive,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/config/schema.rs:16:1
+   |
+16 | pub enum EnvKind {
+   | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/config/schema.rs:18:5
+   |
+18 |     Local,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> src/config/schema.rs:19:5
+   |
+19 |     Docker,
+   |     ^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/schema.rs:23:1
+   |
+23 | pub struct AgentCfg {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:25:5
+   |
+25 |     pub kind: AgentKind,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:27:5
+   |
+27 |     pub step_limit: u32,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:29:5
+   |
+29 |     pub cost_limit_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:31:5
+   |
+31 |     pub format_error_template: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:33:5
+   |
+33 |     pub observation_template: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/schema.rs:49:1
+   |
+49 | pub struct ModelCfg {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:50:5
+   |
+50 |     pub name: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:52:5
+   |
+52 |     pub temperature: Option<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:54:5
+   |
+54 |     pub max_tokens: u32,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/schema.rs:62:1
+   |
+62 | pub struct EnvCfg {
+   | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:64:5
+   |
+64 |     pub kind: EnvKind,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:66:5
+   |
+66 |     pub timeout_secs: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:68:5
+   |
+68 |     pub docker_image: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:70:5
+   |
+70 |     pub workdir: String,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/schema.rs:82:1
+   |
+82 | pub struct PromptCfg {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:84:5
+   |
+84 |     pub system: String,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:86:5
+   |
+86 |     pub instance: String,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/config/schema.rs:90:1
+   |
+90 | pub struct RootCfg {
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:92:5
+   |
+92 |     pub agent: AgentCfg,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:94:5
+   |
+94 |     pub model: ModelCfg,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:96:5
+   |
+96 |     pub environment: EnvCfg,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/config/schema.rs:98:5
+   |
+98 |     pub prompts: PromptCfg,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> src/env/mod.rs:15:1
+   |
+15 | pub mod chaos;
+   | ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/env/mod.rs:27:1
+   |
+27 | pub struct RunRequest {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:28:5
+   |
+28 |     pub command: String,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:30:5
+   |
+30 |     pub cwd: Option<PathBuf>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:32:5
+   |
+32 |     pub env: BTreeMap<String, String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:34:5
+   |
+34 |     pub timeout: Duration,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/env/mod.rs:38:5
+   |
+38 |     pub fn new(command: impl Into<String>) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/mod.rs:48:5
+   |
+48 |     pub fn with_timeout(mut self, t: Duration) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/env/mod.rs:55:1
+   |
+55 | pub struct RunResult {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:56:5
+   |
+56 |     pub stdout: String,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:57:5
+   |
+57 |     pub stderr: String,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:58:5
+   |
+58 |     pub exit_code: i32,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/env/mod.rs:59:5
+   |
+59 |     pub timed_out: bool,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a trait
+  --> src/env/mod.rs:76:1
+   |
+76 | pub trait Environment: Send + Sync {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/mod.rs:77:5
+   |
+77 |     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/env/chaos.rs:16:5
+   |
+16 |     pub fn new(inner: Box<dyn Environment>, fail_every: usize) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/env/docker.rs:25:1
+   |
+25 | pub const LABEL: &str = "rust-swe-agent=1";
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/env/docker.rs:27:1
+   |
+27 | pub struct DockerEnvironment {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/docker.rs:73:5
+   |
+73 |     pub fn container_id(&self) -> &ContainerId {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/docker.rs:77:5
+   |
+77 |     pub fn image(&self) -> &str {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/docker.rs:81:5
+   |
+81 |     pub fn workdir(&self) -> &PathBuf {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/env/docker.rs:86:1
+   |
+86 | pub async fn preflight() -> Result<(), EnvError> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/env/local.rs:21:1
+   |
+21 | pub struct LocalEnvironment {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/env/local.rs:34:5
+   |
+34 |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/env/local.rs:39:5
+   |
+39 |     pub fn with_shell(mut self, shell: impl Into<String>) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+ --> src/error.rs:7:1
+  |
+7 | pub enum Error {
+  | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+ --> src/error.rs:9:5
+  |
+9 |     Model(#[from] ModelError),
+  |     ^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:12:5
+   |
+12 |     Env(#[from] EnvError),
+   |     ^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:15:5
+   |
+15 |     Config(#[from] ConfigError),
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:18:5
+   |
+18 |     Template(String),
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:21:5
+   |
+21 |     Trajectory(String),
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:24:5
+   |
+24 |     Io(#[from] std::io::Error),
+   |     ^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:27:5
+   |
+27 |     Json(#[from] serde_json::Error),
+   |     ^^^^
+
+warning: missing documentation for an enum
+  --> src/error.rs:31:1
+   |
+31 | pub enum ModelError {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:33:5
+   |
+33 |     Request(String),
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:36:5
+   |
+36 |     Malformed(String),
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:39:5
+   |
+39 |     Refused(String),
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:42:5
+   |
+42 |     MissingCredentials(String),
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:45:5
+   |
+45 |     RateLimited(String),
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/error.rs:49:1
+   |
+49 | pub enum EnvError {
+   | ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:51:5
+   |
+51 |     CommandFailed(String),
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:54:5
+   |
+54 |     Timeout(std::time::Duration),
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:57:5
+   |
+57 |     DockerNotInstalled,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:60:5
+   |
+60 |     DockerDaemonUnreachable(String),
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:63:5
+   |
+63 |     ContainerStartFailed(String),
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:66:5
+   |
+66 |     UnexpectedExit(String),
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:69:5
+   |
+69 |     Io(#[from] std::io::Error),
+   |     ^^
+
+warning: missing documentation for an enum
+  --> src/error.rs:73:1
+   |
+73 | pub enum ConfigError {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:75:5
+   |
+75 |     NotFound(String),
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:78:5
+   |
+78 |     Toml(String),
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:81:5
+   |
+81 |     IncludeDepthExceeded(usize),
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/error.rs:84:5
+   |
+84 |     Invalid(String),
+   |     ^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/ids.rs:11:9
+   |
+11 |         pub struct $name(pub String);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+42 | string_id!(ContainerId);
+   | ----------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for an associated function
+  --> src/ids.rs:14:13
+   |
+14 |             pub fn new(s: impl Into<String>) -> Self {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+42 | string_id!(ContainerId);
+   | ----------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a method
+  --> src/ids.rs:17:13
+   |
+17 |             pub fn as_str(&self) -> &str {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+42 | string_id!(ContainerId);
+   | ----------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> src/ids.rs:11:9
+   |
+11 |         pub struct $name(pub String);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+43 | string_id!(TaskId);
+   | ------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for an associated function
+  --> src/ids.rs:14:13
+   |
+14 |             pub fn new(s: impl Into<String>) -> Self {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+43 | string_id!(TaskId);
+   | ------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a method
+  --> src/ids.rs:17:13
+   |
+17 |             pub fn as_str(&self) -> &str {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+43 | string_id!(TaskId);
+   | ------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `string_id` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: missing documentation for a struct
+  --> src/ids.rs:47:1
+   |
+47 | pub struct StepIdx(pub u32);
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/ids.rs:50:5
+   |
+50 |     pub const fn zero() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/ids.rs:54:5
+   |
+54 |     pub const fn next(self) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/ids.rs:57:5
+   |
+57 |     pub const fn get(self) -> u32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/model/mod.rs:24:1
+   |
+24 | pub enum Role {
+   | ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:25:5
+   |
+25 |     System,
+   |     ^^^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:26:5
+   |
+26 |     User,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:27:5
+   |
+27 |     Assistant,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:28:5
+   |
+28 |     Tool,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:43:5
+   |
+43 |     None,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:44:5
+   |
+44 |     Auto,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/model/mod.rs:45:5
+   |
+45 |     Breakpoint,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:53:5
+   |
+53 |     pub actions: Option<Vec<String>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:56:5
+   |
+56 |     pub cost: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:59:5
+   |
+59 |     pub response: Option<serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:62:5
+   |
+62 |     pub timestamp: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:65:5
+   |
+65 |     pub other: BTreeMap<String, serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/model/mod.rs:69:1
+   |
+69 | pub struct Message {
+   | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:70:5
+   |
+70 |     pub role: Role,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:71:5
+   |
+71 |     pub content: String,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:73:5
+   |
+73 |     pub cache_hint: CacheHint,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/model/mod.rs:75:5
+   |
+75 |     pub extra: MessageExtra,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/model/mod.rs:92:5
+   |
+92 |     pub fn system(content: impl Into<String>) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/model/mod.rs:101:5
+    |
+101 |     pub fn user(content: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/model/mod.rs:110:5
+    |
+110 |     pub fn assistant(content: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/model/mod.rs:121:1
+    |
+121 | pub struct ModelUsage {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:122:5
+    |
+122 |     pub input_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:123:5
+    |
+123 |     pub output_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:124:5
+    |
+124 |     pub cache_read_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:125:5
+    |
+125 |     pub cache_creation_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:126:5
+    |
+126 |     pub cost_usd: Option<f64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/model/mod.rs:130:1
+    |
+130 | pub struct ModelResponse {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:131:5
+    |
+131 |     pub content: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:132:5
+    |
+132 |     pub usage: ModelUsage,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:133:5
+    |
+133 |     pub raw: serde_json::Value,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/model/mod.rs:137:1
+    |
+137 | pub struct QueryOpts {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:138:5
+    |
+138 |     pub temperature: Option<f32>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/model/mod.rs:139:5
+    |
+139 |     pub max_tokens: Option<u32>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a trait
+   --> src/model/mod.rs:145:1
+    |
+145 | pub trait Model: Send + Sync {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/model/mod.rs:146:5
+    |
+146 |     fn name(&self) -> &str;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/model/mod.rs:154:5
+    |
+154 | /     async fn query(
+155 | |         &self,
+156 | |         messages: &[Message],
+157 | |         opts: &QueryOpts,
+158 | |     ) -> Result<ModelResponse, ModelError>;
+    | |___________________________________________^
+
+warning: missing documentation for a struct
+  --> src/model/deterministic.rs:10:1
+   |
+10 | pub struct DeterministicModel {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/model/deterministic.rs:19:5
+   |
+19 |     pub fn new(responses: impl IntoIterator<Item = String>) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/model/deterministic.rs:49:5
+   |
+49 |     pub fn call_count(&self) -> u32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/model/deterministic.rs:56:5
+   |
+56 |     pub fn recorded_inputs(&self) -> Vec<Vec<Message>> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/model/litellm.rs:34:1
+   |
+34 | pub struct LitellmBackend {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/model/litellm.rs:41:5
+   |
+41 |     pub fn new(model: impl Into<String>) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/model/litellm.rs:49:5
+   |
+49 |     pub fn with_max_tokens(mut self, n: u32) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> src/run/mod.rs:10:1
+   |
+10 | pub mod replay;
+   | ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:32:5
+   |
+32 |     Text,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:33:5
+   |
+33 |     Json,
+   |     ^^^^
+
+warning: missing documentation for a struct
+  --> src/run/compare.rs:37:1
+   |
+37 | pub struct CompareArgs {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:38:5
+   |
+38 |     pub baseline: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:39:5
+   |
+39 |     pub candidate: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:40:5
+   |
+40 |     pub format: CompareFormat,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:44:5
+   |
+44 |     pub breakdown: crate::run::evaluate::BreakdownSelection,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:45:5
+   |
+45 |     pub min_delta_pp: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:46:5
+   |
+46 |     pub cost_attribution: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:47:5
+   |
+47 |     pub cost_attribution_min_delta_usd: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:56:5
+   |
+56 |     PassPass,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:57:5
+   |
+57 |     PassFail,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:58:5
+   |
+58 |     FailPass,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:59:5
+   |
+59 |     FailFail,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:60:5
+   |
+60 |     MissingPresent,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/compare.rs:61:5
+   |
+61 |     PresentMissing,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/run/compare.rs:66:5
+   |
+66 |     pub fn label(self) -> &'static str {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/compare.rs:79:1
+   |
+79 | pub struct TaskTransition {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:80:5
+   |
+80 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:81:5
+   |
+81 |     pub kind: TransitionKind,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:83:5
+   |
+83 |     pub baseline_outcome: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:85:5
+   |
+85 |     pub candidate_outcome: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:87:5
+   |
+87 |     pub baseline_failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:89:5
+   |
+89 |     pub candidate_failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:91:5
+   |
+91 |     pub baseline_exit_reason: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:93:5
+   |
+93 |     pub candidate_exit_reason: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/compare.rs:97:1
+   |
+97 | pub struct CompareReport {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:98:5
+   |
+98 |     pub baseline_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/compare.rs:99:5
+   |
+99 |     pub candidate_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:100:5
+    |
+100 |     pub baseline_total: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:101:5
+    |
+101 |     pub candidate_total: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:106:5
+    |
+106 |     pub baseline_runs: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:107:5
+    |
+107 |     pub candidate_runs: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:108:5
+    |
+108 |     pub baseline_resolved: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:109:5
+    |
+109 |     pub candidate_resolved: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:110:5
+    |
+110 |     pub resolved_delta: i64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:111:5
+    |
+111 |     pub baseline_resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:112:5
+    |
+112 |     pub candidate_resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:113:5
+    |
+113 |     pub resolved_delta_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:114:5
+    |
+114 |     pub resolved_delta_ci95: ConfidenceInterval,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:115:5
+    |
+115 |     pub within_noise: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:116:5
+    |
+116 |     pub verdict: CompareVerdict,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:117:5
+    |
+117 |     pub baseline_total_cost_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:118:5
+    |
+118 |     pub candidate_total_cost_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:119:5
+    |
+119 |     pub cost_delta_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:121:5
+    |
+121 |     pub baseline_mean_steps: Option<f64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:123:5
+    |
+123 |     pub candidate_mean_steps: Option<f64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:125:5
+    |
+125 |     pub mean_steps_delta: Option<f64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:126:5
+    |
+126 |     pub failure_category_baseline: BTreeMap<FailureCategory, usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:127:5
+    |
+127 |     pub failure_category_candidate: BTreeMap<FailureCategory, usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:128:5
+    |
+128 |     pub failure_category_delta: BTreeMap<FailureCategory, i64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:130:5
+    |
+130 |     pub manifest_deltas: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:132:5
+    |
+132 |     pub subset_warnings: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:134:5
+    |
+134 |     pub breakdown_delta: Vec<BreakdownDeltaRow>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:136:5
+    |
+136 |     pub cost_attribution_delta: Vec<CostAttributionDeltaRow>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:138:5
+    |
+138 |     pub cost_attribution_warnings: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/compare.rs:146:1
+    |
+146 | pub struct ConfidenceInterval {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:147:5
+    |
+147 |     pub lower: f64,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:148:5
+    |
+148 |     pub upper: f64,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/run/compare.rs:153:1
+    |
+153 | pub enum CompareVerdict {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/compare.rs:154:5
+    |
+154 |     Improvement,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/compare.rs:155:5
+    |
+155 |     Regression,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/compare.rs:156:5
+    |
+156 |     WithinNoise,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/compare.rs:160:1
+    |
+160 | pub struct BreakdownDeltaRow {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:161:5
+    |
+161 |     pub bucket_axis: BreakdownAxis,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:162:5
+    |
+162 |     pub bucket_value: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:163:5
+    |
+163 |     pub baseline_n: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:164:5
+    |
+164 |     pub baseline_resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:165:5
+    |
+165 |     pub candidate_n: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:166:5
+    |
+166 |     pub candidate_resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:167:5
+    |
+167 |     pub delta_resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:168:5
+    |
+168 |     pub exceeds_threshold: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/compare.rs:172:1
+    |
+172 | pub struct CostAttributionDeltaRow {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:173:5
+    |
+173 |     pub bucket: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:174:5
+    |
+174 |     pub n_baseline: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:175:5
+    |
+175 |     pub total_usd_baseline: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:176:5
+    |
+176 |     pub n_candidate: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:177:5
+    |
+177 |     pub total_usd_candidate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:178:5
+    |
+178 |     pub delta_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:179:5
+    |
+179 |     pub share_pp_delta: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:180:5
+    |
+180 |     pub exceeds_threshold: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/run/compare.rs:185:5
+    |
+185 |     pub fn regression_count(&self) -> usize {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/run/compare.rs:189:5
+    |
+189 |     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/compare.rs:427:1
+    |
+427 | pub struct LoadedSweep {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:428:5
+    |
+428 |     pub instances: HashMap<String, InstanceResult>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:429:5
+    |
+429 |     pub manifest: Option<ProvenanceManifest>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/compare.rs:430:5
+    |
+430 |     pub filter_spec: Option<FilterSpec>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/compare.rs:440:1
+    |
+440 | pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/compare.rs:839:1
+    |
+839 | pub fn write_diff_script(report: &CompareReport, out_path: &Path) -> Result<(), Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/run/evaluate.rs:15:1
+   |
+15 | pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/run/evaluate.rs:16:1
+   |
+16 | pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/run/evaluate.rs:17:1
+   |
+17 | pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/run/evaluate.rs:18:1
+   |
+18 | pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 8] = [
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/evaluate.rs:30:1
+   |
+30 | pub enum EvaluateBackend {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:31:5
+   |
+31 |     SbCli,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:32:5
+   |
+32 |     None,
+   |     ^^^^
+
+warning: missing documentation for a struct
+  --> src/run/evaluate.rs:36:1
+   |
+36 | pub struct EvaluateArgs {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:37:5
+   |
+37 |     pub sweep_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:38:5
+   |
+38 |     pub dataset_path: Option<PathBuf>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:39:5
+   |
+39 |     pub backend: EvaluateBackend,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:40:5
+   |
+40 |     pub timeout_per_instance_secs: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:41:5
+   |
+41 |     pub parallel: usize,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:42:5
+   |
+42 |     pub sb_subset: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:43:5
+   |
+43 |     pub sb_split: String,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:44:5
+   |
+44 |     pub run_id: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:45:5
+   |
+45 |     pub breakdown: BreakdownSelection,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:46:5
+   |
+46 |     pub cost_attribution: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/evaluate.rs:51:1
+   |
+51 | pub enum BreakdownAxis {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:52:5
+   |
+52 |     Repo,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:53:5
+   |
+53 |     FailureCategory,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/evaluate.rs:57:1
+   |
+57 | pub struct BreakdownSelection {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:58:5
+   |
+58 |     pub axes: Vec<BreakdownAxis>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/run/evaluate.rs:63:5
+   |
+63 |     pub fn none() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/run/evaluate.rs:68:5
+   |
+68 |     pub fn default_axes() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/evaluate.rs:77:1
+   |
+77 | pub enum EvalExitReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:78:5
+   |
+78 |     Resolved,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:79:5
+   |
+79 |     Unresolved,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:80:5
+   |
+80 |     PatchApplyFailed,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:81:5
+   |
+81 |     EvalError,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/evaluate.rs:82:5
+   |
+82 |     SkippedNoPatch,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/evaluate.rs:86:1
+   |
+86 | pub struct InstanceEvaluation {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:87:5
+   |
+87 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:88:5
+   |
+88 |     pub resolved: bool,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:90:5
+   |
+90 |     pub runs: u32,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:92:5
+   |
+92 |     pub resolved_count: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:94:5
+   |
+94 |     pub pass_at_1: bool,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:96:5
+   |
+96 |     pub tests_passed: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:98:5
+   |
+98 |     pub tests_failed: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/evaluate.rs:99:5
+   |
+99 |     pub eval_exit_reason: EvalExitReason,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:101:5
+    |
+101 |     pub eval_log_path: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/evaluate.rs:115:1
+    |
+115 | pub struct EvaluationResults {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:116:5
+    |
+116 |     pub instances: Vec<InstanceEvaluation>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:118:5
+    |
+118 |     pub breakdown: Vec<BreakdownBucket>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:120:5
+    |
+120 |     pub cost_attribution: Vec<CostAttributionBucket>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/evaluate.rs:124:1
+    |
+124 | pub struct EvaluationSummary {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:125:5
+    |
+125 |     pub instances: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:126:5
+    |
+126 |     pub resolved: usize,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:127:5
+    |
+127 |     pub resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:128:5
+    |
+128 |     pub pass_at_1: f64,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:129:5
+    |
+129 |     pub pass_at_k: f64,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/evaluate.rs:133:1
+    |
+133 | pub struct BreakdownBucket {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:134:5
+    |
+134 |     pub bucket_axis: BreakdownAxis,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:135:5
+    |
+135 |     pub bucket_value: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:136:5
+    |
+136 |     pub n: usize,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:137:5
+    |
+137 |     pub resolved: usize,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:138:5
+    |
+138 |     pub resolved_rate: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/evaluate.rs:142:1
+    |
+142 | pub struct CostAttributionBucket {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:143:5
+    |
+143 |     pub bucket: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:144:5
+    |
+144 |     pub n: usize,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:145:5
+    |
+145 |     pub total_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:146:5
+    |
+146 |     pub mean_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/evaluate.rs:147:5
+    |
+147 |     pub share_pct: f64,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:194:1
+    |
+194 | pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:198:1
+    |
+198 | pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:227:1
+    |
+227 | / pub fn summarize<S: std::hash::BuildHasher>(
+228 | |     eval: &EvaluationResults,
+229 | |     results: &HashMap<String, InstanceResult, S>,
+230 | | ) -> EvaluationSummary {
+    | |______________________^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:769:1
+    |
+769 | pub fn parse_repo_from_instance_id(instance_id: &str) -> Option<String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:779:1
+    |
+779 | pub fn failure_label(cat: FailureCategory) -> &'static str {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:793:1
+    |
+793 | / pub fn cost_attribution_bucket_label(
+794 | |     resolved: bool,
+795 | |     failure_category: Option<FailureCategory>,
+796 | | ) -> &'static str {
+    | |_________________^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:805:1
+    |
+805 | pub fn pct(numer: usize, denom: usize) -> f64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:816:1
+    |
+816 | pub fn round_dp(value: f64, places: u32) -> f64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:822:1
+    |
+822 | / pub fn cost_missing_count<S: std::hash::BuildHasher>(
+823 | |     results: &HashMap<String, InstanceResult, S>,
+824 | | ) -> usize {
+    | |__________^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:949:1
+    |
+949 | pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/evaluate.rs:966:1
+    |
+966 | pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/run/hello_world.rs:10:1
+   |
+10 | pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/inspect.rs:20:1
+   |
+20 | pub enum InspectFormat {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/inspect.rs:21:5
+   |
+21 |     Text,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/run/inspect.rs:22:5
+   |
+22 |     Json,
+   |     ^^^^
+
+warning: missing documentation for a struct
+  --> src/run/inspect.rs:26:1
+   |
+26 | pub struct InspectArgs {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:27:5
+   |
+27 |     pub sweep: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:28:5
+   |
+28 |     pub instance: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:29:5
+   |
+29 |     pub filter: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:30:5
+   |
+30 |     pub full: bool,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/inspect.rs:34:1
+   |
+34 | pub struct InspectStep {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:35:5
+   |
+35 |     pub index: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:36:5
+   |
+36 |     pub role: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:38:5
+   |
+38 |     pub message: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:40:5
+   |
+40 |     pub bash: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:42:5
+   |
+42 |     pub exit_code: Option<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:44:5
+   |
+44 |     pub stdout: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:46:5
+   |
+46 |     pub stderr: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:48:5
+   |
+48 |     pub truncated: bool,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:50:5
+   |
+50 |     pub truncation_note: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/inspect.rs:54:1
+   |
+54 | pub struct InspectReport {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:55:5
+   |
+55 |     pub sweep_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:57:5
+   |
+57 |     pub instance_id: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:59:5
+   |
+59 |     pub model: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:61:5
+   |
+61 |     pub outcome: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:63:5
+   |
+63 |     pub failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:65:5
+   |
+65 |     pub total_cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:67:5
+   |
+67 |     pub prompt_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:69:5
+   |
+69 |     pub completion_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:71:5
+   |
+71 |     pub resolved: Option<bool>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:73:5
+   |
+73 |     pub warnings: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:75:5
+   |
+75 |     pub steps: Vec<InspectStep>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/inspect.rs:79:1
+   |
+79 | pub struct SummaryRow {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:80:5
+   |
+80 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:82:5
+   |
+82 |     pub outcome: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:84:5
+   |
+84 |     pub failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:86:5
+   |
+86 |     pub cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:88:5
+   |
+88 |     pub resolved: Option<bool>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/inspect.rs:92:1
+   |
+92 | pub struct SummaryReport {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:93:5
+   |
+93 |     pub sweep_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:94:5
+   |
+94 |     pub filter: String,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:96:5
+   |
+96 |     pub manifest: Option<ProvenanceManifest>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/inspect.rs:97:5
+   |
+97 |     pub rows: Vec<SummaryRow>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/run/inspect.rs:102:1
+    |
+102 | pub enum InspectOutput {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/inspect.rs:103:5
+    |
+103 |     Instance(InspectReport),
+    |     ^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/inspect.rs:104:5
+    |
+104 |     Summary(Box<SummaryReport>),
+    |     ^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/inspect.rs:107:1
+    |
+107 | pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/inspect.rs:270:1
+    |
+270 | pub fn render_text(output: &InspectOutput) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/mini.rs:42:1
+   |
+42 | pub struct MiniArgs {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:43:5
+   |
+43 |     pub task: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:44:5
+   |
+44 |     pub extra_context: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:45:5
+   |
+45 |     pub config: Config,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:46:5
+   |
+46 |     pub output_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:47:5
+   |
+47 |     pub trajectory_name: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/mini.rs:48:5
+   |
+48 |     pub deterministic_responses: Option<Vec<String>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/run/mini.rs:67:1
+   |
+67 | pub async fn run(args: MiniArgs) -> Result<(), Error> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/replay.rs:13:1
+   |
+13 | pub struct ReplayArgs {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/replay.rs:14:5
+   |
+14 |     pub trajectory_path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/replay.rs:15:5
+   |
+15 |     pub config: Config,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/replay.rs:16:5
+   |
+16 |     pub output_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/replay.rs:17:5
+   |
+17 |     pub trajectory_name: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/run/replay.rs:20:1
+   |
+20 | pub async fn run(args: ReplayArgs) -> Result<(), Error> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/run/swebench.rs:39:1
+   |
+39 | pub const SONNET_OUTPUT_USD_PER_MTOK: f64 = 15.0;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+  --> src/run/swebench.rs:42:1
+   |
+42 | pub fn estimate_cost_usd(prompt_tokens: u64, completion_tokens: u64) -> f64 {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/swebench.rs:54:1
+   |
+54 | pub struct SweBenchInstance {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:55:5
+   |
+55 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:57:5
+   |
+57 |     pub repo: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:59:5
+   |
+59 |     pub base_commit: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:61:5
+   |
+61 |     pub problem_statement: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:63:5
+   |
+63 |     pub image: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:65:5
+   |
+65 |     pub other: serde_json::Map<String, serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/swebench.rs:69:1
+   |
+69 | pub struct InstanceResult {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:70:5
+   |
+70 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:71:5
+   |
+71 |     pub exit_reason: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:77:5
+   |
+77 |     pub failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:79:5
+   |
+79 |     pub steps: Option<u32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:81:5
+   |
+81 |     pub cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:83:5
+   |
+83 |     pub prompt_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:85:5
+   |
+85 |     pub completion_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:87:5
+   |
+87 |     pub duration_secs: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/swebench.rs:89:5
+   |
+89 |     pub error: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:123:1
+    |
+123 | pub struct SweepResults {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:124:5
+    |
+124 |     pub total: usize,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:125:5
+    |
+125 |     pub submitted: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:126:5
+    |
+126 |     pub skipped: usize,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:127:5
+    |
+127 |     pub errored: usize,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:129:5
+    |
+129 |     pub failures_by_category: BTreeMap<FailureCategory, usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:140:5
+    |
+140 |     pub total_prompt_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:142:5
+    |
+142 |     pub total_completion_tokens: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:144:5
+    |
+144 |     pub estimated_cost_usd: f64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:159:5
+    |
+159 |     pub manifest: Option<ProvenanceManifest>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:166:5
+    |
+166 |     pub instances: Vec<InstanceResult>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:170:1
+    |
+170 | pub struct FilterSpec {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:172:5
+    |
+172 |     pub original_count: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:174:5
+    |
+174 |     pub selected_count: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:176:5
+    |
+176 |     pub instance_ids: Option<Vec<String>>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:178:5
+    |
+178 |     pub limit: Option<usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:180:5
+    |
+180 |     pub sample: Option<usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:182:5
+    |
+182 |     pub seed: Option<u64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:184:5
+    |
+184 |     pub stratify_by: Option<StratifyBy>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:186:5
+    |
+186 |     pub stratify_mode: Option<StratifyMode>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/run/swebench.rs:191:1
+    |
+191 | pub enum StratifyBy {
+    | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/swebench.rs:192:5
+    |
+192 |     Repo,
+    |     ^^^^
+
+warning: missing documentation for an enum
+   --> src/run/swebench.rs:197:1
+    |
+197 | pub enum StratifyMode {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/swebench.rs:199:5
+    |
+199 |     Proportional,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/run/swebench.rs:200:5
+    |
+200 |     Balanced,
+    |     ^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:204:1
+    |
+204 | pub struct ProvenanceManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:206:5
+    |
+206 |     pub purpose: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:207:5
+    |
+207 |     pub harness: HarnessManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:208:5
+    |
+208 |     pub dataset: DatasetManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:209:5
+    |
+209 |     pub prompt_template: PromptTemplateManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:210:5
+    |
+210 |     pub config: ConfigManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:211:5
+    |
+211 |     pub model: ModelManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:212:5
+    |
+212 |     pub runtime: RuntimeManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:213:5
+    |
+213 |     pub cli: CliManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:217:1
+    |
+217 | pub struct HarnessManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:218:5
+    |
+218 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:219:5
+    |
+219 |     pub version: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:220:5
+    |
+220 |     pub git_sha: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:221:5
+    |
+221 |     pub git_dirty: Option<bool>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:222:5
+    |
+222 |     pub git_resolution: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:226:1
+    |
+226 | pub struct DatasetManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:227:5
+    |
+227 |     pub path: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:228:5
+    |
+228 |     pub sha256: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:229:5
+    |
+229 |     pub instance_count: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:231:5
+    |
+231 |     pub filter_spec: Option<FilterSpec>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:235:1
+    |
+235 | pub struct PromptTemplateManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:236:5
+    |
+236 |     pub source: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:238:5
+    |
+238 |     pub path: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:239:5
+    |
+239 |     pub sha256: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:243:1
+    |
+243 | pub struct ConfigManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:244:5
+    |
+244 |     pub resolved: String,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:246:5
+    |
+246 |     pub overlay_paths: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:250:1
+    |
+250 | pub struct ModelManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:251:5
+    |
+251 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:252:5
+    |
+252 |     pub backend: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:254:5
+    |
+254 |     pub backend_version: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:256:5
+    |
+256 |     pub base_url: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:263:1
+    |
+263 | pub struct RuntimeManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:264:5
+    |
+264 |     pub started_at_utc: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:266:5
+    |
+266 |     pub finished_at_utc: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:267:5
+    |
+267 |     pub host_os: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:269:5
+    |
+269 |     pub resume_mode: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:271:5
+    |
+271 |     pub rust_version: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:275:1
+    |
+275 | pub struct CliManifest {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:276:5
+    |
+276 |     pub argv: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/swebench.rs:396:1
+    |
+396 | pub struct SwebenchArgs {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:397:5
+    |
+397 |     pub dataset_path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:398:5
+    |
+398 |     pub output_dir: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:399:5
+    |
+399 |     pub parallel: usize,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:400:5
+    |
+400 |     pub config: Config,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:455:5
+    |
+455 |     pub dry_run: bool,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:456:5
+    |
+456 |     pub skip_preflight: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:457:5
+    |
+457 |     pub preflight_format: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:458:5
+    |
+458 |     pub skip_model_probe: bool,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:459:5
+    |
+459 |     pub preflight_check_timeout_s: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:460:5
+    |
+460 |     pub preflight_total_timeout_s: u64,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/swebench.rs:461:5
+    |
+461 |     pub preflight_mode: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/swebench.rs:510:1
+    |
+510 | / pub fn trajectory_path_for_run(
+511 | |     output_dir: &std::path::Path,
+512 | |     instance_id: &str,
+513 | |     run_index: u32,
+514 | | ) -> PathBuf {
+    | |____________^
+
+warning: missing documentation for a function
+   --> src/run/swebench.rs:521:1
+    |
+521 | / pub fn patch_path_for_run(
+522 | |     output_dir: &std::path::Path,
+523 | |     instance_id: &str,
+524 | |     run_index: u32,
+525 | | ) -> PathBuf {
+    | |____________^
+
+warning: missing documentation for a function
+   --> src/run/swebench.rs:572:1
+    |
+572 | pub fn predictions_path_for_run(output_dir: &std::path::Path, run_index: u32) -> PathBuf {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/swebench.rs:588:1
+    |
+588 | / pub fn existing_trajectory_info_for_run(
+589 | |     output_dir: &std::path::Path,
+590 | |     instance_id: &str,
+591 | |     run_index: u32,
+592 | | ) -> Option<crate::trajectory::TrajectoryInfo> {
+    | |______________________________________________^
+
+warning: missing documentation for a function
+   --> src/run/swebench.rs:600:1
+    |
+600 | pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+    --> src/run/swebench.rs:1741:1
+     |
+1741 | pub fn effective_runs(row: &InstanceResult) -> u32 {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+    --> src/run/swebench.rs:1746:1
+     |
+1746 | pub fn resolved_count(row: &InstanceResult) -> u32 {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+    --> src/run/swebench.rs:1755:1
+     |
+1755 | pub fn pass_at_1(row: &InstanceResult) -> bool {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+    --> src/run/swebench.rs:1764:1
+     |
+1764 | pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/tail.rs:17:1
+   |
+17 | pub struct SnapshotOptions {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:18:5
+   |
+18 |     pub now: DateTime<Utc>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:19:5
+   |
+19 |     pub burn_rate_window: Duration,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/tail.rs:32:1
+   |
+32 | pub struct TailSnapshot {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:33:5
+   |
+33 |     pub sweep_dir: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:34:5
+   |
+34 |     pub completed: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:35:5
+   |
+35 |     pub in_flight: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:36:5
+   |
+36 |     pub pending: usize,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:37:5
+   |
+37 |     pub total: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:38:5
+   |
+38 |     pub failure_counts: BTreeMap<FailureCategory, usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:39:5
+   |
+39 |     pub cumulative_cost_usd: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:40:5
+   |
+40 |     pub burn_rate_usd_per_min: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:41:5
+   |
+41 |     pub eta_seconds: Option<i64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:42:5
+   |
+42 |     pub budget_cap_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:43:5
+   |
+43 |     pub pct_of_cap_used: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:44:5
+   |
+44 |     pub started_at: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:45:5
+   |
+45 |     pub last_event_at: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:46:5
+   |
+46 |     pub is_complete: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:47:5
+   |
+47 |     pub abort_reason: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/tail.rs:48:5
+   |
+48 |     pub warnings: Vec<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/tail.rs:117:1
+    |
+117 | pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnapshot, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/tail.rs:553:1
+    |
+553 | pub fn render_text(snapshot: &TailSnapshot) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/trajectory_diff.rs:24:1
+   |
+24 | pub enum TrajectoryDiffFormat {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:25:5
+   |
+25 |     Text,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:26:5
+   |
+26 |     Json,
+   |     ^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:27:5
+   |
+27 |     Unified,
+   |     ^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/trajectory_diff.rs:31:1
+   |
+31 | pub struct TrajectoryDiffArgs {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:32:5
+   |
+32 |     pub baseline: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:33:5
+   |
+33 |     pub candidate: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:34:5
+   |
+34 |     pub show_noise: bool,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/trajectory_diff.rs:38:1
+   |
+38 | pub struct TrajectoryDiffReport {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:39:5
+   |
+39 |     pub instance_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:40:5
+   |
+40 |     pub header: TrajectoryDiffHeader,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:41:5
+   |
+41 |     pub steps: Vec<TrajectoryDiffStep>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/trajectory_diff.rs:45:1
+   |
+45 | pub struct TrajectoryDiffHeader {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:46:5
+   |
+46 |     pub baseline_path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:47:5
+   |
+47 |     pub candidate_path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:48:5
+   |
+48 |     pub baseline_failure_category: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:49:5
+   |
+49 |     pub candidate_failure_category: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:50:5
+   |
+50 |     pub baseline_attempts: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:51:5
+   |
+51 |     pub candidate_attempts: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:52:5
+   |
+52 |     pub baseline_cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:53:5
+   |
+53 |     pub candidate_cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:54:5
+   |
+54 |     pub baseline_prompt_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:55:5
+   |
+55 |     pub candidate_prompt_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:56:5
+   |
+56 |     pub baseline_completion_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:57:5
+   |
+57 |     pub candidate_completion_tokens: Option<u64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:58:5
+   |
+58 |     pub baseline_total_steps: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:59:5
+   |
+59 |     pub candidate_total_steps: usize,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:60:5
+   |
+60 |     pub first_divergent_step_index: Option<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:61:5
+   |
+61 |     pub first_divergent_step_role: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+  --> src/run/trajectory_diff.rs:66:1
+   |
+66 | pub enum TrajectoryDiffStatus {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:68:5
+   |
+68 |     Match,
+   |     ^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:69:5
+   |
+69 |     Diverge,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:70:5
+   |
+70 |     BaselineOnly,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/run/trajectory_diff.rs:71:5
+   |
+71 |     CandidateOnly,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/run/trajectory_diff.rs:86:1
+   |
+86 | pub struct SemanticStep {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:88:5
+   |
+88 |     pub prompt: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:90:5
+   |
+90 |     pub assistant_content: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:92:5
+   |
+92 |     pub bash: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:94:5
+   |
+94 |     pub exit_code: Option<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:96:5
+   |
+96 |     pub stdout: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/run/trajectory_diff.rs:98:5
+   |
+98 |     pub stderr: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/run/trajectory_diff.rs:102:1
+    |
+102 | pub struct TrajectoryDiffStep {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:103:5
+    |
+103 |     pub index: usize,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:104:5
+    |
+104 |     pub role: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:105:5
+    |
+105 |     pub status: TrajectoryDiffStatus,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:107:5
+    |
+107 |     pub baseline: Option<SemanticStep>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:109:5
+    |
+109 |     pub candidate: Option<SemanticStep>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/run/trajectory_diff.rs:110:5
+    |
+110 |     pub diff_fields: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/trajectory_diff.rs:131:1
+    |
+131 | pub fn diff_paths(args: &TrajectoryDiffArgs) -> Result<TrajectoryDiffReport, Error> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/trajectory_diff.rs:143:1
+    |
+143 | / pub fn diff_sweep_instance(
+144 | |     baseline_sweep: &Path,
+145 | |     candidate_sweep: &Path,
+146 | |     instance_id: &str,
+147 | |     show_noise: bool,
+148 | | ) -> Result<TrajectoryDiffReport, Error> {
+    | |________________________________________^
+
+warning: missing documentation for a function
+   --> src/run/trajectory_diff.rs:168:1
+    |
+168 | pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/trajectory_diff.rs:181:1
+    |
+181 | pub fn render_text(report: &TrajectoryDiffReport) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/run/trajectory_diff.rs:264:1
+    |
+264 | pub fn render_unified(report: &TrajectoryDiffReport) -> String {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:33:9
+   |
+33 |         task: String,
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:34:9
+   |
+34 |         model: String,
+   |         ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:35:9
+   |
+35 |         started_at: String,
+   |         ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:39:9
+   |
+39 |         step: u32,
+   |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:40:9
+   |
+40 |         content: String,
+   |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:41:9
+   |
+41 |         cost_usd: Option<f64>,
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:42:9
+   |
+42 |         timestamp: String,
+   |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:46:9
+   |
+46 |         step: u32,
+   |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:47:9
+   |
+47 |         command: String,
+   |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:48:9
+   |
+48 |         timestamp: String,
+   |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:52:9
+   |
+52 |         step: u32,
+   |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:53:9
+   |
+53 |         exit_code: i32,
+   |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:54:9
+   |
+54 |         stdout: String,
+   |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:55:9
+   |
+55 |         stderr: String,
+   |         ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:56:9
+   |
+56 |         timed_out: bool,
+   |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:57:9
+   |
+57 |         timestamp: String,
+   |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:61:9
+   |
+61 |         step: u32,
+   |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:62:9
+   |
+62 |         content: String,
+   |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:63:9
+   |
+63 |         timestamp: String,
+   |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:67:9
+   |
+67 |         step: u32,
+   |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:68:9
+   |
+68 |         content: String,
+   |         ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:69:9
+   |
+69 |         timestamp: String,
+   |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:73:9
+   |
+73 |         exit_reason: String,
+   |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:75:9
+   |
+75 |         failure_category: Option<crate::trajectory::FailureCategory>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:76:9
+   |
+76 |         final_output: Option<String>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:77:9
+   |
+77 |         steps: u32,
+   |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:78:9
+   |
+78 |         total_cost_usd: f64,
+   |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/stream/mod.rs:79:9
+   |
+79 |         ended_at: String,
+   |         ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/stream/mod.rs:102:5
+    |
+102 |     fn emit(&self, event: StreamEvent);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/stream/broadcast.rs:20:1
+   |
+20 | pub struct BroadcastSink {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/stream/broadcast.rs:25:5
+   |
+25 |     pub fn new(capacity: usize) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/stream/broadcast.rs:36:5
+   |
+36 |     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/template/mod.rs:15:1
+   |
+15 | pub struct Renderer {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/template/mod.rs:26:5
+   |
+26 |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/template/mod.rs:46:5
+   |
+46 |     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/trajectory/mod.rs:13:1
+   |
+13 | pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> src/trajectory/mod.rs:21:1
+   |
+21 | pub mod outcome {
+   | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+  --> src/trajectory/mod.rs:27:1
+   |
+27 | pub mod exit_reason {
+   | ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:35:5
+   |
+35 |     EnvSetup,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:36:5
+   |
+36 |     ModelApi,
+   |     ^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:37:5
+   |
+37 |     ModelParse,
+   |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:38:5
+   |
+38 |     StepLimit,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:39:5
+   |
+39 |     CostLimit,
+   |     ^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:40:5
+   |
+40 |     WallclockTimeout,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:41:5
+   |
+41 |     AgentInternal,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> src/trajectory/mod.rs:42:5
+   |
+42 |     Unknown,
+   |     ^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/trajectory/mod.rs:46:1
+   |
+46 | pub struct TokenUsage {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:47:5
+   |
+47 |     pub prompt_tokens: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:48:5
+   |
+48 |     pub completion_tokens: u64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/trajectory/mod.rs:52:1
+   |
+52 | pub struct TrajectoryInfo {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:54:5
+   |
+54 |     pub task: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:56:5
+   |
+56 |     pub model_name: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:58:5
+   |
+58 |     pub exit_reason: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:60:5
+   |
+60 |     pub failure_category: Option<FailureCategory>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:62:5
+   |
+62 |     pub outcome: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:64:5
+   |
+64 |     pub final_output: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:66:5
+   |
+66 |     pub total_cost_usd: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:68:5
+   |
+68 |     pub token_usage: Option<TokenUsage>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:70:5
+   |
+70 |     pub duration_secs: Option<f64>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:72:5
+   |
+72 |     pub steps: Option<u32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:74:5
+   |
+74 |     pub started_at: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:76:5
+   |
+76 |     pub ended_at: Option<String>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:78:5
+   |
+78 |     pub other: std::collections::BTreeMap<String, serde_json::Value>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/trajectory/mod.rs:82:1
+   |
+82 | pub struct MessageRecord {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:83:5
+   |
+83 |     pub role: String,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:84:5
+   |
+84 |     pub content: String,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:86:5
+   |
+86 |     pub extra: MessageExtra,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/trajectory/mod.rs:98:1
+   |
+98 | pub struct Trajectory {
+   | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/trajectory/mod.rs:99:5
+   |
+99 |     pub trajectory_format: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/trajectory/mod.rs:100:5
+    |
+100 |     pub info: TrajectoryInfo,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/trajectory/mod.rs:101:5
+    |
+101 |     pub messages: Vec<MessageRecord>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/trajectory/mod.rs:115:5
+    |
+115 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/trajectory/mod.rs:119:5
+    |
+119 |     pub fn record_message(&mut self, m: &Message) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/trajectory/mod.rs:127:5
+    |
+127 |     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/trajectory/mod.rs:135:5
+    |
+135 |     pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/trajectory/mod.rs:141:5
+    |
+141 |     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a trait
+ --> src/trajectory/export.rs:3:1
+  |
+3 | pub trait TrajectoryExporter {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+ --> src/trajectory/export.rs:4:5
+  |
+4 |     fn export(trajectory: &Trajectory) -> String;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+ --> src/trajectory/export.rs:7:1
+  |
+7 | pub struct MarkdownExporter;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> src/trajectory/export.rs:10:1
+   |
+10 | pub struct CsvExporter;
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/trajectory/mod.rs:22:5
+   |
+22 |     pub const SUBMITTED: &str = "submitted";
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/trajectory/mod.rs:23:5
+   |
+23 |     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/trajectory/mod.rs:24:5
+   |
+24 |     pub const ERROR: &str = "error";
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/trajectory/mod.rs:28:5
+   |
+28 |     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rust_swe_agent` (lib) generated 703 warnings
+warning: missing documentation for the crate
+   --> tests/swebench_retry.rs:1:1
+    |
+  1 | / #![allow(clippy::unwrap_used, clippy::too_many_lines)]
+  2 | |
+  3 | | use std::fmt::Write as _;
+  4 | | use std::path::Path;
+...   |
+465 | |     assert_eq!(rerun.skipped, 0);
+466 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for the crate
+   --> tests/swebench_failure_categories.rs:1:1
+    |
+  1 | / #![allow(clippy::unwrap_used, clippy::too_many_lines)]
+  2 | |
+  3 | | use std::fmt::Write as _;
+  4 | | use std::path::Path;
+...   |
+180 | |     );
+181 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `rust_swe_agent` (test "swebench_retry") generated 1 warning
+warning: `rust_swe_agent` (test "swebench_failure_categories") generated 1 warning
+warning: missing documentation for the crate
+   --> tests/swebench_wallclock_timeout.rs:1:1
+    |
+  1 | / #![allow(clippy::unwrap_used)]
+  2 | |
+  3 | | use std::fmt::Write as _;
+  4 | | use std::path::Path;
+...   |
+120 | |     );
+121 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for the crate
+ --> src/main.rs:1:1
+  |
+1 | / use rust_swe_agent::cli;
+2 | |
+3 | | #[tokio::main]
+4 | | async fn main() -> Result<(), rust_swe_agent::Error> {
+5 | |     cli::run().await
+6 | | }
+  | |_^
+  |
+  = note: requested on the command line with `-W missing-docs`
+
+warning: `rust_swe_agent` (test "swebench_wallclock_timeout") generated 1 warning
+warning: `rust_swe_agent` (bin "rust-swe-agent") generated 1 warning
+warning: `rust_swe_agent` (bin "rust-swe-agent" test) generated 1 warning (1 duplicate)
+warning: missing documentation for the crate
+  --> tests/cli_task_timeout_help.rs:1:1
+   |
+ 1 | / #![allow(clippy::unwrap_used)]
+ 2 | |
+ 3 | | use clap::CommandFactory as _;
+ 4 | | use rust_swe_agent::cli::Cli;
+...  |
+30 | |     assert!(help.contains("whichever fires first"));
+31 | | }
+   | |_^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: `rust_swe_agent` (lib test) generated 703 warnings (703 duplicates)
+warning: `rust_swe_agent` (test "cli_task_timeout_help") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.30s
