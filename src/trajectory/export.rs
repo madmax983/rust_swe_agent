@@ -23,6 +23,7 @@ impl TrajectoryExporter for CsvExporter {
             let escaped_content = if msg.content.contains('"')
                 || msg.content.contains(',')
                 || msg.content.contains('\n')
+                || msg.content.contains('\r')
             {
                 format!("\"{}\"", msg.content.replace('"', "\"\""))
             } else {
