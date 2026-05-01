@@ -73,6 +73,7 @@ docker = []
 chaos = []
 live-anthropic = []
 markdown-export = []
+csv-export = []
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
