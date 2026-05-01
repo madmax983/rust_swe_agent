@@ -22,6 +22,11 @@ pub struct MiniCmd {
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
 
+    /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
+    /// Orthogonal to `--step-limit`; whichever fires first wins.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
     /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -173,6 +178,11 @@ pub struct SwebenchCmd {
 
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
+
+    /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
+    /// Orthogonal to `--step-limit`; whichever fires first wins.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
 
     #[arg(long)]
     pub config: Option<PathBuf>,

@@ -66,6 +66,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         resume: false,
         reruns: 3,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,

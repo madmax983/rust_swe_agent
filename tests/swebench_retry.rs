@@ -45,7 +45,12 @@ fn init_repo(dir: &Path) {
 }
 
 fn cfg(workdir: &Path) -> Config {
-    let toml = format!("[environment]\nworkdir = \"{}\"\n", workdir.display());
+    let workdir = workdir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -84,6 +89,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -129,6 +135,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -181,6 +188,7 @@ async fn max_retries_zero_disables_retry() {
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -234,6 +242,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: Some("a,b".into()),
         limit: None,
         sample: None,
@@ -271,6 +280,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: Some("b".into()),
         limit: None,
         sample: None,
@@ -323,6 +333,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -379,6 +390,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         config: cfg(&repo),
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -411,6 +423,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         config: cfg(&repo),
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,

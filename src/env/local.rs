@@ -55,10 +55,10 @@ impl Environment for LocalEnvironment {
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
+        let mut process_guard = ProcessTreeGuard::new(child.id());
 
         // Take pipes so we can read them concurrently with `wait`.
         let mut stdout_pipe = child
@@ -79,6 +79,7 @@ impl Environment for LocalEnvironment {
             r1.map_err(EnvError::Io)?;
             r2.map_err(EnvError::Io)?;
             let status = child.wait().await.map_err(EnvError::Io)?;
+            process_guard.disarm();
             Ok::<_, EnvError>((
                 String::from_utf8_lossy(&stdout_buf).into_owned(),
                 String::from_utf8_lossy(&stderr_buf).into_owned(),
@@ -102,6 +103,59 @@ impl Environment for LocalEnvironment {
             }),
         }
     }
+}
+
+struct ProcessTreeGuard {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl ProcessTreeGuard {
+    const fn new(pid: Option<u32>) -> Self {
+        Self { pid, armed: true }
+    }
+
+    const fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(pid) = self.pid {
+            kill_process_tree_sync(pid);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_process_tree_sync(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree_sync(pid: u32) {
+    let pid_s = pid.to_string();
+    let _ = std::process::Command::new("pkill")
+        .args(["-TERM", "-P", &pid_s])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid_s])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 #[cfg(windows)]

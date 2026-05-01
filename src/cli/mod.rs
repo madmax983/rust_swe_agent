@@ -131,6 +131,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         trajectory_name,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
+        task_timeout_secs: m.task_timeout_secs,
         stream_addr,
         patch_capture: None,
     };
@@ -330,6 +331,7 @@ fn swebench_args_from_cmd(
         reruns: s.reruns,
         resume: s.resume,
         cost_limit_usd: s.sweep_cost_limit_usd,
+        task_timeout_secs: s.task_timeout_secs,
         instance_ids: s.instance_ids,
         limit: s.limit,
         sample: s.sample,

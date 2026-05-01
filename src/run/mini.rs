@@ -50,6 +50,10 @@ pub struct MiniArgs {
     /// on every call. Only meaningful when `deterministic_responses` is
     /// `Some`. Lets tests drive cost/budget logic without a real API.
     pub deterministic_usage_per_call: Option<ModelUsage>,
+    /// Optional wallclock budget for the agent loop. When elapsed, any
+    /// in-flight environment command is dropped and the trajectory is
+    /// finalized as `wallclock_timeout`.
+    pub task_timeout_secs: Option<u64>,
     /// Optional SSE stream endpoint to bind. When `Some`, the runner
     /// starts a server before the agent runs and shuts it down after.
     pub stream_addr: Option<SocketAddr>,
@@ -103,21 +107,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
     // record of what happened — then propagate.
-    let run_result = agent.run().await;
+    let run_result = run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await;
     if let Err(e) = &run_result {
-        agent
-            .trajectory
-            .info
-            .exit_reason
-            .get_or_insert_with(|| "error".into());
-        agent.trajectory.info.failure_category = Some(classify_error(e));
-        agent
-            .trajectory
-            .info
-            .other
-            .entry("error_message".into())
-            .or_insert_with(|| serde_json::Value::String(e.to_string()));
-        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+        finalize_error_trajectory(&mut agent, e);
     }
 
     // Patch capture happens before the trajectory is saved so any
@@ -158,7 +150,15 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
 
     agent.trajectory.save_pretty(&traj_path)?;
 
-    let exit = run_result?;
+    let exit = match run_result {
+        Ok(exit) => exit,
+        Err(e) => {
+            if let Some(server) = server {
+                server.shutdown().await;
+            }
+            return Err(e);
+        }
+    };
 
     if let crate::agent::ExitReason::Submitted { final_output } = &exit {
         let out_path = args
@@ -173,6 +173,50 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         server.shutdown().await;
     }
     Ok(())
+}
+
+fn finalize_error_trajectory(agent: &mut DefaultAgent, err: &Error) {
+    agent
+        .trajectory
+        .info
+        .exit_reason
+        .get_or_insert_with(|| "error".into());
+    agent
+        .trajectory
+        .info
+        .failure_category
+        .get_or_insert_with(|| classify_error(err));
+    agent
+        .trajectory
+        .info
+        .other
+        .entry("error_message".into())
+        .or_insert_with(|| serde_json::Value::String(err.to_string()));
+    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+}
+
+async fn run_agent_with_optional_timeout(
+    agent: &mut DefaultAgent,
+    task_timeout_secs: Option<u64>,
+) -> Result<crate::agent::ExitReason, Error> {
+    let Some(secs) = task_timeout_secs else {
+        return agent.run().await;
+    };
+    let timeout = Duration::from_secs(secs);
+    if let Ok(result) = tokio::time::timeout(timeout, agent.run()).await {
+        return result;
+    }
+    let shutdown_error = agent.env.shutdown().await.err();
+    agent.finalize_wallclock_timeout(timeout);
+    if let Some(err) = shutdown_error {
+        agent.trajectory.info.other.insert(
+            "environment_shutdown_error".into(),
+            serde_json::Value::String(err.to_string()),
+        );
+    }
+    Err(Error::Trajectory(format!(
+        "task wallclock timeout after {secs}s"
+    )))
 }
 
 fn classify_error(err: &Error) -> FailureCategory {

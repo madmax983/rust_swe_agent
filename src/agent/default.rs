@@ -20,7 +20,7 @@ use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
-use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
+use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
 
 pub struct DefaultAgent {
     pub config: Config,
@@ -345,6 +345,24 @@ impl DefaultAgent {
             completion_tokens: self.completion_tokens,
         });
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
+    }
+
+    pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
+        self.trajectory.info.exit_reason = Some(exit_reason::WALLCLOCK_TIMEOUT.into());
+        self.trajectory.info.failure_category = Some(FailureCategory::WallclockTimeout);
+        self.trajectory.info.steps = Some(self.steps);
+        self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+        self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+        self.trajectory.info.other.insert(
+            "task_timeout_secs".into(),
+            serde_json::json!(timeout.as_secs()),
+        );
+        self.finalize_run_metadata(outcome::ERROR);
+        self.emit_run_ended(
+            exit_reason::WALLCLOCK_TIMEOUT,
+            Some(FailureCategory::WallclockTimeout),
+            None,
+        );
     }
 }
 
