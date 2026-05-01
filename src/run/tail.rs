@@ -349,6 +349,33 @@ fn scan_trajectories(
     for entry in std::fs::read_dir(sweep_dir)? {
         let entry = entry?;
         let path = entry.path();
+        if path.is_dir() {
+            let Some(instance_id) = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            for nested in std::fs::read_dir(&path)? {
+                let nested = nested?;
+                let nested_path = nested.path();
+                if !nested_path.is_file() {
+                    continue;
+                }
+                let Some(name) = nested_path.file_name().and_then(std::ffi::OsStr::to_str) else {
+                    continue;
+                };
+                if name.starts_with("run-") && name.ends_with(".traj.json") {
+                    if let Some(record) =
+                        terminal_record_from_trajectory(&nested_path, &instance_id, warnings)
+                    {
+                        records.push(record);
+                    }
+                }
+            }
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
@@ -358,41 +385,50 @@ fn scan_trajectories(
         let Some(instance_id) = name.strip_suffix(".traj.json") else {
             continue;
         };
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) => {
-                warnings.push(format!("{}: failed to read ({err})", path.display()));
-                continue;
-            }
-        };
-        let traj: Trajectory = match serde_json::from_str(&text) {
-            Ok(traj) => traj,
-            Err(err) => {
-                warnings.push(format!(
-                    "{}: partial or invalid JSON ({err})",
-                    path.display()
-                ));
-                continue;
-            }
-        };
-        let info = traj.info;
-        let (prompt_tokens, completion_tokens) =
-            info.token_usage.as_ref().map_or((None, None), |t| {
-                (Some(t.prompt_tokens), Some(t.completion_tokens))
-            });
-        records.push(TerminalRecord {
-            instance_id: instance_id.to_owned(),
-            outcome: info.outcome,
-            exit_reason: info.exit_reason,
-            failure_category: info.failure_category,
-            cost_usd: info.total_cost_usd,
-            prompt_tokens,
-            completion_tokens,
-            started_at: info.started_at.as_deref().and_then(parse_ts),
-            ended_at: info.ended_at.as_deref().and_then(parse_ts),
-        });
+        if let Some(record) = terminal_record_from_trajectory(&path, instance_id, warnings) {
+            records.push(record);
+        }
     }
     Ok(records)
+}
+
+fn terminal_record_from_trajectory(
+    path: &Path,
+    instance_id: &str,
+    warnings: &mut Vec<String>,
+) -> Option<TerminalRecord> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            warnings.push(format!("{}: failed to read ({err})", path.display()));
+            return None;
+        }
+    };
+    let traj: Trajectory = match serde_json::from_str(&text) {
+        Ok(traj) => traj,
+        Err(err) => {
+            warnings.push(format!(
+                "{}: partial or invalid JSON ({err})",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    let info = traj.info;
+    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
+        (Some(t.prompt_tokens), Some(t.completion_tokens))
+    });
+    Some(TerminalRecord {
+        instance_id: instance_id.to_owned(),
+        outcome: info.outcome,
+        exit_reason: info.exit_reason,
+        failure_category: info.failure_category,
+        cost_usd: info.total_cost_usd,
+        prompt_tokens,
+        completion_tokens,
+        started_at: info.started_at.as_deref().and_then(parse_ts),
+        ended_at: info.ended_at.as_deref().and_then(parse_ts),
+    })
 }
 
 fn failure_counts_from_records<'a>(

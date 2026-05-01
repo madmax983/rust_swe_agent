@@ -105,6 +105,18 @@ pub struct InstanceResult {
     /// Failure categories that triggered retries before the terminal attempt.
     #[serde(default)]
     pub retry_reasons: Vec<FailureCategory>,
+    /// Number of independent samples requested for this instance. Legacy
+    /// summaries that predate reruns deserialize as `0`; consumers should use
+    /// `effective_runs` to treat those rows as single-shot.
+    #[serde(default)]
+    pub runs: u32,
+    /// Number of resolved samples out of `runs`.
+    #[serde(default)]
+    pub resolved_count: u32,
+    /// Whether the first sample resolved. Equivalent to the historical
+    /// single-shot pass/fail value when `runs == 1`.
+    #[serde(default)]
+    pub pass_at_1: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +148,10 @@ pub struct SweepResults {
     /// Number of instances that retried at least once.
     #[serde(default)]
     pub retried_instances: usize,
+    /// Mean any-of-k resolution rate across instances, where k is each row's
+    /// `runs` count. For single-shot sweeps this is equivalent to pass@1.
+    #[serde(default)]
+    pub pass_at_k: f64,
     /// Resolved dataset subset spec used for this run.
     #[serde(default)]
     pub filter_spec: FilterSpec,
@@ -256,9 +272,26 @@ impl SweepResults {
         let total_tokens = self
             .total_prompt_tokens
             .saturating_add(self.total_completion_tokens);
+        let effective_tasks = self.effective_task_count();
+        let uniform_runs = self.uniform_runs_per_instance();
+        let pass_at_k_label = uniform_runs.map_or_else(|| "k".to_owned(), |k| k.to_string());
         let mut s = String::new();
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
+        if effective_tasks != self.total {
+            if let Some(runs) = uniform_runs {
+                let _ = writeln!(
+                    s,
+                    "Effective tasks:    {effective_tasks} ({} instances * {runs} runs)",
+                    self.total
+                );
+            } else {
+                let _ = writeln!(
+                    s,
+                    "Effective tasks:    {effective_tasks} (sum of per-instance runs)"
+                );
+            }
+        }
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
         let _ = writeln!(
             s,
@@ -281,6 +314,11 @@ impl SweepResults {
             self.retries, self.retried_instances
         );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
+        let _ = writeln!(
+            s,
+            "Pass@{pass_at_k_label}:            {:.2}%",
+            self.pass_at_k * 100.0
+        );
         let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
         let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
         let _ = writeln!(s, "Total tokens:       {total_tokens}");
@@ -321,6 +359,19 @@ impl SweepResults {
         }
         s
     }
+
+    fn effective_task_count(&self) -> usize {
+        self.instances
+            .iter()
+            .map(|row| usize::try_from(effective_runs(row)).unwrap_or(usize::MAX))
+            .sum()
+    }
+
+    fn uniform_runs_per_instance(&self) -> Option<u32> {
+        let mut iter = self.instances.iter().map(effective_runs);
+        let first = iter.next()?;
+        iter.all(|runs| runs == first).then_some(first)
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -329,6 +380,8 @@ pub struct SwebenchArgs {
     pub output_dir: PathBuf,
     pub parallel: usize,
     pub config: Config,
+    /// Independent samples per selected SWE-bench instance.
+    pub reruns: u32,
     /// When true, tasks whose trajectory file already exists and parses as
     /// valid JSON are skipped before any agent (or Docker container, or
     /// model API call) is launched for them.
@@ -417,7 +470,7 @@ fn default_attempts() -> u32 {
 /// the resume-skip check stays in lockstep with the writer.
 #[must_use]
 pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    output_dir.join(format!("{instance_id}.traj.json"))
+    trajectory_path_for_run(output_dir, instance_id, 1)
 }
 
 /// Path where the SWE-bench-style unified diff is written for an instance.
@@ -425,7 +478,61 @@ pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> P
 /// captured for a previously-submitted run.
 #[must_use]
 pub fn patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    patch_path_for_run(output_dir, instance_id, 1)
+}
+
+#[must_use]
+pub fn trajectory_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    output_dir
+        .join(instance_id)
+        .join(format!("run-{run_index}.traj.json"))
+}
+
+#[must_use]
+pub fn patch_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    output_dir
+        .join(instance_id)
+        .join(format!("run-{run_index}.patch"))
+}
+
+fn legacy_trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    output_dir.join(format!("{instance_id}.traj.json"))
+}
+
+fn legacy_patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
     output_dir.join(format!("{instance_id}.patch"))
+}
+
+fn existing_trajectory_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    let nested = trajectory_path_for_run(output_dir, instance_id, run_index);
+    if nested.exists() || run_index != 1 {
+        return nested;
+    }
+    legacy_trajectory_path_for(output_dir, instance_id)
+}
+
+fn existing_patch_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    let nested = patch_path_for_run(output_dir, instance_id, run_index);
+    if nested.exists() || run_index != 1 {
+        return nested;
+    }
+    legacy_patch_path_for(output_dir, instance_id)
 }
 
 /// Path of the aggregated SWE-bench predictions file written at the end of
@@ -444,7 +551,20 @@ pub fn existing_trajectory_info(
     output_dir: &std::path::Path,
     instance_id: &str,
 ) -> Option<crate::trajectory::TrajectoryInfo> {
-    read_trajectory_info(&trajectory_path_for(output_dir, instance_id))
+    existing_trajectory_info_for_run(output_dir, instance_id, 1)
+}
+
+#[must_use]
+pub fn existing_trajectory_info_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Option<crate::trajectory::TrajectoryInfo> {
+    read_trajectory_info(&existing_trajectory_path_for_run(
+        output_dir,
+        instance_id,
+        run_index,
+    ))
 }
 
 pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Error> {
@@ -480,6 +600,11 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // without yielding reusable pieces.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
+    if args.reruns == 0 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench swebench: --rerun must be at least 1".into(),
+        )));
+    }
     if !args.skip_preflight {
         let report = run_preflight(&args).await?;
         print_preflight_report(&report, &args.preflight_format, &args.preflight_mode)?;
@@ -503,6 +628,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec::default(),
             manifest: None,
             cost_limit_usd: args.cost_limit_usd,
@@ -556,6 +682,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         estimated_cost_usd: 0.0,
         retries: 0,
         retried_instances: 0,
+        pass_at_k: 0.0,
         filter_spec: filter_spec.clone(),
         manifest: Some(initial_manifest),
         cost_limit_usd: args.cost_limit_usd,
@@ -568,9 +695,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         "test panic after initial manifest write"
     );
     let mut set = tokio::task::JoinSet::new();
-    let mut skipped_results: Vec<InstanceResult> = Vec::new();
-    let mut pending: std::collections::VecDeque<SweBenchInstance> =
-        std::collections::VecDeque::new();
+    let mut skipped_results: Vec<RunSlotResult> = Vec::new();
+    let mut pending: std::collections::VecDeque<SweepRun> = std::collections::VecDeque::new();
 
     // Sweep-level cumulative USD spend, computed via `estimate_cost_usd`
     // from each task's prompt/completion tokens. Resume-skipped tasks
@@ -593,73 +719,87 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // was submitted) a patch file mean this task is fully archived
         // from a prior sweep. Skip it before we even consider dispatch —
         // no worker slot, no Docker container, no model API call.
-        if args.resume {
-            if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
-                let patch_path = patch_path_for(&args.output_dir, &inst.instance_id);
-                let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
-                let retryable_resume = args.retry_on_resume
-                    && info
-                        .failure_category
-                        .is_some_and(|cat| retry_policy.is_retry_category(cat));
-                if retryable_resume {
-                    let prior = resume_snapshot_for_instance(
-                        &args.output_dir,
-                        &inst.instance_id,
-                        &info,
-                        &patch_path,
-                        &prior_results,
-                    );
-                    bump_cost(
-                        estimate_cost_usd(
-                            prior.prompt_tokens.unwrap_or(0),
-                            prior.completion_tokens.unwrap_or(0),
-                        ),
-                        &mut cumulative_cost,
-                        &mut halted,
-                    );
-                    if halted {
-                        skipped_results.push(budget_halt_result(&inst.instance_id));
+        for run_index in 1..=args.reruns {
+            if args.resume {
+                if let Some(info) =
+                    existing_trajectory_info_for_run(&args.output_dir, &inst.instance_id, run_index)
+                {
+                    let patch_path =
+                        existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
+                    let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+                    let retryable_resume = args.retry_on_resume
+                        && info
+                            .failure_category
+                            .is_some_and(|cat| retry_policy.is_retry_category(cat));
+                    if retryable_resume {
+                        let prior = resume_snapshot_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                            &info,
+                            &patch_path,
+                            &prior_results,
+                        );
+                        bump_cost(
+                            estimate_cost_usd(
+                                prior.prompt_tokens.unwrap_or(0),
+                                prior.completion_tokens.unwrap_or(0),
+                            ),
+                            &mut cumulative_cost,
+                            &mut halted,
+                        );
+                        if halted {
+                            skipped_results.push(RunSlotResult::new(
+                                run_index,
+                                budget_halt_result(&inst.instance_id),
+                            ));
+                            continue;
+                        }
+                    }
+                    if !retryable_resume && (!needs_patch || patch_path.exists()) {
+                        let r = resume_snapshot_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                            &info,
+                            &patch_path,
+                            &prior_results,
+                        );
+                        bump_cost(
+                            estimate_cost_usd(
+                                r.prompt_tokens.unwrap_or(0),
+                                r.completion_tokens.unwrap_or(0),
+                            ),
+                            &mut cumulative_cost,
+                            &mut halted,
+                        );
+                        skipped_results.push(RunSlotResult::new(run_index, r));
                         continue;
                     }
-                }
-                if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                    let r = resume_snapshot_for_instance(
-                        &args.output_dir,
-                        &inst.instance_id,
-                        &info,
-                        &patch_path,
-                        &prior_results,
+                    tracing::info!(
+                        instance = %inst.instance_id,
+                        run_index,
+                        "resume: trajectory present but patch missing — re-running"
                     );
-                    bump_cost(
-                        estimate_cost_usd(
-                            r.prompt_tokens.unwrap_or(0),
-                            r.completion_tokens.unwrap_or(0),
-                        ),
-                        &mut cumulative_cost,
-                        &mut halted,
-                    );
-                    skipped_results.push(r);
-                    continue;
                 }
-                tracing::info!(
-                    instance = %inst.instance_id,
-                    "resume: trajectory present but patch missing — re-running"
-                );
             }
+            pending.push_back(SweepRun {
+                inst: inst.clone(),
+                run_index,
+            });
         }
-        pending.push_back(inst);
     }
 
     let mut results = skipped_results;
     let skipped = results
         .iter()
-        .filter(|r| r.exit_reason == "skipped_resume")
+        .filter(|r| r.result.exit_reason == "skipped_resume")
         .count();
     let mut submitted = 0;
     let mut errored = 0;
     let mut budget_halted = results
         .iter()
-        .filter(|r| r.exit_reason == EXIT_REASON_BUDGET_HALT)
+        .filter(|r| r.result.exit_reason == EXIT_REASON_BUDGET_HALT)
         .count();
     let mut with_patch = 0;
     let mut total_prompt = 0u64;
@@ -673,22 +813,37 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     // the previous result and (re-)checked the halt flag. A semaphore
     // would close the same race only after the new permit was claimed —
     // by which time another agent has already started an API call.
-    let spawn_one = |inst: SweBenchInstance, set: &mut tokio::task::JoinSet<InstanceResult>| {
+    for r in &results {
+        add_accounting_for_result(
+            &r.result,
+            &mut with_patch,
+            &mut total_prompt,
+            &mut total_completion,
+            &mut total_retries,
+            &mut retried_instances,
+        );
+    }
+
+    let spawn_one = |run: SweepRun, set: &mut tokio::task::JoinSet<RunSlotResult>| {
         let output_dir = args.output_dir.clone();
         let cfg = args.config.clone();
         let deterministic = args.deterministic_responses.clone();
         let det_usage = args.deterministic_usage_per_call.clone();
         let retry_policy = retry_policy.clone();
         set.spawn(async move {
-            run_one(
-                inst,
-                output_dir,
-                cfg,
-                deterministic,
-                det_usage,
-                retry_policy,
+            RunSlotResult::new(
+                run.run_index,
+                run_one(
+                    run.inst,
+                    run.run_index,
+                    output_dir,
+                    cfg,
+                    deterministic,
+                    det_usage,
+                    retry_policy,
+                )
+                .await,
             )
-            .await
         });
     };
 
@@ -696,7 +851,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // Resume already exhausted the budget; everything that was queued
         // never starts.
         while let Some(inst) = pending.pop_front() {
-            results.push(budget_halt_result(&inst.instance_id));
+            results.push(RunSlotResult::new(
+                inst.run_index,
+                budget_halt_result(&inst.inst.instance_id),
+            ));
             budget_halted += 1;
         }
     } else {
@@ -713,31 +871,25 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     while let Some(j) = set.join_next().await {
         match j {
             Ok(r) => {
-                match r.outcome.as_deref() {
+                match r.result.outcome.as_deref() {
                     Some(outcome::SUBMITTED) => submitted += 1,
                     Some(outcome::ERROR) => errored += 1,
                     _ => {}
                 }
-                if r.non_empty_patch {
-                    with_patch += 1;
-                }
-                total_retries =
-                    total_retries.saturating_add(u64::from(r.attempts.saturating_sub(1)));
-                if r.attempts > 1 {
-                    retried_instances += 1;
-                }
-                if let Some(p) = r.prompt_tokens {
-                    total_prompt = total_prompt.saturating_add(p);
-                }
-                if let Some(c) = r.completion_tokens {
-                    total_completion = total_completion.saturating_add(c);
-                }
+                add_accounting_for_result(
+                    &r.result,
+                    &mut with_patch,
+                    &mut total_prompt,
+                    &mut total_completion,
+                    &mut total_retries,
+                    &mut retried_instances,
+                );
                 // Sweep-level budget bookkeeping. Tasks that completed
                 // (whether submitted or errored) consumed real API budget
                 // and count toward the cap.
                 let cost = estimate_cost_usd(
-                    r.prompt_tokens.unwrap_or(0),
-                    r.completion_tokens.unwrap_or(0),
+                    r.result.prompt_tokens.unwrap_or(0),
+                    r.result.completion_tokens.unwrap_or(0),
                 );
                 let was_halted = halted;
                 bump_cost(cost, &mut cumulative_cost, &mut halted);
@@ -754,22 +906,28 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             }
             Err(e) => {
                 errored += 1;
-                results.push(InstanceResult {
-                    instance_id: "<join_error>".into(),
-                    exit_reason: "error".into(),
-                    outcome: Some(outcome::ERROR.into()),
-                    failure_category: Some(FailureCategory::AgentInternal),
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: Some(e.to_string()),
-                    patch_present: false,
-                    non_empty_patch: false,
-                    attempts: 1,
-                    retry_reasons: Vec::new(),
-                });
+                results.push(RunSlotResult::new(
+                    1,
+                    InstanceResult {
+                        instance_id: "<join_error>".into(),
+                        exit_reason: "error".into(),
+                        outcome: Some(outcome::ERROR.into()),
+                        failure_category: Some(FailureCategory::AgentInternal),
+                        steps: None,
+                        cost_usd: None,
+                        prompt_tokens: None,
+                        completion_tokens: None,
+                        duration_secs: None,
+                        error: Some(e.to_string()),
+                        patch_present: false,
+                        non_empty_patch: false,
+                        attempts: 1,
+                        retry_reasons: Vec::new(),
+                        runs: 1,
+                        resolved_count: 0,
+                        pass_at_1: false,
+                    },
+                ));
             }
         }
 
@@ -779,7 +937,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // count at `parallelism` until the queue drains.
         if halted {
             while let Some(inst) = pending.pop_front() {
-                results.push(budget_halt_result(&inst.instance_id));
+                results.push(RunSlotResult::new(
+                    inst.run_index,
+                    budget_halt_result(&inst.inst.instance_id),
+                ));
                 budget_halted += 1;
             }
         } else if let Some(inst) = pending.pop_front() {
@@ -787,16 +948,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
     }
 
-    // Skipped instances loaded from disk also contribute to the patch
-    // counter so resumed sweeps report cumulative `with_patch` correctly.
-    for r in &results {
-        if r.exit_reason == "skipped_resume" && r.non_empty_patch {
-            with_patch += 1;
-        }
-    }
+    let instance_results = aggregate_run_results(&results, args.reruns);
+    let pass_at_k = pass_at_k(&instance_results);
     let mut failures_by_category: BTreeMap<FailureCategory, usize> = BTreeMap::new();
     for r in &results {
-        if let Some(cat) = r.failure_category {
+        if let Some(cat) = r.result.failure_category {
             *failures_by_category.entry(cat).or_insert(0) += 1;
         }
     }
@@ -816,6 +972,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
         retries: total_retries,
         retried_instances,
+        pass_at_k,
         filter_spec,
         manifest: Some(build_manifest(
             &args,
@@ -826,7 +983,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             Some(chrono::Utc::now().to_rfc3339()),
         )),
         cost_limit_usd: args.cost_limit_usd,
-        instances: results,
+        instances: instance_results,
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
@@ -1396,7 +1553,163 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         non_empty_patch: false,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 0,
+        pass_at_1: false,
     }
+}
+
+#[derive(Debug, Clone)]
+struct SweepRun {
+    inst: SweBenchInstance,
+    run_index: u32,
+}
+
+#[derive(Debug, Clone)]
+struct RunSlotResult {
+    run_index: u32,
+    result: InstanceResult,
+}
+
+impl RunSlotResult {
+    fn new(run_index: u32, result: InstanceResult) -> Self {
+        Self { run_index, result }
+    }
+}
+
+fn add_accounting_for_result(
+    r: &InstanceResult,
+    with_patch: &mut usize,
+    total_prompt: &mut u64,
+    total_completion: &mut u64,
+    total_retries: &mut u64,
+    retried_instances: &mut usize,
+) {
+    if r.non_empty_patch {
+        *with_patch += 1;
+    }
+    *total_retries = total_retries.saturating_add(u64::from(r.attempts.saturating_sub(1)));
+    if r.attempts > 1 {
+        *retried_instances += 1;
+    }
+    if let Some(p) = r.prompt_tokens {
+        *total_prompt = total_prompt.saturating_add(p);
+    }
+    if let Some(c) = r.completion_tokens {
+        *total_completion = total_completion.saturating_add(c);
+    }
+}
+
+fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
+    let mut grouped: BTreeMap<String, Vec<&RunSlotResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry(r.result.instance_id.clone())
+            .or_default()
+            .push(r);
+    }
+
+    let mut out = Vec::with_capacity(grouped.len());
+    for (instance_id, mut rows) in grouped {
+        rows.sort_by_key(|r| r.run_index);
+        let Some(first) = rows.first().map(|r| &r.result) else {
+            continue;
+        };
+        let mut aggregate = first.clone();
+        aggregate.instance_id = instance_id;
+        aggregate.exit_reason.clone_from(&first.exit_reason);
+        aggregate.outcome.clone_from(&first.outcome);
+        aggregate.failure_category = first.failure_category;
+        aggregate.steps = first.steps;
+        aggregate.cost_usd = sum_f64(rows.iter().filter_map(|r| r.result.cost_usd));
+        aggregate.prompt_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.prompt_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.completion_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.completion_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.duration_secs = sum_f64(rows.iter().filter_map(|r| r.result.duration_secs));
+        aggregate.error.clone_from(&first.error);
+        aggregate.patch_present = rows.iter().any(|r| r.result.patch_present);
+        aggregate.non_empty_patch = rows.iter().any(|r| r.result.non_empty_patch);
+        aggregate.attempts = rows
+            .iter()
+            .map(|r| r.result.attempts)
+            .fold(0u32, u32::saturating_add);
+        aggregate.retry_reasons = rows
+            .iter()
+            .flat_map(|r| r.result.retry_reasons.iter().copied())
+            .collect();
+        aggregate.runs = requested_runs;
+        aggregate.resolved_count = rows
+            .iter()
+            .filter(|r| is_resolved_instance_result(&r.result))
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        aggregate.pass_at_1 = rows
+            .iter()
+            .find(|r| r.run_index == 1)
+            .is_some_and(|r| is_resolved_instance_result(&r.result));
+        out.push(aggregate);
+    }
+    out
+}
+
+fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut seen = false;
+    let mut total = 0.0;
+    for value in values {
+        seen = true;
+        total += value;
+    }
+    seen.then_some(total)
+}
+
+fn pass_at_k(instances: &[InstanceResult]) -> f64 {
+    if instances.is_empty() {
+        return 0.0;
+    }
+    let passed = instances
+        .iter()
+        .filter(|row| resolved_count(row) > 0)
+        .count();
+    #[allow(clippy::cast_precision_loss)]
+    {
+        passed as f64 / instances.len() as f64
+    }
+}
+
+#[must_use]
+pub fn effective_runs(row: &InstanceResult) -> u32 {
+    if row.runs == 0 { 1 } else { row.runs }
+}
+
+#[must_use]
+pub fn resolved_count(row: &InstanceResult) -> u32 {
+    if row.runs == 0 {
+        u32::from(is_resolved_instance_result(row))
+    } else {
+        row.resolved_count.min(row.runs)
+    }
+}
+
+#[must_use]
+pub fn pass_at_1(row: &InstanceResult) -> bool {
+    if row.runs == 0 {
+        is_resolved_instance_result(row)
+    } else {
+        row.pass_at_1
+    }
+}
+
+#[must_use]
+pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
+    row.outcome.as_deref() == Some(outcome::SUBMITTED) && row.failure_category.is_none()
 }
 
 /// Write `all_preds.jsonl` containing one line per *submitted* instance
@@ -1406,25 +1719,26 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
 /// reports them as unresolved rather than misattributes a stale diff.
 fn write_predictions_file(
     output_dir: &std::path::Path,
-    results: &[InstanceResult],
+    results: &[RunSlotResult],
     model_name: &str,
 ) -> Result<(), Error> {
     let path = predictions_path(output_dir);
     let mut text = String::new();
     for r in results {
-        if r.outcome.as_deref() != Some(outcome::SUBMITTED) {
+        if r.result.outcome.as_deref() != Some(outcome::SUBMITTED) {
             continue;
         }
-        if !r.patch_present {
+        if !r.result.patch_present {
             // A submitted-but-patch-missing instance only happens on a
             // resume that found the trajectory but no `.patch`; we already
             // re-queued it above so this branch is defensive.
             continue;
         }
-        let patch_path = patch_path_for(output_dir, &r.instance_id);
+        let patch_path =
+            existing_patch_path_for_run(output_dir, &r.result.instance_id, r.run_index);
         let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
         let line = serde_json::json!({
-            "instance_id": r.instance_id,
+            "instance_id": r.result.instance_id,
             "model_patch": model_patch,
             "model_name_or_path": model_name,
         });
@@ -1466,6 +1780,12 @@ fn skipped_result_from_info(
         non_empty_patch,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: u32::from(
+            info.outcome.as_deref() == Some(outcome::SUBMITTED) && info.failure_category.is_none(),
+        ),
+        pass_at_1: info.outcome.as_deref() == Some(outcome::SUBMITTED)
+            && info.failure_category.is_none(),
     }
 }
 
@@ -1478,6 +1798,9 @@ fn skipped_result_from_prior_result(
     out.error = None;
     out.patch_present = traj_based.patch_present;
     out.non_empty_patch = traj_based.non_empty_patch;
+    out.runs = 1;
+    out.resolved_count = u32::from(is_resolved_instance_result(&out));
+    out.pass_at_1 = is_resolved_instance_result(&out);
     out
 }
 
@@ -1519,9 +1842,10 @@ fn load_prior_results_by_instance(output_dir: &std::path::Path) -> PriorResults 
     }
 }
 
-fn resume_snapshot_for_instance(
+fn resume_snapshot_for_run(
     output_dir: &std::path::Path,
     instance_id: &str,
+    run_index: u32,
     info: &crate::trajectory::TrajectoryInfo,
     patch_path: &std::path::Path,
     prior: &PriorResults,
@@ -1530,7 +1854,14 @@ fn resume_snapshot_for_instance(
     let Some(prior_result) = prior.by_id.get(instance_id) else {
         return traj_based;
     };
-    if !prior_result_matches_trajectory(output_dir, instance_id, prior_result, &traj_based, prior) {
+    if !prior_result_matches_trajectory(
+        output_dir,
+        instance_id,
+        run_index,
+        prior_result,
+        &traj_based,
+        prior,
+    ) {
         return traj_based;
     }
     skipped_result_from_prior_result(prior_result, &traj_based)
@@ -1539,10 +1870,14 @@ fn resume_snapshot_for_instance(
 fn prior_result_matches_trajectory(
     output_dir: &std::path::Path,
     instance_id: &str,
+    run_index: u32,
     prior_result: &InstanceResult,
     traj_result: &InstanceResult,
     prior: &PriorResults,
 ) -> bool {
+    if effective_runs(prior_result) != 1 {
+        return false;
+    }
     if prior_result.outcome != traj_result.outcome
         || prior_result.failure_category != traj_result.failure_category
         || prior_result.steps != traj_result.steps
@@ -1552,9 +1887,13 @@ fn prior_result_matches_trajectory(
     let Some(results_mtime) = prior.results_mtime else {
         return false;
     };
-    let traj_mtime = std::fs::metadata(trajectory_path_for(output_dir, instance_id))
-        .ok()
-        .and_then(|m| m.modified().ok());
+    let traj_mtime = std::fs::metadata(existing_trajectory_path_for_run(
+        output_dir,
+        instance_id,
+        run_index,
+    ))
+    .ok()
+    .and_then(|m| m.modified().ok());
     let Some(traj_mtime) = traj_mtime else {
         return false;
     };
@@ -1661,6 +2000,7 @@ fn deterministic_for_attempt(all: &[String], attempt: u32, retry_mode: bool) -> 
 #[allow(clippy::too_many_lines)]
 async fn run_one(
     inst: SweBenchInstance,
+    run_index: u32,
     output_dir: PathBuf,
     mut cfg: Config,
     deterministic_responses: Option<Vec<String>>,
@@ -1678,7 +2018,9 @@ async fn run_one(
         }
     }
     let workdir = PathBuf::from(cfg.root.environment.workdir.clone());
-    let patch_path = patch_path_for(&output_dir, &id);
+    let patch_path = patch_path_for_run(&output_dir, &id, run_index);
+    let run_output_dir = output_dir.join(&id);
+    let trajectory_name = format!("run-{run_index}");
     let base_commit = inst.base_commit.clone();
     let mut attempts = 0u32;
     let mut retry_reasons = Vec::new();
@@ -1692,14 +2034,14 @@ async fn run_one(
         let det_for_attempt = deterministic_responses
             .as_ref()
             .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
-        let traj_path = output_dir.join(format!("{id}.traj.json"));
+        let traj_path = trajectory_path_for_run(&output_dir, &id, run_index);
         let before_fp = trajectory_fingerprint(&traj_path);
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
             config: cfg.clone(),
-            output_dir: output_dir.clone(),
-            trajectory_name: id.clone(),
+            output_dir: run_output_dir.clone(),
+            trajectory_name: trajectory_name.clone(),
             deterministic_responses: det_for_attempt,
             deterministic_usage_per_call: deterministic_usage_per_call.clone(),
             stream_addr: None,
@@ -1765,6 +2107,11 @@ async fn run_one(
             non_empty_patch,
             attempts,
             retry_reasons: retry_reasons.clone(),
+            runs: 1,
+            resolved_count: u32::from(
+                outcome_str == outcome::SUBMITTED && failure_category.is_none(),
+            ),
+            pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
         };
         let retryable = current
             .failure_category
@@ -2012,6 +2359,7 @@ mod tests {
             estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec {
                 original_count: 10,
                 selected_count: 10,
@@ -2062,6 +2410,7 @@ mod tests {
             estimated_cost_usd: 1.5,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec {
                 original_count: 5,
                 selected_count: 5,
@@ -2129,6 +2478,7 @@ mod tests {
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: cfg,
             resume: false,
             cost_limit_usd: None,
@@ -2170,6 +2520,7 @@ mod tests {
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: Config::defaults().unwrap(),
             resume: true,
             cost_limit_usd: None,
@@ -2226,6 +2577,7 @@ prompts:
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: cfg_a,
             resume: false,
             cost_limit_usd: None,
@@ -2306,6 +2658,7 @@ prompts:
             dataset_path: dataset,
             output_dir: out.clone(),
             parallel: 1,
+            reruns: 1,
             config: Config::defaults().unwrap(),
             resume: false,
             cost_limit_usd: None,
@@ -2364,6 +2717,7 @@ prompts:
             messages: vec![],
         };
         let path = trajectory_path_for(dir.path(), "inst-1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_json::to_string(&traj).unwrap()).unwrap();
 
         let info = existing_trajectory_info(dir.path(), "inst-1").unwrap();
@@ -2374,6 +2728,7 @@ prompts:
     fn existing_trajectory_info_returns_none_for_truncated_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = trajectory_path_for(dir.path(), "inst-2");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{\"trajectory_format\": \"mini-swe-agent-1.").unwrap();
         assert!(existing_trajectory_info(dir.path(), "inst-2").is_none());
     }

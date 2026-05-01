@@ -327,6 +327,7 @@ fn swebench_args_from_cmd(
         output_dir: s.output,
         parallel: s.parallel,
         config: cfg,
+        reruns: s.reruns,
         resume: s.resume,
         cost_limit_usd: s.sweep_cost_limit_usd,
         instance_ids: s.instance_ids,
@@ -390,10 +391,14 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         crate::run::compare::write_diff_script(&report, &path)?;
     }
     if let Some(max) = c.max_regressions {
-        if report.regression_count() > max {
+        if report.regression_count() > max
+            && report.verdict == crate::run::compare::CompareVerdict::Regression
+        {
             tracing::error!(
                 regressions = report.regression_count(),
                 max = max,
+                ci_lower = report.resolved_delta_ci95.lower,
+                ci_upper = report.resolved_delta_ci95.upper,
                 "compare: regression count exceeds --max-regressions threshold"
             );
             std::process::exit(1);
@@ -484,15 +489,22 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         breakdown,
     };
     let eval = crate::run::evaluate::run(&args)?;
+    let sweep_results = crate::run::compare::load_run(&e.sweep)?;
+    let summary = crate::run::evaluate::summarize(&eval, &sweep_results);
 
-    let resolved = eval.instances.iter().filter(|x| x.resolved).count();
     tracing::info!(
-        instances = eval.instances.len(),
-        resolved,
+        instances = summary.instances,
+        resolved = summary.resolved,
+        resolved_rate = summary.resolved_rate,
+        pass_at_1 = summary.pass_at_1,
+        pass_at_k = summary.pass_at_k,
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
-    println!("resolved: {resolved}");
+    println!("resolved: {}", summary.resolved);
+    println!("resolved_rate: {:.4}", summary.resolved_rate);
+    println!("pass@1: {:.4}", summary.pass_at_1);
+    println!("pass@k: {:.4}", summary.pass_at_k);
     if !eval.breakdown.is_empty() {
         print!(
             "{}",

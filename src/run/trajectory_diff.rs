@@ -170,6 +170,10 @@ pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBu
     if nested.exists() {
         return Some(nested);
     }
+    let nested_run = sweep.join(instance_id).join("run-1.traj.json");
+    if nested_run.exists() {
+        return Some(nested_run);
+    }
     let flat = sweep.join(format!("{instance_id}.traj.json"));
     flat.exists().then_some(flat)
 }
@@ -457,6 +461,13 @@ fn explicit_instance_id(trajectory: &Trajectory) -> Option<String> {
 fn derive_instance_id(path: &Path) -> Option<String> {
     let file_name = path.file_name()?.to_str()?;
     if file_name == "trajectory.json" {
+        return path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned);
+    }
+    if file_name.starts_with("run-") && file_name.ends_with(".traj.json") {
         return path
             .parent()
             .and_then(Path::file_name)

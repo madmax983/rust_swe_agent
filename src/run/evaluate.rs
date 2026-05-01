@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::compare::load_sweep;
-use crate::run::swebench::{self, InstanceResult};
+use crate::run::swebench::{self, InstanceResult, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +87,15 @@ pub struct EvaluationResults {
     pub breakdown: Vec<BreakdownBucket>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EvaluationSummary {
+    pub instances: usize,
+    pub resolved: usize,
+    pub resolved_rate: f64,
+    pub pass_at_1: f64,
+    pub pass_at_k: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BreakdownBucket {
     pub bucket_axis: BreakdownAxis,
@@ -119,6 +128,42 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         serde_json::to_string_pretty(&eval)?,
     )?;
     Ok(eval)
+}
+
+#[must_use]
+pub fn summarize<S: std::hash::BuildHasher>(
+    eval: &EvaluationResults,
+    results: &HashMap<String, InstanceResult, S>,
+) -> EvaluationSummary {
+    let instances = eval.instances.len();
+    if instances == 0 {
+        return EvaluationSummary {
+            instances: 0,
+            resolved: 0,
+            resolved_rate: 0.0,
+            pass_at_1: 0.0,
+            pass_at_k: 0.0,
+        };
+    }
+    let resolved = eval.instances.iter().filter(|row| row.resolved).count();
+    let pass_at_1 = eval
+        .instances
+        .iter()
+        .filter(|row| {
+            row.resolved
+                && results
+                    .get(&row.instance_id)
+                    .is_none_or(|result| effective_runs(result) == 1 || result.pass_at_1)
+        })
+        .count();
+    let pass_at_k = eval.instances.iter().filter(|row| row.resolved).count();
+    EvaluationSummary {
+        instances,
+        resolved,
+        resolved_rate: pct(resolved, instances),
+        pass_at_1: pct(pass_at_1, instances),
+        pass_at_k: pct(pass_at_k, instances),
+    }
 }
 
 fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResults {
@@ -547,6 +592,9 @@ mod tests {
             non_empty_patch: true,
             attempts: 1,
             retry_reasons: Vec::new(),
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }
     }
 
@@ -566,6 +614,9 @@ mod tests {
             non_empty_patch: false,
             attempts: 1,
             retry_reasons: Vec::new(),
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }
     }
 
