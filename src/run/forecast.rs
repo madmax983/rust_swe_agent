@@ -195,6 +195,8 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
     sweep.limit = None;
     sweep.sample = None;
     sweep.seed = None;
+    sweep.stratify_by = None;
+    sweep.stratify_mode = swebench::StratifyMode::Proportional;
     sweep.cost_limit_usd = None;
     if !dry_run {
         sweep.preflight_format = "silent".into();
