@@ -257,10 +257,10 @@ fn write_run_traj(
     std::fs::write(traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
 }
 
-fn write_evaluation_json(dir: &Path, value: serde_json::Value) {
+fn write_evaluation_json(dir: &Path, value: &serde_json::Value) {
     std::fs::write(
         dir.join("evaluation.json"),
-        serde_json::to_string_pretty(&value).unwrap(),
+        serde_json::to_string_pretty(value).unwrap(),
     )
     .unwrap();
 }
@@ -1196,7 +1196,7 @@ fn compare_cost_attribution_prefers_evaluation_json_table_over_aggregate_rows() 
 
     write_evaluation_json(
         baseline_dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "instances": [{
                 "instance_id": "task-a",
                 "resolved": false,
@@ -1216,7 +1216,7 @@ fn compare_cost_attribution_prefers_evaluation_json_table_over_aggregate_rows() 
     );
     write_evaluation_json(
         candidate_dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "instances": [{
                 "instance_id": "task-a",
                 "resolved": false,

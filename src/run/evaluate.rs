@@ -886,12 +886,11 @@ fn build_cost_attribution_report(
     for sample in samples {
         total_n += 1;
         let bucket = cost_attribution_bucket_label(sample.resolved, sample.failure_category);
-        let usd_cost = match sample.cost_usd {
-            Some(cost) => cost,
-            None => {
-                missing_cost_count += 1;
-                0.0
-            }
+        let usd_cost = if let Some(cost) = sample.cost_usd {
+            cost
+        } else {
+            missing_cost_count += 1;
+            0.0
         };
         total_usd += usd_cost;
         let entry = buckets.entry(bucket.to_owned()).or_insert((0, 0.0));
@@ -982,6 +981,13 @@ mod tests {
 
     use super::*;
     use crate::trajectory::FailureCategory;
+
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
 
     fn submitted(id: &str) -> InstanceResult {
         InstanceResult {
@@ -1207,28 +1213,28 @@ mod tests {
 
         let resolved_row = rows.get("resolved").copied().unwrap();
         assert_eq!(resolved_row.n, 1);
-        assert_eq!(resolved_row.total_usd, 0.0);
-        assert_eq!(resolved_row.mean_usd, 0.0);
-        assert_eq!(resolved_row.share_pct, 0.0);
+        assert_f64_eq(resolved_row.total_usd, 0.0);
+        assert_f64_eq(resolved_row.mean_usd, 0.0);
+        assert_f64_eq(resolved_row.share_pct, 0.0);
 
         let uncategorized_row = rows.get("uncategorized").copied().unwrap();
         assert_eq!(uncategorized_row.n, 1);
-        assert_eq!(uncategorized_row.total_usd, 1.0);
-        assert_eq!(uncategorized_row.mean_usd, 1.0);
-        assert_eq!(uncategorized_row.share_pct, 25.0);
+        assert_f64_eq(uncategorized_row.total_usd, 1.0);
+        assert_f64_eq(uncategorized_row.mean_usd, 1.0);
+        assert_f64_eq(uncategorized_row.share_pct, 25.0);
 
         let model_api_row = rows.get("model_api").copied().unwrap();
         assert_eq!(model_api_row.n, 1);
-        assert_eq!(model_api_row.total_usd, 3.0);
-        assert_eq!(model_api_row.mean_usd, 3.0);
-        assert_eq!(model_api_row.share_pct, 75.0);
+        assert_f64_eq(model_api_row.total_usd, 3.0);
+        assert_f64_eq(model_api_row.mean_usd, 3.0);
+        assert_f64_eq(model_api_row.share_pct, 75.0);
 
         let total_row = report.rows.last().unwrap();
         assert_eq!(total_row.bucket, "TOTAL");
         assert_eq!(total_row.n, 3);
-        assert_eq!(total_row.total_usd, 4.0);
-        assert_eq!(total_row.mean_usd, 1.3333);
-        assert_eq!(total_row.share_pct, 100.0);
+        assert_f64_eq(total_row.total_usd, 4.0);
+        assert_f64_eq(total_row.mean_usd, 1.3333);
+        assert_f64_eq(total_row.share_pct, 100.0);
     }
 
     #[test]

@@ -659,13 +659,16 @@ pub(crate) fn load_run_slots<S: std::hash::BuildHasher>(
             result: result.clone(),
         }));
     } else {
-        slots.extend(fallback.iter().filter_map(|(instance_id, result)| {
-            (!seen_ids.contains(instance_id)).then(|| LoadedRunSlot {
-                instance_id: instance_id.clone(),
-                run_index: 1,
-                result: result.clone(),
-            })
-        }));
+        slots.extend(
+            fallback
+                .iter()
+                .filter(|(instance_id, _)| !seen_ids.contains(*instance_id))
+                .map(|(instance_id, result)| LoadedRunSlot {
+                    instance_id: instance_id.clone(),
+                    run_index: 1,
+                    result: result.clone(),
+                }),
+        );
     }
     slots.sort_by(|a, b| {
         a.instance_id
@@ -1630,6 +1633,13 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     fn submitted(id: &str) -> InstanceResult {
         InstanceResult {
             instance_id: id.into(),
@@ -2242,29 +2252,29 @@ mod tests {
 
         let step_limit = rows.iter().find(|row| row.bucket == "step_limit").unwrap();
         assert_eq!(step_limit.n_baseline, 1);
-        assert_eq!(step_limit.total_usd_baseline, 0.2);
+        assert_f64_eq(step_limit.total_usd_baseline, 0.2);
         assert_eq!(step_limit.n_candidate, 1);
-        assert_eq!(step_limit.total_usd_candidate, 0.2);
-        assert_eq!(step_limit.delta_usd, 0.0);
-        assert_eq!(step_limit.share_pp_delta, -16.67);
+        assert_f64_eq(step_limit.total_usd_candidate, 0.2);
+        assert_f64_eq(step_limit.delta_usd, 0.0);
+        assert_f64_eq(step_limit.share_pp_delta, -16.67);
         assert!(!step_limit.exceeds_threshold);
 
         let resolved = rows.iter().find(|row| row.bucket == "resolved").unwrap();
         assert_eq!(resolved.n_baseline, 1);
-        assert_eq!(resolved.total_usd_baseline, 0.1);
+        assert_f64_eq(resolved.total_usd_baseline, 0.1);
         assert_eq!(resolved.n_candidate, 0);
-        assert_eq!(resolved.total_usd_candidate, 0.0);
-        assert_eq!(resolved.delta_usd, -0.1);
-        assert_eq!(resolved.share_pp_delta, -33.33);
+        assert_f64_eq(resolved.total_usd_candidate, 0.0);
+        assert_f64_eq(resolved.delta_usd, -0.1);
+        assert_f64_eq(resolved.share_pp_delta, -33.33);
         assert!(!resolved.exceeds_threshold);
 
         let model_api = rows.iter().find(|row| row.bucket == "model_api").unwrap();
         assert_eq!(model_api.n_baseline, 0);
-        assert_eq!(model_api.total_usd_baseline, 0.0);
+        assert_f64_eq(model_api.total_usd_baseline, 0.0);
         assert_eq!(model_api.n_candidate, 1);
-        assert_eq!(model_api.total_usd_candidate, 0.2);
-        assert_eq!(model_api.delta_usd, 0.2);
-        assert_eq!(model_api.share_pp_delta, 50.0);
+        assert_f64_eq(model_api.total_usd_candidate, 0.2);
+        assert_f64_eq(model_api.delta_usd, 0.2);
+        assert_f64_eq(model_api.share_pp_delta, 50.0);
         assert!(!model_api.exceeds_threshold);
     }
 
