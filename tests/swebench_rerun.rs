@@ -52,8 +52,9 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let yaml = format!("environment:\n  workdir: {}\n", dir.display());
-    Config::from_yaml_str(&yaml).unwrap()
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.environment.workdir = dir.display().to_string();
+    cfg
 }
 
 fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Config) -> SwebenchArgs {
