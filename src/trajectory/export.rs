@@ -133,7 +133,11 @@ impl TrajectoryExporter for MermaidExporter {
             // Basic escaping: replace newlines with space, remove semicolons which might break mermaid depending on context
             let mut safe_content = msg.content.replace('\n', " ").replace(';', ",");
             if safe_content.len() > 50 {
-                safe_content.truncate(47);
+                let mut idx = 47;
+                while idx > 0 && !safe_content.is_char_boundary(idx) {
+                    idx -= 1;
+                }
+                safe_content.truncate(idx);
                 safe_content.push_str("...");
             }
 
