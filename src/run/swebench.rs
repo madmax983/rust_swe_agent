@@ -2307,6 +2307,11 @@ pub(crate) fn apply_subset(
             "`--stratify-by` requires `--sample`".into(),
         )));
     }
+    if stratify_by.is_none() && stratify_mode != StratifyMode::Proportional {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-mode` requires `--stratify-by`".into(),
+        )));
+    }
     if stratify_by.is_some() && requested_ids.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--stratify-by` cannot be combined with `--instance-ids`".into(),
@@ -3185,6 +3190,32 @@ instance = "inst"
         assert!(
             err.to_string()
                 .contains("`--stratify-by` cannot be combined with `--instance-ids`")
+        );
+    }
+
+    #[test]
+    fn stratify_mode_requires_stratify_by() {
+        let inst = SweBenchInstance {
+            instance_id: "a1".into(),
+            repo: Some("a".into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let err = apply_subset(
+            vec![inst],
+            None,
+            None,
+            Some(1),
+            Some(1),
+            None,
+            StratifyMode::Balanced,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`--stratify-mode` requires `--stratify-by`")
         );
     }
 
