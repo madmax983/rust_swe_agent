@@ -2379,24 +2379,27 @@ fn stratified_sample_by_repo(
     seed: u64,
     mode: StratifyMode,
 ) -> Vec<SweBenchInstance> {
-    let mut groups: Vec<(String, Vec<SweBenchInstance>)> = BTreeMap::<String, Vec<SweBenchInstance>>::new()
-        .into_iter()
-        .collect();
     let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
     for inst in instances {
         let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
         map.entry(key).or_default().push(inst);
     }
-    groups.extend(map);
+    let groups: Vec<(String, Vec<SweBenchInstance>)> = map.into_iter().collect();
     let total = groups.iter().map(|(_, v)| v.len()).sum::<usize>();
     let mut targets = vec![0usize; groups.len()];
     match mode {
         StratifyMode::Balanced => {
-            for _ in 0..n {
-                for (i, (_, g)) in groups.iter().enumerate() {
-                    if targets[i] < g.len() {
-                        targets[i] += 1;
-                        break;
+            if !groups.is_empty() {
+                let start = seed as usize % groups.len();
+                let mut cursor = 0usize;
+                for _ in 0..n {
+                    for _ in 0..groups.len() {
+                        let i = (start + cursor) % groups.len();
+                        cursor = cursor.wrapping_add(1);
+                        if targets[i] < groups[i].1.len() {
+                            targets[i] += 1;
+                            break;
+                        }
                     }
                 }
             }
@@ -2409,7 +2412,17 @@ fn stratified_sample_by_repo(
                 rem.push((numer % total, g.len(), i));
             }
             let mut left = n.saturating_sub(targets.iter().sum::<usize>());
-            rem.sort_by(|a, b| b.cmp(a));
+            // Deterministic tie-breaker: larger remainder, then more capacity,
+            // then seeded pseudo-random order by group index.
+            rem.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| {
+                        let ah = simple_hash(&format!("{seed}:{}", a.2));
+                        let bh = simple_hash(&format!("{seed}:{}", b.2));
+                        ah.cmp(&bh)
+                    })
+            });
             for (_, cap, i) in rem {
                 if left == 0 {
                     break;
@@ -3086,6 +3099,81 @@ instance = "inst"
         for inst in filtered {
             assert!(["a", "b", "c", "d", "e"].contains(&inst.instance_id.as_str()));
         }
+    }
+
+    #[test]
+    fn stratified_sample_balanced_spreads_across_repos() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![
+            mk("a1", "a"),
+            mk("a2", "a"),
+            mk("b1", "b"),
+            mk("b2", "b"),
+            mk("c1", "c"),
+            mk("c2", "c"),
+        ];
+        let (filtered, _) = apply_subset(
+            instances,
+            None,
+            None,
+            Some(3),
+            Some(123),
+            Some(StratifyBy::Repo),
+            StratifyMode::Balanced,
+        )
+        .unwrap();
+        let repos: HashSet<_> = filtered
+            .into_iter()
+            .map(|inst| inst.repo.unwrap_or_default())
+            .collect();
+        assert_eq!(repos.len(), 3);
+    }
+
+    #[test]
+    fn stratified_sample_requires_sample_and_excludes_instance_ids() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![mk("a1", "a"), mk("b1", "b")];
+
+        let err = apply_subset(
+            instances.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(StratifyBy::Repo),
+            StratifyMode::Proportional,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("`--stratify-by` requires `--sample`"));
+
+        let err = apply_subset(
+            instances,
+            Some("a1"),
+            None,
+            Some(1),
+            Some(1),
+            Some(StratifyBy::Repo),
+            StratifyMode::Proportional,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`--stratify-by` cannot be combined with `--instance-ids`")
+        );
     }
 
     #[test]
