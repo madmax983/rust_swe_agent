@@ -2,7 +2,18 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StratifyByArg {
+    Repo,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StratifyModeArg {
+    Proportional,
+    Balanced,
+}
 
 #[derive(Debug, Args)]
 pub struct MiniCmd {
@@ -229,6 +240,14 @@ pub struct SwebenchCmd {
     /// RNG seed used by `--sample`.
     #[arg(long)]
     pub seed: Option<u64>,
+
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum, default_value = "proportional")]
+    pub stratify_mode: StratifyModeArg,
 
     /// Retry transiently-failed instances up to N additional attempts.
     /// `0` disables retries entirely.

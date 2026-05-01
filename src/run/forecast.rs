@@ -399,8 +399,15 @@ fn calibration_instance_ids(
     seed: u64,
 ) -> Result<Vec<String>, Error> {
     let planned = planned_instances(args)?;
-    let (calibration, _) =
-        swebench::apply_subset(planned, None, None, Some(calibration_n), Some(seed))?;
+    let (calibration, _) = swebench::apply_subset(
+        planned,
+        None,
+        None,
+        Some(calibration_n),
+        Some(seed),
+        None,
+        swebench::StratifyMode::Proportional,
+    )?;
     Ok(calibration
         .into_iter()
         .map(|inst| inst.instance_id)
@@ -417,6 +424,8 @@ fn planned_instances(
         args.limit,
         args.sample,
         args.seed,
+        args.stratify_by,
+        args.stratify_mode,
     )?;
     Ok(filtered)
 }

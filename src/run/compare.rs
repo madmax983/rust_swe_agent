@@ -1650,6 +1650,8 @@ mod tests {
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: None,
         };
         let candidate = crate::run::swebench::FilterSpec {
             original_count: 10,
@@ -1658,6 +1660,8 @@ mod tests {
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: None,
         };
         assert!(subset_warnings(Some(&baseline), Some(&candidate)).is_empty());
     }
@@ -1671,6 +1675,8 @@ mod tests {
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: None,
         };
         let missing_baseline = subset_warnings(None, Some(&present));
         assert!(

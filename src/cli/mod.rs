@@ -336,6 +336,13 @@ fn swebench_args_from_cmd(
         limit: s.limit,
         sample: s.sample,
         seed: s.seed,
+        stratify_by: s.stratify_by.map(|v| match v {
+            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        }),
+        stratify_mode: match s.stratify_mode {
+            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        },
         max_retries: s.max_retries,
         retry_on: s.retry_on,
         retry_backoff_base_ms: s.retry_backoff_base_ms,

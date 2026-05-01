@@ -51,6 +51,8 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
