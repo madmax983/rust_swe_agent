@@ -695,3 +695,67 @@ impl ForecastRng {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::float_cmp)]
+    use super::*;
+
+    #[test]
+    fn test_quantile_empty_slice() {
+        assert_eq!(quantile(&[], 0.5), 0.0);
+        assert_eq!(quantile_sorted(&[], 0.5), 0.0);
+    }
+
+    #[test]
+    fn test_quantile_single_element() {
+        assert_eq!(quantile(&[42.0], 0.5), 42.0);
+        assert_eq!(quantile_sorted(&[42.0], 0.5), 42.0);
+    }
+
+    #[test]
+    fn test_quantile_clamp_bounds() {
+        let values = [10.0, 20.0, 30.0];
+        assert_eq!(quantile(&values, -1.0), 10.0);
+        assert_eq!(quantile(&values, 2.0), 30.0);
+        assert_eq!(quantile_sorted(&values, -1.0), 10.0);
+        assert_eq!(quantile_sorted(&values, 2.0), 30.0);
+    }
+
+    #[test]
+    fn test_mean() {
+        assert_eq!(mean(&[]), 0.0);
+        assert_eq!(mean(&[10.0, 20.0, 30.0]), 20.0);
+    }
+
+    #[test]
+    fn test_threshold_check() {
+        let cost = IntervalEstimate { point: 50.0, lower: 40.0, upper: 60.0 };
+
+        // NotConfigured
+        let check = threshold_check(None, cost);
+        assert_eq!(check.status, ThresholdStatus::NotConfigured);
+
+        // Under
+        let check = threshold_check(Some(100.0), cost);
+        assert_eq!(check.status, ThresholdStatus::Under);
+
+        // Exceeds
+        let check = threshold_check(Some(30.0), cost);
+        assert_eq!(check.status, ThresholdStatus::Exceeds);
+
+        // TooTight
+        let check = threshold_check(Some(50.0), cost);
+        assert_eq!(check.status, ThresholdStatus::TooTight);
+    }
+
+    #[test]
+    fn test_forecast_rng() {
+        let mut rng1 = ForecastRng::new(42);
+        let mut rng2 = ForecastRng::new(42);
+
+        assert_eq!(rng1.next_u64(), rng2.next_u64());
+        assert_eq!(rng1.next_usize(), rng2.next_usize());
+    }
+}
