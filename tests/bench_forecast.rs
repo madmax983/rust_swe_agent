@@ -8,8 +8,8 @@ use std::process::Command;
 
 use rust_swe_agent::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
 use rust_swe_agent::run::forecast::{
-    ForecastArgs, ForecastGate, ThresholdStatus, forecast_from_results, forecast_gate_allows_sweep,
-    run, validate_fail_over_cap,
+    ForecastArgs, ForecastGate, ForecastOutcome, ForecastReport, ThresholdStatus,
+    forecast_from_results, forecast_gate_allows_sweep, run, validate_fail_over_cap,
 };
 use rust_swe_agent::run::swebench::{InstanceResult, SwebenchArgs, SweepResults};
 use rust_swe_agent::trajectory::{FailureCategory, outcome};
@@ -128,6 +128,13 @@ fn fixture_results() -> SweepResults {
         manifest: None,
         cost_limit_usd: None,
         instances,
+    }
+}
+
+fn expect_forecast_report(outcome: ForecastOutcome) -> ForecastReport {
+    match outcome {
+        ForecastOutcome::Report(report) => *report,
+        ForecastOutcome::DryRun(_) => panic!("expected measured forecast report, got dry-run"),
     }
 }
 
@@ -310,6 +317,109 @@ fn cli_forecast_json_stdout_is_one_forecast_document() {
 }
 
 #[test]
+fn cli_forecast_dry_run_returns_preflight_without_artifacts() {
+    let work = tempfile::tempdir().unwrap();
+    let dataset = work.path().join("dataset.jsonl");
+    let config = work.path().join("config.yaml");
+    let output = work.path().join("runs");
+    write_dataset(&dataset, &["a"]);
+    write_step_limit_zero_config(&config);
+
+    let run = Command::new(binary_path())
+        .args([
+            "bench",
+            "forecast",
+            "--dataset-path",
+            dataset.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "--calibration-n",
+            "1",
+            "--seed",
+            "7",
+            "--target-n",
+            "1",
+            "--dry-run",
+            "--step-limit",
+            "0",
+            "--skip-model-probe",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        run.status.success(),
+        "forecast dry-run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("preflight checks passed"),
+        "dry-run should report preflight success, got: {}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+    assert!(
+        !output.join("forecast/results.json").exists(),
+        "dry-run must not write forecast results"
+    );
+}
+
+#[test]
+fn cli_forecast_first_dry_run_returns_preflight_without_artifacts() {
+    let work = tempfile::tempdir().unwrap();
+    let dataset = work.path().join("dataset.jsonl");
+    let config = work.path().join("config.yaml");
+    let output = work.path().join("runs");
+    write_dataset(&dataset, &["a"]);
+    write_step_limit_zero_config(&config);
+
+    let run = Command::new(binary_path())
+        .args([
+            "bench",
+            "swebench",
+            "--dataset-path",
+            dataset.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+            "--forecast-first",
+            "--calibration-n",
+            "1",
+            "--seed",
+            "7",
+            "--target-n",
+            "1",
+            "--dry-run",
+            "--step-limit",
+            "0",
+            "--skip-model-probe",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        run.status.success(),
+        "forecast-first dry-run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("preflight checks passed"),
+        "dry-run should report preflight success, got: {}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+    assert!(
+        !output.join("forecast/results.json").exists(),
+        "dry-run must not write forecast results"
+    );
+    assert!(
+        !output.join("results.json").exists(),
+        "dry-run must not launch or write the real sweep"
+    );
+}
+
+#[test]
 fn cli_fail_over_cap_returns_nonzero_when_forecast_exceeds_cap() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
@@ -443,7 +553,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
         cache_creation_tokens: 0,
         cost_usd: Some(0.001),
     };
-    let report = run(ForecastArgs {
+    let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
             dataset_path: dataset,
             output_dir: output.clone(),
@@ -478,6 +588,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
     })
     .await
     .unwrap();
+    let report = expect_forecast_report(outcome);
 
     assert_eq!(report.calibration.n, 2);
     assert_eq!(report.forecast.target_n, 4);
@@ -549,7 +660,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
     let mut cfg = config_with_workdir(&repo);
     cfg.root.agent.step_limit = 0;
 
-    let report = run(ForecastArgs {
+    let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
             dataset_path: dataset,
             output_dir: output,
@@ -584,6 +695,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
     })
     .await
     .unwrap();
+    let report = expect_forecast_report(outcome);
 
     assert_eq!(report.forecast.target_n, 2);
 }
@@ -601,7 +713,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
     let mut cfg = config_with_workdir(&repo);
     cfg.root.agent.step_limit = 0;
 
-    let report = run(ForecastArgs {
+    let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
             dataset_path: dataset,
             output_dir: output,
@@ -636,6 +748,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
     })
     .await
     .unwrap();
+    let report = expect_forecast_report(outcome);
 
     assert_eq!(report.forecast.target_n, 1);
     assert_eq!(report.calibration.instance_ids, ["a"]);

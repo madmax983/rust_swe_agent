@@ -24,6 +24,15 @@ pub struct ForecastArgs {
     pub confidence_pct: f64,
 }
 
+/// Result of running forecast setup.
+#[derive(Debug, Clone)]
+pub enum ForecastOutcome {
+    /// A measured calibration sweep produced a forecast report.
+    Report(Box<ForecastReport>),
+    /// Dry-run stopped after preflight without writing forecast artifacts.
+    DryRun(Box<SweepResults>),
+}
+
 /// Stable, serializable forecast report emitted by `bench forecast`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForecastReport {
@@ -162,8 +171,9 @@ pub struct ForecastGate {
 
 /// Run a forecast calibration through the normal sweep runner, isolated under
 /// `<output>/forecast`, then extrapolate from the recorded calibration usage.
-pub async fn run(args: ForecastArgs) -> Result<ForecastReport, Error> {
+pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
     validate_args(args.calibration_n, args.confidence_pct)?;
+    let dry_run = args.sweep.dry_run;
     let original_output = args.sweep.output_dir.clone();
     let calibration_dir = original_output.join("forecast");
     let target_n = match args.target_n {
@@ -186,10 +196,15 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastReport, Error> {
     sweep.sample = None;
     sweep.seed = None;
     sweep.cost_limit_usd = None;
-    sweep.preflight_format = "silent".into();
+    if !dry_run {
+        sweep.preflight_format = "silent".into();
+    }
     sweep.preflight_mode = "forecast".into();
 
     let mut results = swebench::run(sweep).await?;
+    if dry_run {
+        return Ok(ForecastOutcome::DryRun(Box::new(results)));
+    }
     results
         .instances
         .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -203,7 +218,7 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastReport, Error> {
         limit,
     )?;
     report.calibration.output_dir = calibration_dir.display().to_string();
-    Ok(report)
+    Ok(ForecastOutcome::Report(Box::new(report)))
 }
 
 /// Build a forecast report from an already-completed calibration sweep.

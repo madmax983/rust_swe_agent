@@ -163,17 +163,24 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
     if sweep_cmd.forecast_first {
-        let report = run_forecast_from_cmd(sweep_cmd.clone()).await?;
-        print_forecast_report(&report, &sweep_cmd.format)?;
-        crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
-        if !crate::run::forecast::forecast_gate_allows_sweep(
-            &report,
-            crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
-        )? {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "forecast-first blocked sweep: {} (pass --yes to proceed anyway)",
-                report.threshold.message
-            ))));
+        match run_forecast_from_cmd(sweep_cmd.clone()).await? {
+            crate::run::forecast::ForecastOutcome::Report(report) => {
+                print_forecast_report(&report, &sweep_cmd.format)?;
+                crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
+                if !crate::run::forecast::forecast_gate_allows_sweep(
+                    &report,
+                    crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
+                )? {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "forecast-first blocked sweep: {} (pass --yes to proceed anyway)",
+                        report.threshold.message
+                    ))));
+                }
+            }
+            crate::run::forecast::ForecastOutcome::DryRun(results) => {
+                print_dry_run_summary(&results, &sweep_cmd.format);
+                return Ok(());
+            }
         }
         if sweep_cmd.sample.is_none() {
             sweep_cmd.seed = None;
@@ -221,14 +228,21 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
 async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
     let output_format = s.format.clone();
     let fail_over_cap = s.fail_over_cap;
-    let report = run_forecast_from_cmd(s).await?;
-    print_forecast_report(&report, &output_format)?;
-    crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+    match run_forecast_from_cmd(s).await? {
+        crate::run::forecast::ForecastOutcome::Report(report) => {
+            print_forecast_report(&report, &output_format)?;
+            crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+        }
+        crate::run::forecast::ForecastOutcome::DryRun(results) => {
+            print_dry_run_summary(&results, &output_format);
+            Ok(())
+        }
+    }
 }
 
 async fn run_forecast_from_cmd(
     mut s: args::SwebenchCmd,
-) -> Result<crate::run::forecast::ForecastReport, Error> {
+) -> Result<crate::run::forecast::ForecastOutcome, Error> {
     let calibration_n = s.calibration_n;
     let seed = s.seed.unwrap_or(42);
     let target_n = s.target_n;
@@ -246,6 +260,12 @@ async fn run_forecast_from_cmd(
         confidence_pct,
     })
     .await
+}
+
+fn print_dry_run_summary(results: &crate::run::swebench::SweepResults, output_format: &str) {
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
 }
 
 fn print_forecast_report(
