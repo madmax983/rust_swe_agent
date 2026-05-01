@@ -1091,7 +1091,7 @@ fn filter_mode_lists_matching_instances() {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("instance_id | outcome"), "{stdout}");
-    assert!(stdout.contains("a | error | step_limit"), "{stdout}");
-    assert!(!stdout.contains("b | error | model_api"), "{stdout}");
+    assert!(stdout.contains("│ instance_id ┆ outcome"), "{stdout}");
+    assert!(stdout.contains("│ a           ┆ error"), "{stdout}");
+    assert!(!stdout.contains("│ b           ┆ error"), "{stdout}");
 }
