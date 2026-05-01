@@ -1435,6 +1435,102 @@ fn compare_cost_attribution_prefers_evaluation_json_table_over_aggregate_rows() 
 }
 
 #[test]
+fn compare_cost_attribution_falls_back_to_run_slots_when_evaluation_json_is_missing() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut baseline = errored("task-a", FailureCategory::StepLimit);
+    baseline.runs = 2;
+    baseline.cost_usd = Some(0.30);
+    write_results(baseline_dir.path(), vec![baseline]);
+    write_run_traj(
+        baseline_dir.path(),
+        "task-a",
+        1,
+        Some(FailureCategory::StepLimit),
+        Some(0.10),
+    );
+    write_run_traj(
+        baseline_dir.path(),
+        "task-a",
+        2,
+        Some(FailureCategory::ModelApi),
+        Some(0.20),
+    );
+
+    let mut candidate = errored("task-a", FailureCategory::AgentInternal);
+    candidate.runs = 2;
+    candidate.cost_usd = Some(0.30);
+    write_results(candidate_dir.path(), vec![candidate]);
+    write_run_traj(
+        candidate_dir.path(),
+        "task-a",
+        1,
+        Some(FailureCategory::AgentInternal),
+        Some(0.25),
+    );
+    write_run_traj(
+        candidate_dir.path(),
+        "task-a",
+        2,
+        Some(FailureCategory::ModelApi),
+        Some(0.05),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["cost_attribution_delta"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "step_limit"
+                && row["n_baseline"] == 1
+                && row["total_usd_baseline"] == 0.1
+                && row["n_candidate"] == 0
+                && row["total_usd_candidate"] == 0.0
+        }),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "model_api"
+                && row["n_baseline"] == 1
+                && row["total_usd_baseline"] == 0.2
+                && row["n_candidate"] == 1
+                && row["total_usd_candidate"] == 0.05
+        }),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "agent_internal"
+                && row["n_baseline"] == 0
+                && row["total_usd_baseline"] == 0.0
+                && row["n_candidate"] == 1
+                && row["total_usd_candidate"] == 0.25
+        }),
+        "{rows:?}"
+    );
+    assert!(rows.iter().all(|row| row["bucket"] != "TOTAL"), "{rows:?}");
+}
+
+#[test]
 fn compare_breakdown_json_includes_all_buckets_and_threshold_flag() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();

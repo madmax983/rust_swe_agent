@@ -800,18 +800,22 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         let candidate_cost_rows = candidate_eval
             .as_ref()
             .and_then(non_empty_cost_attribution_rows);
-        let baseline_fallback_rows = baseline_cost_rows.is_none().then(|| {
-            build_cost_attribution_rows_from_results(
+        let baseline_fallback_rows = if baseline_cost_rows.is_none() {
+            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
+                &args.baseline,
                 &baseline.instances,
-                baseline_resolved_override.as_ref(),
-            )
-        });
-        let candidate_fallback_rows = candidate_cost_rows.is_none().then(|| {
-            build_cost_attribution_rows_from_results(
+            )?))
+        } else {
+            None
+        };
+        let candidate_fallback_rows = if candidate_cost_rows.is_none() {
+            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
+                &args.candidate,
                 &candidate.instances,
-                candidate_resolved_override.as_ref(),
-            )
-        });
+            )?))
+        } else {
+            None
+        };
         let baseline_rows = if let Some(rows) = baseline_cost_rows {
             rows
         } else {
@@ -1501,6 +1505,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
     out
 }
 
+#[cfg(test)]
 fn cost_attribution_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
@@ -1520,11 +1525,35 @@ fn non_empty_cost_attribution_rows(eval: &EvaluationResults) -> Option<&[CostAtt
     (!eval.cost_attribution.is_empty()).then_some(eval.cost_attribution.as_slice())
 }
 
+fn cost_attribution_map_from_run_slots(slots: &[LoadedRunSlot]) -> HashMap<String, (usize, f64)> {
+    let mut out = HashMap::new();
+    for slot in slots {
+        let resolved = slot.result.resolved_count > 0;
+        let key = cost_attribution_bucket_label(resolved, slot.result.failure_category).to_owned();
+        let entry = out.entry(key).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += slot.result.cost_usd.unwrap_or(0.0);
+    }
+    out
+}
+
+fn build_cost_attribution_rows_from_run_slots(
+    slots: &[LoadedRunSlot],
+) -> Vec<CostAttributionBucket> {
+    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots))
+}
+
+#[cfg(test)]
 fn build_cost_attribution_rows_from_results<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> Vec<CostAttributionBucket> {
-    let map = cost_attribution_map(items, resolved_override);
+    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override))
+}
+
+fn build_cost_attribution_rows_from_map(
+    map: HashMap<String, (usize, f64)>,
+) -> Vec<CostAttributionBucket> {
     let total_usd: f64 = map.values().map(|(_, total)| *total).sum();
     let total_n: usize = map.values().map(|(n, _)| *n).sum();
 
