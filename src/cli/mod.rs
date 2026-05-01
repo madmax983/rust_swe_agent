@@ -1,5 +1,8 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
 
+use std::io::{IsTerminal as _, Write as _};
+use std::time::Duration;
+
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
@@ -65,6 +68,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Inspect(i),
         } => bench_inspect(i),
+        Command::Bench {
+            cmd: args::BenchCmd::Tail(t),
+        } => bench_tail(t).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -577,4 +583,54 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TailFormat {
+    Text,
+    Json,
+}
+
+async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
+    if t.interval_ms == 0 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "tail: --interval-ms must be greater than 0".into(),
+        )));
+    }
+    let format = match t.format.as_str() {
+        "text" => TailFormat::Text,
+        "json" => TailFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let mut stdout = std::io::stdout();
+    let clear_tty = format == TailFormat::Text && !t.once && stdout.is_terminal();
+    loop {
+        let options = crate::run::tail::SnapshotOptions::default();
+        let snapshot = crate::run::tail::snapshot(&t.sweep, &options)?;
+        if clear_tty {
+            write!(stdout, "\x1b[2J\x1b[H")?;
+        }
+        match format {
+            TailFormat::Text => {
+                write!(stdout, "{}", crate::run::tail::render_text(&snapshot))?;
+            }
+            TailFormat::Json => {
+                writeln!(stdout, "{}", serde_json::to_string(&snapshot)?)?;
+            }
+        }
+        stdout.flush()?;
+
+        if let Some(reason) = snapshot.abort_reason {
+            eprintln!("bench tail: {reason}");
+            std::process::exit(1);
+        }
+        if t.once || snapshot.is_complete {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(t.interval_ms)).await;
+    }
 }

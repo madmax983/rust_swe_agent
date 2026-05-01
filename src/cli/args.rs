@@ -97,6 +97,8 @@ pub enum BenchCmd {
     Evaluate(EvaluateCmd),
     /// Inspect a single trajectory or list filtered instance summaries.
     Inspect(InspectCmd),
+    /// Tail live aggregate progress for a running sweep directory.
+    Tail(TailCmd),
 }
 
 #[derive(Debug, Args)]
@@ -354,4 +356,23 @@ pub struct InspectCmd {
     /// Disable stdout/stderr truncation in transcript mode.
     #[arg(long, default_value_t = false)]
     pub full: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TailCmd {
+    /// Sweep output directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Refresh interval for streaming mode.
+    #[arg(long, default_value_t = 2000)]
+    pub interval_ms: u64,
+
+    /// Print one snapshot and exit.
+    #[arg(long, default_value_t = false)]
+    pub once: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
