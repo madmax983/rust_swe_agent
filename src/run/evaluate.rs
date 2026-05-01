@@ -8,9 +8,23 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::compare::load_sweep;
+use crate::run::compare::{load_run_slots, load_sweep};
 use crate::run::swebench::{self, InstanceResult, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
+
+pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
+pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
+pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
+pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 8] = [
+    FailureCategory::EnvSetup,
+    FailureCategory::ModelApi,
+    FailureCategory::ModelParse,
+    FailureCategory::StepLimit,
+    FailureCategory::CostLimit,
+    FailureCategory::WallclockTimeout,
+    FailureCategory::AgentInternal,
+    FailureCategory::Unknown,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvaluateBackend {
@@ -29,6 +43,7 @@ pub struct EvaluateArgs {
     pub sb_split: String,
     pub run_id: Option<String>,
     pub breakdown: BreakdownSelection,
+    pub cost_attribution: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -101,6 +116,8 @@ pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakdown: Vec<BreakdownBucket>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cost_attribution: Vec<CostAttributionBucket>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -121,6 +138,58 @@ pub struct BreakdownBucket {
     pub resolved_rate: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostAttributionBucket {
+    pub bucket: String,
+    pub n: usize,
+    pub total_usd: f64,
+    pub mean_usd: f64,
+    pub share_pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CostAttributionReport {
+    rows: Vec<CostAttributionBucket>,
+    missing_cost_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RunSlotKey {
+    instance_id: String,
+    run_index: u32,
+}
+
+impl RunSlotKey {
+    fn new(instance_id: &str, run_index: u32) -> Self {
+        Self {
+            instance_id: instance_id.to_owned(),
+            run_index,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EvaluateRunOutput {
+    eval: EvaluationResults,
+    resolved_by_run: HashMap<RunSlotKey, bool>,
+}
+
+impl EvaluateRunOutput {
+    fn without_run_resolution(eval: EvaluationResults) -> Self {
+        Self {
+            eval,
+            resolved_by_run: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CostAttributionSample {
+    resolved: bool,
+    failure_category: Option<FailureCategory>,
+    cost_usd: Option<f64>,
+}
+
 #[must_use]
 pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
     sweep_dir.join("evaluation.json")
@@ -134,11 +203,19 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         ));
     }
     let results = loaded.instances;
-    let mut eval = match args.backend {
-        EvaluateBackend::None => build_none_eval(&results),
+    let run_output = match args.backend {
+        EvaluateBackend::None => {
+            EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
+        }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
+    let mut eval = run_output.eval;
     eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown);
+    if args.cost_attribution {
+        let run_slots = load_run_slots(&args.sweep_dir, &results)?;
+        eval.cost_attribution =
+            build_cost_attribution_from_run_slots(&run_slots, &run_output.resolved_by_run).rows;
+    }
     std::fs::write(
         evaluation_path(&args.sweep_dir),
         serde_json::to_string_pretty(&eval)?,
@@ -194,6 +271,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
     EvaluationResults {
         instances,
         breakdown: Vec::new(),
+        cost_attribution: Vec::new(),
     }
 }
 
@@ -219,7 +297,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
 fn run_sb_cli(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
-) -> Result<EvaluationResults, Error> {
+) -> Result<EvaluateRunOutput, Error> {
     let preds = swebench::predictions_path(&args.sweep_dir);
     if !preds.exists() {
         return Err(Error::Trajectory(format!(
@@ -233,6 +311,7 @@ fn run_sb_cli(
     let run_id = args.run_id.clone().unwrap_or_else(generated_run_id);
 
     let max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+    let mut resolved_by_run = HashMap::new();
     if max_runs > 1 {
         let mut reports = BTreeMap::new();
         for run_index in 1..=max_runs {
@@ -243,13 +322,29 @@ fn run_sb_cli(
             }
             let run_report_id = format!("{run_id}-run-{run_index}");
             let parsed = submit_sb_cli_predictions(args, &run_preds, &report_dir, &run_report_id)?;
+            resolved_by_run.extend(
+                parsed.iter().map(|(instance_id, row)| {
+                    (RunSlotKey::new(instance_id, run_index), row.resolved)
+                }),
+            );
             reports.insert(run_index, parsed);
         }
-        return Ok(merge_rerun_reports_with_results(results, &reports));
+        return Ok(EvaluateRunOutput {
+            eval: merge_rerun_reports_with_results(results, &reports),
+            resolved_by_run,
+        });
     }
 
     let parsed = submit_sb_cli_predictions(args, &preds, &report_dir, &run_id)?;
-    Ok(merge_with_results(results, &parsed))
+    resolved_by_run.extend(
+        parsed
+            .iter()
+            .map(|(instance_id, row)| (RunSlotKey::new(instance_id, 1), row.resolved)),
+    );
+    Ok(EvaluateRunOutput {
+        eval: merge_with_results(results, &parsed),
+        resolved_by_run,
+    })
 }
 
 fn predictions_file_has_rows(path: &Path) -> Result<bool, Error> {
@@ -522,6 +617,7 @@ fn merge_with_results(
     EvaluationResults {
         instances,
         breakdown: Vec::new(),
+        cost_attribution: Vec::new(),
     }
 }
 
@@ -584,6 +680,7 @@ fn merge_rerun_reports_with_results(
     EvaluationResults {
         instances,
         breakdown: Vec::new(),
+        cost_attribution: Vec::new(),
     }
 }
 
@@ -693,6 +790,18 @@ pub fn failure_label(cat: FailureCategory) -> &'static str {
 }
 
 #[must_use]
+pub fn cost_attribution_bucket_label(
+    resolved: bool,
+    failure_category: Option<FailureCategory>,
+) -> &'static str {
+    if resolved {
+        COST_ATTRIBUTION_RESOLVED_BUCKET
+    } else {
+        failure_category.map_or(COST_ATTRIBUTION_UNCATEGORIZED_BUCKET, failure_label)
+    }
+}
+
+#[must_use]
 pub fn pct(numer: usize, denom: usize) -> f64 {
     if denom == 0 {
         return 0.0;
@@ -700,6 +809,139 @@ pub fn pct(numer: usize, denom: usize) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     {
         numer as f64 / denom as f64
+    }
+}
+
+#[must_use]
+pub fn round_dp(value: f64, places: u32) -> f64 {
+    let factor = 10_f64.powf(f64::from(places));
+    (value * factor).round() / factor
+}
+
+#[must_use]
+pub fn cost_missing_count<S: std::hash::BuildHasher>(
+    results: &HashMap<String, InstanceResult, S>,
+) -> usize {
+    results
+        .values()
+        .filter(|row| row.cost_usd.is_none())
+        .count()
+}
+
+pub(crate) fn cost_missing_count_for_run_slots<S: std::hash::BuildHasher>(
+    sweep_dir: &Path,
+    results: &HashMap<String, InstanceResult, S>,
+) -> Result<usize, Error> {
+    Ok(load_run_slots(sweep_dir, results)?
+        .into_iter()
+        .filter(|slot| slot.result.cost_usd.is_none())
+        .count())
+}
+
+#[cfg(test)]
+fn build_cost_attribution<S: std::hash::BuildHasher>(
+    evals: &[InstanceEvaluation],
+    results: &HashMap<String, InstanceResult, S>,
+) -> CostAttributionReport {
+    build_cost_attribution_report(evals.iter().map(|row| {
+        let result = results.get(&row.instance_id);
+        CostAttributionSample {
+            resolved: row.resolved,
+            failure_category: result.and_then(|result| result.failure_category),
+            cost_usd: result.and_then(|result| result.cost_usd),
+        }
+    }))
+}
+
+fn build_cost_attribution_from_run_slots(
+    run_slots: &[crate::run::compare::LoadedRunSlot],
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+) -> CostAttributionReport {
+    build_cost_attribution_report(run_slots.iter().map(|slot| {
+        CostAttributionSample {
+            resolved: resolved_by_run
+                .get(&RunSlotKey::new(&slot.instance_id, slot.run_index))
+                .copied()
+                .unwrap_or(false),
+            failure_category: slot.result.failure_category,
+            cost_usd: slot.result.cost_usd,
+        }
+    }))
+}
+
+fn build_cost_attribution_report(
+    samples: impl IntoIterator<Item = CostAttributionSample>,
+) -> CostAttributionReport {
+    let mut buckets: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+    for category in ALL_FAILURE_CATEGORIES {
+        buckets.insert(failure_label(category).to_owned(), (0, 0.0));
+    }
+    buckets.insert(COST_ATTRIBUTION_RESOLVED_BUCKET.to_owned(), (0, 0.0));
+    buckets.insert(COST_ATTRIBUTION_UNCATEGORIZED_BUCKET.to_owned(), (0, 0.0));
+
+    let mut total_n = 0usize;
+    let mut total_usd = 0.0;
+    let mut missing_cost_count = 0usize;
+
+    for sample in samples {
+        total_n += 1;
+        let bucket = cost_attribution_bucket_label(sample.resolved, sample.failure_category);
+        let usd_cost = if let Some(cost) = sample.cost_usd {
+            cost
+        } else {
+            missing_cost_count += 1;
+            0.0
+        };
+        total_usd += usd_cost;
+        let entry = buckets.entry(bucket.to_owned()).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += usd_cost;
+    }
+
+    let mut rows: Vec<CostAttributionBucket> = buckets
+        .into_iter()
+        .map(|(bucket, (n, total))| CostAttributionBucket {
+            bucket,
+            n,
+            total_usd: round_dp(total, 4),
+            mean_usd: if n == 0 {
+                0.0
+            } else {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    round_dp(total / n as f64, 4)
+                }
+            },
+            share_pct: if total_usd == 0.0 {
+                0.0
+            } else {
+                round_dp(total * 100.0 / total_usd, 2)
+            },
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.total_usd
+            .partial_cmp(&a.total_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.bucket.cmp(&b.bucket))
+    });
+    rows.push(CostAttributionBucket {
+        bucket: COST_ATTRIBUTION_TOTAL_BUCKET.to_owned(),
+        n: total_n,
+        total_usd: round_dp(total_usd, 4),
+        mean_usd: if total_n == 0 {
+            0.0
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                round_dp(total_usd / total_n as f64, 4)
+            }
+        },
+        share_pct: if total_n == 0 { 0.0 } else { 100.0 },
+    });
+    CostAttributionReport {
+        rows,
+        missing_cost_count,
     }
 }
 
@@ -720,12 +962,32 @@ pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
     out
 }
 
+#[must_use]
+pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
+    let mut out = String::from("bucket,n,total_usd,mean_usd,share_pct\n");
+    for row in rows {
+        let _ = writeln!(
+            out,
+            "{},{},{:.4},{:.4},{:.2}",
+            row.bucket, row.n, row.total_usd, row.mean_usd, row.share_pct
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
     use crate::trajectory::FailureCategory;
+
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
 
     fn submitted(id: &str) -> InstanceResult {
         InstanceResult {
@@ -768,6 +1030,24 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+        }
+    }
+
+    fn eval_row(id: &str, resolved: bool) -> InstanceEvaluation {
+        InstanceEvaluation {
+            instance_id: id.into(),
+            resolved,
+            runs: 1,
+            resolved_count: u32::from(resolved),
+            pass_at_1: resolved,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: if resolved {
+                EvalExitReason::Resolved
+            } else {
+                EvalExitReason::Unresolved
+            },
+            eval_log_path: None,
         }
     }
 
@@ -895,5 +1175,100 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bucket_value, "none");
+    }
+
+    #[test]
+    fn cost_attribution_tracks_missing_costs_and_resolved_precedence() {
+        let mut resolved = submitted("resolved");
+        resolved.failure_category = Some(FailureCategory::StepLimit);
+        resolved.cost_usd = None;
+
+        let mut uncategorized = errored("uncategorized");
+        uncategorized.failure_category = None;
+        uncategorized.cost_usd = Some(1.0);
+
+        let mut model_api = errored("model-api");
+        model_api.failure_category = Some(FailureCategory::ModelApi);
+        model_api.cost_usd = Some(3.0);
+
+        let evals = vec![
+            eval_row("resolved", true),
+            eval_row("uncategorized", false),
+            eval_row("model-api", false),
+        ];
+        let results = HashMap::from([
+            ("resolved".to_string(), resolved),
+            ("uncategorized".to_string(), uncategorized),
+            ("model-api".to_string(), model_api),
+        ]);
+
+        let report = build_cost_attribution(&evals, &results);
+        assert_eq!(report.missing_cost_count, 1);
+
+        let rows = report
+            .rows
+            .iter()
+            .map(|row| (row.bucket.as_str(), row))
+            .collect::<HashMap<_, _>>();
+
+        let resolved_row = rows.get("resolved").copied().unwrap();
+        assert_eq!(resolved_row.n, 1);
+        assert_f64_eq(resolved_row.total_usd, 0.0);
+        assert_f64_eq(resolved_row.mean_usd, 0.0);
+        assert_f64_eq(resolved_row.share_pct, 0.0);
+
+        let uncategorized_row = rows.get("uncategorized").copied().unwrap();
+        assert_eq!(uncategorized_row.n, 1);
+        assert_f64_eq(uncategorized_row.total_usd, 1.0);
+        assert_f64_eq(uncategorized_row.mean_usd, 1.0);
+        assert_f64_eq(uncategorized_row.share_pct, 25.0);
+
+        let model_api_row = rows.get("model_api").copied().unwrap();
+        assert_eq!(model_api_row.n, 1);
+        assert_f64_eq(model_api_row.total_usd, 3.0);
+        assert_f64_eq(model_api_row.mean_usd, 3.0);
+        assert_f64_eq(model_api_row.share_pct, 75.0);
+
+        let total_row = report.rows.last().unwrap();
+        assert_eq!(total_row.bucket, "TOTAL");
+        assert_eq!(total_row.n, 3);
+        assert_f64_eq(total_row.total_usd, 4.0);
+        assert_f64_eq(total_row.mean_usd, 1.3333);
+        assert_f64_eq(total_row.share_pct, 100.0);
+    }
+
+    #[test]
+    fn cost_attribution_rows_sort_by_total_usd_then_bucket() {
+        let mut env_setup = errored("env");
+        env_setup.failure_category = Some(FailureCategory::EnvSetup);
+        env_setup.cost_usd = Some(2.0);
+
+        let mut model_api = errored("api");
+        model_api.failure_category = Some(FailureCategory::ModelApi);
+        model_api.cost_usd = Some(2.0);
+
+        let mut uncategorized = errored("uncategorized");
+        uncategorized.failure_category = None;
+        uncategorized.cost_usd = Some(5.0);
+
+        let evals = vec![
+            eval_row("env", false),
+            eval_row("api", false),
+            eval_row("uncategorized", false),
+        ];
+        let results = HashMap::from([
+            ("env".to_string(), env_setup),
+            ("api".to_string(), model_api),
+            ("uncategorized".to_string(), uncategorized),
+        ]);
+
+        let report = build_cost_attribution(&evals, &results);
+        let top_buckets: Vec<&str> = report
+            .rows
+            .iter()
+            .take(3)
+            .map(|row| row.bucket.as_str())
+            .collect();
+        assert_eq!(top_buckets, vec!["uncategorized", "env_setup", "model_api"]);
     }
 }

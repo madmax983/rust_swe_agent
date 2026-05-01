@@ -646,6 +646,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
         sb_split: "dev".into(),
         run_id: None,
         breakdown: BreakdownSelection::none(),
+        cost_attribution: true,
     })
     .unwrap_err();
     assert!(

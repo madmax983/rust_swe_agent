@@ -17,7 +17,10 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::evaluate::{BreakdownAxis, EvaluationResults, pct};
+use crate::run::evaluate::{
+    BreakdownAxis, CostAttributionBucket, EvaluationResults, cost_attribution_bucket_label, pct,
+    round_dp,
+};
 use crate::run::swebench::{
     FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, effective_runs, resolved_count,
 };
@@ -40,6 +43,8 @@ pub struct CompareArgs {
     pub max_regressions: Option<usize>,
     pub breakdown: crate::run::evaluate::BreakdownSelection,
     pub min_delta_pp: f64,
+    pub cost_attribution: bool,
+    pub cost_attribution_min_delta_usd: f64,
 }
 
 /// Per-task transition between baseline and candidate. `pass` prefers
@@ -127,6 +132,10 @@ pub struct CompareReport {
     pub subset_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakdown_delta: Vec<BreakdownDeltaRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cost_attribution_delta: Vec<CostAttributionDeltaRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cost_attribution_warnings: Vec<String>,
     /// Tasks that passed in the baseline but failed in the candidate.
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
@@ -156,6 +165,18 @@ pub struct BreakdownDeltaRow {
     pub candidate_n: usize,
     pub candidate_resolved_rate: f64,
     pub delta_resolved_rate: f64,
+    pub exceeds_threshold: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CostAttributionDeltaRow {
+    pub bucket: String,
+    pub n_baseline: usize,
+    pub total_usd_baseline: f64,
+    pub n_candidate: usize,
+    pub total_usd_candidate: f64,
+    pub delta_usd: f64,
+    pub share_pp_delta: f64,
     pub exceeds_threshold: bool,
 }
 
@@ -232,7 +253,21 @@ impl CompareReport {
             &self.failure_category_candidate,
             &self.failure_category_delta,
         );
-        write_subset_warnings(&mut s, &self.subset_warnings);
+        write_cost_attribution_delta_section(
+            &mut s,
+            &self.cost_attribution_warnings,
+            &self.cost_attribution_delta,
+        );
+        let subset_warnings = if self.cost_attribution_delta.is_empty() {
+            self.subset_warnings.clone()
+        } else {
+            self.subset_warnings
+                .iter()
+                .filter(|warning| !warning.contains("dataset subset differs"))
+                .cloned()
+                .collect()
+        };
+        write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
         s
@@ -331,6 +366,34 @@ fn write_breakdown_delta_section(s: &mut String, rows: &[BreakdownDeltaRow]) {
     }
 }
 
+fn write_cost_attribution_delta_section(
+    s: &mut String,
+    warnings: &[String],
+    rows: &[CostAttributionDeltaRow],
+) {
+    if rows.is_empty() {
+        return;
+    }
+    s.push_str("\nCost attribution delta:\n");
+    for warning in warnings {
+        let _ = writeln!(s, "  ! {warning}");
+    }
+    for row in rows {
+        let _ = writeln!(
+            s,
+            "  {} bucket={}  n: {} -> {}  total_usd: ${:.4} -> ${:.4}  delta_usd={:+.4}  share_pp_delta={:+.2}",
+            if row.exceeds_threshold { "*" } else { "-" },
+            row.bucket,
+            row.n_baseline,
+            row.n_candidate,
+            row.total_usd_baseline,
+            row.total_usd_candidate,
+            row.delta_usd,
+            row.share_pp_delta
+        );
+    }
+}
+
 fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
     if regressions.is_empty() {
         s.push_str("\nRegressions:        none\n");
@@ -365,6 +428,13 @@ pub struct LoadedSweep {
     pub instances: HashMap<String, InstanceResult>,
     pub manifest: Option<ProvenanceManifest>,
     pub filter_spec: Option<FilterSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedRunSlot {
+    pub instance_id: String,
+    pub run_index: u32,
+    pub result: InstanceResult,
 }
 
 pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
@@ -453,7 +523,17 @@ fn scan_trajectory_instances(
     dir: &Path,
     min_mtime: Option<SystemTime>,
 ) -> Result<HashMap<String, InstanceResult>, Error> {
-    let mut scanned: Vec<(String, u32, InstanceResult)> = Vec::new();
+    Ok(aggregate_scanned_results(scan_trajectory_run_slots(
+        dir, min_mtime,
+    )?))
+}
+
+fn scan_trajectory_run_slots(
+    dir: &Path,
+    min_mtime: Option<SystemTime>,
+) -> Result<Vec<LoadedRunSlot>, Error> {
+    let mut instance_dirs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut root_trajectories: Vec<(String, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -465,7 +545,7 @@ fn scan_trajectory_instances(
             else {
                 continue;
             };
-            scan_nested_run_trajectories(&path, &instance_id, min_mtime, &mut scanned)?;
+            instance_dirs.push((instance_id, path));
             continue;
         }
         if !path_passes_mtime(&path, min_mtime) {
@@ -477,19 +557,34 @@ fn scan_trajectory_instances(
         let Some(id) = name_str.strip_suffix(".traj.json") else {
             continue;
         };
-        if let Some(result) = instance_result_from_trajectory(id, &path)? {
-            scanned.push((id.to_owned(), 1, result));
+        root_trajectories.push((id.to_owned(), path));
+    }
+    instance_dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    root_trajectories.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut scanned = Vec::new();
+    for (instance_id, path) in instance_dirs {
+        scan_nested_run_trajectories(&path, &instance_id, min_mtime, &mut scanned)?;
+    }
+    for (id, path) in root_trajectories {
+        if let Some(result) = instance_result_from_trajectory(&id, &path)? {
+            scanned.push(LoadedRunSlot {
+                instance_id: id,
+                run_index: 1,
+                result,
+            });
         }
     }
-    Ok(aggregate_scanned_results(scanned))
+    Ok(dedupe_run_slots(scanned))
 }
 
 fn scan_nested_run_trajectories(
     instance_dir: &Path,
     instance_id: &str,
     min_mtime: Option<SystemTime>,
-    out: &mut Vec<(String, u32, InstanceResult)>,
+    out: &mut Vec<LoadedRunSlot>,
 ) -> Result<(), Error> {
+    let mut run_trajectories: Vec<(u32, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(instance_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -506,11 +601,31 @@ fn scan_nested_run_trajectories(
         else {
             continue;
         };
+        run_trajectories.push((run_index, path));
+    }
+    run_trajectories.sort_by_key(|(run_index, _)| *run_index);
+    for (run_index, path) in run_trajectories {
         if let Some(result) = instance_result_from_trajectory(instance_id, &path)? {
-            out.push((instance_id.to_owned(), run_index, result));
+            out.push(LoadedRunSlot {
+                instance_id: instance_id.to_owned(),
+                run_index,
+                result,
+            });
         }
     }
     Ok(())
+}
+
+fn dedupe_run_slots(scanned: Vec<LoadedRunSlot>) -> Vec<LoadedRunSlot> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::with_capacity(scanned.len());
+    for slot in scanned {
+        let key = (slot.instance_id.clone(), slot.run_index);
+        if seen.insert(key) {
+            deduped.push(slot);
+        }
+    }
+    deduped
 }
 
 fn path_passes_mtime(path: &Path, min_mtime: Option<SystemTime>) -> bool {
@@ -559,12 +674,47 @@ fn instance_result_from_trajectory(
     }))
 }
 
-fn aggregate_scanned_results(
-    scanned: Vec<(String, u32, InstanceResult)>,
-) -> HashMap<String, InstanceResult> {
+pub(crate) fn load_run_slots<S: std::hash::BuildHasher>(
+    dir: &Path,
+    fallback: &HashMap<String, InstanceResult, S>,
+) -> Result<Vec<LoadedRunSlot>, Error> {
+    let mut slots = scan_trajectory_run_slots(dir, None)?;
+    let active_ids: BTreeSet<&str> = fallback.keys().map(String::as_str).collect();
+    slots.retain(|slot| active_ids.contains(slot.instance_id.as_str()));
+    let seen_ids: BTreeSet<String> = slots.iter().map(|slot| slot.instance_id.clone()).collect();
+    if slots.is_empty() {
+        slots.extend(fallback.iter().map(|(instance_id, result)| LoadedRunSlot {
+            instance_id: instance_id.clone(),
+            run_index: 1,
+            result: result.clone(),
+        }));
+    } else {
+        slots.extend(
+            fallback
+                .iter()
+                .filter(|(instance_id, _)| !seen_ids.contains(*instance_id))
+                .map(|(instance_id, result)| LoadedRunSlot {
+                    instance_id: instance_id.clone(),
+                    run_index: 1,
+                    result: result.clone(),
+                }),
+        );
+    }
+    slots.sort_by(|a, b| {
+        a.instance_id
+            .cmp(&b.instance_id)
+            .then_with(|| a.run_index.cmp(&b.run_index))
+    });
+    Ok(slots)
+}
+
+fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, InstanceResult> {
     let mut grouped: BTreeMap<String, Vec<(u32, InstanceResult)>> = BTreeMap::new();
-    for (id, run_index, result) in scanned {
-        grouped.entry(id).or_default().push((run_index, result));
+    for slot in scanned {
+        grouped
+            .entry(slot.instance_id)
+            .or_default()
+            .push((slot.run_index, slot.result));
     }
     let mut out = HashMap::new();
     for (id, mut rows) in grouped {
@@ -618,15 +768,17 @@ fn optional_sum(values: impl Iterator<Item = f64>) -> Option<f64> {
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline = load_sweep(&args.baseline)?;
     let candidate = load_sweep(&args.candidate)?;
-    let baseline_eval = load_resolved_overrides(&args.baseline)?;
-    let candidate_eval = load_resolved_overrides(&args.candidate)?;
+    let baseline_eval = load_evaluation_results(&args.baseline)?;
+    let candidate_eval = load_evaluation_results(&args.candidate)?;
+    let baseline_resolved_override = baseline_eval.as_ref().map(resolved_overrides_from_eval);
+    let candidate_resolved_override = candidate_eval.as_ref().map(resolved_overrides_from_eval);
     let mut report = diff_with_overrides(
         &args.baseline,
         &args.candidate,
         &baseline.instances,
         &candidate.instances,
-        baseline_eval.as_ref(),
-        candidate_eval.as_ref(),
+        baseline_resolved_override.as_ref(),
+        candidate_resolved_override.as_ref(),
         manifest_delta_lines(baseline.manifest.as_ref(), candidate.manifest.as_ref()),
     );
     report.subset_warnings = subset_warnings(
@@ -636,11 +788,51 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     report.breakdown_delta = build_breakdown_delta(
         &baseline.instances,
         &candidate.instances,
-        baseline_eval.as_ref(),
-        candidate_eval.as_ref(),
+        baseline_resolved_override.as_ref(),
+        candidate_resolved_override.as_ref(),
         &args.breakdown.axes,
         args.min_delta_pp,
     );
+    if args.cost_attribution {
+        let baseline_cost_rows = baseline_eval
+            .as_ref()
+            .and_then(non_empty_cost_attribution_rows);
+        let candidate_cost_rows = candidate_eval
+            .as_ref()
+            .and_then(non_empty_cost_attribution_rows);
+        let baseline_fallback_rows = if baseline_cost_rows.is_none() {
+            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
+                &args.baseline,
+                &baseline.instances,
+            )?))
+        } else {
+            None
+        };
+        let candidate_fallback_rows = if candidate_cost_rows.is_none() {
+            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
+                &args.candidate,
+                &candidate.instances,
+            )?))
+        } else {
+            None
+        };
+        let baseline_rows = if let Some(rows) = baseline_cost_rows {
+            rows
+        } else {
+            baseline_fallback_rows.as_deref().unwrap_or(&[])
+        };
+        let candidate_rows = if let Some(rows) = candidate_cost_rows {
+            rows
+        } else {
+            candidate_fallback_rows.as_deref().unwrap_or(&[])
+        };
+        report.cost_attribution_delta = build_cost_attribution_delta_from_rows(
+            baseline_rows,
+            candidate_rows,
+            args.cost_attribution_min_delta_usd,
+        );
+        report.cost_attribution_warnings = build_cost_attribution_warnings(&report.subset_warnings);
+    }
     Ok(report)
 }
 
@@ -773,6 +965,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         manifest_deltas,
         subset_warnings: Vec::new(),
         breakdown_delta: Vec::new(),
+        cost_attribution_delta: Vec::new(),
+        cost_attribution_warnings: Vec::new(),
         regressions: transition_summary.regressions,
     }
 }
@@ -1063,30 +1257,29 @@ fn wilson_ci(successes: u64, total: u64) -> ConfidenceInterval {
     }
 }
 
-fn load_resolved_overrides(
-    dir: &Path,
-) -> Result<Option<HashMap<String, ResolutionOverride>>, Error> {
+fn load_evaluation_results(dir: &Path) -> Result<Option<EvaluationResults>, Error> {
     let path = crate::run::evaluate::evaluation_path(dir);
     if !path.exists() {
         return Ok(None);
     }
     let text = std::fs::read_to_string(path)?;
-    let eval: EvaluationResults = serde_json::from_str(&text)?;
-    Ok(Some(
-        eval.instances
-            .into_iter()
-            .map(|row| {
-                (
-                    row.instance_id,
-                    ResolutionOverride {
-                        resolved: row.resolved,
-                        runs: row.runs,
-                        resolved_count: row.resolved_count,
-                    },
-                )
-            })
-            .collect(),
-    ))
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
+fn resolved_overrides_from_eval(eval: &EvaluationResults) -> HashMap<String, ResolutionOverride> {
+    eval.instances
+        .iter()
+        .map(|row| {
+            (
+                row.instance_id.clone(),
+                ResolutionOverride {
+                    resolved: row.resolved,
+                    runs: row.runs,
+                    resolved_count: row.resolved_count,
+                },
+            )
+        })
+        .collect()
 }
 
 fn manifest_delta_lines(
@@ -1272,6 +1465,17 @@ fn build_breakdown_delta<S: std::hash::BuildHasher>(
     out
 }
 
+fn build_cost_attribution_warnings(subset_warnings: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(warning) = subset_warnings
+        .iter()
+        .find(|warning| warning.contains("dataset subset differs"))
+    {
+        out.push(format!("totals are not directly comparable: {warning}"));
+    }
+    out
+}
+
 fn breakdown_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
@@ -1302,9 +1506,198 @@ fn breakdown_map<S: std::hash::BuildHasher>(
 }
 
 #[cfg(test)]
+fn cost_attribution_map<S: std::hash::BuildHasher>(
+    items: &HashMap<String, InstanceResult, S>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> HashMap<String, (usize, f64)> {
+    let mut out = HashMap::new();
+    for (id, row) in items {
+        let resolved = stats_for(id, row, resolved_override).resolved_count > 0;
+        let key = cost_attribution_bucket_label(resolved, row.failure_category).to_owned();
+        let entry = out.entry(key).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += row.cost_usd.unwrap_or(0.0);
+    }
+    out
+}
+
+fn non_empty_cost_attribution_rows(eval: &EvaluationResults) -> Option<&[CostAttributionBucket]> {
+    (!eval.cost_attribution.is_empty()).then_some(eval.cost_attribution.as_slice())
+}
+
+fn cost_attribution_map_from_run_slots(slots: &[LoadedRunSlot]) -> HashMap<String, (usize, f64)> {
+    let mut out = HashMap::new();
+    for slot in slots {
+        let resolved = slot.result.resolved_count > 0;
+        let key = cost_attribution_bucket_label(resolved, slot.result.failure_category).to_owned();
+        let entry = out.entry(key).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += slot.result.cost_usd.unwrap_or(0.0);
+    }
+    out
+}
+
+fn build_cost_attribution_rows_from_run_slots(
+    slots: &[LoadedRunSlot],
+) -> Vec<CostAttributionBucket> {
+    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots))
+}
+
+#[cfg(test)]
+fn build_cost_attribution_rows_from_results<S: std::hash::BuildHasher>(
+    items: &HashMap<String, InstanceResult, S>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> Vec<CostAttributionBucket> {
+    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override))
+}
+
+fn build_cost_attribution_rows_from_map(
+    map: HashMap<String, (usize, f64)>,
+) -> Vec<CostAttributionBucket> {
+    let total_usd: f64 = map.values().map(|(_, total)| *total).sum();
+    let total_n: usize = map.values().map(|(n, _)| *n).sum();
+
+    let mut rows: Vec<CostAttributionBucket> = map
+        .into_iter()
+        .map(|(bucket, (n, total))| CostAttributionBucket {
+            bucket,
+            n,
+            total_usd: round_dp(total, 4),
+            mean_usd: if n == 0 {
+                0.0
+            } else {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    round_dp(total / n as f64, 4)
+                }
+            },
+            share_pct: if total_usd == 0.0 {
+                0.0
+            } else {
+                round_dp(total * 100.0 / total_usd, 2)
+            },
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.total_usd
+            .partial_cmp(&a.total_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.bucket.cmp(&b.bucket))
+    });
+    rows.push(CostAttributionBucket {
+        bucket: crate::run::evaluate::COST_ATTRIBUTION_TOTAL_BUCKET.to_owned(),
+        n: total_n,
+        total_usd: round_dp(total_usd, 4),
+        mean_usd: if total_n == 0 {
+            0.0
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                round_dp(total_usd / total_n as f64, 4)
+            }
+        },
+        share_pct: if total_n == 0 { 0.0 } else { 100.0 },
+    });
+    rows
+}
+
+fn build_cost_attribution_delta_from_rows(
+    baseline_rows: &[CostAttributionBucket],
+    candidate_rows: &[CostAttributionBucket],
+    min_delta_usd: f64,
+) -> Vec<CostAttributionDeltaRow> {
+    let (baseline_map, baseline_total) = cost_attribution_rows_to_map(baseline_rows);
+    let (candidate_map, candidate_total) = cost_attribution_rows_to_map(candidate_rows);
+
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    keys.extend(baseline_map.keys().cloned());
+    keys.extend(candidate_map.keys().cloned());
+
+    let mut out = Vec::new();
+    for key in keys {
+        let (n_baseline, total_usd_baseline_raw) =
+            baseline_map.get(&key).copied().unwrap_or((0, 0.0));
+        let (n_candidate, total_usd_candidate_raw) =
+            candidate_map.get(&key).copied().unwrap_or((0, 0.0));
+        if n_baseline == 0
+            && n_candidate == 0
+            && total_usd_baseline_raw == 0.0
+            && total_usd_candidate_raw == 0.0
+        {
+            continue;
+        }
+        let share_baseline = if baseline_total == 0.0 {
+            0.0
+        } else {
+            total_usd_baseline_raw * 100.0 / baseline_total
+        };
+        let share_candidate = if candidate_total == 0.0 {
+            0.0
+        } else {
+            total_usd_candidate_raw * 100.0 / candidate_total
+        };
+        let delta_usd_raw = total_usd_candidate_raw - total_usd_baseline_raw;
+        out.push(CostAttributionDeltaRow {
+            bucket: key,
+            n_baseline,
+            total_usd_baseline: round_dp(total_usd_baseline_raw, 4),
+            n_candidate,
+            total_usd_candidate: round_dp(total_usd_candidate_raw, 4),
+            delta_usd: round_dp(delta_usd_raw, 4),
+            share_pp_delta: round_dp(share_candidate - share_baseline, 2),
+            exceeds_threshold: delta_usd_raw.abs() >= min_delta_usd,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.delta_usd
+            .abs()
+            .partial_cmp(&a.delta_usd.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.bucket.cmp(&b.bucket))
+    });
+    out
+}
+
+fn cost_attribution_rows_to_map(
+    rows: &[CostAttributionBucket],
+) -> (HashMap<String, (usize, f64)>, f64) {
+    let mut map = HashMap::new();
+    let mut total_usd = None;
+    for row in rows {
+        if row.bucket == crate::run::evaluate::COST_ATTRIBUTION_TOTAL_BUCKET {
+            total_usd = Some(row.total_usd);
+            continue;
+        }
+        map.insert(row.bucket.clone(), (row.n, row.total_usd));
+    }
+    let total_usd = total_usd.unwrap_or_else(|| map.values().map(|(_, total)| *total).sum());
+    (map, total_usd)
+}
+
+#[cfg(test)]
+fn build_cost_attribution_delta<S: std::hash::BuildHasher>(
+    baseline: &HashMap<String, InstanceResult, S>,
+    candidate: &HashMap<String, InstanceResult, S>,
+    baseline_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_override: Option<&HashMap<String, ResolutionOverride>>,
+    min_delta_usd: f64,
+) -> Vec<CostAttributionDeltaRow> {
+    let baseline_rows = build_cost_attribution_rows_from_results(baseline, baseline_override);
+    let candidate_rows = build_cost_attribution_rows_from_results(candidate, candidate_override);
+    build_cost_attribution_delta_from_rows(&baseline_rows, &candidate_rows, min_delta_usd)
+}
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "expected {expected}, got {actual}"
+        );
+    }
 
     fn submitted(id: &str) -> InstanceResult {
         InstanceResult {
@@ -1550,6 +1943,8 @@ mod tests {
             max_regressions: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
+            cost_attribution: true,
+            cost_attribution_min_delta_usd: 1.0,
         })
         .unwrap();
         assert_eq!(r.regressions.len(), 1);
@@ -1810,6 +2205,7 @@ mod tests {
                 eval_log_path: None,
             }],
             breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -1824,6 +2220,7 @@ mod tests {
                 eval_log_path: None,
             }],
             breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
         };
 
         std::fs::write(
@@ -1844,6 +2241,8 @@ mod tests {
             max_regressions: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
+            cost_attribution: true,
+            cost_attribution_min_delta_usd: 1.0,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 1);
@@ -1871,6 +2270,7 @@ mod tests {
                 eval_log_path: None,
             }],
             breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),
@@ -1885,11 +2285,56 @@ mod tests {
             max_regressions: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
+            cost_attribution: true,
+            cost_attribution_min_delta_usd: 1.0,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 10);
         assert_eq!(r.candidate_runs, 10);
         assert_eq!(r.candidate_resolved, 1);
+    }
+
+    #[test]
+    fn cost_attribution_delta_computes_usd_and_share_point_changes() {
+        let baseline = map_of([
+            submitted("resolved"),
+            errored("step", FailureCategory::StepLimit),
+        ]);
+        let candidate = map_of([
+            errored("resolved", FailureCategory::StepLimit),
+            errored("api", FailureCategory::ModelApi),
+        ]);
+
+        let rows = build_cost_attribution_delta(&baseline, &candidate, None, None, 1.0);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].bucket, "model_api");
+
+        let step_limit = rows.iter().find(|row| row.bucket == "step_limit").unwrap();
+        assert_eq!(step_limit.n_baseline, 1);
+        assert_f64_eq(step_limit.total_usd_baseline, 0.2);
+        assert_eq!(step_limit.n_candidate, 1);
+        assert_f64_eq(step_limit.total_usd_candidate, 0.2);
+        assert_f64_eq(step_limit.delta_usd, 0.0);
+        assert_f64_eq(step_limit.share_pp_delta, -16.67);
+        assert!(!step_limit.exceeds_threshold);
+
+        let resolved = rows.iter().find(|row| row.bucket == "resolved").unwrap();
+        assert_eq!(resolved.n_baseline, 1);
+        assert_f64_eq(resolved.total_usd_baseline, 0.1);
+        assert_eq!(resolved.n_candidate, 0);
+        assert_f64_eq(resolved.total_usd_candidate, 0.0);
+        assert_f64_eq(resolved.delta_usd, -0.1);
+        assert_f64_eq(resolved.share_pp_delta, -33.33);
+        assert!(!resolved.exceeds_threshold);
+
+        let model_api = rows.iter().find(|row| row.bucket == "model_api").unwrap();
+        assert_eq!(model_api.n_baseline, 0);
+        assert_f64_eq(model_api.total_usd_baseline, 0.0);
+        assert_eq!(model_api.n_candidate, 1);
+        assert_f64_eq(model_api.total_usd_candidate, 0.2);
+        assert_f64_eq(model_api.delta_usd, 0.2);
+        assert_f64_eq(model_api.share_pp_delta, 50.0);
+        assert!(!model_api.exceeds_threshold);
     }
 
     #[test]
