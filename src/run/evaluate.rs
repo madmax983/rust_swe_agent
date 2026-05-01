@@ -493,7 +493,7 @@ fn merge_with_results(
     results: &HashMap<String, InstanceResult>,
     parsed: &HashMap<String, InstanceEvaluation>,
 ) -> EvaluationResults {
-    let mut instances: Vec<InstanceEvaluation> = Vec::new();
+    let mut instances: Vec<InstanceEvaluation> = Vec::with_capacity(results.len());
     for (id, r) in results {
         if let Some(row) = parsed.get(id) {
             let mut row = row.clone();
@@ -541,7 +541,7 @@ fn merge_rerun_reports_with_results(
     results: &HashMap<String, InstanceResult>,
     run_reports: &BTreeMap<u32, HashMap<String, InstanceEvaluation>>,
 ) -> EvaluationResults {
-    let mut instances = Vec::new();
+    let mut instances = Vec::with_capacity(results.len());
     for (id, result) in results {
         let runs = effective_runs(result);
         let mut resolved_count = 0u32;
@@ -611,7 +611,7 @@ fn build_breakdown(
     results: &HashMap<String, InstanceResult>,
     selection: &BreakdownSelection,
 ) -> Vec<BreakdownBucket> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(selection.axes.len());
     for axis in &selection.axes {
         let mut buckets: BTreeMap<String, (usize, usize)> = BTreeMap::new();
         let mut unknown_repo = 0usize;

@@ -1618,10 +1618,10 @@ fn add_accounting_for_result(
 }
 
 fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
-    let mut grouped: BTreeMap<String, Vec<&RunSlotResult>> = BTreeMap::new();
+    let mut grouped: BTreeMap<&str, Vec<&RunSlotResult>> = BTreeMap::new();
     for r in results {
         grouped
-            .entry(r.result.instance_id.clone())
+            .entry(r.result.instance_id.as_str())
             .or_default()
             .push(r);
     }
@@ -1633,7 +1633,7 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
             continue;
         };
         let mut aggregate = first.clone();
-        aggregate.instance_id = instance_id;
+        instance_id.clone_into(&mut aggregate.instance_id);
         aggregate.exit_reason.clone_from(&first.exit_reason);
         aggregate.outcome.clone_from(&first.outcome);
         aggregate.failure_category = first.failure_category;
