@@ -239,6 +239,17 @@ mod tests {
         t.record_message(&Message::user("Hello agent"));
         t.record_message(&Message::assistant("Hello user"));
 
+        // Add a long multi-byte string to test safe truncation
+        t.record_message(&Message::user(
+            "long string with emoji 👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋",
+        ));
+        t.record_message(&Message {
+            role: crate::model::Role::Tool,
+            content: "unknown tool result".to_string(),
+            cache_hint: crate::model::CacheHint::default(),
+            extra: crate::model::MessageExtra::default(),
+        });
+
         let mermaid = MermaidExporter::export(&t);
 
         assert!(mermaid.starts_with("sequenceDiagram"));
@@ -248,5 +259,7 @@ mod tests {
         assert!(mermaid.contains("System->>User: System prompt"));
         assert!(mermaid.contains("User->>Assistant: Hello agent"));
         assert!(mermaid.contains("Assistant->>User: Hello user"));
+        assert!(mermaid.contains("User->>Assistant: long string with emoji")); // ensure it got through
+        assert!(mermaid.contains("Tool->>Assistant: unknown tool result")); // ensure unknown actor was parsed
     }
 }
