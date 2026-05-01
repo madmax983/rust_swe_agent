@@ -74,6 +74,7 @@ chaos = []
 live-anthropic = []
 markdown-export = []
 csv-export = []
+mermaid-export = []
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
