@@ -2446,6 +2446,14 @@ fn stratified_sample_by_repo(
         }
         out.extend(g.into_iter().take(targets[i]));
     }
+    // Preserve stratified composition while preventing repo-clustered output
+    // order, since a later `--limit` truncation should not always bias toward
+    // lexicographically early repos.
+    let mut rng = XorShift64::new(seed ^ simple_hash("stratified-final-shuffle"));
+    for i in (1..out.len()).rev() {
+        let j = rng.next_usize() % (i + 1);
+        out.swap(i, j);
+    }
     out
 }
 
@@ -3175,6 +3183,50 @@ instance = "inst"
         assert!(
             err.to_string()
                 .contains("`--stratify-by` cannot be combined with `--instance-ids`")
+        );
+    }
+
+    #[test]
+    fn stratified_sample_then_limit_is_not_repo_clustered() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![
+            mk("a1", "a"),
+            mk("a2", "a"),
+            mk("b1", "b"),
+            mk("b2", "b"),
+            mk("c1", "c"),
+            mk("c2", "c"),
+        ];
+
+        let (filtered, _) = apply_subset(
+            instances,
+            None,
+            Some(3),
+            Some(6),
+            Some(5),
+            Some(StratifyBy::Repo),
+            StratifyMode::Balanced,
+        )
+        .unwrap();
+
+        let repos: HashSet<_> = filtered
+            .iter()
+            .map(|inst| inst.repo.clone().unwrap_or_default())
+            .collect();
+        assert!(
+            repos.len() > 1,
+            "expected mixed repos after limit; got {:?}",
+            filtered
+                .iter()
+                .map(|inst| (&inst.instance_id, &inst.repo))
+                .collect::<Vec<_>>()
         );
     }
 
