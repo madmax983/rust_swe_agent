@@ -34,6 +34,7 @@ rust-swe-agent bench evaluate \
   [--sb-split dev] \
   [--run-id <custom_run_id>] \
   [--backend sb-cli|none] \
+  [--cost-attribution on|off] \
   [--timeout-per-instance 600] \
   [--parallel 4]
 ```
@@ -59,6 +60,15 @@ rust-swe-agent bench evaluate \
       "eval_exit_reason": "resolved|unresolved|patch_apply_failed|eval_error|skipped_no_patch",
       "eval_log_path": "optional/path/or/url"
     }
+  ],
+  "cost_attribution": [
+    {
+      "bucket": "resolved|env_setup|model_api|model_parse|step_limit|cost_limit|wallclock_timeout|agent_internal|unknown|uncategorized|TOTAL",
+      "n": 12,
+      "total_usd": 4.321,
+      "mean_usd": 0.3601,
+      "share_pct": 37.42
+    }
   ]
 }
 ```
@@ -75,6 +85,12 @@ Rows missing from backend output are synthesized as:
 - `resolved_rate`: equivalent to `pass@1` for one-run sweeps.
 - `pass@1`: fraction of instances whose first run resolved.
 - `pass@k`: fraction of instances with at least one resolved run.
+- `cost_attribution` (default `on`): a deterministic table that attributes
+  per-trajectory `cost_usd` into terminal buckets. Resolved rows always land
+  in `resolved` even if a legacy `failure_category` is also present. Rows with
+  no `failure_category` and not resolved land in `uncategorized`. Missing
+  `cost_usd` contributes `n` but is summed as `$0.00`; the CLI prints a
+  warning line so operators know spend is understated.
 
 When a sweep has only one run per instance, `resolved_rate`, `pass@1`, and
 `pass@k` are the same value.
@@ -111,6 +127,9 @@ This affects:
 - resolved-rate difference (`resolved_delta_rate`)
 - `resolved_delta_ci95`, a 95% Wilson/Newcombe confidence interval
 - `within_noise`, true when the confidence interval crosses zero
+- optional cost-attribution deltas (`--cost-attribution on|off`), which compare
+  baseline and candidate bucket spend with fields
+  `n_baseline,total_usd_baseline,n_candidate,total_usd_candidate,delta_usd,share_pp_delta`
 
 So a sweep with high submission-rate but zero resolved instances is treated as
 fully regressed against a baseline that resolved everything.

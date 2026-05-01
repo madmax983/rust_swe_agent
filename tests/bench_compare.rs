@@ -89,6 +89,18 @@ fn rerun_result(id: &str, runs: u32, resolved_count: u32) -> InstanceResult {
 }
 
 fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
+    write_results_with_filter_spec(
+        dir,
+        instances,
+        rust_swe_agent::run::swebench::FilterSpec::default(),
+    );
+}
+
+fn write_results_with_filter_spec(
+    dir: &Path,
+    instances: Vec<InstanceResult>,
+    filter_spec: rust_swe_agent::run::swebench::FilterSpec,
+) {
     let sweep = SweepResults {
         total: instances.len(),
         submitted: instances
@@ -115,7 +127,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
             f64::from(u32::try_from(passed).unwrap())
                 / f64::from(u32::try_from(instances.len()).unwrap())
         },
-        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        filter_spec,
         manifest: None,
         cost_limit_usd: None,
         instances,
@@ -215,6 +227,44 @@ fn write_diff_traj(
     .unwrap();
 }
 
+fn write_run_traj(
+    dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+    failure_category: Option<FailureCategory>,
+    cost_usd: Option<f64>,
+) {
+    let mut t = Trajectory::new();
+    t.info
+        .other
+        .insert("instance_id".into(), serde_json::json!(instance_id));
+    t.info.outcome = Some(if failure_category.is_some() {
+        outcome::ERROR.into()
+    } else {
+        outcome::SUBMITTED.into()
+    });
+    t.info.failure_category = failure_category;
+    t.info.total_cost_usd = cost_usd;
+    t.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+    });
+    t.info.steps = Some(1);
+
+    let traj_path =
+        rust_swe_agent::run::swebench::trajectory_path_for_run(dir, instance_id, run_index);
+    std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();
+    std::fs::write(traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+}
+
+fn write_evaluation_json(dir: &Path, value: serde_json::Value) {
+    std::fs::write(
+        dir.join("evaluation.json"),
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn help_lists_compare_subcommand() {
     let out = Command::new(binary_path())
@@ -243,6 +293,7 @@ fn help_lists_compare_subcommand() {
         "--candidate",
         "--format",
         "--max-regressions",
+        "--cost-attribution",
         "--inspect-diff",
         "--emit-diff-script",
     ] {
@@ -516,6 +567,8 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             max_regressions: None,
             breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
+            cost_attribution: true,
+            cost_attribution_min_delta_usd: 1.0,
         })
         .unwrap();
     assert_eq!(
@@ -536,6 +589,8 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             max_regressions: None,
             breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
+            cost_attribution: true,
+            cost_attribution_min_delta_usd: 1.0,
         })
         .unwrap();
     assert_eq!(
@@ -910,12 +965,17 @@ fn evaluate_none_backend_writes_evaluation_json() {
     assert!(stdout.contains("resolved_rate: 0.0000"), "{stdout}");
     assert!(stdout.contains("pass@1: 0.0000"), "{stdout}");
     assert!(stdout.contains("pass@k: 0.0000"), "{stdout}");
+    assert!(
+        stdout.contains("bucket,n,total_usd,mean_usd,share_pct"),
+        "{stdout}"
+    );
 
     let eval_path = sweep_dir.path().join("evaluation.json");
     assert!(eval_path.exists());
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
     assert_eq!(v["instances"].as_array().unwrap().len(), 2);
+    assert!(v["cost_attribution"].is_array(), "{v:?}");
 }
 
 #[test]
@@ -942,6 +1002,280 @@ fn evaluate_breakdown_none_is_headline_only() {
         !stdout.contains("axis,bucket,n,resolved,resolved_rate"),
         "{stdout}"
     );
+}
+
+#[test]
+fn evaluate_cost_attribution_off_matches_legacy_stdout() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
+    );
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = "\
+resolved: 0\n\
+resolved_rate: 0.0000\n\
+pass@1: 0.0000\n\
+pass@k: 0.0000\n\
+axis,bucket,n,resolved,resolved_rate\n\
+repo,unknown,2,0,0.0000\n\
+failure_category,model_api,1,0,0.0000\n\
+failure_category,none,1,0,0.0000\n";
+    assert_eq!(stdout, expected);
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    assert!(v.get("cost_attribution").is_none(), "{v:?}");
+}
+
+#[test]
+fn evaluate_cost_attribution_uses_per_run_trajectories_for_reruns() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut aggregate = errored("task-a", FailureCategory::StepLimit);
+    aggregate.runs = 2;
+    aggregate.cost_usd = Some(0.30);
+    write_results(sweep_dir.path(), vec![aggregate]);
+    write_run_traj(
+        sweep_dir.path(),
+        "task-a",
+        1,
+        Some(FailureCategory::StepLimit),
+        Some(0.10),
+    );
+    write_run_traj(
+        sweep_dir.path(),
+        "task-a",
+        2,
+        Some(FailureCategory::ModelApi),
+        Some(0.20),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("step_limit,1,0.1000,0.1000,33.33"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("model_api,1,0.2000,0.2000,66.67"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("TOTAL,2,0.3000,0.1500,100.00"), "{stdout}");
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    let rows = v["cost_attribution"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "step_limit" && row["n"] == 1 && row["total_usd"] == 0.1
+        })
+    );
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "model_api" && row["n"] == 1 && row["total_usd"] == 0.2
+        })
+    );
+}
+
+#[test]
+fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results_with_filter_spec(
+        baseline_dir.path(),
+        vec![submitted("a"), errored("b", FailureCategory::StepLimit)],
+        rust_swe_agent::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: Some(vec!["a".into(), "b".into()]),
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+        },
+    );
+    write_results_with_filter_spec(
+        candidate_dir.path(),
+        vec![errored("a", FailureCategory::ModelApi), submitted("c")],
+        rust_swe_agent::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: Some(vec!["a".into(), "c".into()]),
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+        },
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Cost attribution delta:"), "{stdout}");
+    assert!(
+        stdout.contains("totals are not directly comparable"),
+        "{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("totals are not directly comparable").count(),
+        1,
+        "{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("dataset subset differs").count(),
+        1,
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compare_cost_attribution_prefers_evaluation_json_table_over_aggregate_rows() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut baseline = errored("task-a", FailureCategory::StepLimit);
+    baseline.runs = 2;
+    baseline.cost_usd = Some(0.30);
+    write_results(baseline_dir.path(), vec![baseline]);
+
+    let mut candidate = errored("task-a", FailureCategory::ModelApi);
+    candidate.runs = 2;
+    candidate.cost_usd = Some(0.30);
+    write_results(candidate_dir.path(), vec![candidate]);
+
+    write_evaluation_json(
+        baseline_dir.path(),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "task-a",
+                "resolved": false,
+                "runs": 2,
+                "resolved_count": 0,
+                "pass_at_1": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "unresolved"
+            }],
+            "cost_attribution": [
+                {"bucket": "model_api", "n": 1, "total_usd": 0.2, "mean_usd": 0.2, "share_pct": 66.67},
+                {"bucket": "step_limit", "n": 1, "total_usd": 0.1, "mean_usd": 0.1, "share_pct": 33.33},
+                {"bucket": "TOTAL", "n": 2, "total_usd": 0.3, "mean_usd": 0.15, "share_pct": 100.0}
+            ]
+        }),
+    );
+    write_evaluation_json(
+        candidate_dir.path(),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "task-a",
+                "resolved": false,
+                "runs": 2,
+                "resolved_count": 0,
+                "pass_at_1": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "unresolved"
+            }],
+            "cost_attribution": [
+                {"bucket": "agent_internal", "n": 1, "total_usd": 0.25, "mean_usd": 0.25, "share_pct": 83.33},
+                {"bucket": "model_api", "n": 1, "total_usd": 0.05, "mean_usd": 0.05, "share_pct": 16.67},
+                {"bucket": "TOTAL", "n": 2, "total_usd": 0.3, "mean_usd": 0.15, "share_pct": 100.0}
+            ]
+        }),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["cost_attribution_delta"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "step_limit"
+                && row["n_baseline"] == 1
+                && row["total_usd_baseline"] == 0.1
+                && row["n_candidate"] == 0
+                && row["total_usd_candidate"] == 0.0
+        }),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "model_api"
+                && row["n_baseline"] == 1
+                && row["total_usd_baseline"] == 0.2
+                && row["n_candidate"] == 1
+                && row["total_usd_candidate"] == 0.05
+        }),
+        "{rows:?}"
+    );
+    assert!(rows.iter().all(|row| row["bucket"] != "TOTAL"), "{rows:?}");
 }
 
 #[test]

@@ -15,6 +15,12 @@ pub enum StratifyModeArg {
     Balanced,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OnOffArg {
+    On,
+    Off,
+}
+
 #[derive(Debug, Args)]
 pub struct MiniCmd {
     /// The task prompt.
@@ -151,6 +157,14 @@ pub struct CompareCmd {
     /// Threshold in percentage points used to highlight large breakdown deltas.
     #[arg(long = "breakdown-min-delta-pp", default_value_t = 5.0)]
     pub breakdown_min_delta_pp: f64,
+
+    /// Attribute sweep USD cost to terminal buckets in the compare report.
+    #[arg(long, value_enum, default_value_t = OnOffArg::On)]
+    pub cost_attribution: OnOffArg,
+
+    /// Highlight cost-attribution deltas whose absolute USD change meets this threshold.
+    #[arg(long = "cost-attribution-min-delta-usd", default_value_t = 1.0)]
+    pub cost_attribution_min_delta_usd: f64,
 
     /// Render `bench inspect --diff` for this instance id by locating both
     /// trajectory files inside the baseline and candidate sweep directories.
@@ -358,6 +372,10 @@ pub struct EvaluateCmd {
     /// Optional metric breakdown axes (`repo,failure_category`) or `none`.
     #[arg(long, default_value = "repo,failure_category")]
     pub breakdown: String,
+
+    /// Attribute sweep USD cost to terminal buckets in the evaluation report.
+    #[arg(long, value_enum, default_value_t = OnOffArg::On)]
+    pub cost_attribution: OnOffArg,
 }
 
 #[derive(Debug, Args)]

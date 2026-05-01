@@ -397,6 +397,8 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         max_regressions: c.max_regressions,
         breakdown,
         min_delta_pp: c.breakdown_min_delta_pp / 100.0,
+        cost_attribution: matches!(c.cost_attribution, args::OnOffArg::On),
+        cost_attribution_min_delta_usd: c.cost_attribution_min_delta_usd,
     })?;
     match format {
         crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
@@ -504,6 +506,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         sb_split: e.sb_split,
         run_id: e.run_id,
         breakdown,
+        cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
     };
     let eval = crate::run::evaluate::run(&args)?;
     let sweep_results = crate::run::compare::load_run(&e.sweep)?;
@@ -526,6 +529,19 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         print!(
             "{}",
             crate::run::evaluate::render_breakdown_table(&eval.breakdown)
+        );
+    }
+    if !eval.cost_attribution.is_empty() {
+        let missing_cost_count =
+            crate::run::evaluate::cost_missing_count_for_run_slots(&e.sweep, &sweep_results)?;
+        if missing_cost_count > 0 {
+            println!(
+                "warning: cost attribution missing usd_cost for {missing_cost_count} trajectories; treating as $0.00"
+            );
+        }
+        print!(
+            "{}",
+            crate::run::evaluate::render_cost_attribution_table(&eval.cost_attribution)
         );
     }
     Ok(())
