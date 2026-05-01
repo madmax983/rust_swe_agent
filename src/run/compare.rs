@@ -651,6 +651,8 @@ pub(crate) fn load_run_slots<S: std::hash::BuildHasher>(
     fallback: &HashMap<String, InstanceResult, S>,
 ) -> Result<Vec<LoadedRunSlot>, Error> {
     let mut slots = scan_trajectory_run_slots(dir, None)?;
+    let active_ids: BTreeSet<&str> = fallback.keys().map(String::as_str).collect();
+    slots.retain(|slot| active_ids.contains(slot.instance_id.as_str()));
     let seen_ids: BTreeSet<String> = slots.iter().map(|slot| slot.instance_id.clone()).collect();
     if slots.is_empty() {
         slots.extend(fallback.iter().map(|(instance_id, result)| LoadedRunSlot {

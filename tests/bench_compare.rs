@@ -1113,6 +1113,72 @@ fn evaluate_cost_attribution_uses_per_run_trajectories_for_reruns() {
 }
 
 #[test]
+fn evaluate_cost_attribution_ignores_stale_trajectories_outside_current_sweep() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![errored("task-a", FailureCategory::StepLimit)],
+    );
+    write_run_traj(
+        sweep_dir.path(),
+        "task-a",
+        1,
+        Some(FailureCategory::StepLimit),
+        Some(0.10),
+    );
+    write_run_traj(
+        sweep_dir.path(),
+        "stale-task",
+        1,
+        Some(FailureCategory::ModelApi),
+        None,
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("step_limit,1,0.1000,0.1000,100.00"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("TOTAL,1,0.1000,0.1000,100.00"), "{stdout}");
+    assert!(!stdout.contains("model_api,1"), "{stdout}");
+    assert!(
+        !stdout.contains("warning: cost attribution missing usd_cost"),
+        "{stdout}"
+    );
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    let rows = v["cost_attribution"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "model_api" && row["n"] == 0 && row["total_usd"] == 0.0
+        }),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| { row["bucket"] == "TOTAL" && row["n"] == 1 && row["total_usd"] == 0.1 })
+    );
+}
+
+#[test]
 fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
