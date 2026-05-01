@@ -2176,7 +2176,12 @@ mod tests {
             None,
         );
         assert!(manifest.config.resolved.contains("step_limit = 7"));
-        assert!(manifest.config.resolved.contains(r#"name = "override-model""#));
+        assert!(
+            manifest
+                .config
+                .resolved
+                .contains(r#"name = "override-model""#)
+        );
     }
 
     #[test]
