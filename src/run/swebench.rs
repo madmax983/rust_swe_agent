@@ -63,6 +63,11 @@ impl TokenBreakdown {
     }
 
     #[must_use]
+    pub fn has_billable_tokens(self) -> bool {
+        self.prompt_tokens() > 0 || self.completion_tokens > 0
+    }
+
+    #[must_use]
     pub fn cache_hit_rate(self) -> f64 {
         let total_prompt = self.prompt_tokens();
         if total_prompt == 0 {
@@ -369,11 +374,13 @@ impl InstanceResult {
 
     #[must_use]
     pub fn effective_cost_usd(&self, model: Option<&str>) -> Option<f64> {
-        if let Some(cost) = self.cost_usd {
-            return Some(cost);
-        }
         let tokens = self.token_breakdown();
-        (tokens.prompt_tokens() > 0 || tokens.completion_tokens > 0).then(|| {
+        if let Some(cost) = self.cost_usd {
+            if cost != 0.0 || !tokens.has_billable_tokens() {
+                return Some(cost);
+            }
+        }
+        tokens.has_billable_tokens().then(|| {
             estimate_cost_usd(
                 tokens.input_tokens,
                 tokens.cache_read_tokens,
@@ -2370,13 +2377,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             || cache_creation_tokens > 0
             || completion_tokens > 0;
         let attempt_effective_cost = match attempt_recorded_cost {
-            Some(cost)
-                if cost > 0.0
-                    || !has_token_usage
-                    || !crate::model::litellm::is_anthropic_model(&model_name) =>
-            {
-                cost
-            }
+            Some(cost) if cost != 0.0 || !has_token_usage => cost,
             Some(_) | None => estimate_cost_usd(
                 prompt_tokens,
                 cache_read_tokens,
@@ -2799,6 +2800,39 @@ mod tests {
                 .effective_cost_usd(Some("claude-3-5-sonnet"))
                 .unwrap_or_default()
                 - 3.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn zero_stored_cost_falls_back_to_token_pricing() {
+        let row = InstanceResult {
+            instance_id: "zero-cost".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: None,
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(100_000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(100_000),
+            duration_secs: None,
+            error: None,
+            patch_present: false,
+            non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        };
+        let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
+        assert!(
+            (row.effective_cost_usd(Some("openai/gpt-4o-mini"))
+                .unwrap_or_default()
+                - expected)
                 .abs()
                 < 1e-9
         );

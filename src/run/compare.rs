@@ -1641,7 +1641,7 @@ fn cost_attribution_map<S: std::hash::BuildHasher>(
         let key = cost_attribution_bucket_label(resolved, row.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += row.cost_usd.unwrap_or(0.0);
+        entry.1 += row.effective_cost_usd(None).unwrap_or(0.0);
     }
     out
 }
@@ -1657,7 +1657,7 @@ fn cost_attribution_map_from_run_slots(slots: &[LoadedRunSlot]) -> HashMap<Strin
         let key = cost_attribution_bucket_label(resolved, slot.result.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += slot.result.cost_usd.unwrap_or(0.0);
+        entry.1 += slot.result.effective_cost_usd(None).unwrap_or(0.0);
     }
     out
 }

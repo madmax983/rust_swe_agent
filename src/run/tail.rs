@@ -113,15 +113,23 @@ impl TerminalRecord {
     }
 
     fn cost(&self) -> Option<f64> {
-        self.cost_usd.or_else(|| {
-            Some(estimate_cost_usd(
-                self.prompt_tokens?,
-                self.cache_read_tokens.unwrap_or(0),
-                self.cache_creation_tokens.unwrap_or(0),
-                self.completion_tokens?,
-                "",
-            ))
-        })
+        if let Some(cost) = self.cost_usd {
+            let has_billable_tokens = self.prompt_tokens.unwrap_or(0)
+                + self.cache_read_tokens.unwrap_or(0)
+                + self.cache_creation_tokens.unwrap_or(0)
+                + self.completion_tokens.unwrap_or(0)
+                > 0;
+            if cost != 0.0 || !has_billable_tokens {
+                return Some(cost);
+            }
+        }
+        Some(estimate_cost_usd(
+            self.prompt_tokens?,
+            self.cache_read_tokens.unwrap_or(0),
+            self.cache_creation_tokens.unwrap_or(0),
+            self.completion_tokens?,
+            "",
+        ))
     }
 }
 

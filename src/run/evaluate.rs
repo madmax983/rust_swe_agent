@@ -886,7 +886,7 @@ fn build_cost_attribution<S: std::hash::BuildHasher>(
         CostAttributionSample {
             resolved: row.resolved,
             failure_category: result.and_then(|result| result.failure_category),
-            cost_usd: result.and_then(|result| result.cost_usd),
+            cost_usd: result.and_then(|result| result.effective_cost_usd(None)),
         }
     }))
 }
@@ -902,7 +902,7 @@ fn build_cost_attribution_from_run_slots(
                 .copied()
                 .unwrap_or(false),
             failure_category: slot.result.failure_category,
-            cost_usd: slot.result.cost_usd,
+            cost_usd: slot.result.effective_cost_usd(None),
         }
     }))
 }

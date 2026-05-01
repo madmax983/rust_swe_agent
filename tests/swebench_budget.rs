@@ -76,6 +76,17 @@ fn config_with_workdir(dir: &Path) -> Config {
     Config::from_toml_str(&toml).unwrap()
 }
 
+fn config_with_workdir_and_model(dir: &Path, model: &str) -> Config {
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let model = model.replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n[model]\nname = \"{model}\"\n");
+    Config::from_toml_str(&toml).unwrap()
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 async fn sweep_halts_when_cumulative_cost_reaches_limit() {
@@ -254,6 +265,79 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn zero_stored_cost_still_trips_budget_from_tokens() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["priced-a", "priced-b"]);
+
+    let per_task_cost = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
+    let usage = ModelUsage {
+        input_tokens: 100_000,
+        output_tokens: 100_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: Some(0.0),
+    };
+
+    let cfg = config_with_workdir_and_model(&repo, "openai/gpt-4o-mini");
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: Some(per_task_cost),
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses_for(2)),
+        deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 1, "results: {results:?}");
+    assert_eq!(results.budget_halted, 1, "results: {results:?}");
+    assert!(
+        (results.estimated_cost_usd - per_task_cost).abs() < 1e-9,
+        "got {} expected {}",
+        results.estimated_cost_usd,
+        per_task_cost
+    );
+    assert!(
+        results.instances[0]
+            .effective_cost_usd(Some("openai/gpt-4o-mini"))
+            .unwrap_or_default()
+            > 0.0,
+        "instance cost should fall back from zero stored cost"
+    );
 }
 
 #[tokio::test]
