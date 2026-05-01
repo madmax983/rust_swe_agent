@@ -11,11 +11,18 @@ The default is `1`. Fresh runs write deterministic per-run artifacts:
 ```text
 <sweep>/<instance_id>/run-<k>.traj.json
 <sweep>/<instance_id>/run-<k>.patch
+<sweep>/all_preds.run-<k>.jsonl
 ```
 
 Resume mode skips completed run files and launches only missing run slots.
 Legacy flat `<sweep>/<instance_id>.traj.json` and `<sweep>/<instance_id>.patch`
 files are still accepted for run 1 resume/inspection compatibility.
+
+For rerun sweeps, aggregate `<sweep>/all_preds.jsonl` uses unique prediction
+IDs and includes `original_instance_id` plus `run_index`. The per-run
+`all_preds.run-<k>.jsonl` files keep original SWE-bench `instance_id` values
+and are what `bench evaluate --backend sb-cli` submits, because sb-cli rejects
+duplicate `instance_id` rows within one predictions file.
 
 ## Command
 
@@ -44,6 +51,9 @@ rust-swe-agent bench evaluate \
     {
       "instance_id": "<id>",
       "resolved": true,
+      "runs": 3,
+      "resolved_count": 1,
+      "pass_at_1": false,
       "tests_passed": ["..."],
       "tests_failed": ["..."],
       "eval_exit_reason": "resolved|unresolved|patch_apply_failed|eval_error|skipped_no_patch",
@@ -68,6 +78,10 @@ Rows missing from backend output are synthesized as:
 
 When a sweep has only one run per instance, `resolved_rate`, `pass@1`, and
 `pass@k` are the same value.
+
+For rerun sweeps evaluated through sb-cli, each run is submitted separately
+with run id `<run_id>-run-<k>`, then the run reports are merged back into one
+evaluation row per original instance.
 
 ## `results.json` rerun fields
 

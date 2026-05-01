@@ -2,13 +2,15 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::Config;
 use rust_swe_agent::run::swebench::{
-    SwebenchArgs, SweepResults, patch_path_for_run, run, trajectory_path_for_run,
+    SwebenchArgs, SweepResults, patch_path_for_run, predictions_path_for_run, run,
+    trajectory_path_for_run,
 };
 use rust_swe_agent::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
 
@@ -162,6 +164,48 @@ async fn rerun_writes_nested_run_files_and_pass_at_k_summary() {
         table.contains("Effective tasks:    3 (1 instances * 3 runs)"),
         "{table}"
     );
+
+    let all_preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    let mut aggregate_ids = BTreeSet::new();
+    let mut aggregate_run_indexes = BTreeSet::new();
+    for (idx, line) in all_preds.lines().enumerate() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        let prediction_id = row
+            .get("instance_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert!(
+            aggregate_ids.insert(prediction_id.to_owned()),
+            "duplicate aggregate prediction id on line {idx}: {prediction_id}"
+        );
+        assert_eq!(
+            row.get("original_instance_id")
+                .and_then(serde_json::Value::as_str),
+            Some("task-a")
+        );
+        aggregate_run_indexes.insert(row.get("run_index").and_then(serde_json::Value::as_u64));
+    }
+    assert_eq!(aggregate_ids.len(), 3);
+    assert_eq!(
+        aggregate_run_indexes,
+        BTreeSet::from([Some(1), Some(2), Some(3)])
+    );
+
+    for run_index in 1..=3 {
+        let run_preds = std::fs::read_to_string(predictions_path_for_run(&output, run_index))
+            .unwrap_or_else(|err| panic!("missing run-{run_index} predictions: {err}"));
+        let rows = run_preds.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "run-{run_index} predictions: {run_preds}");
+        let row: serde_json::Value = serde_json::from_str(rows[0]).unwrap();
+        assert_eq!(
+            row.get("instance_id").and_then(serde_json::Value::as_str),
+            Some("task-a")
+        );
+        assert_eq!(
+            row.get("run_index").and_then(serde_json::Value::as_u64),
+            Some(u64::from(run_index))
+        );
+    }
 }
 
 #[tokio::test]

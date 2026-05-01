@@ -712,8 +712,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     candidate_dir: &Path,
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     manifest_deltas: Vec<String>,
 ) -> CompareReport {
     let transition_summary = build_transition_summary(
@@ -785,8 +785,8 @@ struct TransitionSummary {
 fn build_transition_summary<S: std::hash::BuildHasher>(
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> TransitionSummary {
     let mut all_ids: BTreeSet<&str> = BTreeSet::new();
     all_ids.extend(baseline.keys().map(String::as_str));
@@ -857,8 +857,8 @@ struct ResolutionComparison {
 fn resolution_comparison<S: std::hash::BuildHasher>(
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> ResolutionComparison {
     let (baseline_runs, baseline_resolved) =
         resolution_totals(baseline, baseline_resolved_override);
@@ -899,7 +899,7 @@ fn resolution_comparison<S: std::hash::BuildHasher>(
 
 fn resolution_totals<S: std::hash::BuildHasher>(
     rows: &HashMap<String, InstanceResult, S>,
-    resolved_override: Option<&HashMap<String, bool>>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> (u64, usize) {
     let runs = rows
         .iter()
@@ -949,8 +949,8 @@ fn classify(
     id: &str,
     b: Option<&InstanceResult>,
     c: Option<&InstanceResult>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> TransitionKind {
     match (b, c) {
         (None, Some(_)) => TransitionKind::MissingPresent,
@@ -973,16 +973,38 @@ struct ResolutionStats {
     resolved_count: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ResolutionOverride {
+    resolved: bool,
+    runs: u32,
+    resolved_count: u32,
+}
+
 fn stats_for(
     id: &str,
     row: &InstanceResult,
-    resolved_override: Option<&HashMap<String, bool>>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> ResolutionStats {
     let runs = effective_runs(row);
-    if let Some(resolved) = resolved_override.and_then(|m| m.get(id).copied()) {
+    if let Some(override_row) = resolved_override.and_then(|m| m.get(id).copied()) {
+        let override_runs = if override_row.runs == 0 {
+            runs
+        } else {
+            override_row.runs
+        };
+        let override_resolved_count = if override_row.runs == 0 && override_row.resolved_count == 0
+        {
+            if override_row.resolved {
+                override_runs
+            } else {
+                0
+            }
+        } else {
+            override_row.resolved_count.min(override_runs)
+        };
         return ResolutionStats {
-            runs,
-            resolved_count: if resolved { runs } else { 0 },
+            runs: override_runs,
+            resolved_count: override_resolved_count,
         };
     }
     ResolutionStats {
@@ -1041,7 +1063,9 @@ fn wilson_ci(successes: u64, total: u64) -> ConfidenceInterval {
     }
 }
 
-fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, Error> {
+fn load_resolved_overrides(
+    dir: &Path,
+) -> Result<Option<HashMap<String, ResolutionOverride>>, Error> {
     let path = crate::run::evaluate::evaluation_path(dir);
     if !path.exists() {
         return Ok(None);
@@ -1051,7 +1075,16 @@ fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, 
     Ok(Some(
         eval.instances
             .into_iter()
-            .map(|row| (row.instance_id, row.resolved))
+            .map(|row| {
+                (
+                    row.instance_id,
+                    ResolutionOverride {
+                        resolved: row.resolved,
+                        runs: row.runs,
+                        resolved_count: row.resolved_count,
+                    },
+                )
+            })
             .collect(),
     ))
 }
@@ -1189,8 +1222,8 @@ fn normalize_instance_ids(ids: &[String]) -> BTreeSet<&str> {
 fn build_breakdown_delta<S: std::hash::BuildHasher>(
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_override: Option<&HashMap<String, bool>>,
-    candidate_override: Option<&HashMap<String, bool>>,
+    baseline_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_override: Option<&HashMap<String, ResolutionOverride>>,
     axes: &[BreakdownAxis],
     min_delta_pp: f64,
 ) -> Vec<BreakdownDeltaRow> {
@@ -1232,7 +1265,7 @@ fn build_breakdown_delta<S: std::hash::BuildHasher>(
 
 fn breakdown_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
-    resolved_override: Option<&HashMap<String, bool>>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     axis: BreakdownAxis,
 ) -> HashMap<String, (usize, usize)> {
     let mut out = HashMap::new();
@@ -1334,6 +1367,41 @@ mod tests {
 
     fn map_of<I: IntoIterator<Item = InstanceResult>>(it: I) -> HashMap<String, InstanceResult> {
         it.into_iter().map(|r| (r.instance_id.clone(), r)).collect()
+    }
+
+    fn rerun_submitted(id: &str, runs: u32, resolved: u32) -> InstanceResult {
+        let mut result = submitted(id);
+        result.runs = runs;
+        result.resolved_count = resolved;
+        result.pass_at_1 = resolved > 0;
+        result
+    }
+
+    fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
+        let sweep = SweepResults {
+            total: instances.len(),
+            submitted: instances.len(),
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: instances.len(),
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances,
+        };
+        std::fs::write(
+            dir.join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1617,8 +1685,22 @@ mod tests {
     fn failure_category_breakdown_keeps_resolved_separate_from_none() {
         let baseline = map_of([submitted("a")]);
         let candidate = map_of([submitted("a")]);
-        let baseline_override = HashMap::from([("a".to_string(), true)]);
-        let candidate_override = HashMap::from([("a".to_string(), false)]);
+        let baseline_override = HashMap::from([(
+            "a".to_string(),
+            ResolutionOverride {
+                resolved: true,
+                runs: 0,
+                resolved_count: 0,
+            },
+        )]);
+        let candidate_override = HashMap::from([(
+            "a".to_string(),
+            ResolutionOverride {
+                resolved: false,
+                runs: 0,
+                resolved_count: 0,
+            },
+        )]);
 
         let rows = build_breakdown_delta(
             &baseline,
@@ -1677,6 +1759,9 @@ mod tests {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
                 instance_id: "a".into(),
                 resolved: true,
+                runs: 0,
+                resolved_count: 0,
+                pass_at_1: false,
                 tests_passed: vec![],
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
@@ -1688,6 +1773,9 @@ mod tests {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
                 instance_id: "a".into(),
                 resolved: false,
+                runs: 0,
+                resolved_count: 0,
+                pass_at_1: false,
                 tests_passed: vec![],
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
@@ -1719,6 +1807,47 @@ mod tests {
         assert_eq!(r.baseline_resolved, 1);
         assert_eq!(r.candidate_resolved, 0);
         assert_eq!(r.regressions.len(), 1);
+    }
+
+    #[test]
+    fn evaluation_json_rerun_counts_feed_compare_ci() {
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        write_sweep(dir_b.path(), vec![rerun_submitted("a", 10, 10)]);
+        write_sweep(dir_c.path(), vec![rerun_submitted("a", 10, 10)]);
+
+        let candidate_eval = crate::run::evaluate::EvaluationResults {
+            instances: vec![crate::run::evaluate::InstanceEvaluation {
+                instance_id: "a".into(),
+                resolved: true,
+                runs: 10,
+                resolved_count: 1,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
+                eval_log_path: None,
+            }],
+            breakdown: Vec::new(),
+        };
+        std::fs::write(
+            crate::run::evaluate::evaluation_path(dir_c.path()),
+            serde_json::to_string_pretty(&candidate_eval).unwrap(),
+        )
+        .unwrap();
+
+        let r = compute(&CompareArgs {
+            baseline: dir_b.path().to_path_buf(),
+            candidate: dir_c.path().to_path_buf(),
+            format: CompareFormat::Json,
+            max_regressions: None,
+            breakdown: crate::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
+        })
+        .unwrap();
+        assert_eq!(r.baseline_resolved, 10);
+        assert_eq!(r.candidate_runs, 10);
+        assert_eq!(r.candidate_resolved, 1);
     }
 
     #[test]

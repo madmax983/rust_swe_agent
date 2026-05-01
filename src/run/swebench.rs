@@ -543,6 +543,11 @@ pub fn predictions_path(output_dir: &std::path::Path) -> PathBuf {
     output_dir.join("all_preds.jsonl")
 }
 
+#[must_use]
+pub fn predictions_path_for_run(output_dir: &std::path::Path, run_index: u32) -> PathBuf {
+    output_dir.join(format!("all_preds.run-{run_index}.jsonl"))
+}
+
 /// Inspect a trajectory path on disk. Returns `Some(info)` only when the file
 /// exists *and* parses as valid trajectory JSON; truncated or corrupt files
 /// (e.g. a mid-write crash) yield `None` so the task re-runs.
@@ -1712,18 +1717,19 @@ pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
     row.outcome.as_deref() == Some(outcome::SUBMITTED) && row.failure_category.is_none()
 }
 
-/// Write `all_preds.jsonl` containing one line per *submitted* instance
-/// with a patch artifact on disk. Schema: `{instance_id, model_patch,
-/// model_name_or_path}` — the minimum sb-cli accepts. Non-submitted and
-/// patch-capture-failed instances are excluded by design so sb-cli
-/// reports them as unresolved rather than misattributes a stale diff.
+/// Write aggregate and per-run prediction files. `all_preds.jsonl` is a
+/// complete artifact log with unique prediction IDs across reruns; each
+/// `all_preds.run-k.jsonl` keeps original SWE-bench IDs and is safe to hand
+/// to sb-cli, which rejects duplicate `instance_id` rows.
 fn write_predictions_file(
     output_dir: &std::path::Path,
     results: &[RunSlotResult],
     model_name: &str,
 ) -> Result<(), Error> {
-    let path = predictions_path(output_dir);
-    let mut text = String::new();
+    let max_run = results.iter().map(|r| r.run_index).max().unwrap_or(1);
+    let use_unique_prediction_ids = max_run > 1;
+    let mut aggregate = String::new();
+    let mut per_run: BTreeMap<u32, String> = BTreeMap::new();
     for r in results {
         if r.result.outcome.as_deref() != Some(outcome::SUBMITTED) {
             continue;
@@ -1737,15 +1743,45 @@ fn write_predictions_file(
         let patch_path =
             existing_patch_path_for_run(output_dir, &r.result.instance_id, r.run_index);
         let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
-        let line = serde_json::json!({
+        let run_line = serde_json::json!({
             "instance_id": r.result.instance_id,
             "model_patch": model_patch,
             "model_name_or_path": model_name,
+            "run_index": r.run_index,
         });
-        text.push_str(&serde_json::to_string(&line)?);
-        text.push('\n');
+        let _ = writeln!(
+            per_run.entry(r.run_index).or_default(),
+            "{}",
+            serde_json::to_string(&run_line)?
+        );
+
+        let aggregate_instance_id = if use_unique_prediction_ids {
+            format!("{}::run-{}", r.result.instance_id, r.run_index)
+        } else {
+            r.result.instance_id.clone()
+        };
+        let aggregate_line = if use_unique_prediction_ids {
+            serde_json::json!({
+                "instance_id": aggregate_instance_id,
+                "original_instance_id": r.result.instance_id,
+                "run_index": r.run_index,
+                "model_patch": model_patch,
+                "model_name_or_path": model_name,
+            })
+        } else {
+            serde_json::json!({
+                "instance_id": aggregate_instance_id,
+                "model_patch": model_patch,
+                "model_name_or_path": model_name,
+            })
+        };
+        aggregate.push_str(&serde_json::to_string(&aggregate_line)?);
+        aggregate.push('\n');
     }
-    std::fs::write(&path, text)?;
+    std::fs::write(predictions_path(output_dir), aggregate)?;
+    for (run_index, text) in per_run {
+        std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
+    }
     Ok(())
 }
 

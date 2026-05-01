@@ -71,6 +71,12 @@ pub enum EvalExitReason {
 pub struct InstanceEvaluation {
     pub instance_id: String,
     pub resolved: bool,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub runs: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub resolved_count: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pass_at_1: bool,
     #[serde(default)]
     pub tests_passed: Vec<String>,
     #[serde(default)]
@@ -78,6 +84,16 @@ pub struct InstanceEvaluation {
     pub eval_exit_reason: EvalExitReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval_log_path: Option<String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +166,9 @@ pub fn summarize<S: std::hash::BuildHasher>(
         .instances
         .iter()
         .filter(|row| {
+            if row.runs > 1 || row.resolved_count > 0 || row.pass_at_1 {
+                return row.pass_at_1;
+            }
             row.resolved
                 && results
                     .get(&row.instance_id)
@@ -183,6 +202,9 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
     InstanceEvaluation {
         instance_id: id.to_owned(),
         resolved: false,
+        runs: effective_runs(r),
+        resolved_count: 0,
+        pass_at_1: false,
         tests_passed: vec![],
         tests_failed: vec![],
         eval_exit_reason: if skipped {
@@ -210,16 +232,50 @@ fn run_sb_cli(
     std::fs::create_dir_all(&report_dir)?;
     let run_id = args.run_id.clone().unwrap_or_else(generated_run_id);
 
+    let max_runs = results.values().map(effective_runs).max().unwrap_or(1);
+    if max_runs > 1 {
+        let mut reports = BTreeMap::new();
+        for run_index in 1..=max_runs {
+            let run_preds = swebench::predictions_path_for_run(&args.sweep_dir, run_index);
+            if !predictions_file_has_rows(&run_preds)? {
+                reports.insert(run_index, HashMap::new());
+                continue;
+            }
+            let run_report_id = format!("{run_id}-run-{run_index}");
+            let parsed = submit_sb_cli_predictions(args, &run_preds, &report_dir, &run_report_id)?;
+            reports.insert(run_index, parsed);
+        }
+        return Ok(merge_rerun_reports_with_results(results, &reports));
+    }
+
+    let parsed = submit_sb_cli_predictions(args, &preds, &report_dir, &run_id)?;
+    Ok(merge_with_results(results, &parsed))
+}
+
+fn predictions_file_has_rows(path: &Path) -> Result<bool, Error> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(path)?;
+    Ok(text.lines().any(|line| !line.trim().is_empty()))
+}
+
+fn submit_sb_cli_predictions(
+    args: &EvaluateArgs,
+    preds: &Path,
+    report_dir: &Path,
+    run_id: &str,
+) -> Result<HashMap<String, InstanceEvaluation>, Error> {
     let mut cmd = Command::new("sb-cli");
     cmd.arg("submit")
         .arg(&args.sb_subset)
         .arg(&args.sb_split)
         .arg("--predictions_path")
-        .arg(&preds)
+        .arg(preds)
         .arg("--run_id")
-        .arg(&run_id)
+        .arg(run_id)
         .arg("--output_dir")
-        .arg(&report_dir)
+        .arg(report_dir)
         .arg("--wait_for_evaluation")
         .arg("1")
         .arg("--gen_report")
@@ -261,9 +317,9 @@ fn run_sb_cli(
             .arg("get-report")
             .arg(&args.sb_subset)
             .arg(&args.sb_split)
-            .arg(&run_id)
+            .arg(run_id)
             .arg("--output_dir")
-            .arg(&report_dir)
+            .arg(report_dir)
             .arg("--overwrite")
             .arg("1")
             .output()?;
@@ -276,8 +332,7 @@ fn run_sb_cli(
         }
     }
 
-    let parsed = parse_sb_cli_results(&report_path)?;
-    Ok(merge_with_results(results, &parsed))
+    parse_sb_cli_results(&report_path)
 }
 
 fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluation>, Error> {
@@ -334,6 +389,9 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                         InstanceEvaluation {
                             instance_id: id.clone(),
                             resolved: resolved_ids.contains(id),
+                            runs: 0,
+                            resolved_count: 0,
+                            pass_at_1: false,
                             tests_passed: vec![],
                             tests_failed: vec![],
                             eval_exit_reason: if resolved_ids.contains(id) {
@@ -352,6 +410,9 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                             InstanceEvaluation {
                                 instance_id: id,
                                 resolved: true,
+                                runs: 0,
+                                resolved_count: 0,
+                                pass_at_1: false,
                                 tests_passed: vec![],
                                 tests_failed: vec![],
                                 eval_exit_reason: EvalExitReason::Resolved,
@@ -408,6 +469,9 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
     Some(InstanceEvaluation {
         instance_id: id,
         resolved,
+        runs: 0,
+        resolved_count: 0,
+        pass_at_1: false,
         tests_passed,
         tests_failed,
         eval_exit_reason,
@@ -432,13 +496,18 @@ fn merge_with_results(
     let mut instances: Vec<InstanceEvaluation> = Vec::new();
     for (id, r) in results {
         if let Some(row) = parsed.get(id) {
-            instances.push(row.clone());
+            let mut row = row.clone();
+            normalize_single_run_metrics(&mut row, effective_runs(r));
+            instances.push(row);
             continue;
         }
         let skipped = r.outcome.as_deref() != Some(outcome::SUBMITTED) || !r.patch_present;
         instances.push(InstanceEvaluation {
             instance_id: id.clone(),
             resolved: false,
+            runs: effective_runs(r),
+            resolved_count: 0,
+            pass_at_1: false,
             tests_passed: vec![],
             tests_failed: vec![],
             eval_exit_reason: if skipped {
@@ -453,6 +522,87 @@ fn merge_with_results(
     EvaluationResults {
         instances,
         breakdown: Vec::new(),
+    }
+}
+
+fn normalize_single_run_metrics(row: &mut InstanceEvaluation, runs: u32) {
+    if row.runs == 0 {
+        row.runs = runs;
+    }
+    if row.resolved_count == 0 && row.resolved {
+        row.resolved_count = 1.min(row.runs);
+    }
+    if row.runs <= 1 {
+        row.pass_at_1 = row.resolved;
+    }
+}
+
+fn merge_rerun_reports_with_results(
+    results: &HashMap<String, InstanceResult>,
+    run_reports: &BTreeMap<u32, HashMap<String, InstanceEvaluation>>,
+) -> EvaluationResults {
+    let mut instances = Vec::new();
+    for (id, result) in results {
+        let runs = effective_runs(result);
+        let mut resolved_count = 0u32;
+        let mut pass_at_1 = false;
+        let mut representative: Option<InstanceEvaluation> = None;
+
+        for run_index in 1..=runs {
+            let Some(row) = run_reports
+                .get(&run_index)
+                .and_then(|report| report.get(id))
+            else {
+                continue;
+            };
+            if representative.is_none() || row.resolved {
+                representative = Some(row.clone());
+            }
+            if row.resolved {
+                resolved_count = resolved_count.saturating_add(1);
+                if run_index == 1 {
+                    pass_at_1 = true;
+                }
+            }
+        }
+
+        let resolved = resolved_count > 0;
+        let mut row = representative.unwrap_or_else(|| missing_eval_for_result(id, result));
+        row.instance_id.clone_from(id);
+        row.resolved = resolved;
+        row.runs = runs;
+        row.resolved_count = resolved_count;
+        row.pass_at_1 = pass_at_1;
+        row.eval_exit_reason = if resolved {
+            EvalExitReason::Resolved
+        } else {
+            row.eval_exit_reason
+        };
+        instances.push(row);
+    }
+    instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+    EvaluationResults {
+        instances,
+        breakdown: Vec::new(),
+    }
+}
+
+fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluation {
+    let skipped = result.outcome.as_deref() != Some(outcome::SUBMITTED) || !result.patch_present;
+    InstanceEvaluation {
+        instance_id: id.to_owned(),
+        resolved: false,
+        runs: effective_runs(result),
+        resolved_count: 0,
+        pass_at_1: false,
+        tests_passed: vec![],
+        tests_failed: vec![],
+        eval_exit_reason: if skipped {
+            EvalExitReason::SkippedNoPatch
+        } else {
+            EvalExitReason::EvalError
+        },
+        eval_log_path: None,
     }
 }
 
@@ -656,6 +806,63 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_rerun_evaluations_preserves_pass_at_1_and_pass_at_k() {
+        let mut result = submitted("inst-a");
+        result.runs = 2;
+        result.resolved_count = 0;
+        result.pass_at_1 = false;
+        let results = HashMap::from([("inst-a".to_string(), result)]);
+        let run_reports = BTreeMap::from([
+            (
+                1,
+                HashMap::from([(
+                    "inst-a".to_string(),
+                    InstanceEvaluation {
+                        instance_id: "inst-a".into(),
+                        resolved: false,
+                        runs: 0,
+                        resolved_count: 0,
+                        pass_at_1: false,
+                        tests_passed: vec![],
+                        tests_failed: vec![],
+                        eval_exit_reason: EvalExitReason::Unresolved,
+                        eval_log_path: None,
+                    },
+                )]),
+            ),
+            (
+                2,
+                HashMap::from([(
+                    "inst-a".to_string(),
+                    InstanceEvaluation {
+                        instance_id: "inst-a".into(),
+                        resolved: true,
+                        runs: 0,
+                        resolved_count: 0,
+                        pass_at_1: false,
+                        tests_passed: vec![],
+                        tests_failed: vec![],
+                        eval_exit_reason: EvalExitReason::Resolved,
+                        eval_log_path: None,
+                    },
+                )]),
+            ),
+        ]);
+
+        let eval = merge_rerun_reports_with_results(&results, &run_reports);
+        let row = &eval.instances[0];
+        assert_eq!(row.instance_id, "inst-a");
+        assert!(row.resolved);
+        assert_eq!(row.runs, 2);
+        assert_eq!(row.resolved_count, 1);
+        assert!(!row.pass_at_1);
+
+        let summary = summarize(&eval, &results);
+        assert!((summary.pass_at_1 - 0.0).abs() < f64::EPSILON);
+        assert!((summary.pass_at_k - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn parses_repo_from_instance_id() {
         assert_eq!(
             parse_repo_from_instance_id("django__django-10087"),
@@ -670,6 +877,9 @@ mod tests {
         let evals = vec![InstanceEvaluation {
             instance_id: "a".into(),
             resolved: false,
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
             tests_passed: vec![],
             tests_failed: vec![],
             eval_exit_reason: EvalExitReason::Unresolved,
