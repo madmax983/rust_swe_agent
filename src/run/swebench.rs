@@ -2136,6 +2136,18 @@ mod tests {
     }
 
     #[test]
+    fn strip_json_nulls_removes_nulls_and_traverses_arrays() {
+        let v = serde_json::json!({
+            "a": null,
+            "b": 1,
+            "c": [{"x": null, "y": 2}],
+        });
+        let stripped = strip_json_nulls(v);
+        // null object keys are stripped; array elements are recursed into
+        assert_eq!(stripped, serde_json::json!({"b": 1, "c": [{"y": 2}]}));
+    }
+
+    #[test]
     fn manifest_config_uses_effective_runtime_overrides() {
         let mut cfg = Config::defaults().unwrap();
         cfg.root.agent.step_limit = 7;

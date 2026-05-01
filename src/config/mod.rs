@@ -149,6 +149,12 @@ name = "claude-sonnet-4-6"
     }
 
     #[test]
+    fn invalid_toml_returns_toml_error() {
+        let err = Config::from_toml_str("[[[ not valid toml").unwrap_err();
+        assert!(matches!(err, ConfigError::Toml(_)));
+    }
+
+    #[test]
     fn recursive_merge_replaces_arrays() {
         let base = serde_json::json!({"xs": [1, 2, 3]});
         let overlay = serde_json::json!({"xs": [9]});
