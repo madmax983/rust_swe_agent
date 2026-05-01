@@ -21,7 +21,7 @@ fn long_running_response() -> String {
     let command = if cfg!(windows) {
         "for /L %i in (1,1,2147483647) do @rem"
     } else {
-        "sleep 30"
+        "trap '' TERM; while :; do sleep 1; done"
     };
     format!("```bash\n{command}\n```")
 }
@@ -71,9 +71,14 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
     .unwrap();
     let elapsed = started.elapsed();
 
+    let max_elapsed = if cfg!(windows) {
+        Duration::from_secs(6)
+    } else {
+        Duration::from_secs(5)
+    };
     assert!(
-        elapsed < Duration::from_secs(5),
-        "worker should return within 3s of the 2s deadline; elapsed={elapsed:?}"
+        elapsed < max_elapsed,
+        "worker should return promptly after the 2s deadline; elapsed={elapsed:?}, max={max_elapsed:?}"
     );
     assert_eq!(results.total, 1);
     assert_eq!(results.submitted, 0);

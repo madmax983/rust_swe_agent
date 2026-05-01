@@ -4,11 +4,19 @@
 
 use async_trait::async_trait;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 use super::{Environment, RunRequest, RunResult};
 use crate::error::EnvError;
+
+#[cfg(not(windows))]
+const TERMINATE_GRACE: Duration = Duration::from_millis(250);
+const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
+#[cfg(not(windows))]
+const PROCESS_EXIT_POLL: Duration = Duration::from_millis(25);
 
 pub struct LocalEnvironment {
     shell: String,
@@ -46,6 +54,7 @@ fn default_shell() -> String {
 impl Environment for LocalEnvironment {
     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
         let mut cmd = shell_command(&self.shell, &req.command);
+        isolate_process_tree(&mut cmd);
 
         if let Some(cwd) = req.cwd.as_ref() {
             cmd.current_dir(cwd);
@@ -69,40 +78,50 @@ impl Environment for LocalEnvironment {
             .stderr
             .take()
             .ok_or_else(|| EnvError::UnexpectedExit("stderr pipe missing".into()))?;
+        let stdout_task = tokio::spawn(async move { read_pipe_to_string(&mut stdout_pipe).await });
+        let stderr_task = tokio::spawn(async move { read_pipe_to_string(&mut stderr_pipe).await });
 
-        let wait_fut = async move {
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-            let read_stdout = stdout_pipe.read_to_end(&mut stdout_buf);
-            let read_stderr = stderr_pipe.read_to_end(&mut stderr_buf);
-            let (r1, r2) = tokio::join!(read_stdout, read_stderr);
-            r1.map_err(EnvError::Io)?;
-            r2.map_err(EnvError::Io)?;
-            let status = child.wait().await.map_err(EnvError::Io)?;
+        if let Ok(status) = tokio::time::timeout(req.timeout, child.wait()).await {
+            let status = status.map_err(EnvError::Io)?;
             process_guard.disarm();
-            Ok::<_, EnvError>((
-                String::from_utf8_lossy(&stdout_buf).into_owned(),
-                String::from_utf8_lossy(&stderr_buf).into_owned(),
-                status.code().unwrap_or(-1),
-            ))
-        };
-
-        match tokio::time::timeout(req.timeout, wait_fut).await {
-            Ok(Ok((stdout, stderr, exit_code))) => Ok(RunResult {
+            let stdout = join_reader(stdout_task, "stdout").await?;
+            let stderr = join_reader(stderr_task, "stderr").await?;
+            return Ok(RunResult {
                 stdout,
                 stderr,
-                exit_code,
+                exit_code: status.code().unwrap_or(-1),
                 timed_out: false,
-            }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(RunResult {
-                stdout: String::new(),
-                stderr: format!("timed out after {:?}", req.timeout),
-                exit_code: -1,
-                timed_out: true,
-            }),
+            });
         }
+
+        process_guard.terminate_and_wait(&mut child).await;
+        stdout_task.abort();
+        stderr_task.abort();
+        Ok(RunResult {
+            stdout: String::new(),
+            stderr: format!("timed out after {:?}", req.timeout),
+            exit_code: -1,
+            timed_out: true,
+        })
     }
+}
+
+async fn read_pipe_to_string<R>(pipe: &mut R) -> Result<String, EnvError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    pipe.read_to_end(&mut buf).await.map_err(EnvError::Io)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+async fn join_reader(
+    handle: JoinHandle<Result<String, EnvError>>,
+    name: &str,
+) -> Result<String, EnvError> {
+    handle
+        .await
+        .map_err(|e| EnvError::UnexpectedExit(format!("{name} reader task failed: {e}")))?
 }
 
 struct ProcessTreeGuard {
@@ -118,6 +137,20 @@ impl ProcessTreeGuard {
     const fn disarm(&mut self) {
         self.armed = false;
     }
+
+    async fn terminate_and_wait(&mut self, child: &mut Child) {
+        let Some(pid) = self.pid else {
+            self.disarm();
+            return;
+        };
+        terminate_process_tree_async(pid).await;
+        if tokio::time::timeout(FORCE_KILL_WAIT, child.wait())
+            .await
+            .is_ok()
+        {
+            self.disarm();
+        }
+    }
 }
 
 impl Drop for ProcessTreeGuard {
@@ -126,37 +159,166 @@ impl Drop for ProcessTreeGuard {
             return;
         }
         if let Some(pid) = self.pid {
-            kill_process_tree_sync(pid);
+            terminate_process_tree_blocking(pid);
         }
     }
 }
 
 #[cfg(windows)]
-fn kill_process_tree_sync(pid: u32) {
+async fn terminate_process_tree_async(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
+#[cfg(windows)]
+fn terminate_process_tree_blocking(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .status();
 }
 
-#[cfg(not(windows))]
-fn kill_process_tree_sync(pid: u32) {
+#[cfg(unix)]
+async fn terminate_process_tree_async(pid: u32) {
+    signal_process_group_async(pid, "TERM").await;
+    tokio::time::sleep(TERMINATE_GRACE).await;
+    if process_group_alive_async(pid).await {
+        signal_process_group_async(pid, "KILL").await;
+        wait_for_process_exit_async(pid).await;
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_tree_blocking(pid: u32) {
+    signal_process_group_blocking(pid, "TERM");
+    std::thread::sleep(TERMINATE_GRACE);
+    if process_group_alive_blocking(pid) {
+        signal_process_group_blocking(pid, "KILL");
+        wait_for_process_exit_blocking(pid);
+    }
+}
+
+#[cfg(all(not(windows), not(unix)))]
+async fn terminate_process_tree_async(pid: u32) {
     let pid_s = pid.to_string();
-    let _ = std::process::Command::new("pkill")
-        .args(["-TERM", "-P", &pid_s])
+    let _ = Command::new("kill")
+        .args(["-TERM", &pid_s])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .status()
+        .await;
+    tokio::time::sleep(TERMINATE_GRACE).await;
+    let _ = Command::new("kill")
+        .args(["-KILL", &pid_s])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
+#[cfg(all(not(windows), not(unix)))]
+fn terminate_process_tree_blocking(pid: u32) {
+    let pid_s = pid.to_string();
     let _ = std::process::Command::new("kill")
         .args(["-TERM", &pid_s])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .status();
+    std::thread::sleep(TERMINATE_GRACE);
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &pid_s])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
+
+#[cfg(unix)]
+async fn wait_for_process_exit_async(pid: u32) {
+    let deadline = tokio::time::Instant::now() + FORCE_KILL_WAIT;
+    while tokio::time::Instant::now() < deadline {
+        if !process_group_alive_async(pid).await {
+            return;
+        }
+        tokio::time::sleep(PROCESS_EXIT_POLL).await;
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_process_exit_blocking(pid: u32) {
+    let deadline = std::time::Instant::now() + FORCE_KILL_WAIT;
+    while std::time::Instant::now() < deadline {
+        if !process_group_alive_blocking(pid) {
+            return;
+        }
+        std::thread::sleep(PROCESS_EXIT_POLL);
+    }
+}
+
+#[cfg(unix)]
+async fn signal_process_group_async(pid: u32, signal: &str) {
+    let group = format!("-{pid}");
+    let _ = Command::new("kill")
+        .args([format!("-{signal}"), group])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
+#[cfg(unix)]
+fn signal_process_group_blocking(pid: u32, signal: &str) {
+    let group = format!("-{pid}");
+    let _ = std::process::Command::new("kill")
+        .args([format!("-{signal}"), group])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(unix)]
+async fn process_group_alive_async(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+fn process_group_alive_blocking(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+fn isolate_process_tree(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_tree(_cmd: &mut Command) {}
 
 #[cfg(windows)]
 fn shell_command(shell: &str, command: &str) -> Command {
@@ -222,6 +384,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeout_reclaims_stubborn_process_before_returning() {
+        let work = tempfile::tempdir().unwrap();
+        let pid_file = work.path().join("stubborn.pid");
+        let command = stubborn_process_command(&pid_file);
+
+        let env = LocalEnvironment::new();
+        let req = RunRequest::new(command).with_timeout(Duration::from_secs(1));
+        let r = env.run(req).await.unwrap();
+
+        assert!(r.timed_out);
+        let pid_text = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid_text.trim().parse::<u32>().unwrap();
+        assert!(
+            !process_is_alive(pid),
+            "timed-out process {pid} was still alive after run returned"
+        );
+    }
+
+    #[tokio::test]
     async fn stderr_is_captured_separately() {
         let env = LocalEnvironment::new();
         let r = env
@@ -230,5 +411,44 @@ mod tests {
             .unwrap();
         assert_eq!(r.stdout.trim(), "out");
         assert_eq!(r.stderr.trim(), "err");
+    }
+
+    #[cfg(windows)]
+    fn stubborn_process_command(pid_file: &std::path::Path) -> String {
+        let path = pid_file.display().to_string().replace('\'', "''");
+        format!(
+            "powershell -NoProfile -Command \"$pidFile='{path}'; Set-Content -LiteralPath $pidFile -Value $PID; while ($true) {{ Start-Sleep -Milliseconds 200 }}\""
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn stubborn_process_command(pid_file: &std::path::Path) -> String {
+        let path = sh_single_quote(&pid_file.display().to_string());
+        format!("trap '' TERM; printf '%s' $$ > {path}; while :; do sleep 1; done")
+    }
+
+    #[cfg(not(windows))]
+    fn sh_single_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    fn process_is_alive(pid: u32) -> bool {
+        if cfg!(windows) {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+                    ),
+                ])
+                .status()
+                .is_ok_and(|status| status.success())
+        } else {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .is_ok_and(|status| status.success())
+        }
     }
 }
