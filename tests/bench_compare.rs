@@ -257,6 +257,36 @@ fn write_run_traj(
     std::fs::write(traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
 }
 
+fn write_root_traj(
+    dir: &Path,
+    instance_id: &str,
+    failure_category: Option<FailureCategory>,
+    cost_usd: Option<f64>,
+) {
+    let mut t = Trajectory::new();
+    t.info
+        .other
+        .insert("instance_id".into(), serde_json::json!(instance_id));
+    t.info.outcome = Some(if failure_category.is_some() {
+        outcome::ERROR.into()
+    } else {
+        outcome::SUBMITTED.into()
+    });
+    t.info.failure_category = failure_category;
+    t.info.total_cost_usd = cost_usd;
+    t.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 10,
+        completion_tokens: 5,
+    });
+    t.info.steps = Some(1);
+
+    std::fs::write(
+        dir.join(format!("{instance_id}.traj.json")),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+}
+
 fn write_evaluation_json(dir: &Path, value: &serde_json::Value) {
     std::fs::write(
         dir.join("evaluation.json"),
@@ -1176,6 +1206,63 @@ fn evaluate_cost_attribution_ignores_stale_trajectories_outside_current_sweep() 
         rows.iter()
             .any(|row| { row["bucket"] == "TOTAL" && row["n"] == 1 && row["total_usd"] == 0.1 })
     );
+}
+
+#[test]
+fn evaluate_cost_attribution_dedupes_legacy_root_and_nested_run_slots() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![errored("task-a", FailureCategory::StepLimit)],
+    );
+    write_root_traj(
+        sweep_dir.path(),
+        "task-a",
+        Some(FailureCategory::ModelApi),
+        Some(0.30),
+    );
+    write_run_traj(
+        sweep_dir.path(),
+        "task-a",
+        1,
+        Some(FailureCategory::StepLimit),
+        Some(0.10),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("step_limit,1,0.1000,0.1000,100.00"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("TOTAL,1,0.1000,0.1000,100.00"), "{stdout}");
+    assert!(!stdout.contains("model_api,1,0.3000"), "{stdout}");
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    let rows = v["cost_attribution"].as_array().unwrap();
+    assert!(rows.iter().any(|row| {
+        row["bucket"] == "step_limit" && row["n"] == 1 && row["total_usd"] == 0.1
+    }));
+    assert!(rows.iter().any(|row| {
+        row["bucket"] == "TOTAL" && row["n"] == 1 && row["total_usd"] == 0.1
+    }));
 }
 
 #[test]

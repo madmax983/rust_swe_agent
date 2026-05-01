@@ -532,7 +532,8 @@ fn scan_trajectory_run_slots(
     dir: &Path,
     min_mtime: Option<SystemTime>,
 ) -> Result<Vec<LoadedRunSlot>, Error> {
-    let mut scanned = Vec::new();
+    let mut instance_dirs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut root_trajectories: Vec<(String, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -544,7 +545,7 @@ fn scan_trajectory_run_slots(
             else {
                 continue;
             };
-            scan_nested_run_trajectories(&path, &instance_id, min_mtime, &mut scanned)?;
+            instance_dirs.push((instance_id, path));
             continue;
         }
         if !path_passes_mtime(&path, min_mtime) {
@@ -556,15 +557,25 @@ fn scan_trajectory_run_slots(
         let Some(id) = name_str.strip_suffix(".traj.json") else {
             continue;
         };
-        if let Some(result) = instance_result_from_trajectory(id, &path)? {
+        root_trajectories.push((id.to_owned(), path));
+    }
+    instance_dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    root_trajectories.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut scanned = Vec::new();
+    for (instance_id, path) in instance_dirs {
+        scan_nested_run_trajectories(&path, &instance_id, min_mtime, &mut scanned)?;
+    }
+    for (id, path) in root_trajectories {
+        if let Some(result) = instance_result_from_trajectory(&id, &path)? {
             scanned.push(LoadedRunSlot {
-                instance_id: id.to_owned(),
+                instance_id: id,
                 run_index: 1,
                 result,
             });
         }
     }
-    Ok(scanned)
+    Ok(dedupe_run_slots(scanned))
 }
 
 fn scan_nested_run_trajectories(
@@ -573,6 +584,7 @@ fn scan_nested_run_trajectories(
     min_mtime: Option<SystemTime>,
     out: &mut Vec<LoadedRunSlot>,
 ) -> Result<(), Error> {
+    let mut run_trajectories: Vec<(u32, std::path::PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(instance_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -589,6 +601,10 @@ fn scan_nested_run_trajectories(
         else {
             continue;
         };
+        run_trajectories.push((run_index, path));
+    }
+    run_trajectories.sort_by_key(|(run_index, _)| *run_index);
+    for (run_index, path) in run_trajectories {
         if let Some(result) = instance_result_from_trajectory(instance_id, &path)? {
             out.push(LoadedRunSlot {
                 instance_id: instance_id.to_owned(),
@@ -598,6 +614,18 @@ fn scan_nested_run_trajectories(
         }
     }
     Ok(())
+}
+
+fn dedupe_run_slots(scanned: Vec<LoadedRunSlot>) -> Vec<LoadedRunSlot> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::with_capacity(scanned.len());
+    for slot in scanned {
+        let key = (slot.instance_id.clone(), slot.run_index);
+        if seen.insert(key) {
+            deduped.push(slot);
+        }
+    }
+    deduped
 }
 
 fn path_passes_mtime(path: &Path, min_mtime: Option<SystemTime>) -> bool {
