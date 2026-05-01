@@ -746,8 +746,14 @@ fn manifest_delta_lines(
     if b.model.name != c.model.name {
         out.push(format!("model.name: {} -> {}", b.model.name, c.model.name));
     }
-    let b_cfg: serde_json::Value = serde_yaml::from_str(&b.config.resolved).unwrap_or_default();
-    let c_cfg: serde_json::Value = serde_yaml::from_str(&c.config.resolved).unwrap_or_default();
+    let b_cfg: serde_json::Value = toml::from_str::<toml::Value>(&b.config.resolved)
+        .ok()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or_default();
+    let c_cfg: serde_json::Value = toml::from_str::<toml::Value>(&c.config.resolved)
+        .ok()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or_default();
     let mut changed = Vec::new();
     diff_config_keys("", &b_cfg, &c_cfg, &mut changed);
     if !changed.is_empty() {

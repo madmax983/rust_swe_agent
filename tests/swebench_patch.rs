@@ -86,11 +86,11 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nmodified\n```".into(),
     ];
 
-    let yaml = format!(
-        "environment:\n  workdir: {}\nmodel:\n  name: scripted-test-model\n",
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
         repo.display()
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
@@ -175,11 +175,11 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     std::fs::create_dir_all(&output).unwrap();
     write_dataset(&dataset, &["noop-instance"], &base_commit);
 
-    let yaml = format!(
-        "environment:\n  workdir: {}\nmodel:\n  name: scripted-test-model\n",
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
         repo.display()
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
@@ -250,11 +250,11 @@ async fn missing_workdir_marks_outcome_as_error() {
     write_dataset(&dataset, &["broken"], "deadbeef");
 
     // Workdir points at a path that doesn't exist; `git diff` will fail.
-    let yaml = format!(
-        "environment:\n  workdir: {}\n",
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n",
         work.path().join("does-not-exist").display()
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),

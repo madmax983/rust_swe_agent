@@ -1,0 +1,53 @@
+# Default config for rust-swe-agent. Mirrors mini-swe-agent's
+# `config/mini.yaml` in shape. Fields documented inline.
+
+[agent]
+# Which agent impl to instantiate. One of: "default", "interactive".
+kind = "default"
+# Max conversational steps. Prevents runaway loops.
+step_limit = 50
+# Template rendered when the model's response contains no valid action.
+format_error_template = '''
+Your response did not include a shell command. Respond with a single
+```bash
+# command here
+```
+block, or the sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own
+line followed by the final output block.
+'''
+# Template rendered over each command's RunResult to form the next
+# user-observation message.
+observation_template = '''
+Exit code: {{ returncode }}
+Output:
+{{ output }}
+'''
+
+[model]
+# String name. Routed by prefix to backend (claude* -> Anthropic).
+name = "claude-opus-4-7"
+# temperature omitted — uses backend default (maps to null in schema)
+max_tokens = 4096
+
+[environment]
+# "local" or "docker".
+kind = "local"
+# Per-command timeout in seconds.
+timeout_secs = 60
+workdir = "/workspace"
+
+[prompts]
+system = '''
+You are a skilled software engineer working at a terminal. You have
+access to a bash shell. Each response must contain exactly one action:
+either a single ```bash block to execute, or the literal sentinel
+`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a
+final output block.
+'''
+instance = '''
+Task: {{ task }}
+{% if extra_context %}
+Additional context:
+{{ extra_context }}
+{% endif %}
+'''

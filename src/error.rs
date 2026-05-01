@@ -74,8 +74,8 @@ pub enum ConfigError {
     #[error("config file not found: {0}")]
     NotFound(String),
 
-    #[error("yaml parse failed: {0}")]
-    Yaml(String),
+    #[error("toml parse failed: {0}")]
+    Toml(String),
 
     #[error("include chain exceeded {0} levels (possible cycle)")]
     IncludeDepthExceeded(usize),
@@ -84,8 +84,8 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-impl From<serde_yaml::Error> for ConfigError {
-    fn from(e: serde_yaml::Error) -> Self {
-        Self::Yaml(e.to_string())
+impl From<toml::de::Error> for ConfigError {
+    fn from(e: toml::de::Error) -> Self {
+        Self::Toml(e.to_string())
     }
 }

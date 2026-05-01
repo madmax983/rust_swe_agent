@@ -45,8 +45,8 @@ fn init_repo(dir: &Path) {
 }
 
 fn cfg(workdir: &Path) -> Config {
-    let yaml = format!("environment:\n  workdir: {}\n", workdir.display());
-    Config::from_yaml_str(&yaml).unwrap()
+    let toml = format!("[environment]\nworkdir = \"{}\"\n", workdir.display());
+    Config::from_toml_str(&toml).unwrap()
 }
 
 fn submit_response() -> String {
