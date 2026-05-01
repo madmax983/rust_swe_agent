@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::error::Error;
+use crate::model::litellm::is_anthropic_model;
 use crate::model::{Model, ModelUsage};
 use crate::trajectory::{FailureCategory, Trajectory, exit_reason, outcome};
 
@@ -37,17 +38,74 @@ pub const EXIT_REASON_BUDGET_HALT: &str = "budget_halt";
 /// counts so downstream tooling can re-price as needed.
 pub const SONNET_INPUT_USD_PER_MTOK: f64 = 3.0;
 pub const SONNET_OUTPUT_USD_PER_MTOK: f64 = 15.0;
+pub const ANTHROPIC_CACHE_READ_MULTIPLIER: f64 = 0.10;
+pub const ANTHROPIC_CACHE_CREATION_MULTIPLIER: f64 = 1.25;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenBreakdown {
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl TokenBreakdown {
+    #[must_use]
+    pub fn prompt_tokens(self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_creation_tokens)
+    }
+
+    #[must_use]
+    pub fn total_tokens(self) -> u64 {
+        self.prompt_tokens().saturating_add(self.completion_tokens)
+    }
+
+    #[must_use]
+    pub fn cache_hit_rate(self) -> f64 {
+        let total_prompt = self.prompt_tokens();
+        if total_prompt == 0 {
+            return 0.0;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        {
+            self.cache_read_tokens as f64 / total_prompt as f64
+        }
+    }
+}
 
 #[must_use]
-pub fn estimate_cost_usd(prompt_tokens: u64, completion_tokens: u64) -> f64 {
+pub fn estimate_cost_usd(
+    prompt_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    completion_tokens: u64,
+    model: &str,
+) -> f64 {
+    let (cache_read_multiplier, cache_creation_multiplier) =
+        if model.is_empty() || is_anthropic_model(model) {
+            (
+                ANTHROPIC_CACHE_READ_MULTIPLIER,
+                ANTHROPIC_CACHE_CREATION_MULTIPLIER,
+            )
+        } else {
+            (1.0, 1.0)
+        };
     #[allow(clippy::cast_precision_loss)]
     let p = prompt_tokens as f64;
     #[allow(clippy::cast_precision_loss)]
+    let cr = cache_read_tokens as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let cc = cache_creation_tokens as f64;
+    #[allow(clippy::cast_precision_loss)]
     let c = completion_tokens as f64;
-    (c / 1_000_000.0).mul_add(
-        SONNET_OUTPUT_USD_PER_MTOK,
-        p / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK,
-    )
+    let input_cost = p / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK;
+    let cache_read_cost = cr / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_read_multiplier;
+    let cache_creation_cost =
+        cc / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_creation_multiplier;
+    let completion_cost = c / 1_000_000.0 * SONNET_OUTPUT_USD_PER_MTOK;
+    input_cost + cache_read_cost + cache_creation_cost + completion_cost
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,9 +137,25 @@ pub struct InstanceResult {
     pub steps: Option<u32>,
     #[serde(default)]
     pub cost_usd: Option<f64>,
-    #[serde(default)]
+    #[serde(default, rename = "total_input_tokens", alias = "prompt_tokens")]
     pub prompt_tokens: Option<u64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "total_cache_read_tokens",
+        alias = "cache_read_tokens"
+    )]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(
+        default,
+        rename = "total_cache_creation_tokens",
+        alias = "cache_creation_tokens"
+    )]
+    pub cache_creation_tokens: Option<u64>,
+    #[serde(
+        default,
+        rename = "total_completion_tokens",
+        alias = "completion_tokens"
+    )]
     pub completion_tokens: Option<u64>,
     #[serde(default)]
     pub duration_secs: Option<f64>,
@@ -136,12 +210,18 @@ pub struct SweepResults {
     /// Equal to `submitted` minus the count of empty-diff submissions.
     #[serde(default)]
     pub with_patch: usize,
-    #[serde(default)]
+    #[serde(default, rename = "total_input_tokens", alias = "total_prompt_tokens")]
     pub total_prompt_tokens: u64,
     #[serde(default)]
-    pub total_completion_tokens: u64,
+    pub total_cache_read_tokens: u64,
     #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_completion_tokens: u64,
+    #[serde(default, rename = "total_cost_usd", alias = "estimated_cost_usd")]
     pub estimated_cost_usd: f64,
+    #[serde(default)]
+    pub cache_hit_rate: f64,
     /// Total retry attempts executed across all instances.
     #[serde(default)]
     pub retries: u64,
@@ -276,7 +356,46 @@ pub struct CliManifest {
     pub argv: Vec<String>,
 }
 
+impl InstanceResult {
+    #[must_use]
+    pub fn token_breakdown(&self) -> TokenBreakdown {
+        TokenBreakdown {
+            input_tokens: self.prompt_tokens.unwrap_or(0),
+            cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
+            cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
+            completion_tokens: self.completion_tokens.unwrap_or(0),
+        }
+    }
+
+    #[must_use]
+    pub fn effective_cost_usd(&self, model: Option<&str>) -> Option<f64> {
+        if let Some(cost) = self.cost_usd {
+            return Some(cost);
+        }
+        let tokens = self.token_breakdown();
+        (tokens.prompt_tokens() > 0 || tokens.completion_tokens > 0).then(|| {
+            estimate_cost_usd(
+                tokens.input_tokens,
+                tokens.cache_read_tokens,
+                tokens.cache_creation_tokens,
+                tokens.completion_tokens,
+                model.unwrap_or(""),
+            )
+        })
+    }
+}
+
 impl SweepResults {
+    #[must_use]
+    pub fn token_breakdown(&self) -> TokenBreakdown {
+        TokenBreakdown {
+            input_tokens: self.total_prompt_tokens,
+            cache_read_tokens: self.total_cache_read_tokens,
+            cache_creation_tokens: self.total_cache_creation_tokens,
+            completion_tokens: self.total_completion_tokens,
+        }
+    }
+
     /// Render the post-sweep summary table. A flat plain-text block so it
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
@@ -287,9 +406,8 @@ impl SweepResults {
         } else {
             (self.submitted as f64 / self.total as f64) * 100.0
         };
-        let total_tokens = self
-            .total_prompt_tokens
-            .saturating_add(self.total_completion_tokens);
+        let tokens = self.token_breakdown();
+        let total_tokens = tokens.total_tokens();
         let effective_tasks = self.effective_task_count();
         let uniform_runs = self.uniform_runs_per_instance();
         let pass_at_k_label = uniform_runs.map_or_else(|| "k".to_owned(), |k| k.to_string());
@@ -337,12 +455,23 @@ impl SweepResults {
             "Pass@{pass_at_k_label}:            {:.2}%",
             self.pass_at_k * 100.0
         );
-        let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
+        let _ = writeln!(s, "Input tokens:       {}", self.total_prompt_tokens);
+        let _ = writeln!(s, "Cache read tokens:  {}", self.total_cache_read_tokens);
+        let _ = writeln!(
+            s,
+            "Cache create toks:  {}",
+            self.total_cache_creation_tokens
+        );
         let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
+        let _ = writeln!(
+            s,
+            "Cache hit rate:     {:.2}%",
+            tokens.cache_hit_rate() * 100.0
+        );
         let _ = writeln!(s, "Total tokens:       {total_tokens}");
         let _ = writeln!(
             s,
-            "Estimated cost:     ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
+            "Total cost:         ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
             self.estimated_cost_usd
         );
         if let Some(limit) = self.cost_limit_usd {
@@ -654,8 +783,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -710,8 +842,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         budget_halted: 0,
         with_patch: 0,
         total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,
         pass_at_k: 0.0,
@@ -730,13 +865,13 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let mut skipped_results: Vec<RunSlotResult> = Vec::new();
     let mut pending: std::collections::VecDeque<SweepRun> = std::collections::VecDeque::new();
 
-    // Sweep-level cumulative USD spend, computed via `estimate_cost_usd`
-    // from each task's prompt/completion tokens. Resume-skipped tasks
-    // contribute their stored cost up front so a resumed sweep cannot
-    // blow past the limit by re-summing only freshly-run tasks.
+    // Sweep-level cumulative USD spend. Prefer the provider-recorded
+    // per-instance `cost_usd`; fall back to token-based re-pricing for
+    // older artifacts that only carried token counts.
     let mut cumulative_cost = 0.0f64;
     let mut halted = false;
     let limit = args.cost_limit_usd;
+    let model_name = args.config.root.model.name.clone();
     let bump_cost = |cost: f64, cumulative: &mut f64, halted: &mut bool| {
         *cumulative += cost;
         if let Some(l) = limit {
@@ -773,10 +908,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &prior_results,
                         );
                         bump_cost(
-                            estimate_cost_usd(
-                                prior.prompt_tokens.unwrap_or(0),
-                                prior.completion_tokens.unwrap_or(0),
-                            ),
+                            prior.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -798,10 +930,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &prior_results,
                         );
                         bump_cost(
-                            estimate_cost_usd(
-                                r.prompt_tokens.unwrap_or(0),
-                                r.completion_tokens.unwrap_or(0),
-                            ),
+                            r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -835,6 +964,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         .count();
     let mut with_patch = 0;
     let mut total_prompt = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_creation = 0u64;
     let mut total_completion = 0u64;
     let mut total_retries = 0u64;
     let mut retried_instances = 0usize;
@@ -850,6 +981,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             &r.result,
             &mut with_patch,
             &mut total_prompt,
+            &mut total_cache_read,
+            &mut total_cache_creation,
             &mut total_completion,
             &mut total_retries,
             &mut retried_instances,
@@ -906,6 +1039,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     &r.result,
                     &mut with_patch,
                     &mut total_prompt,
+                    &mut total_cache_read,
+                    &mut total_cache_creation,
                     &mut total_completion,
                     &mut total_retries,
                     &mut retried_instances,
@@ -913,10 +1048,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 // Sweep-level budget bookkeeping. Tasks that completed
                 // (whether submitted or errored) consumed real API budget
                 // and count toward the cap.
-                let cost = estimate_cost_usd(
-                    r.result.prompt_tokens.unwrap_or(0),
-                    r.result.completion_tokens.unwrap_or(0),
-                );
+                let cost = r
+                    .result
+                    .effective_cost_usd(Some(&model_name))
+                    .unwrap_or(0.0);
                 let was_halted = halted;
                 bump_cost(cost, &mut cumulative_cost, &mut halted);
                 if halted && !was_halted {
@@ -942,6 +1077,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         steps: None,
                         cost_usd: None,
                         prompt_tokens: None,
+                        cache_read_tokens: None,
+                        cache_creation_tokens: None,
                         completion_tokens: None,
                         duration_secs: None,
                         error: Some(e.to_string()),
@@ -985,6 +1122,27 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
+    let total_cost_usd = sum_f64(
+        instance_results
+            .iter()
+            .filter_map(|result| result.effective_cost_usd(Some(&model_name))),
+    )
+    .unwrap_or_else(|| {
+        estimate_cost_usd(
+            total_prompt,
+            total_cache_read,
+            total_cache_creation,
+            total_completion,
+            &model_name,
+        )
+    });
+    let token_breakdown = TokenBreakdown {
+        input_tokens: total_prompt,
+        cache_read_tokens: total_cache_read,
+        cache_creation_tokens: total_cache_creation,
+        completion_tokens: total_completion,
+    };
+
     let sweep = SweepResults {
         total,
         submitted,
@@ -994,8 +1152,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         budget_halted,
         with_patch,
         total_prompt_tokens: total_prompt,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_creation_tokens: total_cache_creation,
         total_completion_tokens: total_completion,
-        estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
+        estimated_cost_usd: total_cost_usd,
+        cache_hit_rate: token_breakdown.cache_hit_rate(),
         retries: total_retries,
         retried_instances,
         pass_at_k,
@@ -1599,6 +1760,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         steps: None,
         cost_usd: None,
         prompt_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         completion_tokens: None,
         duration_secs: None,
         error: None,
@@ -1634,6 +1797,8 @@ fn add_accounting_for_result(
     r: &InstanceResult,
     with_patch: &mut usize,
     total_prompt: &mut u64,
+    total_cache_read: &mut u64,
+    total_cache_creation: &mut u64,
     total_completion: &mut u64,
     total_retries: &mut u64,
     retried_instances: &mut usize,
@@ -1647,6 +1812,12 @@ fn add_accounting_for_result(
     }
     if let Some(p) = r.prompt_tokens {
         *total_prompt = total_prompt.saturating_add(p);
+    }
+    if let Some(cache_read) = r.cache_read_tokens {
+        *total_cache_read = total_cache_read.saturating_add(cache_read);
+    }
+    if let Some(cache_creation) = r.cache_creation_tokens {
+        *total_cache_creation = total_cache_creation.saturating_add(cache_creation);
     }
     if let Some(c) = r.completion_tokens {
         *total_completion = total_completion.saturating_add(c);
@@ -1678,6 +1849,16 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
         aggregate.prompt_tokens = Some(
             rows.iter()
                 .filter_map(|r| r.result.prompt_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_read_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.cache_read_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_creation_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.cache_creation_tokens)
                 .fold(0u64, u64::saturating_add),
         );
         aggregate.completion_tokens = Some(
@@ -1842,9 +2023,17 @@ fn skipped_result_from_info(
     info: &crate::trajectory::TrajectoryInfo,
     patch_path: &std::path::Path,
 ) -> InstanceResult {
-    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
-        (Some(t.prompt_tokens), Some(t.completion_tokens))
-    });
+    let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None, None, None), |t| {
+            (
+                Some(t.prompt_tokens),
+                Some(t.cache_read_tokens),
+                Some(t.cache_creation_tokens),
+                Some(t.completion_tokens),
+            )
+        });
     let (patch_present, non_empty_patch) = match std::fs::metadata(patch_path) {
         Ok(m) => (true, m.len() > 0),
         Err(_) => (false, false),
@@ -1857,6 +2046,8 @@ fn skipped_result_from_info(
         steps: info.steps,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
@@ -2120,8 +2311,11 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
     let mut attempts = 0u32;
     let mut retry_reasons = Vec::new();
     let mut total_prompt_tokens = 0u64;
+    let mut total_cache_read_tokens = 0u64;
+    let mut total_cache_creation_tokens = 0u64;
     let mut total_completion_tokens = 0u64;
-    let mut total_recorded_cost_usd = Some(0.0f64);
+    let model_name = cfg.root.model.name.clone();
+    let mut total_recorded_cost_usd = 0.0f64;
     let mut terminal: Option<InstanceResult> = None;
 
     while attempts <= retry_policy.max_retries {
@@ -2158,17 +2352,44 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             .as_ref()
             .and_then(|i| i.exit_reason.clone())
             .unwrap_or_else(|| outcome_str.clone());
-        let (prompt_tokens, completion_tokens) = info
+        let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
             .as_ref()
             .and_then(|i| i.token_usage.as_ref())
-            .map_or((0, 0), |t| (t.prompt_tokens, t.completion_tokens));
+            .map_or((0, 0, 0, 0), |t| {
+                (
+                    t.prompt_tokens,
+                    t.cache_read_tokens,
+                    t.cache_creation_tokens,
+                    t.completion_tokens,
+                )
+            });
         total_prompt_tokens = total_prompt_tokens.saturating_add(prompt_tokens);
+        total_cache_read_tokens = total_cache_read_tokens.saturating_add(cache_read_tokens);
+        total_cache_creation_tokens =
+            total_cache_creation_tokens.saturating_add(cache_creation_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
         let attempt_recorded_cost = info.as_ref().and_then(|i| i.total_cost_usd);
-        total_recorded_cost_usd = match (total_recorded_cost_usd, attempt_recorded_cost) {
-            (Some(total), Some(attempt)) => Some(total + attempt),
-            _ => None,
+        let has_token_usage = prompt_tokens > 0
+            || cache_read_tokens > 0
+            || cache_creation_tokens > 0
+            || completion_tokens > 0;
+        let attempt_effective_cost = match attempt_recorded_cost {
+            Some(cost)
+                if cost > 0.0
+                    || !has_token_usage
+                    || !crate::model::litellm::is_anthropic_model(&model_name) =>
+            {
+                cost
+            }
+            Some(_) | None => estimate_cost_usd(
+                prompt_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                completion_tokens,
+                &model_name,
+            ),
         };
+        total_recorded_cost_usd += attempt_effective_cost;
 
         let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
             Ok(m) => (true, m.len() > 0),
@@ -2195,8 +2416,10 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             outcome: Some(outcome_str.clone()),
             failure_category,
             steps: info.as_ref().and_then(|i| i.steps),
-            cost_usd: total_recorded_cost_usd,
+            cost_usd: Some(total_recorded_cost_usd),
             prompt_tokens: Some(total_prompt_tokens),
+            cache_read_tokens: Some(total_cache_read_tokens),
+            cache_creation_tokens: Some(total_cache_creation_tokens),
             completion_tokens: Some(total_completion_tokens),
             duration_secs: info.as_ref().and_then(|i| i.duration_secs),
             error: run_err.map(|e| e.to_string()),
@@ -2544,11 +2767,45 @@ mod tests {
 
     #[test]
     fn cost_estimate_uses_sonnet_pricing() {
-        // 1M prompt + 1M completion = $3 + $15 = $18.
-        let c = estimate_cost_usd(1_000_000, 1_000_000);
+        // 1M cold input + 1M completion = $3 + $15 = $18.
+        let c = estimate_cost_usd(1_000_000, 0, 0, 1_000_000, "claude-3-5-sonnet");
         assert!((c - 18.0).abs() < 1e-9, "got {c}");
         // Zero in, zero out.
-        assert!(estimate_cost_usd(0, 0).abs() < 1e-9);
+        assert!(estimate_cost_usd(0, 0, 0, 0, "claude-3-5-sonnet").abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_estimate_applies_cache_multipliers_for_anthropic() {
+        let cold = estimate_cost_usd(1_000_000, 0, 0, 0, "claude-3-5-sonnet");
+        let cache_read = estimate_cost_usd(0, 1_000_000, 0, 0, "claude-3-5-sonnet");
+        let cache_creation = estimate_cost_usd(0, 0, 1_000_000, 0, "claude-3-5-sonnet");
+        assert!((cold - 3.0).abs() < 1e-9, "got {cold}");
+        assert!((cache_read - 0.3).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.75).abs() < 1e-9, "got {cache_creation}");
+        assert!(cache_read < cold);
+        assert!(cache_creation > cold);
+    }
+
+    #[test]
+    fn legacy_prompt_token_alias_keeps_full_prompt_pricing() {
+        let legacy: InstanceResult = serde_json::from_value(serde_json::json!({
+            "instance_id": "legacy",
+            "exit_reason": "submitted",
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 0
+        }))
+        .unwrap();
+        assert_eq!(legacy.prompt_tokens, Some(1_000_000));
+        assert_eq!(legacy.cache_read_tokens, None);
+        assert_eq!(legacy.cache_creation_tokens, None);
+        assert!(
+            (legacy
+                .effective_cost_usd(Some("claude-3-5-sonnet"))
+                .unwrap_or_default()
+                - 3.0)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
@@ -2562,8 +2819,16 @@ mod tests {
             budget_halted: 0,
             with_patch: 3,
             total_prompt_tokens: 250_000,
+            total_cache_read_tokens: 2_000_000,
+            total_cache_creation_tokens: 250_000,
             total_completion_tokens: 50_000,
-            estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
+            estimated_cost_usd: estimate_cost_usd(
+                250_000,
+                2_000_000,
+                250_000,
+                50_000,
+                "claude-3-5-sonnet",
+            ),
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2574,6 +2839,7 @@ mod tests {
             },
             manifest: None,
             cost_limit_usd: None,
+            cache_hit_rate: 0.8,
             instances: vec![],
         };
         let t = s.summary_table();
@@ -2592,8 +2858,13 @@ mod tests {
             "missing budget_halted row in: {t}"
         );
         assert!(t.contains("Submit rate:        40.00%"));
-        assert!(t.contains("Total tokens:       300000"));
-        assert!(t.contains("Estimated cost:     $1.5000"));
+        assert!(t.contains("Input tokens:       250000"));
+        assert!(t.contains("Cache read tokens:  2000000"));
+        assert!(t.contains("Cache create toks:  250000"));
+        assert!(t.contains("Completion tokens:  50000"));
+        assert!(t.contains("Cache hit rate:     80.00%"));
+        assert!(t.contains("Total tokens:       2550000"));
+        assert!(t.contains("Total cost:         $3.0375"));
         // Without a configured limit, the summary should not advertise one.
         assert!(
             !t.contains("Sweep cost limit:"),
@@ -2613,6 +2884,8 @@ mod tests {
             budget_halted: 2,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
             retries: 0,
@@ -2625,6 +2898,7 @@ mod tests {
             },
             manifest: None,
             cost_limit_usd: Some(1.0),
+            cache_hit_rate: 0.0,
             instances: vec![],
         };
         let t = s.summary_table();

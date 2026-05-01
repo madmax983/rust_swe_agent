@@ -71,6 +71,8 @@ struct TerminalRecord {
     failure_category: Option<FailureCategory>,
     cost_usd: Option<f64>,
     prompt_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_creation_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
@@ -93,6 +95,12 @@ impl TerminalRecord {
         if self.prompt_tokens.is_none() {
             self.prompt_tokens = other.prompt_tokens;
         }
+        if self.cache_read_tokens.is_none() {
+            self.cache_read_tokens = other.cache_read_tokens;
+        }
+        if self.cache_creation_tokens.is_none() {
+            self.cache_creation_tokens = other.cache_creation_tokens;
+        }
         if self.completion_tokens.is_none() {
             self.completion_tokens = other.completion_tokens;
         }
@@ -108,7 +116,10 @@ impl TerminalRecord {
         self.cost_usd.or_else(|| {
             Some(estimate_cost_usd(
                 self.prompt_tokens?,
+                self.cache_read_tokens.unwrap_or(0),
+                self.cache_creation_tokens.unwrap_or(0),
                 self.completion_tokens?,
+                "",
             ))
         })
     }
@@ -332,8 +343,14 @@ fn record_from_result_value(value: &serde_json::Value) -> Option<TerminalRecord>
         cost_usd: get_f64(value, "cost_usd")
             .or_else(|| get_f64(value, "total_cost_usd"))
             .or_else(|| get_f64(value, "cumulative_cost_usd")),
-        prompt_tokens: get_u64(value, "prompt_tokens"),
-        completion_tokens: get_u64(value, "completion_tokens"),
+        prompt_tokens: get_u64(value, "total_input_tokens")
+            .or_else(|| get_u64(value, "prompt_tokens")),
+        cache_read_tokens: get_u64(value, "total_cache_read_tokens")
+            .or_else(|| get_u64(value, "cache_read_tokens")),
+        cache_creation_tokens: get_u64(value, "total_cache_creation_tokens")
+            .or_else(|| get_u64(value, "cache_creation_tokens")),
+        completion_tokens: get_u64(value, "total_completion_tokens")
+            .or_else(|| get_u64(value, "completion_tokens")),
         started_at: get_str(value, "started_at").and_then(parse_ts),
         ended_at: get_str(value, "ended_at")
             .or_else(|| get_str(value, "finished_at"))
@@ -415,9 +432,17 @@ fn terminal_record_from_trajectory(
         }
     };
     let info = traj.info;
-    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
-        (Some(t.prompt_tokens), Some(t.completion_tokens))
-    });
+    let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None, None, None), |t| {
+            (
+                Some(t.prompt_tokens),
+                Some(t.cache_read_tokens),
+                Some(t.cache_creation_tokens),
+                Some(t.completion_tokens),
+            )
+        });
     Some(TerminalRecord {
         instance_id: instance_id.to_owned(),
         outcome: info.outcome,
@@ -425,6 +450,8 @@ fn terminal_record_from_trajectory(
         failure_category: info.failure_category,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
         completion_tokens,
         started_at: info.started_at.as_deref().and_then(parse_ts),
         ended_at: info.ended_at.as_deref().and_then(parse_ts),

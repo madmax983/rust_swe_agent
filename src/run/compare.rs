@@ -22,7 +22,8 @@ use crate::run::evaluate::{
     round_dp,
 };
 use crate::run::swebench::{
-    FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, effective_runs, resolved_count,
+    FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, TokenBreakdown, effective_runs,
+    resolved_count,
 };
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
@@ -117,6 +118,16 @@ pub struct CompareReport {
     pub baseline_total_cost_usd: f64,
     pub candidate_total_cost_usd: f64,
     pub cost_delta_usd: f64,
+    pub baseline_total_input_tokens: u64,
+    pub candidate_total_input_tokens: u64,
+    pub baseline_total_cache_read_tokens: u64,
+    pub candidate_total_cache_read_tokens: u64,
+    pub baseline_total_cache_creation_tokens: u64,
+    pub candidate_total_cache_creation_tokens: u64,
+    pub baseline_total_completion_tokens: u64,
+    pub candidate_total_completion_tokens: u64,
+    pub baseline_cache_hit_rate: f64,
+    pub candidate_cache_hit_rate: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_mean_steps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,6 +244,45 @@ impl CompareReport {
             s,
             "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
             self.baseline_total_cost_usd, self.candidate_total_cost_usd, self.cost_delta_usd
+        );
+        let _ = writeln!(
+            s,
+            "Input tokens:       {} -> {} ({:+})",
+            self.baseline_total_input_tokens,
+            self.candidate_total_input_tokens,
+            i128::from(self.candidate_total_input_tokens)
+                - i128::from(self.baseline_total_input_tokens)
+        );
+        let _ = writeln!(
+            s,
+            "Cache read tokens:  {} -> {} ({:+})",
+            self.baseline_total_cache_read_tokens,
+            self.candidate_total_cache_read_tokens,
+            i128::from(self.candidate_total_cache_read_tokens)
+                - i128::from(self.baseline_total_cache_read_tokens)
+        );
+        let _ = writeln!(
+            s,
+            "Cache create toks:  {} -> {} ({:+})",
+            self.baseline_total_cache_creation_tokens,
+            self.candidate_total_cache_creation_tokens,
+            i128::from(self.candidate_total_cache_creation_tokens)
+                - i128::from(self.baseline_total_cache_creation_tokens)
+        );
+        let _ = writeln!(
+            s,
+            "Completion tokens:  {} -> {} ({:+})",
+            self.baseline_total_completion_tokens,
+            self.candidate_total_completion_tokens,
+            i128::from(self.candidate_total_completion_tokens)
+                - i128::from(self.baseline_total_completion_tokens)
+        );
+        let _ = writeln!(
+            s,
+            "Cache hit rate:     {:.2}% -> {:.2}% ({:+.2}pp)",
+            self.baseline_cache_hit_rate * 100.0,
+            self.candidate_cache_hit_rate * 100.0,
+            (self.candidate_cache_hit_rate - self.baseline_cache_hit_rate) * 100.0
         );
         match (
             self.baseline_mean_steps,
@@ -648,9 +698,17 @@ fn instance_result_from_trajectory(
         Err(_) => return Ok(None),
     };
     let info = traj.info;
-    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
-        (Some(t.prompt_tokens), Some(t.completion_tokens))
-    });
+    let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None, None, None), |t| {
+            (
+                Some(t.prompt_tokens),
+                Some(t.cache_read_tokens),
+                Some(t.cache_creation_tokens),
+                Some(t.completion_tokens),
+            )
+        });
     let resolved =
         info.outcome.as_deref() == Some(outcome::SUBMITTED) && info.failure_category.is_none();
     Ok(Some(InstanceResult {
@@ -661,6 +719,8 @@ fn instance_result_from_trajectory(
         steps: info.steps,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
@@ -742,6 +802,16 @@ fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, Ins
         aggregate.prompt_tokens = Some(
             rows.iter()
                 .filter_map(|(_, result)| result.prompt_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_read_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.cache_read_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_creation_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.cache_creation_tokens)
                 .fold(0u64, u64::saturating_add),
         );
         aggregate.completion_tokens = Some(
@@ -921,8 +991,16 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_resolved_override,
     );
 
-    let baseline_total_cost: f64 = baseline.values().filter_map(|r| r.cost_usd).sum();
-    let candidate_total_cost: f64 = candidate.values().filter_map(|r| r.cost_usd).sum();
+    let baseline_total_cost: f64 = baseline
+        .values()
+        .filter_map(|r| r.effective_cost_usd(None))
+        .sum();
+    let candidate_total_cost: f64 = candidate
+        .values()
+        .filter_map(|r| r.effective_cost_usd(None))
+        .sum();
+    let baseline_tokens = aggregate_token_breakdown(baseline);
+    let candidate_tokens = aggregate_token_breakdown(candidate);
 
     let baseline_mean_steps = mean_steps(baseline);
     let candidate_mean_steps = mean_steps(candidate);
@@ -956,6 +1034,16 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_total_cost_usd: baseline_total_cost,
         candidate_total_cost_usd: candidate_total_cost,
         cost_delta_usd: candidate_total_cost - baseline_total_cost,
+        baseline_total_input_tokens: baseline_tokens.input_tokens,
+        candidate_total_input_tokens: candidate_tokens.input_tokens,
+        baseline_total_cache_read_tokens: baseline_tokens.cache_read_tokens,
+        candidate_total_cache_read_tokens: candidate_tokens.cache_read_tokens,
+        baseline_total_cache_creation_tokens: baseline_tokens.cache_creation_tokens,
+        candidate_total_cache_creation_tokens: candidate_tokens.cache_creation_tokens,
+        baseline_total_completion_tokens: baseline_tokens.completion_tokens,
+        candidate_total_completion_tokens: candidate_tokens.completion_tokens,
+        baseline_cache_hit_rate: baseline_tokens.cache_hit_rate(),
+        candidate_cache_hit_rate: candidate_tokens.cache_hit_rate(),
         baseline_mean_steps,
         candidate_mean_steps,
         mean_steps_delta,
@@ -969,6 +1057,26 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         cost_attribution_warnings: Vec::new(),
         regressions: transition_summary.regressions,
     }
+}
+
+fn aggregate_token_breakdown<S: std::hash::BuildHasher>(
+    rows: &HashMap<String, InstanceResult, S>,
+) -> TokenBreakdown {
+    rows.values()
+        .fold(TokenBreakdown::default(), |mut total, row| {
+            let tokens = row.token_breakdown();
+            total.input_tokens = total.input_tokens.saturating_add(tokens.input_tokens);
+            total.cache_read_tokens = total
+                .cache_read_tokens
+                .saturating_add(tokens.cache_read_tokens);
+            total.cache_creation_tokens = total
+                .cache_creation_tokens
+                .saturating_add(tokens.cache_creation_tokens);
+            total.completion_tokens = total
+                .completion_tokens
+                .saturating_add(tokens.completion_tokens);
+            total
+        })
 }
 
 struct TransitionSummary {
@@ -1708,6 +1816,8 @@ mod tests {
             steps: Some(5),
             cost_usd: Some(0.10),
             prompt_tokens: Some(1000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             completion_tokens: Some(200),
             duration_secs: Some(12.0),
             error: None,
@@ -1730,6 +1840,8 @@ mod tests {
             steps: Some(7),
             cost_usd: Some(0.20),
             prompt_tokens: Some(2000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             completion_tokens: Some(400),
             duration_secs: Some(20.0),
             error: Some("boom".into()),
@@ -1754,6 +1866,8 @@ mod tests {
             steps: None,
             cost_usd: None,
             prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             completion_tokens: None,
             duration_secs: None,
             error: None,
@@ -1789,8 +1903,11 @@ mod tests {
             budget_halted: 0,
             with_patch: instances.len(),
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -1911,8 +2028,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -1966,6 +2086,71 @@ mod tests {
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
         assert!(t.contains("- b"), "got:\n{t}");
         assert!(t.contains("category=step_limit"), "got:\n{t}");
+    }
+
+    #[test]
+    fn human_table_includes_cache_breakdown_and_hit_rate() {
+        let baseline = map_of([InstanceResult {
+            instance_id: "cached".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: Some(3),
+            cost_usd: Some(0.42),
+            prompt_tokens: Some(100),
+            cache_read_tokens: Some(800),
+            cache_creation_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_secs: Some(4.0),
+            error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        }]);
+        let candidate = map_of([InstanceResult {
+            instance_id: "cached".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: Some(3),
+            cost_usd: Some(0.90),
+            prompt_tokens: Some(900),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_secs: Some(4.0),
+            error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        }]);
+        let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        let t = r.human_table();
+        assert!(
+            t.contains("Input tokens:       100 -> 900 (+800)"),
+            "got:\n{t}"
+        );
+        assert!(
+            t.contains("Cache read tokens:  800 -> 0 (-800)"),
+            "got:\n{t}"
+        );
+        assert!(
+            t.contains("Cache create toks:  100 -> 100 (+0)"),
+            "got:\n{t}"
+        );
+        assert!(t.contains("Completion tokens:  50 -> 50 (+0)"), "got:\n{t}");
+        assert!(
+            t.contains("Cache hit rate:     80.00% -> 0.00% (-80.00pp)"),
+            "got:\n{t}"
+        );
     }
 
     #[test]
@@ -2170,8 +2355,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2379,8 +2567,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2462,8 +2653,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2511,8 +2705,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2596,8 +2793,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,

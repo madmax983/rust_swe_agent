@@ -1094,6 +1094,8 @@ mod tests {
         t.info.total_cost_usd = Some(0.10);
         t.info.token_usage = Some(TokenUsage {
             prompt_tokens: 100,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             completion_tokens: 20,
         });
         t.info.steps = Some(u32::try_from(steps).unwrap_or(u32::MAX));

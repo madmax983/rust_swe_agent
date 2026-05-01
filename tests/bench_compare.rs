@@ -41,6 +41,8 @@ fn submitted(id: &str) -> InstanceResult {
         steps: Some(4),
         cost_usd: Some(0.05),
         prompt_tokens: Some(500),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
         completion_tokens: Some(100),
         duration_secs: Some(8.0),
         error: None,
@@ -63,6 +65,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         steps: Some(6),
         cost_usd: Some(0.10),
         prompt_tokens: Some(1500),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
         completion_tokens: Some(200),
         duration_secs: Some(15.0),
         error: Some("stub".into()),
@@ -116,8 +120,11 @@ fn write_results_with_filter_spec(
         budget_halted: 0,
         with_patch: 0,
         total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,
         pass_at_k: if instances.is_empty() {
@@ -200,6 +207,8 @@ fn write_diff_traj(
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -247,6 +256,8 @@ fn write_run_traj(
     t.info.total_cost_usd = cost_usd;
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -276,6 +287,8 @@ fn write_root_traj(
     t.info.total_cost_usd = cost_usd;
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -1065,6 +1078,12 @@ resolved: 0\n\
 resolved_rate: 0.0000\n\
 pass@1: 0.0000\n\
 pass@k: 0.0000\n\
+input_tokens: 2000\n\
+cache_read_tokens: 0\n\
+cache_creation_tokens: 0\n\
+completion_tokens: 300\n\
+cache_hit_rate: 0.0000\n\
+total_cost_usd: 0.1500\n\
 axis,bucket,n,resolved,resolved_rate\n\
 repo,unknown,2,0,0.0000\n\
 failure_category,model_api,1,0,0.0000\n\

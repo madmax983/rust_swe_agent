@@ -28,6 +28,8 @@ fn write_traj(dir: &Path, instance_id: &str, huge_stderr: bool) {
     t.info.total_cost_usd = Some(0.55);
     t.info.token_usage = Some(rust_swe_agent::trajectory::TokenUsage {
         prompt_tokens: 123,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 45,
     });
 
@@ -111,6 +113,8 @@ fn write_diff_traj(
     t.info.total_cost_usd = Some(cost_usd);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(u32::try_from(steps.len()).unwrap_or(u32::MAX));
@@ -153,6 +157,8 @@ fn write_prompted_diff_traj(
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(1);
@@ -188,6 +194,8 @@ fn write_orphan_tool_alignment_traj(path: &Path, instance_id: &str, include_orph
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(2);
@@ -210,6 +218,8 @@ fn write_trailing_prompt_traj(path: &Path, instance_id: &str, include_trailing_p
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(2);

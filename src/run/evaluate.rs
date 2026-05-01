@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::compare::{load_run_slots, load_sweep};
-use crate::run::swebench::{self, InstanceResult, effective_runs};
+use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
 
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
@@ -127,6 +127,12 @@ pub struct EvaluationSummary {
     pub resolved_rate: f64,
     pub pass_at_1: f64,
     pub pass_at_k: f64,
+    pub total_input_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_completion_tokens: u64,
+    pub total_cost_usd: f64,
+    pub cache_hit_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -236,8 +242,34 @@ pub fn summarize<S: std::hash::BuildHasher>(
             resolved_rate: 0.0,
             pass_at_1: 0.0,
             pass_at_k: 0.0,
+            total_input_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            total_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
         };
     }
+    let tokens = results
+        .values()
+        .fold(TokenBreakdown::default(), |mut total, row| {
+            let row_tokens = row.token_breakdown();
+            total.input_tokens = total.input_tokens.saturating_add(row_tokens.input_tokens);
+            total.cache_read_tokens = total
+                .cache_read_tokens
+                .saturating_add(row_tokens.cache_read_tokens);
+            total.cache_creation_tokens = total
+                .cache_creation_tokens
+                .saturating_add(row_tokens.cache_creation_tokens);
+            total.completion_tokens = total
+                .completion_tokens
+                .saturating_add(row_tokens.completion_tokens);
+            total
+        });
+    let total_cost_usd = results
+        .values()
+        .filter_map(|row| row.effective_cost_usd(None))
+        .sum();
     let resolved = eval.instances.iter().filter(|row| row.resolved).count();
     let pass_at_1 = eval
         .instances
@@ -259,6 +291,12 @@ pub fn summarize<S: std::hash::BuildHasher>(
         resolved_rate: pct(resolved, instances),
         pass_at_1: pct(pass_at_1, instances),
         pass_at_k: pct(pass_at_k, instances),
+        total_input_tokens: tokens.input_tokens,
+        total_cache_read_tokens: tokens.cache_read_tokens,
+        total_cache_creation_tokens: tokens.cache_creation_tokens,
+        total_completion_tokens: tokens.completion_tokens,
+        total_cost_usd,
+        cache_hit_rate: tokens.cache_hit_rate(),
     }
 }
 
@@ -975,6 +1013,34 @@ pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
     out
 }
 
+#[must_use]
+pub fn render_summary_table(summary: &EvaluationSummary) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "resolved: {}", summary.resolved);
+    let _ = writeln!(out, "resolved_rate: {:.4}", summary.resolved_rate);
+    let _ = writeln!(out, "pass@1: {:.4}", summary.pass_at_1);
+    let _ = writeln!(out, "pass@k: {:.4}", summary.pass_at_k);
+    let _ = writeln!(out, "input_tokens: {}", summary.total_input_tokens);
+    let _ = writeln!(
+        out,
+        "cache_read_tokens: {}",
+        summary.total_cache_read_tokens
+    );
+    let _ = writeln!(
+        out,
+        "cache_creation_tokens: {}",
+        summary.total_cache_creation_tokens
+    );
+    let _ = writeln!(
+        out,
+        "completion_tokens: {}",
+        summary.total_completion_tokens
+    );
+    let _ = writeln!(out, "cache_hit_rate: {:.4}", summary.cache_hit_rate);
+    let _ = writeln!(out, "total_cost_usd: {:.4}", summary.total_cost_usd);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -998,6 +1064,8 @@ mod tests {
             steps: None,
             cost_usd: None,
             prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             completion_tokens: None,
             duration_secs: None,
             error: None,
@@ -1020,6 +1088,8 @@ mod tests {
             steps: None,
             cost_usd: None,
             prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             completion_tokens: None,
             duration_secs: None,
             error: Some("boom".into()),
@@ -1270,5 +1340,54 @@ mod tests {
             .map(|row| row.bucket.as_str())
             .collect();
         assert_eq!(top_buckets, vec!["uncategorized", "env_setup", "model_api"]);
+    }
+
+    #[test]
+    fn summary_reports_cache_breakdown_and_rendered_table() {
+        let mut cached = submitted("cached");
+        cached.cost_usd = Some(0.42);
+        cached.prompt_tokens = Some(100);
+        cached.cache_read_tokens = Some(800);
+        cached.cache_creation_tokens = Some(100);
+        cached.completion_tokens = Some(50);
+
+        let results = HashMap::from([("cached".to_string(), cached)]);
+        let eval = EvaluationResults {
+            instances: vec![eval_row("cached", true)],
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        assert_eq!(summary.instances, 1);
+        assert_eq!(summary.resolved, 1);
+        assert_eq!(summary.total_input_tokens, 100);
+        assert_eq!(summary.total_cache_read_tokens, 800);
+        assert_eq!(summary.total_cache_creation_tokens, 100);
+        assert_eq!(summary.total_completion_tokens, 50);
+        assert!((summary.total_cost_usd - 0.42).abs() < f64::EPSILON);
+        assert!((summary.cache_hit_rate - 0.8).abs() < f64::EPSILON);
+
+        let rendered = render_summary_table(&summary);
+        assert!(rendered.contains("input_tokens: 100"), "got:\n{rendered}");
+        assert!(
+            rendered.contains("cache_read_tokens: 800"),
+            "got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cache_creation_tokens: 100"),
+            "got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("completion_tokens: 50"),
+            "got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("cache_hit_rate: 0.8000"),
+            "got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("total_cost_usd: 0.4200"),
+            "got:\n{rendered}"
+        );
     }
 }

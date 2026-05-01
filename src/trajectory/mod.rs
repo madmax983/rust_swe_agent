@@ -45,7 +45,16 @@ pub enum FailureCategory {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub prompt_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_read_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_creation_tokens: u64,
     pub completion_tokens: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -206,6 +215,8 @@ mod tests {
         t.info.outcome = Some(outcome::SUBMITTED.into());
         t.info.token_usage = Some(TokenUsage {
             prompt_tokens: 1234,
+            cache_read_tokens: 567,
+            cache_creation_tokens: 89,
             completion_tokens: 56,
         });
         t.info.duration_secs = Some(12.5);
@@ -213,6 +224,8 @@ mod tests {
         let json = t.to_json_pretty().unwrap();
         assert!(json.contains("\"outcome\": \"submitted\""));
         assert!(json.contains("\"prompt_tokens\": 1234"));
+        assert!(json.contains("\"cache_read_tokens\": 567"));
+        assert!(json.contains("\"cache_creation_tokens\": 89"));
         assert!(json.contains("\"completion_tokens\": 56"));
         assert!(json.contains("\"duration_secs\": 12.5"));
 
@@ -222,10 +235,36 @@ mod tests {
             back.info.token_usage,
             Some(TokenUsage {
                 prompt_tokens: 1234,
+                cache_read_tokens: 567,
+                cache_creation_tokens: 89,
                 completion_tokens: 56
             })
         );
         assert_eq!(back.info.duration_secs, Some(12.5));
+    }
+
+    #[test]
+    fn legacy_token_usage_without_cache_fields_defaults_to_zero() {
+        let json = r#"{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "info": {
+    "token_usage": {
+      "prompt_tokens": 1000,
+      "completion_tokens": 25
+    }
+  },
+  "messages": []
+}"#;
+        let back: Trajectory = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back.info.token_usage,
+            Some(TokenUsage {
+                prompt_tokens: 1000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                completion_tokens: 25,
+            })
+        );
     }
 
     #[test]

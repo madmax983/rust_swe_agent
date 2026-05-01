@@ -483,12 +483,7 @@ fn values(instances: &[InstanceResult], f: impl Fn(&InstanceResult) -> f64) -> V
 }
 
 fn instance_cost_usd(r: &InstanceResult) -> f64 {
-    r.cost_usd.unwrap_or_else(|| {
-        swebench::estimate_cost_usd(
-            r.prompt_tokens.unwrap_or(0),
-            r.completion_tokens.unwrap_or(0),
-        )
-    })
+    r.effective_cost_usd(None).unwrap_or_default()
 }
 
 fn quantiles(values: &[f64]) -> QuantileSummary {

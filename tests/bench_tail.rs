@@ -47,6 +47,8 @@ fn write_traj(
     traj.info.total_cost_usd = Some(cost);
     traj.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     traj.info.started_at = Some(started_at.into());
