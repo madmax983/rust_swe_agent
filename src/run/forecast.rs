@@ -731,7 +731,11 @@ mod tests {
 
     #[test]
     fn test_threshold_check() {
-        let cost = IntervalEstimate { point: 50.0, lower: 40.0, upper: 60.0 };
+        let cost = IntervalEstimate {
+            point: 50.0,
+            lower: 40.0,
+            upper: 60.0,
+        };
 
         // NotConfigured
         let check = threshold_check(None, cost);
