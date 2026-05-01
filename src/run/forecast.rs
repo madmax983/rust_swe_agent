@@ -189,7 +189,7 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
         calibration_instance_ids(&args.sweep, args.calibration_n, args.seed)?;
 
     let mut sweep = args.sweep;
-    sweep.output_dir = calibration_dir.clone();
+    sweep.output_dir.clone_from(&calibration_dir);
     sweep.resume = false;
     sweep.instance_ids = Some(calibration_instance_ids.join(","));
     sweep.limit = None;

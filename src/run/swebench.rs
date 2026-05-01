@@ -2337,7 +2337,7 @@ pub(crate) fn apply_subset(
             ))
         })?;
         if n < instances.len() {
-            if let Some(StratifyBy::Repo) = stratify_by {
+            if stratify_by == Some(StratifyBy::Repo) {
                 instances = stratified_sample_by_repo(instances, n, seed_value, stratify_mode);
             } else {
                 let mut rng = XorShift64::new(seed_value);
@@ -2392,7 +2392,9 @@ fn stratified_sample_by_repo(
     match mode {
         StratifyMode::Balanced => {
             if !groups.is_empty() {
-                let start = seed as usize % groups.len();
+                let groups_len_u64 = u64::try_from(groups.len()).unwrap_or(u64::MAX);
+                let start_u64 = seed % groups_len_u64;
+                let start = usize::try_from(start_u64).unwrap_or(0);
                 let mut cursor = 0usize;
                 for _ in 0..n {
                     for _ in 0..groups.len() {
