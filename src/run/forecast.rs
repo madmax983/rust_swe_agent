@@ -189,12 +189,14 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
         calibration_instance_ids(&args.sweep, args.calibration_n, args.seed)?;
 
     let mut sweep = args.sweep;
-    sweep.output_dir = calibration_dir.clone();
+    sweep.output_dir.clone_from(&calibration_dir);
     sweep.resume = false;
     sweep.instance_ids = Some(calibration_instance_ids.join(","));
     sweep.limit = None;
     sweep.sample = None;
     sweep.seed = None;
+    sweep.stratify_by = None;
+    sweep.stratify_mode = swebench::StratifyMode::Proportional;
     sweep.cost_limit_usd = None;
     if !dry_run {
         sweep.preflight_format = "silent".into();
@@ -399,8 +401,15 @@ fn calibration_instance_ids(
     seed: u64,
 ) -> Result<Vec<String>, Error> {
     let planned = planned_instances(args)?;
-    let (calibration, _) =
-        swebench::apply_subset(planned, None, None, Some(calibration_n), Some(seed))?;
+    let (calibration, _) = swebench::apply_subset(
+        planned,
+        None,
+        None,
+        Some(calibration_n),
+        Some(seed),
+        None,
+        swebench::StratifyMode::Proportional,
+    )?;
     Ok(calibration
         .into_iter()
         .map(|inst| inst.instance_id)
@@ -417,6 +426,8 @@ fn planned_instances(
         args.limit,
         args.sample,
         args.seed,
+        args.stratify_by,
+        args.stratify_mode,
     )?;
     Ok(filtered)
 }

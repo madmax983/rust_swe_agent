@@ -295,6 +295,11 @@ fn print_forecast_report(
 }
 
 fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
+    if s.stratify_by.is_none() && s.stratify_mode.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-mode` requires `--stratify-by`".into(),
+        )));
+    }
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
@@ -336,6 +341,16 @@ fn swebench_args_from_cmd(
         limit: s.limit,
         sample: s.sample,
         seed: s.seed,
+        stratify_by: s.stratify_by.map(|v| match v {
+            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        }),
+        stratify_mode: match s
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
+            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        },
         max_retries: s.max_retries,
         retry_on: s.retry_on,
         retry_backoff_base_ms: s.retry_backoff_base_ms,

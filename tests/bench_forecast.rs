@@ -578,6 +578,8 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -687,6 +689,8 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             limit: None,
             sample: Some(2),
             seed: Some(99),
+            stratify_by: None,
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -742,6 +746,8 @@ async fn calibration_sampling_stays_within_planned_limit() {
             limit: Some(1),
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -798,6 +804,8 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             limit: None,
             sample: Some(2),
             seed: None,
+            stratify_by: None,
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -830,4 +838,61 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
         !output.join("forecast/results.json").exists(),
         "forecast must fail validation before spending calibration budget"
     );
+}
+
+#[tokio::test]
+async fn forecast_with_stratified_planning_runs_calibration_subset() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let dataset = work.path().join("dataset.jsonl");
+    write_dataset(&dataset, &["a", "b", "c", "d", "e"]);
+    let output = work.path().join("runs");
+    let mut cfg = config_with_workdir(&repo);
+    cfg.root.agent.step_limit = 0;
+
+    let outcome = run(ForecastArgs {
+        sweep: SwebenchArgs {
+            dataset_path: dataset,
+            output_dir: output,
+            parallel: 1,
+            reruns: 1,
+            config: cfg,
+            resume: false,
+            cost_limit_usd: None,
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: Some(3),
+            seed: Some(99),
+            stratify_by: Some(rust_swe_agent::run::swebench::StratifyBy::Repo),
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Balanced,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+        },
+        calibration_n: 2,
+        seed: 7,
+        target_n: None,
+        confidence_pct: 80.0,
+    })
+    .await
+    .unwrap();
+
+    let report = expect_forecast_report(outcome);
+    assert_eq!(report.calibration.instance_ids.len(), 2);
 }
