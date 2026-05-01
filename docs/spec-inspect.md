@@ -29,7 +29,7 @@ rust-swe-agent bench compare --baseline <dir> --candidate <dir> --emit-diff-scri
 * `--full`: disable stdout/stderr truncation in transcript mode.
 * `--diff`: compare two trajectory JSON files for the same `instance_id`.
 * `--show-noise`: in diff mode, include whitespace-only and timestamp-only differences.
-* `--inspect-diff`: compare sugar that resolves `<instance_id>.traj.json` inside both sweep directories.
+* `--inspect-diff`: compare sugar that resolves `<instance_id>.traj.json` or `<instance_id>/run-1.traj.json` inside both sweep directories.
 * `--emit-diff-script`: writes one `bench inspect --diff` invocation per regressed instance.
 
 Exactly one of `--instance` or `--filter` is required.
@@ -67,8 +67,8 @@ Truncation defaults:
 `bench inspect --diff` is read-only. Both trajectories must resolve to the
 same `instance_id`. The ID is read from `info.instance_id` when present and
 otherwise derived from the trajectory filename (`<id>.traj.json`) or nested
-directory (`<id>/trajectory.json`). A mismatch exits non-zero with a clear
-error.
+directory (`<id>/trajectory.json` or `<id>/run-<k>.traj.json`). A mismatch
+exits non-zero with a clear error.
 
 The diff aligns by an explicit `(role, logical_step_index)` key, not by raw
 message position. A normal action turn groups the pending `system`/`user`

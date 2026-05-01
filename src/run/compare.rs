@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::evaluate::{BreakdownAxis, EvaluationResults, pct};
-use crate::run::swebench::{FilterSpec, InstanceResult, ProvenanceManifest, SweepResults};
+use crate::run::swebench::{
+    FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, effective_runs, resolved_count,
+};
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Output format for the compare report.
@@ -40,9 +42,9 @@ pub struct CompareArgs {
     pub min_delta_pp: f64,
 }
 
-/// Per-task transition between baseline and candidate. `pass` is defined
-/// as `outcome == "submitted"` AND `failure_category` is `None`, which
-/// matches what `run::swebench::run_one` writes for a clean submission.
+/// Per-task transition between baseline and candidate. `pass` prefers
+/// evaluator output when present, otherwise it uses the sweep row's rerun
+/// resolution count and finally the legacy submitted-without-failure proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
@@ -96,9 +98,17 @@ pub struct CompareReport {
     /// with zero for absent buckets — keeps downstream JSON consumers
     /// from having to special-case missing keys.
     pub transitions: BTreeMap<TransitionKind, usize>,
+    pub baseline_runs: u64,
+    pub candidate_runs: u64,
     pub baseline_resolved: usize,
     pub candidate_resolved: usize,
     pub resolved_delta: i64,
+    pub baseline_resolved_rate: f64,
+    pub candidate_resolved_rate: f64,
+    pub resolved_delta_rate: f64,
+    pub resolved_delta_ci95: ConfidenceInterval,
+    pub within_noise: bool,
+    pub verdict: CompareVerdict,
     pub baseline_total_cost_usd: f64,
     pub candidate_total_cost_usd: f64,
     pub cost_delta_usd: f64,
@@ -121,6 +131,20 @@ pub struct CompareReport {
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
     pub regressions: Vec<TaskTransition>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ConfidenceInterval {
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareVerdict {
+    Improvement,
+    Regression,
+    WithinNoise,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +191,25 @@ impl CompareReport {
         );
         let _ = writeln!(
             s,
+            "Resolved rate:      {:.2}% -> {:.2}% ({:+.2}pp)",
+            self.baseline_resolved_rate * 100.0,
+            self.candidate_resolved_rate * 100.0,
+            self.resolved_delta_rate * 100.0
+        );
+        let _ = writeln!(
+            s,
+            "Delta CI 95%:       [{:+.2}pp, {:+.2}pp]",
+            self.resolved_delta_ci95.lower * 100.0,
+            self.resolved_delta_ci95.upper * 100.0
+        );
+        let _ = writeln!(
+            s,
+            "Within noise:       {}",
+            if self.within_noise { "true" } else { "false" }
+        );
+        let _ = writeln!(s, "Verdict:            {}", self.verdict.label());
+        let _ = writeln!(
+            s,
             "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
             self.baseline_total_cost_usd, self.candidate_total_cost_usd, self.cost_delta_usd
         );
@@ -193,6 +236,16 @@ impl CompareReport {
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
         s
+    }
+}
+
+impl CompareVerdict {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Improvement => "improvement",
+            Self::Regression => "regression",
+            Self::WithinNoise => "within_noise",
+        }
     }
 }
 
@@ -400,56 +453,165 @@ fn scan_trajectory_instances(
     dir: &Path,
     min_mtime: Option<SystemTime>,
 ) -> Result<HashMap<String, InstanceResult>, Error> {
-    let mut out = HashMap::new();
+    let mut scanned: Vec<(String, u32, InstanceResult)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if let Some(min) = min_mtime {
-            let Some(modified) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+        let path = entry.path();
+        if path.is_dir() {
+            let Some(instance_id) = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_owned)
+            else {
                 continue;
             };
-            if modified < min {
-                continue;
-            }
-        }
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else {
-            continue;
-        };
-        if !name_str.ends_with(".traj.json") {
+            scan_nested_run_trajectories(&path, &instance_id, min_mtime, &mut scanned)?;
             continue;
         }
-        let id = name_str.trim_end_matches(".traj.json").to_owned();
-        let text = std::fs::read_to_string(entry.path())?;
-        let traj: Trajectory = match serde_json::from_str(&text) {
-            Ok(t) => t,
-            Err(_) => continue,
+        if !path_passes_mtime(&path, min_mtime) {
+            continue;
+        }
+        let Some(name_str) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
         };
-        let info = traj.info;
-        let (prompt_tokens, completion_tokens) =
-            info.token_usage.as_ref().map_or((None, None), |t| {
-                (Some(t.prompt_tokens), Some(t.completion_tokens))
-            });
-        out.insert(
-            id.clone(),
-            InstanceResult {
-                instance_id: id,
-                exit_reason: info.exit_reason.clone().unwrap_or_default(),
-                outcome: info.outcome.clone(),
-                failure_category: info.failure_category,
-                steps: info.steps,
-                cost_usd: info.total_cost_usd,
-                prompt_tokens,
-                completion_tokens,
-                duration_secs: info.duration_secs,
-                error: None,
-                patch_present: false,
-                non_empty_patch: false,
-                attempts: 1,
-                retry_reasons: Vec::new(),
-            },
-        );
+        let Some(id) = name_str.strip_suffix(".traj.json") else {
+            continue;
+        };
+        if let Some(result) = instance_result_from_trajectory(id, &path)? {
+            scanned.push((id.to_owned(), 1, result));
+        }
     }
-    Ok(out)
+    Ok(aggregate_scanned_results(scanned))
+}
+
+fn scan_nested_run_trajectories(
+    instance_dir: &Path,
+    instance_id: &str,
+    min_mtime: Option<SystemTime>,
+    out: &mut Vec<(String, u32, InstanceResult)>,
+) -> Result<(), Error> {
+    for entry in std::fs::read_dir(instance_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || !path_passes_mtime(&path, min_mtime) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let Some(run_index) = name
+            .strip_prefix("run-")
+            .and_then(|s| s.strip_suffix(".traj.json"))
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Some(result) = instance_result_from_trajectory(instance_id, &path)? {
+            out.push((instance_id.to_owned(), run_index, result));
+        }
+    }
+    Ok(())
+}
+
+fn path_passes_mtime(path: &Path, min_mtime: Option<SystemTime>) -> bool {
+    let Some(min) = min_mtime else {
+        return true;
+    };
+    path.metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .is_some_and(|modified| modified >= min)
+}
+
+fn instance_result_from_trajectory(
+    instance_id: &str,
+    path: &Path,
+) -> Result<Option<InstanceResult>, Error> {
+    let text = std::fs::read_to_string(path)?;
+    let traj: Trajectory = match serde_json::from_str(&text) {
+        Ok(t) => t,
+        Err(_) => return Ok(None),
+    };
+    let info = traj.info;
+    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
+        (Some(t.prompt_tokens), Some(t.completion_tokens))
+    });
+    let resolved =
+        info.outcome.as_deref() == Some(outcome::SUBMITTED) && info.failure_category.is_none();
+    Ok(Some(InstanceResult {
+        instance_id: instance_id.to_owned(),
+        exit_reason: info.exit_reason.clone().unwrap_or_default(),
+        outcome: info.outcome.clone(),
+        failure_category: info.failure_category,
+        steps: info.steps,
+        cost_usd: info.total_cost_usd,
+        prompt_tokens,
+        completion_tokens,
+        duration_secs: info.duration_secs,
+        error: None,
+        patch_present: false,
+        non_empty_patch: false,
+        attempts: 1,
+        retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: u32::from(resolved),
+        pass_at_1: resolved,
+    }))
+}
+
+fn aggregate_scanned_results(
+    scanned: Vec<(String, u32, InstanceResult)>,
+) -> HashMap<String, InstanceResult> {
+    let mut grouped: BTreeMap<String, Vec<(u32, InstanceResult)>> = BTreeMap::new();
+    for (id, run_index, result) in scanned {
+        grouped.entry(id).or_default().push((run_index, result));
+    }
+    let mut out = HashMap::new();
+    for (id, mut rows) in grouped {
+        rows.sort_by_key(|(run_index, _)| *run_index);
+        let Some((_, first)) = rows.first() else {
+            continue;
+        };
+        let mut aggregate = first.clone();
+        aggregate.runs = rows
+            .iter()
+            .map(|(run_index, _)| *run_index)
+            .max()
+            .unwrap_or(1);
+        aggregate.resolved_count = rows
+            .iter()
+            .filter(|(_, result)| result.resolved_count > 0)
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        aggregate.pass_at_1 = rows
+            .iter()
+            .find(|(run_index, _)| *run_index == 1)
+            .is_some_and(|(_, result)| result.resolved_count > 0);
+        aggregate.cost_usd = optional_sum(rows.iter().filter_map(|(_, result)| result.cost_usd));
+        aggregate.prompt_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.prompt_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.completion_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.completion_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        out.insert(id, aggregate);
+    }
+    out
+}
+
+fn optional_sum(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut seen = false;
+    let mut total = 0.0;
+    for value in values {
+        seen = true;
+        total += value;
+    }
+    seen.then_some(total)
 }
 
 /// Compute a `CompareReport` from two on-disk sweep directories.
@@ -550,27 +712,88 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     candidate_dir: &Path,
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     manifest_deltas: Vec<String>,
 ) -> CompareReport {
+    let transition_summary = build_transition_summary(
+        baseline,
+        candidate,
+        baseline_resolved_override,
+        candidate_resolved_override,
+    );
+    let resolution = resolution_comparison(
+        baseline,
+        candidate,
+        baseline_resolved_override,
+        candidate_resolved_override,
+    );
+
+    let baseline_total_cost: f64 = baseline.values().filter_map(|r| r.cost_usd).sum();
+    let candidate_total_cost: f64 = candidate.values().filter_map(|r| r.cost_usd).sum();
+
+    let baseline_mean_steps = mean_steps(baseline);
+    let candidate_mean_steps = mean_steps(candidate);
+    let mean_steps_delta = match (baseline_mean_steps, candidate_mean_steps) {
+        (Some(b), Some(c)) => Some(c - b),
+        _ => None,
+    };
+
+    let failure_category_baseline = histogram(baseline);
+    let failure_category_candidate = histogram(candidate);
+    let failure_category_delta =
+        category_delta(&failure_category_baseline, &failure_category_candidate);
+
+    CompareReport {
+        baseline_dir: baseline_dir.to_path_buf(),
+        candidate_dir: candidate_dir.to_path_buf(),
+        baseline_total: baseline.len(),
+        candidate_total: candidate.len(),
+        transitions: transition_summary.transitions,
+        baseline_runs: resolution.baseline_runs,
+        candidate_runs: resolution.candidate_runs,
+        baseline_resolved: resolution.baseline_resolved,
+        candidate_resolved: resolution.candidate_resolved,
+        resolved_delta: resolution.resolved_delta,
+        baseline_resolved_rate: resolution.baseline_resolved_rate,
+        candidate_resolved_rate: resolution.candidate_resolved_rate,
+        resolved_delta_rate: resolution.resolved_delta_rate,
+        resolved_delta_ci95: resolution.resolved_delta_ci95,
+        within_noise: resolution.within_noise,
+        verdict: resolution.verdict,
+        baseline_total_cost_usd: baseline_total_cost,
+        candidate_total_cost_usd: candidate_total_cost,
+        cost_delta_usd: candidate_total_cost - baseline_total_cost,
+        baseline_mean_steps,
+        candidate_mean_steps,
+        mean_steps_delta,
+        failure_category_baseline,
+        failure_category_candidate,
+        failure_category_delta,
+        manifest_deltas,
+        subset_warnings: Vec::new(),
+        breakdown_delta: Vec::new(),
+        regressions: transition_summary.regressions,
+    }
+}
+
+struct TransitionSummary {
+    transitions: BTreeMap<TransitionKind, usize>,
+    regressions: Vec<TaskTransition>,
+}
+
+fn build_transition_summary<S: std::hash::BuildHasher>(
+    baseline: &HashMap<String, InstanceResult, S>,
+    candidate: &HashMap<String, InstanceResult, S>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> TransitionSummary {
     let mut all_ids: BTreeSet<&str> = BTreeSet::new();
     all_ids.extend(baseline.keys().map(String::as_str));
     all_ids.extend(candidate.keys().map(String::as_str));
 
-    let mut transitions: BTreeMap<TransitionKind, usize> = BTreeMap::new();
-    for kind in [
-        TransitionKind::PassPass,
-        TransitionKind::PassFail,
-        TransitionKind::FailPass,
-        TransitionKind::FailFail,
-        TransitionKind::MissingPresent,
-        TransitionKind::PresentMissing,
-    ] {
-        transitions.insert(kind, 0);
-    }
-    let mut regressions: Vec<TaskTransition> = Vec::new();
-
+    let mut transitions = transition_counts();
+    let mut regressions = Vec::new();
     for id in &all_ids {
         let b = baseline.get(*id);
         let c = candidate.get(*id);
@@ -595,64 +818,114 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
             });
         }
     }
-
-    let baseline_resolved = baseline
-        .iter()
-        .filter(|(id, r)| resolved_for(id, r, baseline_resolved_override))
-        .count();
-    let candidate_resolved = candidate
-        .iter()
-        .filter(|(id, r)| resolved_for(id, r, candidate_resolved_override))
-        .count();
-
-    let baseline_total_cost: f64 = baseline.values().filter_map(|r| r.cost_usd).sum();
-    let candidate_total_cost: f64 = candidate.values().filter_map(|r| r.cost_usd).sum();
-
-    let baseline_mean_steps = mean_steps(baseline);
-    let candidate_mean_steps = mean_steps(candidate);
-    let mean_steps_delta = match (baseline_mean_steps, candidate_mean_steps) {
-        (Some(b), Some(c)) => Some(c - b),
-        _ => None,
-    };
-
-    let failure_category_baseline = histogram(baseline);
-    let failure_category_candidate = histogram(candidate);
-    let mut failure_category_delta: BTreeMap<FailureCategory, i64> = BTreeMap::new();
-    for cat in failure_category_baseline
-        .keys()
-        .chain(failure_category_candidate.keys())
-    {
-        let b = i64::try_from(failure_category_baseline.get(cat).copied().unwrap_or(0))
-            .unwrap_or(i64::MAX);
-        let c = i64::try_from(failure_category_candidate.get(cat).copied().unwrap_or(0))
-            .unwrap_or(i64::MAX);
-        failure_category_delta.insert(*cat, c - b);
-    }
-
-    CompareReport {
-        baseline_dir: baseline_dir.to_path_buf(),
-        candidate_dir: candidate_dir.to_path_buf(),
-        baseline_total: baseline.len(),
-        candidate_total: candidate.len(),
+    TransitionSummary {
         transitions,
+        regressions,
+    }
+}
+
+fn transition_counts() -> BTreeMap<TransitionKind, usize> {
+    let mut transitions = BTreeMap::new();
+    for kind in [
+        TransitionKind::PassPass,
+        TransitionKind::PassFail,
+        TransitionKind::FailPass,
+        TransitionKind::FailFail,
+        TransitionKind::MissingPresent,
+        TransitionKind::PresentMissing,
+    ] {
+        transitions.insert(kind, 0);
+    }
+    transitions
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolutionComparison {
+    baseline_runs: u64,
+    candidate_runs: u64,
+    baseline_resolved: usize,
+    candidate_resolved: usize,
+    resolved_delta: i64,
+    baseline_resolved_rate: f64,
+    candidate_resolved_rate: f64,
+    resolved_delta_rate: f64,
+    resolved_delta_ci95: ConfidenceInterval,
+    within_noise: bool,
+    verdict: CompareVerdict,
+}
+
+fn resolution_comparison<S: std::hash::BuildHasher>(
+    baseline: &HashMap<String, InstanceResult, S>,
+    candidate: &HashMap<String, InstanceResult, S>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> ResolutionComparison {
+    let (baseline_runs, baseline_resolved) =
+        resolution_totals(baseline, baseline_resolved_override);
+    let (candidate_runs, candidate_resolved) =
+        resolution_totals(candidate, candidate_resolved_override);
+    let baseline_resolved_rate = rate_usize_u64(baseline_resolved, baseline_runs);
+    let candidate_resolved_rate = rate_usize_u64(candidate_resolved, candidate_runs);
+    let resolved_delta_rate = candidate_resolved_rate - baseline_resolved_rate;
+    let resolved_delta_ci95 = wilson_delta_ci95(
+        usize_to_u64(candidate_resolved),
+        candidate_runs,
+        usize_to_u64(baseline_resolved),
+        baseline_runs,
+    );
+    let within_noise = resolved_delta_ci95.lower <= 0.0 && resolved_delta_ci95.upper >= 0.0;
+    let verdict = if resolved_delta_ci95.upper < 0.0 {
+        CompareVerdict::Regression
+    } else if resolved_delta_ci95.lower > 0.0 {
+        CompareVerdict::Improvement
+    } else {
+        CompareVerdict::WithinNoise
+    };
+    ResolutionComparison {
+        baseline_runs,
+        candidate_runs,
         baseline_resolved,
         candidate_resolved,
         resolved_delta: i64::try_from(candidate_resolved).unwrap_or(i64::MAX)
             - i64::try_from(baseline_resolved).unwrap_or(i64::MAX),
-        baseline_total_cost_usd: baseline_total_cost,
-        candidate_total_cost_usd: candidate_total_cost,
-        cost_delta_usd: candidate_total_cost - baseline_total_cost,
-        baseline_mean_steps,
-        candidate_mean_steps,
-        mean_steps_delta,
-        failure_category_baseline,
-        failure_category_candidate,
-        failure_category_delta,
-        manifest_deltas,
-        subset_warnings: Vec::new(),
-        breakdown_delta: Vec::new(),
-        regressions,
+        baseline_resolved_rate,
+        candidate_resolved_rate,
+        resolved_delta_rate,
+        resolved_delta_ci95,
+        within_noise,
+        verdict,
     }
+}
+
+fn resolution_totals<S: std::hash::BuildHasher>(
+    rows: &HashMap<String, InstanceResult, S>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> (u64, usize) {
+    let runs = rows
+        .iter()
+        .map(|(id, r)| u64::from(stats_for(id, r, resolved_override).runs))
+        .sum();
+    let resolved = rows
+        .iter()
+        .map(|(id, r)| {
+            usize::try_from(stats_for(id, r, resolved_override).resolved_count)
+                .unwrap_or(usize::MAX)
+        })
+        .sum();
+    (runs, resolved)
+}
+
+fn category_delta(
+    baseline: &BTreeMap<FailureCategory, usize>,
+    candidate: &BTreeMap<FailureCategory, usize>,
+) -> BTreeMap<FailureCategory, i64> {
+    let mut delta = BTreeMap::new();
+    for cat in baseline.keys().chain(candidate.keys()) {
+        let b = i64::try_from(baseline.get(cat).copied().unwrap_or(0)).unwrap_or(i64::MAX);
+        let c = i64::try_from(candidate.get(cat).copied().unwrap_or(0)).unwrap_or(i64::MAX);
+        delta.insert(*cat, c - b);
+    }
+    delta
 }
 
 fn sh_quote_path(path: &Path) -> String {
@@ -676,15 +949,15 @@ fn classify(
     id: &str,
     b: Option<&InstanceResult>,
     c: Option<&InstanceResult>,
-    baseline_resolved_override: Option<&HashMap<String, bool>>,
-    candidate_resolved_override: Option<&HashMap<String, bool>>,
+    baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
 ) -> TransitionKind {
     match (b, c) {
         (None, Some(_)) => TransitionKind::MissingPresent,
         (None | Some(_), None) => TransitionKind::PresentMissing,
         (Some(b), Some(c)) => match (
-            resolved_for(id, b, baseline_resolved_override),
-            resolved_for(id, c, candidate_resolved_override),
+            stats_for(id, b, baseline_resolved_override).resolved_count > 0,
+            stats_for(id, c, candidate_resolved_override).resolved_count > 0,
         ) {
             (true, true) => TransitionKind::PassPass,
             (true, false) => TransitionKind::PassFail,
@@ -694,21 +967,105 @@ fn classify(
     }
 }
 
-fn is_pass(r: &InstanceResult) -> bool {
-    r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.failure_category.is_none()
+#[derive(Debug, Clone, Copy)]
+struct ResolutionStats {
+    runs: u32,
+    resolved_count: u32,
 }
 
-fn resolved_for(
+#[derive(Debug, Clone, Copy)]
+struct ResolutionOverride {
+    resolved: bool,
+    runs: u32,
+    resolved_count: u32,
+}
+
+fn stats_for(
     id: &str,
-    r: &InstanceResult,
-    resolved_override: Option<&HashMap<String, bool>>,
-) -> bool {
-    resolved_override
-        .and_then(|m| m.get(id).copied())
-        .unwrap_or_else(|| is_pass(r))
+    row: &InstanceResult,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+) -> ResolutionStats {
+    let runs = effective_runs(row);
+    if let Some(override_row) = resolved_override.and_then(|m| m.get(id).copied()) {
+        let override_runs = if override_row.runs == 0 {
+            runs
+        } else {
+            override_row.runs
+        };
+        let override_resolved_count = if override_row.runs == 0 && override_row.resolved_count == 0
+        {
+            if override_row.resolved {
+                override_runs
+            } else {
+                0
+            }
+        } else {
+            override_row.resolved_count.min(override_runs)
+        };
+        return ResolutionStats {
+            runs: override_runs,
+            resolved_count: override_resolved_count,
+        };
+    }
+    ResolutionStats {
+        runs,
+        resolved_count: resolved_count(row),
+    }
 }
 
-fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, Error> {
+fn rate_usize_u64(numer: usize, denom: u64) -> f64 {
+    if denom == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        numer as f64 / denom as f64
+    }
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn wilson_delta_ci95(
+    candidate_successes: u64,
+    candidate_total: u64,
+    baseline_successes: u64,
+    baseline_total: u64,
+) -> ConfidenceInterval {
+    let candidate = wilson_ci(candidate_successes, candidate_total);
+    let baseline = wilson_ci(baseline_successes, baseline_total);
+    ConfidenceInterval {
+        lower: candidate.lower - baseline.upper,
+        upper: candidate.upper - baseline.lower,
+    }
+}
+
+fn wilson_ci(successes: u64, total: u64) -> ConfidenceInterval {
+    const Z: f64 = 1.959_963_984_540_054;
+    if total == 0 {
+        return ConfidenceInterval {
+            lower: 0.0,
+            upper: 0.0,
+        };
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = total as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let phat = successes as f64 / n;
+    let z2 = Z * Z;
+    let denom = 1.0 + z2 / n;
+    let center = (phat + z2 / (2.0 * n)) / denom;
+    let margin = (Z / denom) * ((phat * (1.0 - phat) / n + z2 / (4.0 * n * n)).sqrt());
+    ConfidenceInterval {
+        lower: (center - margin).max(0.0),
+        upper: (center + margin).min(1.0),
+    }
+}
+
+fn load_resolved_overrides(
+    dir: &Path,
+) -> Result<Option<HashMap<String, ResolutionOverride>>, Error> {
     let path = crate::run::evaluate::evaluation_path(dir);
     if !path.exists() {
         return Ok(None);
@@ -718,7 +1075,16 @@ fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, 
     Ok(Some(
         eval.instances
             .into_iter()
-            .map(|row| (row.instance_id, row.resolved))
+            .map(|row| {
+                (
+                    row.instance_id,
+                    ResolutionOverride {
+                        resolved: row.resolved,
+                        runs: row.runs,
+                        resolved_count: row.resolved_count,
+                    },
+                )
+            })
             .collect(),
     ))
 }
@@ -862,8 +1228,8 @@ fn normalize_instance_ids(ids: &[String]) -> BTreeSet<&str> {
 fn build_breakdown_delta<S: std::hash::BuildHasher>(
     baseline: &HashMap<String, InstanceResult, S>,
     candidate: &HashMap<String, InstanceResult, S>,
-    baseline_override: Option<&HashMap<String, bool>>,
-    candidate_override: Option<&HashMap<String, bool>>,
+    baseline_override: Option<&HashMap<String, ResolutionOverride>>,
+    candidate_override: Option<&HashMap<String, ResolutionOverride>>,
     axes: &[BreakdownAxis],
     min_delta_pp: f64,
 ) -> Vec<BreakdownDeltaRow> {
@@ -905,7 +1271,7 @@ fn build_breakdown_delta<S: std::hash::BuildHasher>(
 
 fn breakdown_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
-    resolved_override: Option<&HashMap<String, bool>>,
+    resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     axis: BreakdownAxis,
 ) -> HashMap<String, (usize, usize)> {
     let mut out = HashMap::new();
@@ -914,7 +1280,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
             BreakdownAxis::Repo => crate::run::evaluate::parse_repo_from_instance_id(id)
                 .unwrap_or_else(|| "unknown".to_owned()),
             BreakdownAxis::FailureCategory => {
-                if resolved_for(id, r, resolved_override) {
+                if stats_for(id, r, resolved_override).resolved_count > 0 {
                     "resolved".to_owned()
                 } else {
                     r.failure_category
@@ -925,7 +1291,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
         };
         let entry = out.entry(key).or_insert((0, 0));
         entry.0 += 1;
-        if resolved_for(id, r, resolved_override) {
+        if stats_for(id, r, resolved_override).resolved_count > 0 {
             entry.1 += 1;
         }
     }
@@ -953,6 +1319,9 @@ mod tests {
             non_empty_patch: true,
             attempts: 1,
             retry_reasons: Vec::new(),
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }
     }
 
@@ -972,6 +1341,9 @@ mod tests {
             non_empty_patch: false,
             attempts: 1,
             retry_reasons: Vec::new(),
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }
     }
 
@@ -993,11 +1365,49 @@ mod tests {
             non_empty_patch: false,
             attempts: 1,
             retry_reasons: Vec::new(),
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }
     }
 
     fn map_of<I: IntoIterator<Item = InstanceResult>>(it: I) -> HashMap<String, InstanceResult> {
         it.into_iter().map(|r| (r.instance_id.clone(), r)).collect()
+    }
+
+    fn rerun_submitted(id: &str, runs: u32, resolved: u32) -> InstanceResult {
+        let mut result = submitted(id);
+        result.runs = runs;
+        result.resolved_count = resolved;
+        result.pass_at_1 = resolved > 0;
+        result
+    }
+
+    fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
+        let sweep = SweepResults {
+            total: instances.len(),
+            submitted: instances.len(),
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: instances.len(),
+            total_prompt_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances,
+        };
+        std::fs::write(
+            dir.join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1109,6 +1519,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: None,
             cost_limit_usd: None,
@@ -1280,8 +1691,22 @@ mod tests {
     fn failure_category_breakdown_keeps_resolved_separate_from_none() {
         let baseline = map_of([submitted("a")]);
         let candidate = map_of([submitted("a")]);
-        let baseline_override = HashMap::from([("a".to_string(), true)]);
-        let candidate_override = HashMap::from([("a".to_string(), false)]);
+        let baseline_override = HashMap::from([(
+            "a".to_string(),
+            ResolutionOverride {
+                resolved: true,
+                runs: 0,
+                resolved_count: 0,
+            },
+        )]);
+        let candidate_override = HashMap::from([(
+            "a".to_string(),
+            ResolutionOverride {
+                resolved: false,
+                runs: 0,
+                resolved_count: 0,
+            },
+        )]);
 
         let rows = build_breakdown_delta(
             &baseline,
@@ -1318,6 +1743,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: None,
             cost_limit_usd: None,
@@ -1339,6 +1765,9 @@ mod tests {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
                 instance_id: "a".into(),
                 resolved: true,
+                runs: 0,
+                resolved_count: 0,
+                pass_at_1: false,
                 tests_passed: vec![],
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
@@ -1350,6 +1779,9 @@ mod tests {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
                 instance_id: "a".into(),
                 resolved: false,
+                runs: 0,
+                resolved_count: 0,
+                pass_at_1: false,
                 tests_passed: vec![],
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
@@ -1381,6 +1813,47 @@ mod tests {
         assert_eq!(r.baseline_resolved, 1);
         assert_eq!(r.candidate_resolved, 0);
         assert_eq!(r.regressions.len(), 1);
+    }
+
+    #[test]
+    fn evaluation_json_rerun_counts_feed_compare_ci() {
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        write_sweep(dir_b.path(), vec![rerun_submitted("a", 10, 10)]);
+        write_sweep(dir_c.path(), vec![rerun_submitted("a", 10, 10)]);
+
+        let candidate_eval = crate::run::evaluate::EvaluationResults {
+            instances: vec![crate::run::evaluate::InstanceEvaluation {
+                instance_id: "a".into(),
+                resolved: true,
+                runs: 10,
+                resolved_count: 1,
+                pass_at_1: false,
+                tests_passed: vec![],
+                tests_failed: vec![],
+                eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
+                eval_log_path: None,
+            }],
+            breakdown: Vec::new(),
+        };
+        std::fs::write(
+            crate::run::evaluate::evaluation_path(dir_c.path()),
+            serde_json::to_string_pretty(&candidate_eval).unwrap(),
+        )
+        .unwrap();
+
+        let r = compute(&CompareArgs {
+            baseline: dir_b.path().to_path_buf(),
+            candidate: dir_c.path().to_path_buf(),
+            format: CompareFormat::Json,
+            max_regressions: None,
+            breakdown: crate::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
+        })
+        .unwrap();
+        assert_eq!(r.baseline_resolved, 10);
+        assert_eq!(r.candidate_runs, 10);
+        assert_eq!(r.candidate_resolved, 1);
     }
 
     #[test]
@@ -1429,6 +1902,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
                 purpose: None,
@@ -1511,6 +1985,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: None,
             cost_limit_usd: None,
@@ -1559,6 +2034,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
                 purpose: None,
@@ -1643,6 +2119,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: crate::run::swebench::FilterSpec::default(),
             manifest: Some(ProvenanceManifest {
                 purpose: None,

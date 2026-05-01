@@ -48,6 +48,9 @@ fn submitted(id: &str) -> InstanceResult {
         non_empty_patch: true,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 1,
+        pass_at_1: true,
     }
 }
 
@@ -67,7 +70,22 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         non_empty_patch: false,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 0,
+        pass_at_1: false,
     }
+}
+
+fn rerun_result(id: &str, runs: u32, resolved_count: u32) -> InstanceResult {
+    let mut r = if resolved_count > 0 {
+        submitted(id)
+    } else {
+        errored(id, FailureCategory::StepLimit)
+    };
+    r.runs = runs;
+    r.resolved_count = resolved_count;
+    r.pass_at_1 = resolved_count > 0;
+    r
 }
 
 fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
@@ -90,6 +108,13 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         estimated_cost_usd: 0.0,
         retries: 0,
         retried_instances: 0,
+        pass_at_k: if instances.is_empty() {
+            0.0
+        } else {
+            let passed = instances.iter().filter(|r| r.resolved_count > 0).count();
+            f64::from(u32::try_from(passed).unwrap())
+                / f64::from(u32::try_from(instances.len()).unwrap())
+        },
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: None,
@@ -440,16 +465,19 @@ fn cli_json_output_is_machine_readable() {
 fn cli_max_regressions_flips_exit_code() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
-    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
+    let ids = (0..10).map(|i| format!("case-{i}")).collect::<Vec<_>>();
+    write_results(
+        baseline_dir.path(),
+        ids.iter().map(|id| submitted(id)).collect(),
+    );
     write_results(
         candidate_dir.path(),
-        vec![
-            errored("a", FailureCategory::StepLimit),
-            errored("b", FailureCategory::StepLimit),
-        ],
+        ids.iter()
+            .map(|id| errored(id, FailureCategory::StepLimit))
+            .collect(),
     );
 
-    // Threshold 0 -> any regression fails the gate (2 regressions > 0).
+    // Threshold 0 -> decisive regressions fail the gate.
     let out = Command::new(binary_path())
         .args([
             "bench",
@@ -469,7 +497,7 @@ fn cli_max_regressions_flips_exit_code() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // Threshold 5 -> 2 regressions <= 5; informational only, exit 0.
+    // Threshold 20 -> 10 regressions <= 20; informational only, exit 0.
     let out = Command::new(binary_path())
         .args([
             "bench",
@@ -479,7 +507,7 @@ fn cli_max_regressions_flips_exit_code() {
             "--candidate",
             candidate_dir.path().to_str().unwrap(),
             "--max-regressions",
-            "5",
+            "20",
         ])
         .output()
         .unwrap();
@@ -610,20 +638,33 @@ fn cli_disjoint_id_sets_bucketed_not_dropped() {
 fn compare_gate_uses_evaluation_resolved_when_present() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
-    write_results(baseline_dir.path(), vec![submitted("a"), submitted("b")]);
-    write_results(candidate_dir.path(), vec![submitted("a"), submitted("b")]);
+    let ids = (0..10).map(|i| format!("case-{i}")).collect::<Vec<_>>();
+    write_results(
+        baseline_dir.path(),
+        ids.iter().map(|id| submitted(id)).collect(),
+    );
+    write_results(
+        candidate_dir.path(),
+        ids.iter().map(|id| submitted(id)).collect(),
+    );
 
     let baseline_eval = serde_json::json!({
-        "instances": [
-            {"instance_id": "a", "resolved": true, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "resolved"},
-            {"instance_id": "b", "resolved": true, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "resolved"}
-        ]
+        "instances": ids.iter().map(|id| serde_json::json!({
+            "instance_id": id,
+            "resolved": true,
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "resolved"
+        })).collect::<Vec<_>>()
     });
     let candidate_eval = serde_json::json!({
-        "instances": [
-            {"instance_id": "a", "resolved": false, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "unresolved"},
-            {"instance_id": "b", "resolved": false, "tests_passed": [], "tests_failed": [], "eval_exit_reason": "unresolved"}
-        ]
+        "instances": ids.iter().map(|id| serde_json::json!({
+            "instance_id": id,
+            "resolved": false,
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "unresolved"
+        })).collect::<Vec<_>>()
     });
     std::fs::write(
         baseline_dir.path().join("evaluation.json"),
@@ -671,10 +712,83 @@ fn compare_gate_uses_evaluation_resolved_when_present() {
         .unwrap();
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["baseline_resolved"], 2);
+    assert_eq!(v["baseline_resolved"], 10);
     assert_eq!(v["candidate_resolved"], 0);
-    assert_eq!(v["resolved_delta"], -2);
-    assert_eq!(v["regressions"].as_array().unwrap().len(), 2);
+    assert_eq!(v["resolved_delta"], -10);
+    assert_eq!(v["regressions"].as_array().unwrap().len(), 10);
+}
+
+#[test]
+fn compare_json_marks_small_rerun_delta_as_within_noise() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![rerun_result("a", 10, 8)]);
+    write_results(candidate_dir.path(), vec![rerun_result("a", 10, 7)]);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--max-regressions",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "CI crossing zero must not fail the gate; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["baseline_runs"], 10);
+    assert_eq!(v["candidate_runs"], 10);
+    assert_eq!(v["baseline_resolved"], 8);
+    assert_eq!(v["candidate_resolved"], 7);
+    assert_eq!(v["resolved_delta"], -1);
+    assert_eq!(v["within_noise"], true);
+    assert_eq!(v["verdict"], "within_noise");
+    assert!(v["resolved_delta_ci95"]["lower"].as_f64().unwrap() < 0.0);
+    assert!(v["resolved_delta_ci95"]["upper"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn compare_gate_fails_only_when_rerun_ci_is_below_zero() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![rerun_result("a", 10, 10)]);
+    write_results(candidate_dir.path(), vec![rerun_result("a", 10, 0)]);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-regressions",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "strong negative CI should fail the regression gate; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Verdict:            regression"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Within noise:       false"), "{stdout}");
 }
 
 #[test]
@@ -701,6 +815,11 @@ fn evaluate_none_backend_writes_evaluation_json() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("resolved: 0"), "{stdout}");
+    assert!(stdout.contains("resolved_rate: 0.0000"), "{stdout}");
+    assert!(stdout.contains("pass@1: 0.0000"), "{stdout}");
+    assert!(stdout.contains("pass@k: 0.0000"), "{stdout}");
 
     let eval_path = sweep_dir.path().join("evaluation.json");
     assert!(eval_path.exists());

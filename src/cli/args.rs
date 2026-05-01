@@ -164,6 +164,10 @@ pub struct SwebenchCmd {
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
 
+    /// Run each selected SWE-bench instance N independent times.
+    #[arg(long = "rerun", alias = "samples", default_value_t = 1)]
+    pub reruns: u32,
+
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,
 

@@ -11,7 +11,9 @@ use rust_swe_agent::run::forecast::{
     ForecastArgs, ForecastGate, ForecastOutcome, ForecastReport, ThresholdStatus,
     forecast_from_results, forecast_gate_allows_sweep, run, validate_fail_over_cap,
 };
-use rust_swe_agent::run::swebench::{InstanceResult, SwebenchArgs, SweepResults};
+use rust_swe_agent::run::swebench::{
+    InstanceResult, SwebenchArgs, SweepResults, trajectory_path_for_run,
+};
 use rust_swe_agent::trajectory::{FailureCategory, outcome};
 use rust_swe_agent::{Config, ModelUsage};
 
@@ -102,6 +104,9 @@ fn instance(
         non_empty_patch: false,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 0,
+        resolved_count: 0,
+        pass_at_1: false,
     }
 }
 
@@ -124,6 +129,7 @@ fn fixture_results() -> SweepResults {
         estimated_cost_usd: 0.06,
         retries: 0,
         retried_instances: 0,
+        pass_at_k: 0.0,
         filter_spec: Default::default(),
         manifest: None,
         cost_limit_usd: None,
@@ -558,6 +564,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             dataset_path: dataset,
             output_dir: output.clone(),
             parallel: 1,
+            reruns: 1,
             config: config_with_workdir(&repo),
             resume: false,
             cost_limit_usd: Some(0.50),
@@ -610,7 +617,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
     );
     for id in &report.calibration.instance_ids {
         let traj: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(output.join("forecast").join(format!("{id}.traj.json")))
+            &std::fs::read_to_string(trajectory_path_for_run(&output.join("forecast"), id, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -665,6 +672,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             dataset_path: dataset,
             output_dir: output,
             parallel: 1,
+            reruns: 1,
             config: cfg,
             resume: false,
             cost_limit_usd: None,
@@ -718,6 +726,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
             dataset_path: dataset,
             output_dir: output,
             parallel: 1,
+            reruns: 1,
             config: cfg,
             resume: false,
             cost_limit_usd: None,
@@ -772,6 +781,7 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             dataset_path: dataset,
             output_dir: output.clone(),
             parallel: 1,
+            reruns: 1,
             config: cfg,
             resume: false,
             cost_limit_usd: None,

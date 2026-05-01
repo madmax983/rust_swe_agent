@@ -18,7 +18,8 @@ use std::process::Command;
 use rust_swe_agent::Config;
 use rust_swe_agent::ModelUsage;
 use rust_swe_agent::run::swebench::{
-    EXIT_REASON_BUDGET_HALT, InstanceResult, SwebenchArgs, SweepResults, estimate_cost_usd, run,
+    EXIT_REASON_BUDGET_HALT, InstanceResult, SwebenchArgs, SweepResults, estimate_cost_usd,
+    patch_path_for_run, run, trajectory_path_for_run,
 };
 use rust_swe_agent::trajectory::{
     FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
@@ -110,6 +111,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: Some(limit),
@@ -221,12 +223,12 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
     // remain valid, fully-formed records (same schema as a normal run).
     for r in &results.instances {
         if r.outcome.as_deref() == Some(outcome::SUBMITTED) {
-            let traj_path = output.join(format!("{}.traj.json", r.instance_id));
+            let traj_path = trajectory_path_for_run(&output, &r.instance_id, 1);
             let traj: Trajectory =
                 serde_json::from_str(&std::fs::read_to_string(&traj_path).unwrap()).unwrap();
             assert_eq!(traj.trajectory_format, FORMAT_VERSION);
             assert_eq!(traj.info.outcome.as_deref(), Some(outcome::SUBMITTED));
-            assert!(output.join(format!("{}.patch", r.instance_id)).exists());
+            assert!(patch_path_for_run(&output, &r.instance_id, 1).exists());
         }
     }
 
@@ -235,11 +237,11 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
     for r in &results.instances {
         if r.exit_reason == EXIT_REASON_BUDGET_HALT {
             assert!(
-                !output.join(format!("{}.traj.json", r.instance_id)).exists(),
+                !trajectory_path_for_run(&output, &r.instance_id, 1).exists(),
                 "budget_halt task must not write a trajectory"
             );
             assert!(
-                !output.join(format!("{}.patch", r.instance_id)).exists(),
+                !patch_path_for_run(&output, &r.instance_id, 1).exists(),
                 "budget_halt task must not write a patch"
             );
         }
@@ -274,6 +276,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 2,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -364,6 +367,7 @@ async fn resume_skipped_costs_count_against_budget() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
@@ -448,6 +452,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         estimated_cost_usd: estimate_cost_usd(0, 8_000),
         retries: 1,
         retried_instances: 1,
+        pass_at_k: 0.0,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
@@ -466,6 +471,9 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             non_empty_patch: false,
             attempts: 2,
             retry_reasons: vec![FailureCategory::ModelApi],
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }],
     };
     std::fs::write(
@@ -487,6 +495,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
@@ -567,6 +576,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         estimated_cost_usd: estimate_cost_usd(0, 10_000),
         retries: 2,
         retried_instances: 1,
+        pass_at_k: 0.0,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
@@ -585,6 +595,9 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             non_empty_patch: false,
             attempts: 3,
             retry_reasons: vec![FailureCategory::ModelApi, FailureCategory::ModelApi],
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }],
     };
     std::fs::write(
@@ -598,6 +611,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
@@ -659,6 +673,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         estimated_cost_usd: estimate_cost_usd(0, 10_000),
         retries: 2,
         retried_instances: 1,
+        pass_at_k: 0.0,
         filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
@@ -677,6 +692,9 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             non_empty_patch: false,
             attempts: 3,
             retry_reasons: vec![FailureCategory::ModelApi, FailureCategory::ModelApi],
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
         }],
     };
     std::fs::write(
@@ -714,6 +732,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),

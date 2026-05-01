@@ -14,7 +14,9 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{SwebenchArgs, run};
+use rust_swe_agent::run::swebench::{
+    SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
+};
 use rust_swe_agent::trajectory::{Trajectory, outcome};
 
 /// Initialize a git repo at `dir` with one tracked file at the base
@@ -95,6 +97,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -125,7 +128,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
     assert_eq!(results.submitted, 1);
     assert_eq!(results.with_patch, 1);
 
-    let mod_patch = output.join("mod-instance.patch");
+    let mod_patch = patch_path_for_run(&output, "mod-instance", 1);
     assert!(mod_patch.exists());
     let patch_text = std::fs::read_to_string(&mod_patch).unwrap();
     assert!(!patch_text.is_empty(), "expected non-empty diff");
@@ -184,6 +187,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -216,7 +220,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     // Empty diff still counts as submitted but not as `with_patch`.
     assert_eq!(results.with_patch, 0);
 
-    let patch_path = output.join("noop-instance.patch");
+    let patch_path = patch_path_for_run(&output, "noop-instance", 1);
     assert!(patch_path.exists(), "empty patch must still be written");
     assert!(
         std::fs::read_to_string(&patch_path).unwrap().is_empty(),
@@ -232,7 +236,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     assert_eq!(v.get("model_patch").and_then(|v| v.as_str()), Some(""));
 
     let traj: Trajectory = serde_json::from_str(
-        &std::fs::read_to_string(output.join("noop-instance.traj.json")).unwrap(),
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "noop-instance", 1)).unwrap(),
     )
     .unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::SUBMITTED));
@@ -259,6 +263,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -294,7 +299,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     assert_eq!(results.submitted, 0);
 
     // Trajectory records the patch_error in `info.other` and outcome=error.
-    let traj_path = output.join("broken.traj.json");
+    let traj_path = trajectory_path_for_run(&output, "broken", 1);
     let traj: Trajectory =
         serde_json::from_str(&std::fs::read_to_string(&traj_path).unwrap()).unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
@@ -305,7 +310,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     );
 
     // No `.patch` file written for the failed capture.
-    assert!(!output.join("broken.patch").exists());
+    assert!(!patch_path_for_run(&output, "broken", 1).exists());
 
     // all_preds.jsonl exists but contains no lines (no submitted instances).
     let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();

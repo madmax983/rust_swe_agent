@@ -2,8 +2,9 @@
 
 `bench tail` is a read-only operator view over a `bench swebench` output
 directory. It does not talk to the writer process, open sockets, or create new
-files. Every snapshot is derived from `results.json` plus valid
-`*.traj.json` files that already exist in the sweep directory.
+files. Every snapshot is derived from `results.json` plus valid flat
+`*.traj.json` files or nested `<instance_id>/run-*.traj.json` files that
+already exist in the sweep directory.
 
 ## Usage
 
@@ -53,8 +54,8 @@ It exits non-zero after printing a one-line reason to stderr when it detects:
 
 ## Partial Files
 
-Partially-written `results.json` or `*.traj.json` files are ignored for the
-current tick and reported in `warnings`. The next refresh retries them. This is
-intentional: the tailer must never panic just because the writer was halfway
-through flushing JSON.
+Partially-written `results.json`, flat `*.traj.json`, or nested
+`run-*.traj.json` files are ignored for the current tick and reported in
+`warnings`. The next refresh retries them. This is intentional: the tailer must
+never panic just because the writer was halfway through flushing JSON.
 

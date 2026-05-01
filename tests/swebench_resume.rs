@@ -11,7 +11,9 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{SwebenchArgs, run};
+use rust_swe_agent::run::swebench::{
+    SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
+};
 use rust_swe_agent::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
@@ -114,6 +116,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 2,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: None,
@@ -157,21 +160,23 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
     );
 
     // Invalid pre-existing trajectory was overwritten with a fresh, parseable one.
-    let reread: Trajectory =
-        serde_json::from_str(&std::fs::read_to_string(&invalid_path).unwrap()).unwrap();
+    let reread: Trajectory = serde_json::from_str(
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "pre-invalid", 1)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(reread.trajectory_format, FORMAT_VERSION);
     assert_eq!(reread.info.outcome.as_deref(), Some(outcome::SUBMITTED));
 
     // Fresh instance got a brand-new trajectory file too.
-    let fresh_path = output.join("fresh.traj.json");
+    let fresh_path = trajectory_path_for_run(&output, "fresh", 1);
     let fresh: Trajectory =
         serde_json::from_str(&std::fs::read_to_string(&fresh_path).unwrap()).unwrap();
     assert_eq!(fresh.info.outcome.as_deref(), Some(outcome::SUBMITTED));
 
     // Both freshly-run instances got a `.patch` file (empty, since the agent
     // submitted without modifying anything in `repo`).
-    assert!(output.join("pre-invalid.patch").exists());
-    assert!(output.join("fresh.patch").exists());
+    assert!(patch_path_for_run(&output, "pre-invalid", 1).exists());
+    assert!(patch_path_for_run(&output, "fresh", 1).exists());
 
     // Summary table mentions the skipped count.
     let table = results.summary_table();
@@ -204,6 +209,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: None,
@@ -233,9 +239,11 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
     assert_eq!(results.skipped, 0, "missing patch must trigger a re-run");
 
     // After the re-run both files exist.
-    assert!(output.join("needs-patch.patch").exists());
-    let reread: Trajectory =
-        serde_json::from_str(&std::fs::read_to_string(&traj).unwrap()).unwrap();
+    assert!(patch_path_for_run(&output, "needs-patch", 1).exists());
+    let reread: Trajectory = serde_json::from_str(
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "needs-patch", 1)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(reread.info.outcome.as_deref(), Some(outcome::SUBMITTED));
     assert!(
         !reread.info.other.contains_key("test_marker"),
@@ -263,6 +271,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -296,8 +305,10 @@ async fn without_resume_existing_trajectories_are_overwritten() {
     );
 
     // The stale marker we wrote should have been overwritten by a fresh run.
-    let reread: Trajectory =
-        serde_json::from_str(&std::fs::read_to_string(&traj_path).unwrap()).unwrap();
+    let reread: Trajectory = serde_json::from_str(
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "only", 1)).unwrap(),
+    )
+    .unwrap();
     assert!(
         !reread.info.other.contains_key("test_marker"),
         "stale trajectory was not overwritten without --resume"
@@ -322,6 +333,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
@@ -350,7 +362,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
 
     assert_eq!(results.total, 1);
     assert_eq!(results.submitted, 1);
-    assert!(output.join("one.traj.json").exists());
+    assert!(trajectory_path_for_run(&output, "one", 1).exists());
 }
 
 #[tokio::test]
@@ -410,6 +422,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: None,
@@ -439,4 +452,9 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
     assert_eq!(results.skipped, 1);
     let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
     assert_eq!(preds.lines().count(), 1, "{preds}");
+    let pred: serde_json::Value = serde_json::from_str(preds.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        pred.get("model_patch").and_then(serde_json::Value::as_str),
+        Some("diff --git a/x b/x\n")
+    );
 }

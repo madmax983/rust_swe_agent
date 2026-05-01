@@ -94,6 +94,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 2,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: None,
