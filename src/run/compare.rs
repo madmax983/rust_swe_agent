@@ -1213,6 +1213,8 @@ fn subset_warnings(baseline: Option<&FilterSpec>, candidate: Option<&FilterSpec>
         && b.sample == c.sample
         && b.seed == c.seed
         && b.limit == c.limit
+        && b.stratify_by == c.stratify_by
+        && b.stratify_mode == c.stratify_mode
     {
         return Vec::new();
     }
@@ -1664,6 +1666,33 @@ mod tests {
             stratify_mode: None,
         };
         assert!(subset_warnings(Some(&baseline), Some(&candidate)).is_empty());
+    }
+
+    #[test]
+    fn subset_warning_when_stratify_settings_differ() {
+        let baseline = crate::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: None,
+            limit: None,
+            sample: Some(2),
+            seed: Some(7),
+            stratify_by: Some(crate::run::swebench::StratifyBy::Repo),
+            stratify_mode: Some(crate::run::swebench::StratifyMode::Balanced),
+        };
+        let candidate = crate::run::swebench::FilterSpec {
+            original_count: 10,
+            selected_count: 2,
+            instance_ids: None,
+            limit: None,
+            sample: Some(2),
+            seed: Some(7),
+            stratify_by: None,
+            stratify_mode: None,
+        };
+        let warnings = subset_warnings(Some(&baseline), Some(&candidate));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dataset subset differs"));
     }
 
     #[test]
