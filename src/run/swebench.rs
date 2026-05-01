@@ -1044,6 +1044,8 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let limit = args.limit;
     let sample = args.sample;
     let seed = args.seed;
+    let stratify_by = args.stratify_by;
+    let stratify_mode = args.stratify_mode;
     let (subset, _) = timed_sync(
         "dataset.subset",
         args.preflight_check_timeout_s,
@@ -1054,8 +1056,8 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
             limit,
             sample,
             seed,
-            None,
-            StratifyMode::Proportional,
+            stratify_by,
+            stratify_mode,
         ),
     )
     .await?;
