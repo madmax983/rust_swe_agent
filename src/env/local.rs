@@ -144,10 +144,14 @@ impl ProcessTreeGuard {
             return;
         };
         terminate_process_tree_async(pid).await;
-        if tokio::time::timeout(FORCE_KILL_WAIT, child.wait())
+        let child_reaped = tokio::time::timeout(FORCE_KILL_WAIT, child.wait())
             .await
-            .is_ok()
-        {
+            .is_ok();
+        #[cfg(unix)]
+        if child_reaped {
+            wait_for_process_group_exit_async(pid).await;
+        }
+        if child_reaped {
             self.disarm();
         }
     }
@@ -189,20 +193,15 @@ fn terminate_process_tree_blocking(pid: u32) {
 async fn terminate_process_tree_async(pid: u32) {
     signal_process_group_async(pid, "TERM").await;
     tokio::time::sleep(TERMINATE_GRACE).await;
-    if process_group_alive_async(pid).await {
-        signal_process_group_async(pid, "KILL").await;
-        wait_for_process_exit_async(pid).await;
-    }
+    signal_process_group_async(pid, "KILL").await;
 }
 
 #[cfg(unix)]
 fn terminate_process_tree_blocking(pid: u32) {
     signal_process_group_blocking(pid, "TERM");
     std::thread::sleep(TERMINATE_GRACE);
-    if process_group_alive_blocking(pid) {
-        signal_process_group_blocking(pid, "KILL");
-        wait_for_process_exit_blocking(pid);
-    }
+    signal_process_group_blocking(pid, "KILL");
+    wait_for_process_group_exit_blocking(pid);
 }
 
 #[cfg(all(not(windows), not(unix)))]
@@ -244,7 +243,7 @@ fn terminate_process_tree_blocking(pid: u32) {
 }
 
 #[cfg(unix)]
-async fn wait_for_process_exit_async(pid: u32) {
+async fn wait_for_process_group_exit_async(pid: u32) {
     let deadline = tokio::time::Instant::now() + FORCE_KILL_WAIT;
     while tokio::time::Instant::now() < deadline {
         if !process_group_alive_async(pid).await {
@@ -255,7 +254,7 @@ async fn wait_for_process_exit_async(pid: u32) {
 }
 
 #[cfg(unix)]
-fn wait_for_process_exit_blocking(pid: u32) {
+fn wait_for_process_group_exit_blocking(pid: u32) {
     let deadline = std::time::Instant::now() + FORCE_KILL_WAIT;
     while std::time::Instant::now() < deadline {
         if !process_group_alive_blocking(pid) {
@@ -269,7 +268,7 @@ fn wait_for_process_exit_blocking(pid: u32) {
 async fn signal_process_group_async(pid: u32, signal: &str) {
     let group = format!("-{pid}");
     let _ = Command::new("kill")
-        .args([format!("-{signal}"), group])
+        .args([format!("-{signal}"), "--".to_owned(), group])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -281,7 +280,7 @@ async fn signal_process_group_async(pid: u32, signal: &str) {
 fn signal_process_group_blocking(pid: u32, signal: &str) {
     let group = format!("-{pid}");
     let _ = std::process::Command::new("kill")
-        .args([format!("-{signal}"), group])
+        .args([format!("-{signal}"), "--".to_owned(), group])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -291,7 +290,7 @@ fn signal_process_group_blocking(pid: u32, signal: &str) {
 #[cfg(unix)]
 async fn process_group_alive_async(pid: u32) -> bool {
     Command::new("kill")
-        .args(["-0", &format!("-{pid}")])
+        .args(["-0", "--", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -303,7 +302,7 @@ async fn process_group_alive_async(pid: u32) -> bool {
 #[cfg(unix)]
 fn process_group_alive_blocking(pid: u32) -> bool {
     std::process::Command::new("kill")
-        .args(["-0", &format!("-{pid}")])
+        .args(["-0", "--", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -442,11 +441,17 @@ mod tests {
                         "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
                     ),
                 ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success())
         } else {
             std::process::Command::new("kill")
                 .args(["-0", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success())
         }
