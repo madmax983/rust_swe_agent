@@ -51,6 +51,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
         Command::Bench {
+            cmd: args::BenchCmd::Forecast(s),
+        } => bench_forecast(s).await,
+        Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
         } => bench_doctor(s).await,
         Command::Bench {
@@ -72,7 +75,10 @@ pub async fn run() -> Result<(), Error> {
 fn init_logging(level: &str) {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
@@ -155,14 +161,162 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 }
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
+    let mut sweep_cmd = s;
+    if sweep_cmd.forecast_first {
+        match run_forecast_from_cmd(sweep_cmd.clone()).await? {
+            crate::run::forecast::ForecastOutcome::Report(report) => {
+                print_forecast_report(&report, &sweep_cmd.format)?;
+                crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
+                if !crate::run::forecast::forecast_gate_allows_sweep(
+                    &report,
+                    crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
+                )? {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "forecast-first blocked sweep: {} (pass --yes to proceed anyway)",
+                        report.threshold.message
+                    ))));
+                }
+            }
+            crate::run::forecast::ForecastOutcome::DryRun(results) => {
+                print_dry_run_summary(&results, &sweep_cmd.format);
+                return Ok(());
+            }
+        }
+        if sweep_cmd.sample.is_none() {
+            sweep_cmd.seed = None;
+        }
+    }
+
+    let cfg = swebench_config_from_cmd(&sweep_cmd)?;
+    let preflight_mode = if sweep_cmd.dry_run {
+        "dry_run"
+    } else {
+        "sweep"
+    };
+    let results =
+        crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)).await?;
+
+    tracing::info!(
+        total = results.total,
+        submitted = results.submitted,
+        skipped = results.skipped,
+        errored = results.errored,
+        budget_halted = results.budget_halted,
+        retries = results.retries,
+        retried_instances = results.retried_instances,
+        prompt_tokens = results.total_prompt_tokens,
+        completion_tokens = results.total_completion_tokens,
+        estimated_cost_usd = results.estimated_cost_usd,
+        cost_limit_usd = ?results.cost_limit_usd,
+        "sweep complete"
+    );
+    print!("{}", results.summary_table());
+    Ok(())
+}
+
+async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
+    s.dry_run = true;
+    let output_format = s.format.clone();
+    let cfg = swebench_config_from_cmd(&s)?;
+    let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")).await?;
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
+    Ok(())
+}
+
+async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
+    let output_format = s.format.clone();
+    let fail_over_cap = s.fail_over_cap;
+    match run_forecast_from_cmd(s).await? {
+        crate::run::forecast::ForecastOutcome::Report(report) => {
+            print_forecast_report(&report, &output_format)?;
+            crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+        }
+        crate::run::forecast::ForecastOutcome::DryRun(results) => {
+            print_dry_run_summary(&results, &output_format);
+            Ok(())
+        }
+    }
+}
+
+async fn run_forecast_from_cmd(
+    mut s: args::SwebenchCmd,
+) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    let calibration_n = s.calibration_n;
+    let seed = s.seed.unwrap_or(42);
+    let target_n = s.target_n;
+    let confidence_pct = s.confidence;
+    if s.sample.is_none() {
+        s.seed = None;
+    }
+    let cfg = swebench_config_from_cmd(&s)?;
+    let sweep = swebench_args_from_cmd(s, cfg, "forecast");
+    crate::run::forecast::run(crate::run::forecast::ForecastArgs {
+        sweep,
+        calibration_n,
+        seed,
+        target_n,
+        confidence_pct,
+    })
+    .await
+}
+
+fn print_dry_run_summary(results: &crate::run::swebench::SweepResults, output_format: &str) {
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
+}
+
+fn print_forecast_report(
+    report: &crate::run::forecast::ForecastReport,
+    output_format: &str,
+) -> Result<(), Error> {
+    match output_format {
+        "text" => {
+            print!("{}", crate::run::forecast::render_text(report));
+            Ok(())
+        }
+        "json" => {
+            println!("{}", crate::run::forecast::to_json(report)?);
+            Ok(())
+        }
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text` or `json`)"
+        )))),
+    }
+}
+
+fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
     cfg.root.model.name.clone_from(&s.model);
     cfg.root.agent.step_limit = s.step_limit;
+    if let Some(kind) = &s.env {
+        cfg.root.environment.kind = match kind.as_str() {
+            "local" => crate::config::EnvKind::Local,
+            "docker" => crate::config::EnvKind::Docker,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "unknown --env `{other}` (expected `local` or `docker`)"
+                ))));
+            }
+        };
+    }
+    if let Some(img) = s.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    Ok(cfg)
+}
 
-    let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
+fn swebench_args_from_cmd(
+    s: args::SwebenchCmd,
+    cfg: Config,
+    preflight_mode: &str,
+) -> crate::run::swebench::SwebenchArgs {
+    crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
         parallel: s.parallel,
@@ -187,69 +341,8 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         skip_model_probe: s.skip_model_probe,
         preflight_check_timeout_s: s.preflight_check_timeout_s,
         preflight_total_timeout_s: s.preflight_total_timeout_s,
-        preflight_mode: if s.dry_run { "dry_run" } else { "sweep" }.into(),
-    })
-    .await?;
-
-    tracing::info!(
-        total = results.total,
-        submitted = results.submitted,
-        skipped = results.skipped,
-        errored = results.errored,
-        budget_halted = results.budget_halted,
-        retries = results.retries,
-        retried_instances = results.retried_instances,
-        prompt_tokens = results.total_prompt_tokens,
-        completion_tokens = results.total_completion_tokens,
-        estimated_cost_usd = results.estimated_cost_usd,
-        cost_limit_usd = ?results.cost_limit_usd,
-        "sweep complete"
-    );
-    print!("{}", results.summary_table());
-    Ok(())
-}
-
-async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
-    s.dry_run = true;
-    let output_format = s.format.clone();
-    let mut cfg = match &s.config {
-        Some(p) => Config::load(p)?,
-        None => Config::defaults()?,
-    };
-    cfg.root.model.name.clone_from(&s.model);
-    cfg.root.agent.step_limit = s.step_limit;
-    let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
-        dataset_path: s.dataset_path,
-        output_dir: s.output,
-        parallel: s.parallel,
-        config: cfg,
-        resume: s.resume,
-        cost_limit_usd: s.sweep_cost_limit_usd,
-        instance_ids: s.instance_ids,
-        limit: s.limit,
-        sample: s.sample,
-        seed: s.seed,
-        max_retries: s.max_retries,
-        retry_on: s.retry_on,
-        retry_backoff_base_ms: s.retry_backoff_base_ms,
-        retry_backoff_cap_s: s.retry_backoff_cap_s,
-        retry_on_resume: s.retry_on_resume,
-        deterministic_responses: None,
-        deterministic_usage_per_call: None,
-        config_overlay_paths: s.config.into_iter().collect(),
-        dry_run: true,
-        skip_preflight: s.skip_preflight,
-        preflight_format: s.format,
-        skip_model_probe: s.skip_model_probe,
-        preflight_check_timeout_s: s.preflight_check_timeout_s,
-        preflight_total_timeout_s: s.preflight_total_timeout_s,
-        preflight_mode: "doctor".into(),
-    })
-    .await?;
-    if output_format != "json" {
-        print!("{}", results.summary_table());
+        preflight_mode: preflight_mode.into(),
     }
-    Ok(())
 }
 
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {

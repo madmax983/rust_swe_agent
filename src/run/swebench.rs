@@ -168,6 +168,8 @@ pub struct FilterSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
     pub harness: HarnessManifest,
     pub dataset: DatasetManifest,
     pub prompt_template: PromptTemplateManifest,
@@ -886,13 +888,13 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     ensure_total_deadline(deadline)?;
     match args.config.root.environment.kind {
         crate::config::EnvKind::Local => {
-            for bin in ["bash", "git", "patch"] {
+            for bin in local_preflight_tools() {
                 ensure_total_deadline(deadline)?;
                 let ok = timed_sync(
                     "env.local_tools",
                     args.preflight_check_timeout_s,
                     deadline,
-                    move || Command::new("which").arg(bin).output(),
+                    move || local_tool_probe(bin).output(),
                 )
                 .await?
                 .status
@@ -1017,8 +1019,35 @@ fn render_preflight_report(
 }
 
 fn print_preflight_report(checks: &[CheckResult], format: &str, mode: &str) -> Result<(), Error> {
+    if format == "silent" {
+        return Ok(());
+    }
     print!("{}", render_preflight_report(checks, format, mode)?);
     Ok(())
+}
+
+#[cfg(windows)]
+fn local_preflight_tools() -> &'static [&'static str] {
+    &["cmd.exe", "git"]
+}
+
+#[cfg(not(windows))]
+fn local_preflight_tools() -> &'static [&'static str] {
+    &["bash", "git", "patch"]
+}
+
+#[cfg(windows)]
+fn local_tool_probe(bin: &str) -> Command {
+    let mut cmd = Command::new("where.exe");
+    cmd.arg(bin);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn local_tool_probe(bin: &str) -> Command {
+    let mut cmd = Command::new("which");
+    cmd.arg(bin);
+    cmd
 }
 
 async fn timed_sync<T, E, F>(
@@ -1069,6 +1098,7 @@ fn build_manifest(
     redact_json_secrets(&mut config_raw);
     let resolved = serde_yaml::to_string(&config_raw).unwrap_or_else(|_| "--- {}\n".to_owned());
     ProvenanceManifest {
+        purpose: None,
         harness: resolve_harness_manifest(),
         dataset: DatasetManifest {
             path: args.dataset_path.display().to_string(),
@@ -1808,7 +1838,7 @@ fn load_fresh_trajectory_info(
     read_trajectory_info(path)
 }
 
-fn apply_subset(
+pub(crate) fn apply_subset(
     mut instances: Vec<SweBenchInstance>,
     instance_ids_arg: Option<&str>,
     limit: Option<usize>,

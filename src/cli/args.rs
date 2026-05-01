@@ -86,6 +86,8 @@ pub struct ReplayCmd {
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
     Swebench(SwebenchCmd),
+    /// Forecast sweep cost from a reproducible calibration slice.
+    Forecast(SwebenchCmd),
     /// Validate sweep inputs without launching tasks.
     Doctor(SwebenchCmd),
     /// Diff two completed sweep runs by instance id; surfaces regressions
@@ -148,13 +150,13 @@ pub struct CompareCmd {
     pub show_noise: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchCmd {
     #[arg(long)]
     pub dataset_path: PathBuf,
 
-    #[arg(long)]
+    #[arg(long, alias = "output-dir")]
     pub output: PathBuf,
 
     #[arg(long, default_value_t = 4)]
@@ -168,6 +170,14 @@ pub struct SwebenchCmd {
 
     #[arg(long)]
     pub config: Option<PathBuf>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
 
     /// Skip tasks whose output trajectory file already exists on disk and
     /// parses as valid JSON. Lets an interrupted sweep resume without
@@ -249,6 +259,31 @@ pub struct SwebenchCmd {
     /// Max total seconds for all preflight checks.
     #[arg(long, default_value_t = 60)]
     pub preflight_total_timeout_s: u64,
+
+    /// Run a calibration forecast before the real sweep and launch only
+    /// when the forecast clears `--sweep-cost-limit-usd` or `--yes` is set.
+    #[arg(long, default_value_t = false)]
+    pub forecast_first: bool,
+
+    /// Proceed after `--forecast-first` even without a clear cost-cap pass.
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
+
+    /// Instance count for `bench forecast` calibration.
+    #[arg(long, default_value_t = 5)]
+    pub calibration_n: usize,
+
+    /// Forecast target instance count. Defaults to full post-filter dataset.
+    #[arg(long)]
+    pub target_n: Option<usize>,
+
+    /// Confidence level percentage for forecast intervals.
+    #[arg(long, default_value_t = 80.0)]
+    pub confidence: f64,
+
+    /// Exit non-zero when the forecast projects the sweep will exceed cap.
+    #[arg(long, default_value_t = false)]
+    pub fail_over_cap: bool,
 }
 
 #[derive(Debug, Args)]

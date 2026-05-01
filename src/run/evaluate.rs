@@ -8,7 +8,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::compare::load_run;
+use crate::run::compare::load_sweep;
 use crate::run::swebench::{self, InstanceResult};
 use crate::trajectory::{FailureCategory, outcome};
 
@@ -102,7 +102,13 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
 }
 
 pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
-    let results = load_run(&args.sweep_dir)?;
+    let loaded = load_sweep(&args.sweep_dir)?;
+    if loaded.manifest.as_ref().and_then(|m| m.purpose.as_deref()) == Some("forecast") {
+        return Err(Error::Trajectory(
+            "bench evaluate: refusing to evaluate forecast calibration output".into(),
+        ));
+    }
+    let results = loaded.instances;
     let mut eval = match args.backend {
         EvaluateBackend::None => build_none_eval(&results),
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
