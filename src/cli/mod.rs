@@ -344,7 +344,10 @@ fn swebench_args_from_cmd(
         stratify_by: s.stratify_by.map(|v| match v {
             args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
         }),
-        stratify_mode: match s.stratify_mode.unwrap_or(args::StratifyModeArg::Proportional) {
+        stratify_mode: match s
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
             args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
             args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
         },
