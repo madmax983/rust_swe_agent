@@ -68,7 +68,12 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let toml = format!("[environment]\nworkdir = \"{}\"\n", dir.display());
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -568,6 +573,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             config: config_with_workdir(&repo),
             resume: false,
             cost_limit_usd: Some(0.50),
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
@@ -676,6 +682,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             config: cfg,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: Some(2),
@@ -730,6 +737,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
             config: cfg,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: Some(1),
             sample: None,
@@ -785,6 +793,7 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             config: cfg,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: Some(2),

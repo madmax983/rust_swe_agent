@@ -66,6 +66,13 @@ fn write_dataset(path: &Path, instance_ids: &[&str], base_commit: &str) {
     std::fs::write(path, s).unwrap();
 }
 
+fn toml_escape_path(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 #[tokio::test]
 async fn sweep_emits_patch_artifact_for_modifying_agent() {
     let work = tempfile::tempdir().unwrap();
@@ -90,7 +97,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
 
     let toml = format!(
         "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
-        repo.display()
+        toml_escape_path(&repo)
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
@@ -101,6 +108,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -180,7 +188,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
 
     let toml = format!(
         "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
-        repo.display()
+        toml_escape_path(&repo)
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
@@ -191,6 +199,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -256,7 +265,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     // Workdir points at a path that doesn't exist; `git diff` will fail.
     let toml = format!(
         "[environment]\nworkdir = \"{}\"\n",
-        work.path().join("does-not-exist").display()
+        toml_escape_path(&work.path().join("does-not-exist"))
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
@@ -267,6 +276,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,

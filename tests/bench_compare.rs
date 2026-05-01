@@ -127,6 +127,46 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
     .unwrap();
 }
 
+fn write_wallclock_timeout_results_json(dir: &Path, id: &str) {
+    let payload = serde_json::json!({
+        "total": 1,
+        "submitted": 0,
+        "skipped": 0,
+        "errored": 1,
+        "failures_by_category": {"wallclock_timeout": 1},
+        "budget_halted": 0,
+        "with_patch": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "cost_limit_usd": null,
+        "instances": [{
+            "instance_id": id,
+            "exit_reason": "wallclock_timeout",
+            "outcome": "error",
+            "failure_category": "wallclock_timeout",
+            "steps": 1,
+            "duration_secs": 2.0,
+            "patch_present": false,
+            "non_empty_patch": false,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 1,
+            "resolved_count": 0,
+            "pass_at_1": false
+        }]
+    });
+    std::fs::write(
+        dir.join("results.json"),
+        serde_json::to_string_pretty(&payload).unwrap(),
+    )
+    .unwrap();
+}
+
 fn write_diff_traj(
     dir: &Path,
     instance_id: &str,
@@ -459,6 +499,56 @@ fn cli_json_output_is_machine_readable() {
     assert_eq!(v["regressions"][0]["kind"], "pass_fail");
     assert_eq!(v["resolved_delta"], -1);
     assert_eq!(v["transitions"]["pass_fail"], 1);
+}
+
+#[test]
+fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    write_wallclock_timeout_results_json(baseline_dir.path(), "slow");
+    write_results(candidate_dir.path(), vec![submitted("slow")]);
+    let report =
+        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+            baseline: baseline_dir.path().to_path_buf(),
+            candidate: candidate_dir.path().to_path_buf(),
+            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            max_regressions: None,
+            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
+        })
+        .unwrap();
+    assert_eq!(
+        report
+            .transitions
+            .get(&rust_swe_agent::run::compare::TransitionKind::FailPass),
+        Some(&1)
+    );
+    assert!(report.regressions.is_empty());
+
+    write_results(baseline_dir.path(), vec![submitted("slow")]);
+    write_wallclock_timeout_results_json(candidate_dir.path(), "slow");
+    let report =
+        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+            baseline: baseline_dir.path().to_path_buf(),
+            candidate: candidate_dir.path().to_path_buf(),
+            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            max_regressions: None,
+            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
+        })
+        .unwrap();
+    assert_eq!(
+        report
+            .transitions
+            .get(&rust_swe_agent::run::compare::TransitionKind::PassFail),
+        Some(&1)
+    );
+    assert_eq!(report.regressions.len(), 1);
+    assert_eq!(
+        report.regressions[0].candidate_exit_reason.as_deref(),
+        Some("wallclock_timeout")
+    );
 }
 
 #[test]

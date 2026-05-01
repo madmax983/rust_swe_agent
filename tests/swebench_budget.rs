@@ -67,7 +67,12 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let toml = format!("[environment]\nworkdir = \"{}\"\n", dir.display());
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -115,6 +120,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         config: cfg,
         resume: false,
         cost_limit_usd: Some(limit),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -280,6 +286,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -371,6 +378,7 @@ async fn resume_skipped_costs_count_against_budget() {
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -499,6 +507,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -615,6 +624,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -736,6 +746,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         config: cfg,
         resume: true,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,

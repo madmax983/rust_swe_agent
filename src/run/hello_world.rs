@@ -20,6 +20,7 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
         ]),
         deterministic_usage_per_call: None,
+        task_timeout_secs: None,
         stream_addr: None,
         patch_capture: None,
     };

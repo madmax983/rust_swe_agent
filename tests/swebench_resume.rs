@@ -81,7 +81,12 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let toml = format!("[environment]\nworkdir = \"{}\"\n", dir.display());
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -120,6 +125,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -213,6 +219,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -275,6 +282,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -337,6 +345,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
@@ -426,6 +435,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,

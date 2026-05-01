@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::config::Config;
 use crate::error::Error;
 use crate::model::{Model, ModelUsage};
-use crate::trajectory::{FailureCategory, Trajectory, outcome};
+use crate::trajectory::{FailureCategory, Trajectory, exit_reason, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
 /// sweep-level USD budget was exhausted. Distinct from `error` and
@@ -394,6 +394,9 @@ pub struct SwebenchArgs {
     /// tasks contribute to the running total at their stored cost so a
     /// resumed sweep cannot blow past the limit.
     pub cost_limit_usd: Option<f64>,
+    /// Optional wallclock budget applied independently to each task's agent
+    /// loop. Orthogonal to step and cost limits; whichever fires first wins.
+    pub task_timeout_secs: Option<u64>,
     /// Dataset subset selector. Either comma-separated ids or
     /// `@path/to/file.txt` (one id per line).
     pub instance_ids: Option<String>,
@@ -830,24 +833,18 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     let spawn_one = |run: SweepRun, set: &mut tokio::task::JoinSet<RunSlotResult>| {
-        let output_dir = args.output_dir.clone();
-        let cfg = args.config.clone();
-        let deterministic = args.deterministic_responses.clone();
-        let det_usage = args.deterministic_usage_per_call.clone();
-        let retry_policy = retry_policy.clone();
+        let params = RunOneParams {
+            output_dir: args.output_dir.clone(),
+            cfg: args.config.clone(),
+            deterministic_responses: args.deterministic_responses.clone(),
+            deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+            retry_policy: retry_policy.clone(),
+            task_timeout_secs: args.task_timeout_secs,
+        };
         set.spawn(async move {
             RunSlotResult::new(
                 run.run_index,
-                run_one(
-                    run.inst,
-                    run.run_index,
-                    output_dir,
-                    cfg,
-                    deterministic,
-                    det_usage,
-                    retry_policy,
-                )
-                .await,
+                run_one(run.inst, run.run_index, params).await,
             )
         });
     };
@@ -2020,6 +2017,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "model_parse" => Ok(FailureCategory::ModelParse),
         "step_limit" => Ok(FailureCategory::StepLimit),
         "cost_limit" => Ok(FailureCategory::CostLimit),
+        "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -2048,16 +2046,26 @@ fn deterministic_for_attempt(all: &[String], attempt: u32, retry_mode: bool) -> 
     all.last().cloned().into_iter().collect()
 }
 
-#[allow(clippy::too_many_lines)]
-async fn run_one(
-    inst: SweBenchInstance,
-    run_index: u32,
+#[derive(Clone)]
+struct RunOneParams {
     output_dir: PathBuf,
-    mut cfg: Config,
+    cfg: Config,
     deterministic_responses: Option<Vec<String>>,
     deterministic_usage_per_call: Option<ModelUsage>,
     retry_policy: RetryPolicy,
-) -> InstanceResult {
+    task_timeout_secs: Option<u64>,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -> InstanceResult {
+    let RunOneParams {
+        output_dir,
+        mut cfg,
+        deterministic_responses,
+        deterministic_usage_per_call,
+        retry_policy,
+        task_timeout_secs,
+    } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
     // A scripted model implies a local-only sweep — `image` from the dataset
@@ -2095,6 +2103,7 @@ async fn run_one(
             trajectory_name: trajectory_name.clone(),
             deterministic_responses: det_for_attempt,
             deterministic_usage_per_call: deterministic_usage_per_call.clone(),
+            task_timeout_secs,
             stream_addr: None,
             patch_capture: Some(crate::run::mini::PatchCaptureSpec {
                 base_commit: base_commit.clone(),
@@ -2137,6 +2146,7 @@ async fn run_one(
                 .or_else(|| match exit_reason.as_str() {
                     "step_limit" => Some(FailureCategory::StepLimit),
                     "cost_limit" => Some(FailureCategory::CostLimit),
+                    exit_reason::WALLCLOCK_TIMEOUT => Some(FailureCategory::WallclockTimeout),
                     _ => run_err
                         .as_ref()
                         .map(classify_error)
@@ -2199,7 +2209,11 @@ fn is_failed_instance(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::ERROR)
         || matches!(
             r.failure_category,
-            Some(FailureCategory::StepLimit | FailureCategory::CostLimit)
+            Some(
+                FailureCategory::StepLimit
+                    | FailureCategory::CostLimit
+                    | FailureCategory::WallclockTimeout
+            )
         )
 }
 
@@ -2210,6 +2224,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::Unknown => "unknown",
     }
@@ -2545,6 +2560,7 @@ mod tests {
             config: cfg,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
@@ -2592,6 +2608,7 @@ mod tests {
             config: Config::defaults().unwrap(),
             resume: true,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
@@ -2649,6 +2666,7 @@ instance = "inst"
             config: cfg_a,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
@@ -2730,6 +2748,7 @@ instance = "inst"
             config: Config::defaults().unwrap(),
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,

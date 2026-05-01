@@ -24,6 +24,10 @@ pub mod outcome {
     pub const ERROR: &str = "error";
 }
 
+pub mod exit_reason {
+    pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
+}
+
 /// Closed set of non-success terminal failure modes for sweeps.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +37,7 @@ pub enum FailureCategory {
     ModelParse,
     StepLimit,
     CostLimit,
+    WallclockTimeout,
     AgentInternal,
     Unknown,
 }
