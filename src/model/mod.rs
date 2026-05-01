@@ -14,9 +14,11 @@ use std::collections::BTreeMap;
 use crate::error::ModelError;
 
 pub mod deterministic;
+pub mod fallback;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
+pub use fallback::FallbackModel;
 pub use litellm::{AnthropicBackend, LitellmBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
