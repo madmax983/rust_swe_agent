@@ -246,8 +246,8 @@ pub struct SwebenchCmd {
     pub stratify_by: Option<StratifyByArg>,
 
     /// Allocation mode used with `--stratify-by`.
-    #[arg(long, value_enum, default_value = "proportional")]
-    pub stratify_mode: StratifyModeArg,
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
 
     /// Retry transiently-failed instances up to N additional attempts.
     /// `0` disables retries entirely.
