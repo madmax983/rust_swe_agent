@@ -1050,15 +1050,17 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         "dataset.subset",
         args.preflight_check_timeout_s,
         deadline,
-        move || apply_subset(
-            instances,
-            instance_ids.as_deref(),
-            limit,
-            sample,
-            seed,
-            stratify_by,
-            stratify_mode,
-        ),
+        move || {
+            apply_subset(
+                instances,
+                instance_ids.as_deref(),
+                limit,
+                sample,
+                seed,
+                stratify_by,
+                stratify_mode,
+            )
+        },
     )
     .await?;
     checks.push(CheckResult {
@@ -2424,13 +2426,11 @@ fn stratified_sample_by_repo(
             // Deterministic tie-breaker: larger remainder, then more capacity,
             // then seeded pseudo-random order by group index.
             rem.sort_by(|a, b| {
-                b.0.cmp(&a.0)
-                    .then_with(|| b.1.cmp(&a.1))
-                    .then_with(|| {
-                        let ah = simple_hash(&format!("{seed}:{}", a.2));
-                        let bh = simple_hash(&format!("{seed}:{}", b.2));
-                        ah.cmp(&bh)
-                    })
+                b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| {
+                    let ah = simple_hash(&format!("{seed}:{}", a.2));
+                    let bh = simple_hash(&format!("{seed}:{}", b.2));
+                    ah.cmp(&bh)
+                })
             });
             for (_, cap, i) in rem {
                 if left == 0 {
@@ -3065,14 +3065,31 @@ instance = "inst"
                 other: serde_json::Map::new(),
             },
         ];
-        let (filtered, spec) =
-            apply_subset(instances.clone(), Some("b"), None, None, None, None, StratifyMode::Proportional).unwrap();
+        let (filtered, spec) = apply_subset(
+            instances.clone(),
+            Some("b"),
+            None,
+            None,
+            None,
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].instance_id, "b");
         assert_eq!(spec.original_count, 2);
         assert_eq!(spec.selected_count, 1);
 
-        let err = apply_subset(instances, Some("missing"), None, None, None, None, StratifyMode::Proportional).unwrap_err();
+        let err = apply_subset(
+            instances,
+            Some("missing"),
+            None,
+            None,
+            None,
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown id(s): missing"), "{err}");
     }
 
@@ -3087,8 +3104,26 @@ instance = "inst"
             other: serde_json::Map::new(),
         };
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
-        let (a, _) = apply_subset(instances.clone(), None, None, Some(3), Some(42), None, StratifyMode::Proportional).unwrap();
-        let (b, _) = apply_subset(instances, None, None, Some(3), Some(42), None, StratifyMode::Proportional).unwrap();
+        let (a, _) = apply_subset(
+            instances.clone(),
+            None,
+            None,
+            Some(3),
+            Some(42),
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap();
+        let (b, _) = apply_subset(
+            instances,
+            None,
+            None,
+            Some(3),
+            Some(42),
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap();
         let a_ids: Vec<_> = a.into_iter().map(|i| i.instance_id).collect();
         let b_ids: Vec<_> = b.into_iter().map(|i| i.instance_id).collect();
         assert_eq!(a_ids, b_ids);
@@ -3105,8 +3140,16 @@ instance = "inst"
             other: serde_json::Map::new(),
         };
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
-        let (filtered, spec) =
-            apply_subset(instances, Some("a,b,c,d,e"), Some(2), Some(4), Some(7), None, StratifyMode::Proportional).unwrap();
+        let (filtered, spec) = apply_subset(
+            instances,
+            Some("a,b,c,d,e"),
+            Some(2),
+            Some(4),
+            Some(7),
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap();
         assert_eq!(spec.original_count, 6);
         assert_eq!(spec.selected_count, 2);
         assert_eq!(spec.limit, Some(2));
@@ -3175,7 +3218,10 @@ instance = "inst"
             StratifyMode::Proportional,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("`--stratify-by` requires `--sample`"));
+        assert!(
+            err.to_string()
+                .contains("`--stratify-by` requires `--sample`")
+        );
 
         let err = apply_subset(
             instances,
@@ -3273,7 +3319,16 @@ instance = "inst"
             image: None,
             other: serde_json::Map::new(),
         }];
-        let err = apply_subset(instances, Some("a"), Some(0), None, None, None, StratifyMode::Proportional).unwrap_err();
+        let err = apply_subset(
+            instances,
+            Some("a"),
+            Some(0),
+            None,
+            None,
+            None,
+            StratifyMode::Proportional,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("produced zero instances"),
             "unexpected err: {err}"
