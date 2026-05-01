@@ -1257,12 +1257,15 @@ fn evaluate_cost_attribution_dedupes_legacy_root_and_nested_run_slots() {
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
     let rows = v["cost_attribution"].as_array().unwrap();
-    assert!(rows.iter().any(|row| {
-        row["bucket"] == "step_limit" && row["n"] == 1 && row["total_usd"] == 0.1
-    }));
-    assert!(rows.iter().any(|row| {
-        row["bucket"] == "TOTAL" && row["n"] == 1 && row["total_usd"] == 0.1
-    }));
+    assert!(
+        rows.iter().any(|row| {
+            row["bucket"] == "step_limit" && row["n"] == 1 && row["total_usd"] == 0.1
+        })
+    );
+    assert!(
+        rows.iter()
+            .any(|row| { row["bucket"] == "TOTAL" && row["n"] == 1 && row["total_usd"] == 0.1 })
+    );
 }
 
 #[test]
