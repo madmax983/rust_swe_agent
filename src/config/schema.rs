@@ -1,4 +1,4 @@
-//! Serde-visible shape of `config/*.yaml`. Mirrors mini-swe-agent's layout
+//! Serde-visible shape of `config/*.toml`. Mirrors mini-swe-agent's layout
 //! with stronger typing — enum variants for backends rather than free-text.
 
 use serde::{Deserialize, Serialize};

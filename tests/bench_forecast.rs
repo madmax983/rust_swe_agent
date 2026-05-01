@@ -40,7 +40,7 @@ fn write_dataset(path: &Path, instance_ids: &[&str]) {
 }
 
 fn write_step_limit_zero_config(path: &Path) {
-    std::fs::write(path, "agent:\n  step_limit: 0\n").unwrap();
+    std::fs::write(path, "[agent]\nstep_limit = 0\n").unwrap();
 }
 
 fn init_repo(dir: &Path) {
@@ -66,8 +66,8 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let yaml = format!("environment:\n  workdir: {}\n", dir.display());
-    Config::from_yaml_str(&yaml).unwrap()
+    let toml = format!("[environment]\nworkdir = \"{}\"\n", dir.display());
+    Config::from_toml_str(&toml).unwrap()
 }
 
 fn submit_response() -> String {
@@ -266,7 +266,7 @@ fn cli_exposes_forecast_command_and_forecast_first_flag() {
 fn cli_forecast_json_stdout_is_one_forecast_document() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    let config = work.path().join("config.yaml");
+    let config = work.path().join("config.toml");
     let output = work.path().join("runs");
     write_dataset(&dataset, &["a", "b"]);
     write_step_limit_zero_config(&config);
@@ -320,7 +320,7 @@ fn cli_forecast_json_stdout_is_one_forecast_document() {
 fn cli_forecast_dry_run_returns_preflight_without_artifacts() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    let config = work.path().join("config.yaml");
+    let config = work.path().join("config.toml");
     let output = work.path().join("runs");
     write_dataset(&dataset, &["a"]);
     write_step_limit_zero_config(&config);
@@ -369,7 +369,7 @@ fn cli_forecast_dry_run_returns_preflight_without_artifacts() {
 fn cli_forecast_first_dry_run_returns_preflight_without_artifacts() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    let config = work.path().join("config.yaml");
+    let config = work.path().join("config.toml");
     let output = work.path().join("runs");
     write_dataset(&dataset, &["a"]);
     write_step_limit_zero_config(&config);
@@ -423,7 +423,7 @@ fn cli_forecast_first_dry_run_returns_preflight_without_artifacts() {
 fn cli_fail_over_cap_returns_nonzero_when_forecast_exceeds_cap() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    let config = work.path().join("config.yaml");
+    let config = work.path().join("config.toml");
     let output = work.path().join("runs");
     write_dataset(&dataset, &["a"]);
     write_step_limit_zero_config(&config);
@@ -465,7 +465,7 @@ fn cli_fail_over_cap_returns_nonzero_when_forecast_exceeds_cap() {
 fn cli_forecast_first_blocks_or_launches_real_sweep() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
-    let config = work.path().join("config.yaml");
+    let config = work.path().join("config.toml");
     write_dataset(&dataset, &["a", "b"]);
     write_step_limit_zero_config(&config);
 

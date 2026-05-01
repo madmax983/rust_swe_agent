@@ -22,7 +22,7 @@ pub struct MiniCmd {
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
 
-    /// Optional path to a YAML config (overlays defaults).
+    /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -61,7 +61,7 @@ pub struct ReplayCmd {
     #[arg(long)]
     pub trajectory_path: PathBuf,
 
-    /// Optional path to a YAML config (overlays defaults).
+    /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
 

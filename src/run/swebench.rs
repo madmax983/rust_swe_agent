@@ -1096,7 +1096,7 @@ fn build_manifest(
     );
     let mut config_raw = effective_runtime_config(&args.config);
     redact_json_secrets(&mut config_raw);
-    let resolved = serde_yaml::to_string(&config_raw).unwrap_or_else(|_| "--- {}\n".to_owned());
+    let resolved = toml::to_string(&strip_json_nulls(config_raw)).unwrap_or_default();
     ProvenanceManifest {
         purpose: None,
         harness: resolve_harness_manifest(),
@@ -1308,6 +1308,21 @@ fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]
             *s = "<redacted>".into();
         }
         _ => {}
+    }
+}
+
+fn strip_json_nulls(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_json_nulls(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(a) => {
+            serde_json::Value::Array(a.into_iter().map(strip_json_nulls).collect())
+        }
+        other => other,
     }
 }
 
@@ -2121,6 +2136,18 @@ mod tests {
     }
 
     #[test]
+    fn strip_json_nulls_removes_nulls_and_traverses_arrays() {
+        let v = serde_json::json!({
+            "a": null,
+            "b": 1,
+            "c": [{"x": null, "y": 2}],
+        });
+        let stripped = strip_json_nulls(v);
+        // null object keys are stripped; array elements are recursed into
+        assert_eq!(stripped, serde_json::json!({"b": 1, "c": [{"y": 2}]}));
+    }
+
+    #[test]
     fn manifest_config_uses_effective_runtime_overrides() {
         let mut cfg = Config::defaults().unwrap();
         cfg.root.agent.step_limit = 7;
@@ -2160,8 +2187,13 @@ mod tests {
             "2026-01-01T00:00:00Z",
             None,
         );
-        assert!(manifest.config.resolved.contains("step_limit: 7"));
-        assert!(manifest.config.resolved.contains("name: override-model"));
+        assert!(manifest.config.resolved.contains("step_limit = 7"));
+        assert!(
+            manifest
+                .config
+                .resolved
+                .contains(r#"name = "override-model""#)
+        );
     }
 
     #[test]
@@ -2206,19 +2238,19 @@ mod tests {
 
     #[test]
     fn prompt_template_hash_changes_when_overlay_edits_prompt() {
-        let cfg_a = Config::from_yaml_str(
+        let cfg_a = Config::from_toml_str(
             r#"
-prompts:
-  system: "sys-a"
-  instance: "inst"
+[prompts]
+system = "sys-a"
+instance = "inst"
 "#,
         )
         .unwrap();
-        let cfg_b = Config::from_yaml_str(
+        let cfg_b = Config::from_toml_str(
             r#"
-prompts:
-  system: "sys-b"
-  instance: "inst"
+[prompts]
+system = "sys-b"
+instance = "inst"
 "#,
         )
         .unwrap();

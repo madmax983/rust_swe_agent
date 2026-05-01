@@ -79,8 +79,8 @@ fn init_repo(dir: &Path) {
 }
 
 fn config_with_workdir(dir: &Path) -> Config {
-    let yaml = format!("environment:\n  workdir: {}\n", dir.display());
-    Config::from_yaml_str(&yaml).unwrap()
+    let toml = format!("[environment]\nworkdir = \"{}\"\n", dir.display());
+    Config::from_toml_str(&toml).unwrap()
 }
 
 #[tokio::test]
