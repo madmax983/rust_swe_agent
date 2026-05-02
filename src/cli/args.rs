@@ -343,6 +343,19 @@ pub struct SwebenchCmd {
     /// Exit non-zero when the forecast projects the sweep will exceed cap.
     #[arg(long, default_value_t = false)]
     pub fail_over_cap: bool,
+
+    /// Cap aggregate provider request rate across all workers (requests/min).
+    /// When set, workers block (not spin) until budget is available.
+    /// Does NOT count blocked time against `--task-timeout`.
+    /// When unset, no RPM ceiling is enforced (opt-in, no behavior change).
+    #[arg(long)]
+    pub max_rpm: Option<u32>,
+
+    /// Cap aggregate input-token rate across all workers (tokens/min).
+    /// When set, workers block until the TPM bucket has capacity.
+    /// When unset, no TPM ceiling is enforced (opt-in, no behavior change).
+    #[arg(long)]
+    pub max_input_tpm: Option<u64>,
 }
 
 #[derive(Debug, Args)]

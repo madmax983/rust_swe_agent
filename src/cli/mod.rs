@@ -367,6 +367,8 @@ fn swebench_args_from_cmd(
         preflight_total_timeout_s: s.preflight_total_timeout_s,
         preflight_mode: preflight_mode.into(),
         skip_patch_validation: s.skip_patch_validation,
+        max_rpm: s.max_rpm,
+        max_input_tpm: s.max_input_tpm,
     }
 }
 

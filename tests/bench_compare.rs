@@ -188,6 +188,7 @@ fn write_results_with_filter_spec_and_model(
         }),
         cost_limit_usd: None,
         instances,
+        rate_limit_events: None,
     };
     std::fs::write(
         dir.join("results.json"),

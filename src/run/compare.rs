@@ -1962,6 +1962,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances,
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -2089,6 +2090,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
+            rate_limit_events: None,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -2418,6 +2420,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a")],
+            rate_limit_events: None,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -2670,6 +2673,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -2720,6 +2724,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a")],
+            rate_limit_events: None,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -2812,6 +2817,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -2904,6 +2910,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
