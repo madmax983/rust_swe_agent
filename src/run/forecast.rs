@@ -404,12 +404,11 @@ fn calibration_instance_ids(
     let planned = planned_instances(args)?;
     let (calibration, _) = swebench::apply_subset(
         planned,
-        None,
-        None,
-        Some(calibration_n),
-        Some(seed),
-        None,
-        swebench::StratifyMode::Proportional,
+        &swebench::ApplySubsetParams {
+            sample: Some(calibration_n),
+            seed: Some(seed),
+            ..Default::default()
+        },
     )?;
     Ok(calibration
         .into_iter()
@@ -423,12 +422,14 @@ fn planned_instances(
     let instances = swebench::load_dataset(&args.dataset_path)?;
     let (filtered, _) = swebench::apply_subset(
         instances,
-        args.instance_ids.as_deref(),
-        args.limit,
-        args.sample,
-        args.seed,
-        args.stratify_by,
-        args.stratify_mode,
+        &swebench::ApplySubsetParams {
+            instance_ids_arg: args.instance_ids.as_deref(),
+            limit: args.limit,
+            sample: args.sample,
+            seed: args.seed,
+            stratify_by: args.stratify_by,
+            stratify_mode: args.stratify_mode,
+        },
     )?;
     Ok(filtered)
 }

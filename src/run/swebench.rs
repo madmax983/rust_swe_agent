@@ -835,12 +835,14 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let instances = load_dataset_from_bytes(&dataset_bytes)?;
     let (instances, filter_spec) = apply_subset(
         instances,
-        args.instance_ids.as_deref(),
-        args.limit,
-        args.sample,
-        args.seed,
-        args.stratify_by,
-        args.stratify_mode,
+        &ApplySubsetParams {
+            instance_ids_arg: args.instance_ids.as_deref(),
+            limit: args.limit,
+            sample: args.sample,
+            seed: args.seed,
+            stratify_by: args.stratify_by,
+            stratify_mode: args.stratify_mode,
+        },
     )?;
     let total = instances.len();
     let summary_path = args.output_dir.join("results.json");
@@ -1204,12 +1206,14 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         move || {
             apply_subset(
                 instances,
-                instance_ids.as_deref(),
-                limit,
-                sample,
-                seed,
-                stratify_by,
-                stratify_mode,
+                &ApplySubsetParams {
+                    instance_ids_arg: instance_ids.as_deref(),
+                    limit,
+                    sample,
+                    seed,
+                    stratify_by,
+                    stratify_mode,
+                },
             )
         },
     )
@@ -2506,38 +2510,50 @@ fn load_fresh_trajectory_info(
     read_trajectory_info(path)
 }
 
-pub(crate) fn apply_subset(
-    mut instances: Vec<SweBenchInstance>,
-    instance_ids_arg: Option<&str>,
-    limit: Option<usize>,
-    sample: Option<usize>,
-    seed: Option<u64>,
-    stratify_by: Option<StratifyBy>,
-    stratify_mode: StratifyMode,
-) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
-    if seed.is_some() && sample.is_none() {
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ApplySubsetParams<'a> {
+    pub instance_ids_arg: Option<&'a str>,
+    pub limit: Option<usize>,
+    pub sample: Option<usize>,
+    pub seed: Option<u64>,
+    pub stratify_by: Option<StratifyBy>,
+    pub stratify_mode: StratifyMode,
+}
+
+fn validate_subset_params(
+    params: &ApplySubsetParams<'_>,
+    requested_ids: Option<&Vec<String>>,
+) -> Result<(), Error> {
+    if params.seed.is_some() && params.sample.is_none() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--seed` requires `--sample`".into(),
         )));
     }
-
-    let original_count = instances.len();
-    let requested_ids = parse_instance_ids_arg(instance_ids_arg)?;
-    if stratify_by.is_some() && sample.is_none() {
+    if params.stratify_by.is_some() && params.sample.is_none() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--stratify-by` requires `--sample`".into(),
         )));
     }
-    if stratify_by.is_none() && stratify_mode != StratifyMode::Proportional {
+    if params.stratify_by.is_none() && params.stratify_mode != StratifyMode::Proportional {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--stratify-mode` requires `--stratify-by`".into(),
         )));
     }
-    if stratify_by.is_some() && requested_ids.is_some() {
+    if params.stratify_by.is_some() && requested_ids.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--stratify-by` cannot be combined with `--instance-ids`".into(),
         )));
     }
+    Ok(())
+}
+
+pub(crate) fn apply_subset(
+    mut instances: Vec<SweBenchInstance>,
+    params: &ApplySubsetParams<'_>,
+) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
+    let original_count = instances.len();
+    let requested_ids = parse_instance_ids_arg(params.instance_ids_arg)?;
+    validate_subset_params(params, requested_ids.as_ref())?;
 
     if let Some(ids) = requested_ids.as_ref() {
         let dataset_ids: HashSet<&str> = instances.iter().map(|i| i.instance_id.as_str()).collect();
@@ -2556,15 +2572,16 @@ pub(crate) fn apply_subset(
         instances.retain(|i| include.contains(i.instance_id.as_str()));
     }
 
-    if let Some(n) = sample {
-        let seed_value = seed.ok_or_else(|| {
+    if let Some(n) = params.sample {
+        let seed_value = params.seed.ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(
                 "`--sample` requires `--seed`".into(),
             ))
         })?;
         if n < instances.len() {
-            if stratify_by == Some(StratifyBy::Repo) {
-                instances = stratified_sample_by_repo(instances, n, seed_value, stratify_mode);
+            if params.stratify_by == Some(StratifyBy::Repo) {
+                instances =
+                    stratified_sample_by_repo(instances, n, seed_value, params.stratify_mode);
             } else {
                 let mut rng = XorShift64::new(seed_value);
                 for i in (1..instances.len()).rev() {
@@ -2576,7 +2593,7 @@ pub(crate) fn apply_subset(
         }
     }
 
-    if let Some(n) = limit {
+    if let Some(n) = params.limit {
         if n < instances.len() {
             instances.truncate(n);
         }
@@ -2592,11 +2609,11 @@ pub(crate) fn apply_subset(
         original_count,
         selected_count: instances.len(),
         instance_ids: requested_ids,
-        limit,
-        sample,
-        seed,
-        stratify_by,
-        stratify_mode: stratify_by.map(|_| stratify_mode),
+        limit: params.limit,
+        sample: params.sample,
+        seed: params.seed,
+        stratify_by: params.stratify_by,
+        stratify_mode: params.stratify_by.map(|_| params.stratify_mode),
     };
     Ok((instances, spec))
 }
@@ -3388,12 +3405,10 @@ instance = "inst"
         ];
         let (filtered, spec) = apply_subset(
             instances.clone(),
-            Some("b"),
-            None,
-            None,
-            None,
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("b"),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(filtered.len(), 1);
@@ -3403,12 +3418,10 @@ instance = "inst"
 
         let err = apply_subset(
             instances,
-            Some("missing"),
-            None,
-            None,
-            None,
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("missing"),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(err.to_string().contains("unknown id(s): missing"), "{err}");
@@ -3427,22 +3440,20 @@ instance = "inst"
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
         let (a, _) = apply_subset(
             instances.clone(),
-            None,
-            None,
-            Some(3),
-            Some(42),
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(42),
+                ..Default::default()
+            },
         )
         .unwrap();
         let (b, _) = apply_subset(
             instances,
-            None,
-            None,
-            Some(3),
-            Some(42),
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(42),
+                ..Default::default()
+            },
         )
         .unwrap();
         let a_ids: Vec<_> = a.into_iter().map(|i| i.instance_id).collect();
@@ -3463,12 +3474,13 @@ instance = "inst"
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
         let (filtered, spec) = apply_subset(
             instances,
-            Some("a,b,c,d,e"),
-            Some(2),
-            Some(4),
-            Some(7),
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a,b,c,d,e"),
+                limit: Some(2),
+                sample: Some(4),
+                seed: Some(7),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(spec.original_count, 6);
@@ -3502,12 +3514,13 @@ instance = "inst"
         ];
         let (filtered, _) = apply_subset(
             instances,
-            None,
-            None,
-            Some(3),
-            Some(123),
-            Some(StratifyBy::Repo),
-            StratifyMode::Balanced,
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(123),
+                stratify_by: Some(StratifyBy::Repo),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
         )
         .unwrap();
         let repos: HashSet<_> = filtered
@@ -3531,12 +3544,10 @@ instance = "inst"
 
         let err = apply_subset(
             instances.clone(),
-            None,
-            None,
-            None,
-            None,
-            Some(StratifyBy::Repo),
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                stratify_by: Some(StratifyBy::Repo),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(
@@ -3546,12 +3557,13 @@ instance = "inst"
 
         let err = apply_subset(
             instances,
-            Some("a1"),
-            None,
-            Some(1),
-            Some(1),
-            Some(StratifyBy::Repo),
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a1"),
+                sample: Some(1),
+                seed: Some(1),
+                stratify_by: Some(StratifyBy::Repo),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(
@@ -3572,12 +3584,12 @@ instance = "inst"
         };
         let err = apply_subset(
             vec![inst],
-            None,
-            None,
-            Some(1),
-            Some(1),
-            None,
-            StratifyMode::Balanced,
+            &ApplySubsetParams {
+                sample: Some(1),
+                seed: Some(1),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(
@@ -3607,12 +3619,14 @@ instance = "inst"
 
         let (filtered, _) = apply_subset(
             instances,
-            None,
-            Some(3),
-            Some(6),
-            Some(5),
-            Some(StratifyBy::Repo),
-            StratifyMode::Balanced,
+            &ApplySubsetParams {
+                limit: Some(3),
+                sample: Some(6),
+                seed: Some(5),
+                stratify_by: Some(StratifyBy::Repo),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -3642,12 +3656,11 @@ instance = "inst"
         }];
         let err = apply_subset(
             instances,
-            Some("a"),
-            Some(0),
-            None,
-            None,
-            None,
-            StratifyMode::Proportional,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a"),
+                limit: Some(0),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(
