@@ -111,6 +111,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -159,6 +160,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -214,6 +216,7 @@ async fn max_retries_zero_disables_retry() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -273,6 +276,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -310,6 +314,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -365,6 +370,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -424,6 +430,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -459,6 +466,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();

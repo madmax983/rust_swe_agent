@@ -129,6 +129,8 @@ fn write_results_with_filter_spec_and_model(
         failures_by_category: BTreeMap::new(),
         budget_halted: 0,
         with_patch: 0,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,

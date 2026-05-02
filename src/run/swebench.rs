@@ -214,6 +214,14 @@ pub struct SweepResults {
     /// Equal to `submitted` minus the count of empty-diff submissions.
     #[serde(default)]
     pub with_patch: usize,
+    /// Instances downgraded from `submitted` because the captured diff was
+    /// empty at capture time.
+    #[serde(default)]
+    pub patch_empty: usize,
+    /// Instances downgraded from `submitted` because `git apply --check`
+    /// rejected the patch at capture time.
+    #[serde(default)]
+    pub patch_apply_invalid: usize,
     #[serde(default, rename = "total_input_tokens", alias = "total_prompt_tokens")]
     pub total_prompt_tokens: u64,
     #[serde(default)]
@@ -422,6 +430,18 @@ impl SweepResults {
             "With patch:         {} — non-empty diff against base_commit",
             self.with_patch
         );
+        if self.patch_empty > 0 || self.patch_apply_invalid > 0 {
+            let _ = writeln!(
+                s,
+                "Patch-empty:        {} — empty diff downgraded from submitted",
+                self.patch_empty
+            );
+            let _ = writeln!(
+                s,
+                "Patch-invalid:      {} — git apply --check failed at capture",
+                self.patch_apply_invalid
+            );
+        }
         let _ = writeln!(
             s,
             "Skipped:            {} — trajectory already on disk",
@@ -607,6 +627,9 @@ pub struct SwebenchArgs {
     pub preflight_check_timeout_s: u64,
     pub preflight_total_timeout_s: u64,
     pub preflight_mode: String,
+    /// When `true`, skip `git apply --check` and empty-diff validation after
+    /// patch capture. Escape hatch for non-git environments; default is off.
+    pub skip_patch_validation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,6 +824,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             failures_by_category: BTreeMap::new(),
             budget_halted: 0,
             with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -862,6 +887,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         failures_by_category: BTreeMap::new(),
         budget_halted: 0,
         with_patch: 0,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -1003,6 +1030,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
             retry_policy: retry_policy.clone(),
             task_timeout_secs: args.task_timeout_secs,
+            skip_patch_validation: args.skip_patch_validation,
         };
         set.spawn(async move {
             RunSlotResult::new(
@@ -1135,6 +1163,15 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         )
     });
 
+    let patch_empty = failures_by_category
+        .get(&FailureCategory::PatchEmpty)
+        .copied()
+        .unwrap_or(0);
+    let patch_apply_invalid = failures_by_category
+        .get(&FailureCategory::PatchApplyInvalid)
+        .copied()
+        .unwrap_or(0);
+
     let sweep = SweepResults {
         total,
         submitted,
@@ -1143,6 +1180,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         failures_by_category,
         budget_halted,
         with_patch: accounting.with_patch,
+        patch_empty,
+        patch_apply_invalid,
         total_prompt_tokens: token_breakdown.input_tokens,
         total_cache_read_tokens: token_breakdown.cache_read_tokens,
         total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
@@ -1797,7 +1836,7 @@ struct SweepAccounting {
 
 impl SweepAccounting {
     fn add_result(&mut self, result: &InstanceResult) {
-        if result.non_empty_patch {
+        if result.non_empty_patch && result.outcome.as_deref() == Some(outcome::SUBMITTED) {
             self.with_patch += 1;
         }
         self.total_retries = self
@@ -2252,6 +2291,8 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "cost_limit" => Ok(FailureCategory::CostLimit),
         "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
+        "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
+        "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
@@ -2287,6 +2328,7 @@ struct RunOneParams {
     deterministic_usage_per_call: Option<ModelUsage>,
     retry_policy: RetryPolicy,
     task_timeout_secs: Option<u64>,
+    skip_patch_validation: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2298,6 +2340,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         deterministic_usage_per_call,
         retry_policy,
         task_timeout_secs,
+        skip_patch_validation,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -2345,6 +2388,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 base_commit: base_commit.clone(),
                 workdir: workdir.clone(),
                 patch_path: patch_path.clone(),
+                skip_patch_validation,
             }),
         };
         let run_err = crate::run::mini::run(args).await.err();
@@ -2485,6 +2529,8 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::CostLimit => "cost_limit",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::Unknown => "unknown",
     }
 }
@@ -2882,6 +2928,8 @@ mod tests {
             failures_by_category: BTreeMap::new(),
             budget_halted: 0,
             with_patch: 3,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 250_000,
             total_cache_read_tokens: 2_000_000,
             total_cache_creation_tokens: 250_000,
@@ -2947,6 +2995,8 @@ mod tests {
             failures_by_category: BTreeMap::new(),
             budget_halted: 2,
             with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -3061,6 +3111,7 @@ mod tests {
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
         };
         let manifest = build_manifest(
             &args,
@@ -3111,6 +3162,7 @@ mod tests {
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
         };
         let manifest = build_manifest(
             &args,
@@ -3171,6 +3223,7 @@ instance = "inst"
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -3255,6 +3308,7 @@ instance = "inst"
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))

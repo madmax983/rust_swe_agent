@@ -37,6 +37,18 @@ pub struct PatchCaptureSpec {
     /// "agent ran and changed nothing" from "agent never reached this
     /// instance".
     pub patch_path: PathBuf,
+    /// When `true`, skip `git apply --check` and empty-diff validation.
+    /// Escape hatch for non-git environments; not for normal use.
+    pub skip_patch_validation: bool,
+}
+
+/// Reasons why patch validation can fail after a successful `git diff` capture.
+#[derive(Debug)]
+pub enum PatchValidationFailure {
+    /// The captured diff was empty (zero bytes).
+    Empty,
+    /// `git apply --check` rejected the patch; carries trimmed stderr.
+    ApplyFailed(String),
 }
 
 pub struct MiniArgs {
@@ -64,6 +76,7 @@ pub struct MiniArgs {
     pub patch_capture: Option<PatchCaptureSpec>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
@@ -121,14 +134,38 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     {
         match capture_patch(agent.env.as_ref(), spec).await {
             Ok(diff) => {
-                if diff.is_empty() {
-                    tracing::warn!(
-                        instance = %args.trajectory_name,
-                        "agent submitted but produced an empty diff"
-                    );
-                }
+                // Always write the patch file — operators need to inspect
+                // failed patches too.
                 std::fs::write(&spec.patch_path, &diff)?;
                 patch_written = true;
+
+                match check_patch_validity(agent.env.as_ref(), spec, &diff).await {
+                    Ok(()) => {}
+                    Err(PatchValidationFailure::Empty) => {
+                        tracing::warn!(
+                            instance = %args.trajectory_name,
+                            "agent submitted but produced an empty diff; downgrading to error"
+                        );
+                        agent.trajectory.info.exit_reason = Some("error".into());
+                        agent.trajectory.info.failure_category = Some(FailureCategory::PatchEmpty);
+                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    }
+                    Err(PatchValidationFailure::ApplyFailed(reason)) => {
+                        tracing::warn!(
+                            instance = %args.trajectory_name,
+                            error = %reason,
+                            "patch apply check failed; downgrading outcome to error"
+                        );
+                        agent.trajectory.info.exit_reason = Some("error".into());
+                        agent.trajectory.info.failure_category =
+                            Some(FailureCategory::PatchApplyInvalid);
+                        agent.trajectory.info.other.insert(
+                            "patch_apply_error".into(),
+                            serde_json::Value::String(reason),
+                        );
+                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    }
+                }
             }
             Err(reason) => {
                 tracing::warn!(
@@ -226,6 +263,96 @@ fn classify_error(err: &Error) -> FailureCategory {
         Error::Model(_) => FailureCategory::ModelApi,
         _ => FailureCategory::AgentInternal,
     }
+}
+
+/// Validate that `diff` applies cleanly against `spec.base_commit` in a clean
+/// checkout, without touching the agent's working tree.
+///
+/// - Returns `Ok(())` immediately when `spec.skip_patch_validation` is `true`
+///   or `spec.base_commit` is `None` (standalone runs without a base).
+/// - Returns `Err(PatchValidationFailure::Empty)` when `diff` is empty.
+/// - Returns `Err(PatchValidationFailure::ApplyFailed(_))` when the worktree
+///   setup or `git apply --check` exits non-zero.
+///
+/// A temporary git worktree is created at `base_commit` so the check runs
+/// against the clean base state rather than the (already-modified) working
+/// tree.  Temp files are placed inside `spec.workdir` (the volume mount point
+/// in Docker) using relative paths so the shell command works correctly in
+/// both local and Docker environments.  The worktree and patch file are always
+/// removed after the check, success or failure.
+pub(crate) async fn check_patch_validity(
+    env: &dyn Environment,
+    spec: &PatchCaptureSpec,
+    diff: &str,
+) -> Result<(), PatchValidationFailure> {
+    if spec.skip_patch_validation {
+        return Ok(());
+    }
+    let Some(base_commit) = spec.base_commit.as_deref() else {
+        return Ok(());
+    };
+    if diff.is_empty() {
+        return Err(PatchValidationFailure::Empty);
+    }
+    validate_git_rev(base_commit).map_err(PatchValidationFailure::ApplyFailed)?;
+
+    // Use full nanoseconds for better uniqueness across concurrent calls.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+
+    // Place temp files inside spec.workdir so they are accessible from inside
+    // Docker containers (where the workdir is the mounted volume).  Relative
+    // names are used in the shell command so paths are correct regardless of
+    // how the volume is mapped inside the container.
+    let patch_name = format!(".patch_validate_{unique}.patch");
+    let wt_name = format!(".patch_validate_wt_{unique}");
+    let tmp_patch = spec.workdir.join(&patch_name);
+
+    std::fs::write(&tmp_patch, diff.as_bytes())
+        .map_err(|e| PatchValidationFailure::ApplyFailed(format!("write temp: {e}")))?;
+
+    // `patch_base_shell_arg` generates a shell-quoted env-var reference that
+    // expands to `base_commit` at runtime (cross-platform: POSIX `$VAR` /
+    // Windows `%VAR%`).
+    let base_arg = patch_base_shell_arg(base_commit);
+
+    // Create a clean worktree at base_commit (relative path, valid in Docker),
+    // validate the patch there, then always remove the worktree even on failure.
+    // `../{patch_name}` navigates from inside the worktree back to spec.workdir.
+    let cmd = format!(
+        "git worktree add -q --detach {wt} {base_arg} \
+        && git -C {wt} apply --check --no-3way -- ../{patch} ; \
+        RC=$? ; git worktree remove --force {wt} 2>/dev/null ; exit $RC",
+        wt = shell_quote_path(&wt_name),
+        patch = shell_quote_path(&patch_name),
+    );
+    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(30));
+    req.cwd = Some(spec.workdir.clone());
+    req.env
+        .insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
+
+    let run_result = env.run(req).await;
+    // Always remove the temp patch file, even when env.run fails.
+    let _ = std::fs::remove_file(&tmp_patch);
+    let result =
+        run_result.map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
+
+    if result.timed_out || result.exit_code != 0 {
+        let reason = result.stderr.trim();
+        return Err(PatchValidationFailure::ApplyFailed(if reason.is_empty() {
+            "git apply --check failed (no stderr)".into()
+        } else {
+            reason.to_owned()
+        }));
+    }
+    Ok(())
+}
+
+fn shell_quote_path(path: &str) -> String {
+    // The patch-validation command is POSIX sh in all environments (local
+    // Linux and Docker).  Always use single-quote escaping.
+    format!("'{}'", path.replace('\'', "'\\''"))
 }
 
 /// Snapshot the working tree at `spec.workdir` as a unified diff against
@@ -420,6 +547,7 @@ mod tests {
             base_commit: Some("HEAD@{1}".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let diff = capture_patch(&LocalEnvironment::new(), &spec)
@@ -445,6 +573,7 @@ mod tests {
             base_commit: Some("v1.2^{commit}".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let diff = capture_patch(&LocalEnvironment::new(), &spec)
@@ -470,6 +599,7 @@ mod tests {
             base_commit: Some("refs/heads/feat%test".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let diff = capture_patch(&LocalEnvironment::new(), &spec)
@@ -495,6 +625,7 @@ mod tests {
             base_commit: Some("refs/heads/feat\"test".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let diff = capture_patch(&LocalEnvironment::new(), &spec)
@@ -519,6 +650,7 @@ mod tests {
             base_commit: Some("HEAD^{/foo bar}".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let diff = capture_patch(&LocalEnvironment::new(), &spec)
@@ -542,6 +674,7 @@ mod tests {
             base_commit: Some("HEAD && echo injected > injected.txt".into()),
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
         };
 
         let result = capture_patch(&LocalEnvironment::new(), &spec).await;
@@ -553,6 +686,8 @@ mod tests {
         git(dir, &["init"]);
         git(dir, &["config", "user.email", "test@example.invalid"]);
         git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        git(dir, &["config", "tag.gpgsign", "false"]);
     }
 
     fn write_packed_ref(dir: &Path, ref_name: &str) {
@@ -593,5 +728,222 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap()
+    }
+
+    // ── RED-phase tests: patch validation ──────────────────────────────────
+
+    #[tokio::test]
+    async fn patch_validation_empty_diff_yields_patch_empty_error() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some(base_sha),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+        // empty diff string → should fail with PatchEmpty
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        assert!(
+            matches!(result, Err(PatchValidationFailure::Empty)),
+            "expected PatchEmpty, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_validation_valid_patch_passes() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        // Modify workdir (leave unstaged) — worktree approach checks against
+        // a clean checkout at base_sha, so this does not need to be reverted.
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some(base_sha.clone()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
+
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, &diff).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn patch_validation_wrong_base_yields_apply_invalid() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let initial_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        // Apply "before → after" change and commit it
+        std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
+        git(&repo, &["commit", "-am", "second"]);
+
+        // Build a diff that patches "before" → "after"
+        let _spec_diff = PatchCaptureSpec {
+            base_commit: Some(initial_sha.clone()),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+        // HEAD is at "second" commit; diff against initial gives before→after
+        // But workdir already has "after" committed, so diff is empty from cwd.
+        // Instead, craft the diff manually to simulate a stale patch.
+        let stale_diff = "diff --git a/hello.txt b/hello.txt\n\
+index 8a1218a..24c5735 100644\n\
+--- a/hello.txt\n\
++++ b/hello.txt\n\
+@@ -1 +1 @@\n\
+-before\n\
++after\n";
+
+        // Validate against the CURRENT HEAD (which already has "after") — should fail
+        let head_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        let spec_validate = PatchCaptureSpec {
+            base_commit: Some(head_sha),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+        let result =
+            check_patch_validity(&LocalEnvironment::new(), &spec_validate, stale_diff).await;
+        assert!(
+            matches!(result, Err(PatchValidationFailure::ApplyFailed(_))),
+            "expected ApplyFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_validation_skipped_when_flag_set() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        let spec = PatchCaptureSpec {
+            base_commit: Some(base_sha),
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: true,
+        };
+        // Empty diff + skip_patch_validation=true → should succeed
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        assert!(result.is_ok(), "expected Ok with skip flag, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn patch_validation_skipped_when_no_base_commit() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "base"]);
+
+        let spec = PatchCaptureSpec {
+            base_commit: None, // no base → validation is gated off
+            workdir: repo.clone(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        assert!(
+            result.is_ok(),
+            "expected Ok when base_commit is None, got {result:?}"
+        );
+    }
+
+    // ── End-to-end tests through mini::run() ──────────────────────────────
+
+    /// AC (b): agent submits with no workdir changes → empty diff → outcome
+    /// downgraded to error with failure_category=patch_empty.
+    #[tokio::test]
+    async fn mini_run_empty_diff_yields_patch_empty_outcome() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "content\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        let runs_dir = work.path().join("runs");
+        let patch_path = work.path().join("out.patch");
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+
+        let args = MiniArgs {
+            task: "do nothing".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "empty-diff-test".into(),
+            // Submit immediately without touching the repo → empty diff
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            stream_addr: None,
+            patch_capture: Some(PatchCaptureSpec {
+                base_commit: Some(base_sha),
+                workdir: repo.clone(),
+                patch_path: patch_path.clone(),
+                skip_patch_validation: false,
+            }),
+        };
+
+        run(args).await.unwrap();
+
+        // Trajectory must have outcome=error, failure_category=patch_empty
+        let traj_path = runs_dir.join("empty-diff-test.traj.json");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+
+        assert_eq!(
+            traj["info"]["outcome"].as_str(),
+            Some("error"),
+            "expected error outcome; trajectory:\n{traj_json}"
+        );
+        assert_eq!(
+            traj["info"]["failure_category"].as_str(),
+            Some("patch_empty"),
+            "expected patch_empty failure_category; trajectory:\n{traj_json}"
+        );
+
+        // Patch file must be written even though the diff is empty
+        assert!(patch_path.exists(), "patch file should exist on disk");
+        let patch_content = std::fs::read_to_string(&patch_path).unwrap();
+        assert!(
+            patch_content.is_empty(),
+            "patch file should be empty for a no-op submission"
+        );
     }
 }

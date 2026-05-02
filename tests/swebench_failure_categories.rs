@@ -130,6 +130,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
