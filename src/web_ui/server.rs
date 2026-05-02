@@ -26,11 +26,15 @@ pub async fn start_server(sweep_dir: PathBuf, port: u16) -> Result<(), Error> {
     tracing::info!("Starting Web UI server on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-        Error::Config(crate::error::ConfigError::Invalid(format!("Failed to bind to {addr}: {e}")))
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Failed to bind to {addr}: {e}"
+        )))
     })?;
 
     axum::serve(listener, app).await.map_err(|e| {
-        Error::Config(crate::error::ConfigError::Invalid(format!("Server error: {e}")))
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Server error: {e}"
+        )))
     })?;
 
     Ok(())
