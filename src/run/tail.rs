@@ -714,3 +714,17 @@ fn failure_label(category: FailureCategory) -> &'static str {
         FailureCategory::Unknown => "unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_label_formats_patch_validation_categories() {
+        assert_eq!(
+            failure_label(FailureCategory::PatchApplyInvalid),
+            "patch_apply_invalid"
+        );
+        assert_eq!(failure_label(FailureCategory::PatchEmpty), "patch_empty");
+    }
+}

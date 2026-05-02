@@ -1852,6 +1852,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn failure_label_formats_patch_validation_categories() {
+        assert_eq!(
+            failure_label(FailureCategory::PatchApplyInvalid),
+            "patch_apply_invalid"
+        );
+        assert_eq!(failure_label(FailureCategory::PatchEmpty), "patch_empty");
+    }
+
     fn submitted(id: &str) -> InstanceResult {
         InstanceResult {
             instance_id: id.into(),

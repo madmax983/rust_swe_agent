@@ -1079,9 +1079,21 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::model::Message;
-    use crate::trajectory::{TokenUsage, Trajectory, outcome};
+    use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
     use super::{TrajectoryDiffArgs, diff_paths, render_text};
+
+    #[test]
+    fn failure_label_formats_patch_validation_categories() {
+        assert_eq!(
+            super::failure_label(FailureCategory::PatchApplyInvalid),
+            "patch_apply_invalid"
+        );
+        assert_eq!(
+            super::failure_label(FailureCategory::PatchEmpty),
+            "patch_empty"
+        );
+    }
 
     #[test]
     fn diffing_and_rendering_eighty_step_trajectories_stays_under_500ms() {
