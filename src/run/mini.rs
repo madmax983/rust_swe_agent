@@ -513,8 +513,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use crate::env::RunResult;
+    use crate::error::EnvError;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::Mutex;
 
     #[test]
     fn slugify_basic() {
@@ -692,6 +695,101 @@ mod tests {
         assert!(!repo.join("injected.txt").exists());
     }
 
+    #[tokio::test]
+    async fn patch_validation_index_path_reports_exec_failure() {
+        let work = tempfile::tempdir().unwrap();
+        let env = StubEnv::new(Err(EnvError::UnexpectedExit("boom".into())));
+
+        let failure = patch_validation_index_path(&env, &patch_spec(work.path()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure.category, FailureCategory::PatchApplyInvalid);
+        assert!(
+            failure
+                .message
+                .contains("git rev-parse --git-path exec failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_validation_index_path_reports_timeout() {
+        let work = tempfile::tempdir().unwrap();
+        let env = StubEnv::new(Ok(RunResult {
+            stdout: String::new(),
+            stderr: "slow".into(),
+            exit_code: -1,
+            timed_out: true,
+        }));
+
+        let failure = patch_validation_index_path(&env, &patch_spec(work.path()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure.category, FailureCategory::PatchApplyInvalid);
+        assert_eq!(failure.message, "git rev-parse --git-path timed out: slow");
+    }
+
+    #[tokio::test]
+    async fn patch_validation_index_path_reports_nonzero_exit() {
+        let work = tempfile::tempdir().unwrap();
+        let env = StubEnv::new(Ok(RunResult {
+            stdout: String::new(),
+            stderr: "no git dir".into(),
+            exit_code: 9,
+            timed_out: false,
+        }));
+
+        let failure = patch_validation_index_path(&env, &patch_spec(work.path()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure.category, FailureCategory::PatchApplyInvalid);
+        assert_eq!(
+            failure.message,
+            "git rev-parse --git-path exited 9 (no git dir)"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_validation_index_path_rejects_empty_stdout() {
+        let work = tempfile::tempdir().unwrap();
+        let env = StubEnv::new(Ok(RunResult {
+            stdout: "\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        }));
+
+        let failure = patch_validation_index_path(&env, &patch_spec(work.path()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure.category, FailureCategory::PatchApplyInvalid);
+        assert_eq!(
+            failure.message,
+            "git rev-parse --git-path returned an empty path"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_captured_patch_rejects_empty_diff_before_git() {
+        let work = tempfile::tempdir().unwrap();
+        let env = StubEnv::new(Ok(RunResult {
+            stdout: "unused".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        }));
+
+        let failure = validate_captured_patch(&env, &patch_spec(work.path()), "")
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure.category, FailureCategory::PatchEmpty);
+        assert_eq!(failure.message, "captured patch is empty");
+    }
+
     fn init_repo(dir: &Path) {
         git(dir, &["init"]);
         git(dir, &["config", "user.email", "test@example.invalid"]);
@@ -736,5 +834,32 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap()
+    }
+
+    fn patch_spec(workdir: &Path) -> PatchCaptureSpec {
+        PatchCaptureSpec {
+            workdir: workdir.to_path_buf(),
+            base_commit: Some("HEAD".into()),
+            patch_path: workdir.join("out.patch"),
+        }
+    }
+
+    struct StubEnv {
+        result: Mutex<Option<Result<RunResult, EnvError>>>,
+    }
+
+    impl StubEnv {
+        fn new(result: Result<RunResult, EnvError>) -> Self {
+            Self {
+                result: Mutex::new(Some(result)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Environment for StubEnv {
+        async fn run(&self, _req: RunRequest) -> Result<RunResult, EnvError> {
+            self.result.lock().unwrap().take().unwrap()
+        }
     }
 }
