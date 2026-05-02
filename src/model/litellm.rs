@@ -97,6 +97,8 @@ impl Model for LitellmBackend {
 
         let lite_msgs = capped
             .map(|(m, _hint)| match m.role {
+                // Future: when litellm-rs supports cache_control on MessageContent::Text,
+                // apply `_hint` here.
                 Role::System => system_message(m.content.clone()),
                 Role::Assistant => assistant_message(m.content.clone()),
                 // Tool messages map to user role for litellm-rs's flat
