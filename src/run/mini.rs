@@ -76,6 +76,7 @@ pub struct MiniArgs {
     pub patch_capture: Option<PatchCaptureSpec>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
@@ -146,8 +147,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                             "agent submitted but produced an empty diff; downgrading to error"
                         );
                         agent.trajectory.info.exit_reason = Some("error".into());
-                        agent.trajectory.info.failure_category =
-                            Some(FailureCategory::PatchEmpty);
+                        agent.trajectory.info.failure_category = Some(FailureCategory::PatchEmpty);
                         agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
                     }
                     Err(PatchValidationFailure::ApplyFailed(reason)) => {
@@ -276,19 +276,24 @@ fn classify_error(err: &Error) -> FailureCategory {
 ///
 /// A temporary git worktree is created at `base_commit` so the check runs
 /// against the clean base state rather than the (already-modified) working
-/// tree.  The worktree is always removed after the check, success or failure.
+/// tree.  Temp files are placed inside `spec.workdir` (the volume mount point
+/// in Docker) using relative paths so the shell command works correctly in
+/// both local and Docker environments.  The worktree and patch file are always
+/// removed after the check, success or failure.
 pub(crate) async fn check_patch_validity(
     env: &dyn Environment,
     spec: &PatchCaptureSpec,
     diff: &str,
 ) -> Result<(), PatchValidationFailure> {
-    if spec.skip_patch_validation || spec.base_commit.is_none() {
+    if spec.skip_patch_validation {
         return Ok(());
     }
+    let Some(base_commit) = spec.base_commit.as_deref() else {
+        return Ok(());
+    };
     if diff.is_empty() {
         return Err(PatchValidationFailure::Empty);
     }
-    let base_commit = spec.base_commit.as_deref().unwrap();
     validate_git_rev(base_commit).map_err(PatchValidationFailure::ApplyFailed)?;
 
     // Use full nanoseconds for better uniqueness across concurrent calls.
@@ -296,28 +301,38 @@ pub(crate) async fn check_patch_validity(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp_patch = std::env::temp_dir().join(format!(".patch_validate_{unique}.patch"));
-    let wt_path = std::env::temp_dir().join(format!(".patch_validate_wt_{unique}"));
+
+    // Place temp files inside spec.workdir so they are accessible from inside
+    // Docker containers (where the workdir is the mounted volume).  Relative
+    // names are used in the shell command so paths are correct regardless of
+    // how the volume is mapped inside the container.
+    let patch_name = format!(".patch_validate_{unique}.patch");
+    let wt_name = format!(".patch_validate_wt_{unique}");
+    let tmp_patch = spec.workdir.join(&patch_name);
 
     std::fs::write(&tmp_patch, diff.as_bytes())
         .map_err(|e| PatchValidationFailure::ApplyFailed(format!("write temp: {e}")))?;
 
-    let tmp_patch_str = tmp_patch.to_string_lossy().into_owned();
-    let wt_path_str = wt_path.to_string_lossy().into_owned();
+    // `patch_base_shell_arg` generates a shell-quoted env-var reference that
+    // expands to `base_commit` at runtime (cross-platform: POSIX `$VAR` /
+    // Windows `%VAR%`).
+    let base_arg = patch_base_shell_arg(base_commit);
 
-    // Create a clean worktree at base_commit, validate the patch there, then
-    // always remove the worktree — even when apply fails.
+    // Create a clean worktree at base_commit (relative path, valid in Docker),
+    // validate the patch there, then always remove the worktree even on failure.
+    // `../{patch_name}` navigates from inside the worktree back to spec.workdir.
     let cmd = format!(
-        "git worktree add -q --detach {wt} \"${base_env}\" \
-        && git -C {wt} apply --check --no-3way -- {patch} ; \
+        "git worktree add -q --detach {wt} {base_arg} \
+        && git -C {wt} apply --check --no-3way -- ../{patch} ; \
         RC=$? ; git worktree remove --force {wt} 2>/dev/null ; exit $RC",
-        wt = shell_quote_path(&wt_path_str),
-        patch = shell_quote_path(&tmp_patch_str),
-        base_env = PATCH_BASE_ENV,
+        wt = shell_quote_path(&wt_name),
+        patch = shell_quote_path(&patch_name),
+        base_arg = base_arg,
     );
     let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(30));
     req.cwd = Some(spec.workdir.clone());
-    req.env.insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
+    req.env
+        .insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
 
     let result = env
         .run(req)
@@ -327,9 +342,12 @@ pub(crate) async fn check_patch_validity(
     let _ = std::fs::remove_file(&tmp_patch);
 
     if result.timed_out || result.exit_code != 0 {
-        return Err(PatchValidationFailure::ApplyFailed(
-            result.stderr.trim().to_owned(),
-        ));
+        let reason = result.stderr.trim();
+        return Err(PatchValidationFailure::ApplyFailed(if reason.is_empty() {
+            "git apply --check failed (no stderr)".into()
+        } else {
+            reason.to_owned()
+        }));
     }
     Ok(())
 }
@@ -765,7 +783,9 @@ mod tests {
             patch_path: work.path().join("out.patch"),
             skip_patch_validation: false,
         };
-        let diff = capture_patch(&LocalEnvironment::new(), &spec).await.unwrap();
+        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+            .await
+            .unwrap();
 
         let result = check_patch_validity(&LocalEnvironment::new(), &spec, &diff).await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
