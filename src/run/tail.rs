@@ -53,6 +53,7 @@ struct SweepMeta {
     total: Option<usize>,
     accounted_count: usize,
     estimated_cost_usd: Option<f64>,
+    model_name: Option<String>,
     budget_cap_usd: Option<f64>,
     budget_halted: usize,
     status: Option<String>,
@@ -69,6 +70,7 @@ struct TerminalRecord {
     outcome: Option<String>,
     exit_reason: Option<String>,
     failure_category: Option<FailureCategory>,
+    model_name: Option<String>,
     cost_usd: Option<f64>,
     prompt_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
@@ -88,6 +90,9 @@ impl TerminalRecord {
         }
         if self.failure_category.is_none() {
             self.failure_category = other.failure_category;
+        }
+        if self.model_name.is_none() {
+            self.model_name.clone_from(&other.model_name);
         }
         if self.cost_usd.is_none() {
             self.cost_usd = other.cost_usd;
@@ -112,7 +117,7 @@ impl TerminalRecord {
         }
     }
 
-    fn cost(&self) -> Option<f64> {
+    fn cost(&self, sweep_model: Option<&str>) -> Option<f64> {
         if let Some(cost) = self.cost_usd {
             let has_billable_tokens = self.prompt_tokens.unwrap_or(0)
                 + self.cache_read_tokens.unwrap_or(0)
@@ -128,7 +133,7 @@ impl TerminalRecord {
             self.cache_read_tokens.unwrap_or(0),
             self.cache_creation_tokens.unwrap_or(0),
             self.completion_tokens?,
-            "",
+            self.model_name.as_deref().or(sweep_model).unwrap_or(""),
         ))
     }
 }
@@ -178,9 +183,10 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         failure_counts = std::mem::take(&mut meta.failure_counts);
     }
 
+    let sweep_model = meta.model_name.as_deref();
     let record_cost = records
         .values()
-        .filter_map(TerminalRecord::cost)
+        .filter_map(|record| record.cost(sweep_model))
         .sum::<f64>();
     let cumulative_cost_usd = if records.is_empty() {
         meta.estimated_cost_usd.unwrap_or(0.0)
@@ -212,7 +218,7 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         0
     };
     let pending = remaining.saturating_sub(in_flight);
-    let burn_rate_usd_per_min = burn_rate(records.values(), options);
+    let burn_rate_usd_per_min = burn_rate(records.values(), options, sweep_model);
     let eta_seconds = eta_seconds(started, options.now, completed, total, is_complete);
     let pct_of_cap_used = meta
         .budget_cap_usd
@@ -306,6 +312,10 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
         estimated_cost_usd: get_f64(value, "estimated_cost_usd")
             .or_else(|| get_f64(value, "total_cost_usd"))
             .or_else(|| get_f64(value, "cumulative_cost_usd")),
+        model_name: value
+            .pointer("/manifest/model/name")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
         budget_cap_usd: get_f64(value, "budget_cap_usd")
             .or_else(|| get_f64(value, "cost_limit_usd"))
             .or_else(|| get_f64(value, "sweep_cost_limit_usd")),
@@ -349,6 +359,9 @@ fn record_from_result_value(value: &serde_json::Value) -> Option<TerminalRecord>
         outcome: get_str(value, "outcome").map(ToOwned::to_owned),
         exit_reason: get_str(value, "exit_reason").map(ToOwned::to_owned),
         failure_category: parse_failure_category_value(value.get("failure_category")),
+        model_name: get_str(value, "model_name")
+            .or_else(|| get_str(value, "model_name_or_path"))
+            .map(ToOwned::to_owned),
         cost_usd: get_f64(value, "cost_usd")
             .or_else(|| get_f64(value, "total_cost_usd"))
             .or_else(|| get_f64(value, "cumulative_cost_usd")),
@@ -457,6 +470,7 @@ fn terminal_record_from_trajectory(
         outcome: info.outcome,
         exit_reason: info.exit_reason,
         failure_category: info.failure_category,
+        model_name: info.model_name,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
         cache_read_tokens,
@@ -542,6 +556,7 @@ fn abort_reason(
 fn burn_rate<'a>(
     records: impl Iterator<Item = &'a TerminalRecord>,
     options: &SnapshotOptions,
+    sweep_model: Option<&str>,
 ) -> f64 {
     let window_secs = options.burn_rate_window.num_seconds().max(1);
     let cutoff = options.now - options.burn_rate_window;
@@ -551,7 +566,7 @@ fn burn_rate<'a>(
                 .ended_at
                 .is_some_and(|ended_at| ended_at >= cutoff && ended_at <= options.now)
         })
-        .filter_map(TerminalRecord::cost)
+        .filter_map(|record| record.cost(sweep_model))
         .sum::<f64>();
     #[allow(clippy::cast_precision_loss)]
     let window_minutes = window_secs as f64 / 60.0;
