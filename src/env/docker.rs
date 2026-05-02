@@ -112,7 +112,7 @@ impl Environment for DockerEnvironment {
             .into_owned();
 
         let mut cmd = Command::new("docker");
-        cmd.args(["exec", "-w", &wd]);
+        cmd.args(docker_exec_base_args(&wd, req.stdin.is_some()));
         for (k, v) in &req.env {
             cmd.args(["-e", &format!("{k}={v}")]);
         }
@@ -202,6 +202,15 @@ impl Environment for DockerEnvironment {
     }
 }
 
+fn docker_exec_base_args(wd: &str, attach_stdin: bool) -> Vec<&str> {
+    let mut args = vec!["exec"];
+    if attach_stdin {
+        args.push("-i");
+    }
+    args.extend(["-w", wd]);
+    args
+}
+
 impl Drop for DockerEnvironment {
     fn drop(&mut self) {
         if !self.cleanup_on_drop {
@@ -264,3 +273,24 @@ pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
 
 #[allow(dead_code)]
 const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_exec_base_args_attaches_stdin_when_requested() {
+        assert_eq!(
+            docker_exec_base_args("/work", true),
+            vec!["exec", "-i", "-w", "/work"]
+        );
+    }
+
+    #[test]
+    fn docker_exec_base_args_omits_interactive_stdin_without_input() {
+        assert_eq!(
+            docker_exec_base_args("/work", false),
+            vec!["exec", "-w", "/work"]
+        );
+    }
+}
