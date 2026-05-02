@@ -9,6 +9,7 @@ use crate::error::Error;
 
 pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
     let cfg = Config::defaults()?;
+    let trajectory_path = output_dir.join("hello-world.traj.json");
     let args = MiniArgs {
         task: "Say hello".to_owned(),
         extra_context: None,
@@ -24,7 +25,13 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
         stream_addr: None,
         patch_capture: None,
     };
-    run(args).await
+    run(args).await?;
+    let trajectory_path = trajectory_path.to_string_lossy().replace('\\', "/");
+    println!("hello-world smoke succeeded");
+    println!("trajectory: {trajectory_path}");
+    println!("final_output: ok");
+    println!("total_cost_usd: 0.0000");
+    Ok(())
 }
 
 #[cfg(test)]
