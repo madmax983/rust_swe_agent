@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 #[cfg(test)]
 mod tests {
     use crate::model::Model;
@@ -17,7 +18,10 @@ mod tests {
             let m_clone = Arc::clone(&m);
             handlers.push(task::spawn(async move {
                 for _ in 0..10 {
-                    let _ = m_clone.query(&[], &QueryOpts::default()).await;
+                    m_clone
+                        .query(&[], &QueryOpts::default())
+                        .await
+                        .expect("model query failed");
                 }
             }));
         }
