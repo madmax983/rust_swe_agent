@@ -88,15 +88,14 @@ pub fn estimate_cost_usd(
     completion_tokens: u64,
     model: &str,
 ) -> f64 {
-    let (cache_read_multiplier, cache_creation_multiplier) =
-        if is_anthropic_model(model) {
-            (
-                ANTHROPIC_CACHE_READ_MULTIPLIER,
-                ANTHROPIC_CACHE_CREATION_MULTIPLIER,
-            )
-        } else {
-            (1.0, 1.0)
-        };
+    let (cache_read_multiplier, cache_creation_multiplier) = if is_anthropic_model(model) {
+        (
+            ANTHROPIC_CACHE_READ_MULTIPLIER,
+            ANTHROPIC_CACHE_CREATION_MULTIPLIER,
+        )
+    } else {
+        (1.0, 1.0)
+    };
     #[allow(clippy::cast_precision_loss)]
     let p = prompt_tokens as f64;
     #[allow(clippy::cast_precision_loss)]
