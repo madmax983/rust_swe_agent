@@ -335,8 +335,8 @@ pub(crate) async fn check_patch_validity(
     let run_result = env.run(req).await;
     // Always remove the temp patch file, even when env.run fails.
     let _ = std::fs::remove_file(&tmp_patch);
-    let result = run_result
-        .map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
+    let result =
+        run_result.map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
 
     if result.timed_out || result.exit_code != 0 {
         let reason = result.stderr.trim();
