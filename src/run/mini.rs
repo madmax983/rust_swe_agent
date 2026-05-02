@@ -351,12 +351,9 @@ pub(crate) async fn check_patch_validity(
 }
 
 fn shell_quote_path(path: &str) -> String {
-    // Single-quote the path for POSIX shells, escaping embedded single-quotes.
-    if cfg!(windows) {
-        format!("\"{}\"", path.replace('"', "\\\""))
-    } else {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    }
+    // The patch-validation command is POSIX sh in all environments (local
+    // Linux and Docker).  Always use single-quote escaping.
+    format!("'{}'", path.replace('\'', "'\\''"))
 }
 
 /// Snapshot the working tree at `spec.workdir` as a unified diff against
