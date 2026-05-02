@@ -89,7 +89,7 @@ pub fn estimate_cost_usd(
     model: &str,
 ) -> f64 {
     let (cache_read_multiplier, cache_creation_multiplier) =
-        if model.is_empty() || is_anthropic_model(model) {
+        if is_anthropic_model(model) {
             (
                 ANTHROPIC_CACHE_READ_MULTIPLIER,
                 ANTHROPIC_CACHE_CREATION_MULTIPLIER,
@@ -2781,6 +2781,14 @@ mod tests {
         assert!((cache_creation - 3.75).abs() < 1e-9, "got {cache_creation}");
         assert!(cache_read < cold);
         assert!(cache_creation > cold);
+    }
+
+    #[test]
+    fn cost_estimate_without_model_name_does_not_apply_cache_multipliers() {
+        let cache_read = estimate_cost_usd(0, 1_000_000, 0, 0, "");
+        let cache_creation = estimate_cost_usd(0, 0, 1_000_000, 0, "");
+        assert!((cache_read - 3.0).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.0).abs() < 1e-9, "got {cache_creation}");
     }
 
     #[test]

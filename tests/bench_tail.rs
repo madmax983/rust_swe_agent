@@ -208,6 +208,34 @@ fn snapshot_marks_budget_halt_as_abort() {
 }
 
 #[test]
+fn snapshot_uses_total_cost_usd_metadata_when_no_records_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 2,
+            "submitted": 0,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 0,
+            "total_input_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_cost_usd": 1.75,
+            "instances": []
+        }),
+    );
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap()),
+    )
+    .unwrap();
+
+    assert!((snap.cumulative_cost_usd - 1.75).abs() < f64::EPSILON);
+}
+
+#[test]
 fn cli_once_json_outputs_single_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     write_results(

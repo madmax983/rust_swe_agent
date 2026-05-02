@@ -304,6 +304,7 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
         total,
         accounted_count,
         estimated_cost_usd: get_f64(value, "estimated_cost_usd")
+            .or_else(|| get_f64(value, "total_cost_usd"))
             .or_else(|| get_f64(value, "cumulative_cost_usd")),
         budget_cap_usd: get_f64(value, "budget_cap_usd")
             .or_else(|| get_f64(value, "cost_limit_usd"))
