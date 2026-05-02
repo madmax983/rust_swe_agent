@@ -134,6 +134,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         task_timeout_secs: m.task_timeout_secs,
         stream_addr,
         patch_capture: None,
+        skip_patch_validation: m.skip_patch_validation,
     };
     crate::run::mini::run(args).await
 }
@@ -356,6 +357,7 @@ fn swebench_args_from_cmd(
         retry_backoff_base_ms: s.retry_backoff_base_ms,
         retry_backoff_cap_s: s.retry_backoff_cap_s,
         retry_on_resume: s.retry_on_resume,
+        skip_patch_validation: s.skip_patch_validation,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         config_overlay_paths: s.config.into_iter().collect(),

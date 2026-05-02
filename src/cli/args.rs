@@ -69,6 +69,10 @@ pub struct MiniCmd {
     /// unset, no server is started.
     #[arg(long)]
     pub stream: Option<String>,
+
+    /// Skip capture-time patch validation when a patch capture spec is used.
+    #[arg(long, default_value_t = false)]
+    pub skip_patch_validation: bool,
 }
 
 #[derive(Debug, Args)]
@@ -284,6 +288,10 @@ pub struct SwebenchCmd {
     /// `failure_category` is retryable instead of skipping them.
     #[arg(long, default_value_t = false)]
     pub retry_on_resume: bool,
+
+    /// Skip capture-time `git apply --check` validation for submitted patches.
+    #[arg(long, default_value_t = false)]
+    pub skip_patch_validation: bool,
 
     /// Run preflight checks and exit without launching tasks.
     #[arg(long, default_value_t = false)]

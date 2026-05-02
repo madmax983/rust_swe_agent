@@ -78,6 +78,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         retry_backoff_base_ms: 0,
         retry_backoff_cap_s: 0,
         retry_on_resume: false,
+        skip_patch_validation: true,
         deterministic_responses: Some(submit_only_responses()),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),

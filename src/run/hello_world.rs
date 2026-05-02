@@ -23,6 +23,7 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
         task_timeout_secs: None,
         stream_addr: None,
         patch_capture: None,
+        skip_patch_validation: false,
     };
     run(args).await
 }

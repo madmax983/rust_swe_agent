@@ -48,6 +48,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         "step",
         "cost",
         "wallclock",
+        "patch_apply_invalid",
+        "patch_empty",
         "internal",
         "unknown",
         "legacy",
@@ -72,6 +74,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         ("step", FailureCategory::StepLimit),
         ("cost", FailureCategory::CostLimit),
         ("wallclock", FailureCategory::WallclockTimeout),
+        ("patch_apply_invalid", FailureCategory::PatchApplyInvalid),
+        ("patch_empty", FailureCategory::PatchEmpty),
         ("internal", FailureCategory::AgentInternal),
         ("unknown", FailureCategory::Unknown),
     ] {
@@ -120,6 +124,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         retry_backoff_base_ms: 0,
         retry_backoff_cap_s: 0,
         retry_on_resume: false,
+        skip_patch_validation: false,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),
@@ -143,7 +148,10 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         FailureCategory::ModelParse,
         FailureCategory::StepLimit,
         FailureCategory::CostLimit,
+        FailureCategory::WallclockTimeout,
         FailureCategory::AgentInternal,
+        FailureCategory::PatchApplyInvalid,
+        FailureCategory::PatchEmpty,
         FailureCategory::Unknown,
     ] {
         assert_eq!(results.failures_by_category.get(&cat), Some(&1));
@@ -158,6 +166,10 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
             "step" => assert_eq!(r.failure_category, Some(FailureCategory::StepLimit)),
             "cost" => assert_eq!(r.failure_category, Some(FailureCategory::CostLimit)),
             "wallclock" => assert_eq!(r.failure_category, Some(FailureCategory::WallclockTimeout)),
+            "patch_apply_invalid" => {
+                assert_eq!(r.failure_category, Some(FailureCategory::PatchApplyInvalid));
+            }
+            "patch_empty" => assert_eq!(r.failure_category, Some(FailureCategory::PatchEmpty)),
             "internal" => assert_eq!(r.failure_category, Some(FailureCategory::AgentInternal)),
             "unknown" => assert_eq!(r.failure_category, Some(FailureCategory::Unknown)),
             other => panic!("unexpected id: {other}"),
@@ -172,6 +184,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
     assert!(table.contains("  - step_limit: 1"), "got: {table}");
     assert!(table.contains("  - cost_limit: 1"), "got: {table}");
     assert!(table.contains("  - wallclock_timeout: 1"), "got: {table}");
+    assert!(table.contains("  - patch_apply_invalid: 1"), "got: {table}");
+    assert!(table.contains("  - patch_empty: 1"), "got: {table}");
     assert!(table.contains("  - agent_internal: 1"), "got: {table}");
     assert!(table.contains("  - unknown: 1"), "got: {table}");
     assert!(

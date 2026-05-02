@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::Stdio as StdStdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::{Environment, RunRequest, RunResult};
@@ -118,12 +118,31 @@ impl Environment for DockerEnvironment {
         }
         cmd.arg(self.container_id.as_str())
             .args(["bash", "-c", &req.command])
-            .stdin(StdStdio::null())
+            .stdin(if req.stdin.is_some() {
+                StdStdio::piped()
+            } else {
+                StdStdio::null()
+            })
             .stdout(StdStdio::piped())
             .stderr(StdStdio::piped())
             .kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
+        let stdin_task = match req.stdin {
+            Some(input) => {
+                let mut stdin_pipe = child.stdin.take().ok_or_else(|| {
+                    EnvError::UnexpectedExit("docker exec stdin pipe missing".into())
+                })?;
+                Some(tokio::spawn(async move {
+                    stdin_pipe
+                        .write_all(input.as_bytes())
+                        .await
+                        .map_err(EnvError::Io)?;
+                    stdin_pipe.shutdown().await.map_err(EnvError::Io)
+                }))
+            }
+            None => None,
+        };
         let mut stdout_pipe = child
             .stdout
             .take()
@@ -143,6 +162,11 @@ impl Environment for DockerEnvironment {
             r1.map_err(EnvError::Io)?;
             r2.map_err(EnvError::Io)?;
             let status = child.wait().await.map_err(EnvError::Io)?;
+            if let Some(stdin_task) = stdin_task {
+                stdin_task.await.map_err(|e| {
+                    EnvError::UnexpectedExit(format!("docker exec stdin writer task failed: {e}"))
+                })??;
+            }
             Ok::<_, EnvError>((
                 String::from_utf8_lossy(&stdout_buf).into_owned(),
                 String::from_utf8_lossy(&stderr_buf).into_owned(),

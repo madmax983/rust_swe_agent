@@ -1031,6 +1031,8 @@ fn failure_label(category: FailureCategory) -> &'static str {
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::Unknown => "unknown",
     }

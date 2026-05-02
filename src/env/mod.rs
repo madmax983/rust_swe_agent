@@ -27,6 +27,8 @@ pub use local::LocalEnvironment;
 pub struct RunRequest {
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
@@ -38,6 +40,7 @@ impl RunRequest {
     pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
+            stdin: None,
             cwd: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(60),

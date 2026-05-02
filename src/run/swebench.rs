@@ -205,6 +205,10 @@ pub struct SweepResults {
     pub errored: usize,
     #[serde(default)]
     pub failures_by_category: BTreeMap<FailureCategory, usize>,
+    #[serde(default)]
+    pub patch_apply_invalid: usize,
+    #[serde(default)]
+    pub patch_empty: usize,
     /// Tasks that never started because the sweep-level USD budget was
     /// exhausted before they could acquire a worker permit. Counted in
     /// `total` but excluded from `submitted` and `errored`.
@@ -417,6 +421,8 @@ impl SweepResults {
         let _ = writeln!(s, "Total tasks:        {}", self.total);
         write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
+        let _ = writeln!(s, "Patch apply invalid: {}", self.patch_apply_invalid);
+        let _ = writeln!(s, "Patch empty:        {}", self.patch_empty);
         let _ = writeln!(
             s,
             "With patch:         {} — non-empty diff against base_commit",
@@ -589,6 +595,8 @@ pub struct SwebenchArgs {
     /// If true, `--resume` re-runs previously completed instances whose
     /// stored `failure_category` is retryable.
     pub retry_on_resume: bool,
+    /// If true, submitted patches are captured without empty/apply validation.
+    pub skip_patch_validation: bool,
     /// Per-task deterministic responses, cloned into each spawned `MiniArgs`.
     /// Lets sweeps run end-to-end against a scripted model without network
     /// I/O — mainly useful for tests and local smoke checks.
@@ -799,6 +807,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
+            patch_apply_invalid: 0,
+            patch_empty: 0,
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
@@ -860,6 +870,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         skipped: 0,
         errored: 0,
         failures_by_category: BTreeMap::new(),
+        patch_apply_invalid: 0,
+        patch_empty: 0,
         budget_halted: 0,
         with_patch: 0,
         total_prompt_tokens: 0,
@@ -1003,6 +1015,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
             retry_policy: retry_policy.clone(),
             task_timeout_secs: args.task_timeout_secs,
+            skip_patch_validation: args.skip_patch_validation,
         };
         set.spawn(async move {
             RunSlotResult::new(
@@ -1116,6 +1129,14 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             *failures_by_category.entry(cat).or_insert(0) += 1;
         }
     }
+    let patch_apply_invalid = failures_by_category
+        .get(&FailureCategory::PatchApplyInvalid)
+        .copied()
+        .unwrap_or(0);
+    let patch_empty = failures_by_category
+        .get(&FailureCategory::PatchEmpty)
+        .copied()
+        .unwrap_or(0);
 
     write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
@@ -1141,6 +1162,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         skipped,
         errored,
         failures_by_category,
+        patch_apply_invalid,
+        patch_empty,
         budget_halted,
         with_patch: accounting.with_patch,
         total_prompt_tokens: token_breakdown.input_tokens,
@@ -2251,6 +2274,8 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "step_limit" => Ok(FailureCategory::StepLimit),
         "cost_limit" => Ok(FailureCategory::CostLimit),
         "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
+        "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
+        "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -2287,6 +2312,7 @@ struct RunOneParams {
     deterministic_usage_per_call: Option<ModelUsage>,
     retry_policy: RetryPolicy,
     task_timeout_secs: Option<u64>,
+    skip_patch_validation: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2298,6 +2324,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         deterministic_usage_per_call,
         retry_policy,
         task_timeout_secs,
+        skip_patch_validation,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -2346,6 +2373,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 workdir: workdir.clone(),
                 patch_path: patch_path.clone(),
             }),
+            skip_patch_validation,
         };
         let run_err = crate::run::mini::run(args).await.err();
         let info = load_fresh_trajectory_info(&traj_path, before_fp);
@@ -2484,6 +2512,8 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::Unknown => "unknown",
     }
@@ -2880,6 +2910,8 @@ mod tests {
             skipped: 3,
             errored: 1,
             failures_by_category: BTreeMap::new(),
+            patch_apply_invalid: 0,
+            patch_empty: 0,
             budget_halted: 0,
             with_patch: 3,
             total_prompt_tokens: 250_000,
@@ -2945,6 +2977,8 @@ mod tests {
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
+            patch_apply_invalid: 0,
+            patch_empty: 0,
             budget_halted: 2,
             with_patch: 0,
             total_prompt_tokens: 0,
@@ -3051,6 +3085,7 @@ mod tests {
             retry_backoff_base_ms: 1,
             retry_backoff_cap_s: 1,
             retry_on_resume: false,
+            skip_patch_validation: false,
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
@@ -3101,6 +3136,7 @@ mod tests {
             retry_backoff_base_ms: 1,
             retry_backoff_cap_s: 1,
             retry_on_resume: false,
+            skip_patch_validation: false,
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
@@ -3161,6 +3197,7 @@ instance = "inst"
             retry_backoff_base_ms: 1,
             retry_backoff_cap_s: 1,
             retry_on_resume: false,
+            skip_patch_validation: false,
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),
@@ -3245,6 +3282,7 @@ instance = "inst"
             retry_backoff_base_ms: 1,
             retry_backoff_cap_s: 1,
             retry_on_resume: false,
+            skip_patch_validation: false,
             deterministic_responses: None,
             deterministic_usage_per_call: None,
             config_overlay_paths: Vec::new(),

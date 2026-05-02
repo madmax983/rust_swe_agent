@@ -10,14 +10,14 @@
 #![allow(clippy::unwrap_used)]
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rust_swe_agent::Config;
 use rust_swe_agent::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{Trajectory, outcome};
+use rust_swe_agent::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Initialize a git repo at `dir` with one tracked file at the base
 /// commit. The file's existence is what makes the working tree's
@@ -73,6 +73,47 @@ fn toml_escape_path(path: &Path) -> String {
         .replace('"', "\\\"")
 }
 
+fn scripted_swebench_args(
+    dataset_path: PathBuf,
+    output_dir: PathBuf,
+    config: Config,
+    deterministic_responses: Vec<String>,
+    skip_patch_validation: bool,
+) -> SwebenchArgs {
+    SwebenchArgs {
+        dataset_path,
+        output_dir,
+        parallel: 1,
+        reruns: 1,
+        config,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        skip_patch_validation,
+        deterministic_responses: Some(deterministic_responses),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+    }
+}
+
 #[tokio::test]
 async fn sweep_emits_patch_artifact_for_modifying_agent() {
     let work = tempfile::tempdir().unwrap();
@@ -100,37 +141,13 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         toml_escape_path(&repo)
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
-    let results = run(SwebenchArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
-        parallel: 1,
-        reruns: 1,
-        config: cfg,
-        resume: false,
-        cost_limit_usd: None,
-        task_timeout_secs: None,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
-        max_retries: 0,
-        retry_on: None,
-        retry_backoff_base_ms: 0,
-        retry_backoff_cap_s: 0,
-        retry_on_resume: false,
-        deterministic_responses: Some(responses),
-        deterministic_usage_per_call: None,
-        config_overlay_paths: Vec::new(),
-        dry_run: false,
-        skip_preflight: true,
-        preflight_format: "text".into(),
-        skip_model_probe: true,
-        preflight_check_timeout_s: 10,
-        preflight_total_timeout_s: 60,
-        preflight_mode: "test".into(),
-    })
+    let results = run(scripted_swebench_args(
+        dataset,
+        output.clone(),
+        cfg,
+        responses,
+        false,
+    ))
     .await
     .unwrap();
 
@@ -177,7 +194,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
 }
 
 #[tokio::test]
-async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
+async fn empty_patch_downgrades_to_patch_empty_and_skips_predictions() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -193,44 +210,24 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         toml_escape_path(&repo)
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
-    let results = run(SwebenchArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
-        parallel: 1,
-        reruns: 1,
-        config: cfg,
-        resume: false,
-        cost_limit_usd: None,
-        task_timeout_secs: None,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
-        max_retries: 0,
-        retry_on: None,
-        retry_backoff_base_ms: 0,
-        retry_backoff_cap_s: 0,
-        retry_on_resume: false,
-        deterministic_responses: Some(vec![
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into(),
-        ]),
-        deterministic_usage_per_call: None,
-        config_overlay_paths: Vec::new(),
-        dry_run: false,
-        skip_preflight: true,
-        preflight_format: "text".into(),
-        skip_model_probe: true,
-        preflight_check_timeout_s: 10,
-        preflight_total_timeout_s: 60,
-        preflight_mode: "test".into(),
-    })
+    let results = run(scripted_swebench_args(
+        dataset,
+        output.clone(),
+        cfg,
+        vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into()],
+        false,
+    ))
     .await
     .unwrap();
 
-    assert_eq!(results.submitted, 1);
-    // Empty diff still counts as submitted but not as `with_patch`.
+    assert_eq!(results.submitted, 0);
+    assert_eq!(results.errored, 1);
+    assert_eq!(
+        results
+            .failures_by_category
+            .get(&FailureCategory::PatchEmpty),
+        Some(&1)
+    );
     assert_eq!(results.with_patch, 0);
 
     let patch_path = patch_path_for_run(&output, "noop-instance", 1);
@@ -240,19 +237,155 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         "diff should be empty"
     );
 
-    // Predictions: empty agent still gets a row with `model_patch: ""`,
-    // so sb-cli reports it as unresolved rather than missing.
     let preds_text = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
-    let lines: Vec<&str> = preds_text.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(lines.len(), 1);
-    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(v.get("model_patch").and_then(|v| v.as_str()), Some(""));
+    let line_count = preds_text.lines().filter(|l| !l.is_empty()).count();
+    assert_eq!(
+        line_count, 0,
+        "empty patch must not be submitted: {preds_text}"
+    );
 
     let traj: Trajectory = serde_json::from_str(
         &std::fs::read_to_string(trajectory_path_for_run(&output, "noop-instance", 1)).unwrap(),
     )
     .unwrap();
-    assert_eq!(traj.info.outcome.as_deref(), Some(outcome::SUBMITTED));
+    assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(
+        traj.info.failure_category,
+        Some(FailureCategory::PatchEmpty)
+    );
+}
+
+#[tokio::test]
+async fn invalid_patch_downgrades_to_patch_apply_invalid_and_skips_predictions() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let base_commit = init_repo_with_file(&repo, "hello.txt", "base\n");
+
+    let out = Command::new("git")
+        .args(["config", "apply.whitespace", "error"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git config apply.whitespace failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload = work.path().join("payload.txt");
+    std::fs::write(&payload, "agent   \n").unwrap();
+
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["invalid-instance"], &base_commit);
+
+    let mod_cmd = if cfg!(windows) {
+        format!(
+            "copy /Y \"{}\" \"{}\" >NUL",
+            payload.display(),
+            repo.join("hello.txt").display()
+        )
+    } else {
+        format!(
+            "cp \"{}\" \"{}\"",
+            payload.display(),
+            repo.join("hello.txt").display()
+        )
+    };
+    let responses = vec![
+        format!("```bash\n{mod_cmd}\n```"),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nmodified\n```".into(),
+    ];
+
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
+        toml_escape_path(&repo)
+    );
+    let cfg = Config::from_toml_str(&toml).unwrap();
+    let results = run(scripted_swebench_args(
+        dataset,
+        output.clone(),
+        cfg,
+        responses,
+        false,
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 0);
+    assert_eq!(results.errored, 1);
+    let invalid_traj_text =
+        std::fs::read_to_string(trajectory_path_for_run(&output, "invalid-instance", 1)).unwrap();
+    assert_eq!(
+        results
+            .failures_by_category
+            .get(&FailureCategory::PatchApplyInvalid),
+        Some(&1),
+        "results: {results:?}"
+    );
+
+    let patch_path = patch_path_for_run(&output, "invalid-instance", 1);
+    assert!(patch_path.exists(), "invalid patch must still be written");
+    assert!(
+        !std::fs::read_to_string(&patch_path).unwrap().is_empty(),
+        "invalid patch should remain inspectable"
+    );
+
+    let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert!(
+        preds.is_empty(),
+        "invalid patch must not be submitted: {preds}"
+    );
+
+    let traj: Trajectory = serde_json::from_str(&invalid_traj_text).unwrap();
+    assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(
+        traj.info.failure_category,
+        Some(FailureCategory::PatchApplyInvalid)
+    );
+    assert!(
+        traj.info.other.contains_key("patch_apply_error"),
+        "expected patch_apply_error in info.other: {:?}",
+        traj.info.other
+    );
+}
+
+#[tokio::test]
+async fn skip_patch_validation_preserves_empty_patch_submission() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let base_commit = init_repo_with_file(&repo, "hello.txt", "untouched\n");
+
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["noop-instance"], &base_commit);
+
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
+        toml_escape_path(&repo)
+    );
+    let cfg = Config::from_toml_str(&toml).unwrap();
+    let results = run(scripted_swebench_args(
+        dataset,
+        output.clone(),
+        cfg,
+        vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nnoop\n```".into()],
+        true,
+    ))
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 1);
+    assert_eq!(results.errored, 0);
+
+    let preds_text = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    let lines: Vec<&str> = preds_text.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1);
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v.get("model_patch").and_then(|v| v.as_str()), Some(""));
 }
 
 #[tokio::test]
@@ -272,39 +405,13 @@ async fn missing_workdir_marks_outcome_as_error() {
         toml_escape_path(&work.path().join("does-not-exist"))
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
-    let results = run(SwebenchArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
-        parallel: 1,
-        reruns: 1,
-        config: cfg,
-        resume: false,
-        cost_limit_usd: None,
-        task_timeout_secs: None,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
-        max_retries: 0,
-        retry_on: None,
-        retry_backoff_base_ms: 0,
-        retry_backoff_cap_s: 0,
-        retry_on_resume: false,
-        deterministic_responses: Some(vec![
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
-        ]),
-        deterministic_usage_per_call: None,
-        config_overlay_paths: Vec::new(),
-        dry_run: false,
-        skip_preflight: true,
-        preflight_format: "text".into(),
-        skip_model_probe: true,
-        preflight_check_timeout_s: 10,
-        preflight_total_timeout_s: 60,
-        preflight_mode: "test".into(),
-    })
+    let results = run(scripted_swebench_args(
+        dataset,
+        output.clone(),
+        cfg,
+        vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into()],
+        false,
+    ))
     .await
     .unwrap();
 

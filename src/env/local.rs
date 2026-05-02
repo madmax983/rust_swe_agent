@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
@@ -62,12 +62,31 @@ impl Environment for LocalEnvironment {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        if req.stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
         let mut process_guard = ProcessTreeGuard::new(child.id());
+        let stdin_task = match req.stdin {
+            Some(input) => {
+                let mut stdin_pipe = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| EnvError::UnexpectedExit("stdin pipe missing".into()))?;
+                Some(tokio::spawn(async move {
+                    stdin_pipe
+                        .write_all(input.as_bytes())
+                        .await
+                        .map_err(EnvError::Io)?;
+                    stdin_pipe.shutdown().await.map_err(EnvError::Io)
+                }))
+            }
+            None => None,
+        };
 
         // Take pipes so we can read them concurrently with `wait`.
         let mut stdout_pipe = child
@@ -84,6 +103,9 @@ impl Environment for LocalEnvironment {
         if let Ok(status) = tokio::time::timeout(req.timeout, child.wait()).await {
             let status = status.map_err(EnvError::Io)?;
             process_guard.disarm();
+            if let Some(stdin_task) = stdin_task {
+                join_writer(stdin_task, "stdin").await?;
+            }
             let stdout = join_reader(stdout_task, "stdout").await?;
             let stderr = join_reader(stderr_task, "stderr").await?;
             return Ok(RunResult {
@@ -95,6 +117,9 @@ impl Environment for LocalEnvironment {
         }
 
         process_guard.terminate_and_wait(&mut child).await;
+        if let Some(stdin_task) = stdin_task {
+            stdin_task.abort();
+        }
         stdout_task.abort();
         stderr_task.abort();
         Ok(RunResult {
@@ -104,6 +129,12 @@ impl Environment for LocalEnvironment {
             timed_out: true,
         })
     }
+}
+
+async fn join_writer(handle: JoinHandle<Result<(), EnvError>>, name: &str) -> Result<(), EnvError> {
+    handle
+        .await
+        .map_err(|e| EnvError::UnexpectedExit(format!("{name} writer task failed: {e}")))?
 }
 
 async fn read_pipe_to_string<R>(pipe: &mut R) -> Result<String, EnvError>

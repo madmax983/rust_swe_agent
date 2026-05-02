@@ -58,6 +58,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         retry_backoff_base_ms: 0,
         retry_backoff_cap_s: 0,
         retry_on_resume: false,
+        skip_patch_validation: true,
         deterministic_responses: Some(vec![long_running_response()]),
         deterministic_usage_per_call: None,
         config_overlay_paths: Vec::new(),

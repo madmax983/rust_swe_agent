@@ -127,6 +127,8 @@ fn write_results_with_filter_spec_and_model(
             .filter(|r| r.outcome.as_deref() == Some(outcome::ERROR))
             .count(),
         failures_by_category: BTreeMap::new(),
+        patch_apply_invalid: 0,
+        patch_empty: 0,
         budget_halted: 0,
         with_patch: 0,
         total_prompt_tokens: 0,

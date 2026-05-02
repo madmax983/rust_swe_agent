@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
 use crate::config::{Config, EnvKind};
@@ -62,6 +62,9 @@ pub struct MiniArgs {
     /// `patch_path`. Capture failures downgrade the run's recorded
     /// outcome to `error` rather than crashing the runner.
     pub patch_capture: Option<PatchCaptureSpec>,
+    /// Preserve pre-validation behavior for unusual non-git/debug runs.
+    /// When true, captured patches are written without empty/apply checks.
+    pub skip_patch_validation: bool,
 }
 
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
@@ -121,14 +124,20 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     {
         match capture_patch(agent.env.as_ref(), spec).await {
             Ok(diff) => {
-                if diff.is_empty() {
+                std::fs::write(&spec.patch_path, &diff)?;
+                patch_written = true;
+                if !args.skip_patch_validation {
+                    if let Err(failure) =
+                        validate_captured_patch(agent.env.as_ref(), spec, &diff).await
+                    {
+                        downgrade_for_patch_validation_failure(&mut agent, failure);
+                    }
+                } else if diff.is_empty() {
                     tracing::warn!(
                         instance = %args.trajectory_name,
                         "agent submitted but produced an empty diff"
                     );
                 }
-                std::fs::write(&spec.patch_path, &diff)?;
-                patch_written = true;
             }
             Err(reason) => {
                 tracing::warn!(
@@ -173,6 +182,47 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         server.shutdown().await;
     }
     Ok(())
+}
+
+struct PatchValidationFailure {
+    category: FailureCategory,
+    message: String,
+}
+
+impl PatchValidationFailure {
+    fn empty() -> Self {
+        Self {
+            category: FailureCategory::PatchEmpty,
+            message: "captured patch is empty".to_owned(),
+        }
+    }
+
+    fn invalid(message: String) -> Self {
+        Self {
+            category: FailureCategory::PatchApplyInvalid,
+            message,
+        }
+    }
+}
+
+fn downgrade_for_patch_validation_failure(
+    agent: &mut DefaultAgent,
+    failure: PatchValidationFailure,
+) {
+    agent.trajectory.info.exit_reason = Some("error".into());
+    agent.trajectory.info.failure_category = Some(failure.category);
+    if failure.category == FailureCategory::PatchApplyInvalid {
+        agent.trajectory.info.other.insert(
+            "patch_apply_error".into(),
+            serde_json::Value::String(failure.message),
+        );
+    } else {
+        agent.trajectory.info.other.insert(
+            "patch_error".into(),
+            serde_json::Value::String(failure.message),
+        );
+    }
+    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
 }
 
 fn finalize_error_trajectory(agent: &mut DefaultAgent, err: &Error) {
@@ -258,6 +308,99 @@ async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result
         ));
     }
     Ok(result.stdout)
+}
+
+async fn validate_captured_patch(
+    env: &dyn Environment,
+    spec: &PatchCaptureSpec,
+    diff: &str,
+) -> Result<(), PatchValidationFailure> {
+    if diff.is_empty() {
+        return Err(PatchValidationFailure::empty());
+    }
+
+    let base = validate_git_rev(spec.base_commit.as_deref().unwrap_or("HEAD"))
+        .map_err(PatchValidationFailure::invalid)?;
+    let base_arg = patch_base_shell_arg(base);
+    let index_path = patch_validation_index_path(env, spec).await?;
+    let cmd = patch_validation_command(&base_arg);
+    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    req.cwd = Some(spec.workdir.clone());
+    req.stdin = Some(diff.to_owned());
+    req.env.insert(PATCH_BASE_ENV.into(), base.to_owned());
+    req.env
+        .insert("RUST_SWE_AGENT_PATCH_INDEX".into(), index_path.clone());
+    req.env.insert("GIT_INDEX_FILE".into(), index_path);
+    let result = env.run(req).await.map_err(|e| {
+        PatchValidationFailure::invalid(format!("git apply --check exec failed: {e}"))
+    })?;
+    if result.timed_out {
+        return Err(PatchValidationFailure::invalid(format!(
+            "git apply --check timed out: {}",
+            result.stderr.trim()
+        )));
+    }
+    if result.exit_code != 0 {
+        let stderr = result.stderr.trim();
+        let message = if stderr.is_empty() {
+            format!("git apply --check exited {}", result.exit_code)
+        } else {
+            format!("git apply --check exited {} ({stderr})", result.exit_code)
+        };
+        return Err(PatchValidationFailure::invalid(message));
+    }
+    Ok(())
+}
+
+async fn patch_validation_index_path(
+    env: &dyn Environment,
+    spec: &PatchCaptureSpec,
+) -> Result<String, PatchValidationFailure> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let index_name = format!(
+        "rust-swe-agent-patch-check-{}-{now}.idx",
+        std::process::id()
+    );
+    let mut req = RunRequest::new(format!("git rev-parse --git-path {index_name}"))
+        .with_timeout(Duration::from_secs(10));
+    req.cwd = Some(spec.workdir.clone());
+    let result = env.run(req).await.map_err(|e| {
+        PatchValidationFailure::invalid(format!("git rev-parse --git-path exec failed: {e}"))
+    })?;
+    if result.timed_out {
+        return Err(PatchValidationFailure::invalid(format!(
+            "git rev-parse --git-path timed out: {}",
+            result.stderr.trim()
+        )));
+    }
+    if result.exit_code != 0 {
+        return Err(PatchValidationFailure::invalid(format!(
+            "git rev-parse --git-path exited {} ({})",
+            result.exit_code,
+            result.stderr.trim()
+        )));
+    }
+    let path = result.stdout.trim();
+    if path.is_empty() {
+        return Err(PatchValidationFailure::invalid(
+            "git rev-parse --git-path returned an empty path".to_owned(),
+        ));
+    }
+    Ok(path.to_owned())
+}
+
+fn patch_validation_command(base_arg: &str) -> String {
+    if cfg!(windows) {
+        format!(
+            "git read-tree --empty && git read-tree {base_arg} && git apply --check --cached --no-3way - & if errorlevel 1 (del /f /q \"%RUST_SWE_AGENT_PATCH_INDEX%\" 2>NUL & exit /b 1) else (del /f /q \"%RUST_SWE_AGENT_PATCH_INDEX%\" 2>NUL & exit /b 0)"
+        )
+    } else {
+        format!(
+            "set -o pipefail; trap 'rm -f \"$RUST_SWE_AGENT_PATCH_INDEX\"' EXIT; git read-tree --empty && git read-tree {base_arg} && git apply --check --cached --no-3way -"
+        )
+    }
 }
 
 fn validate_git_rev(rev: &str) -> Result<&str, String> {

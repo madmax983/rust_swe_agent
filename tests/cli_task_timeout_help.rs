@@ -14,6 +14,7 @@ fn mini_help_documents_task_timeout_seconds_and_step_limit_interaction() {
     assert!(help.contains("unset"));
     assert!(help.contains("step-limit"));
     assert!(help.contains("whichever fires first"));
+    assert!(help.contains("--skip-patch-validation"));
 }
 
 #[test]
@@ -28,4 +29,5 @@ fn swebench_help_documents_task_timeout_seconds_and_step_limit_interaction() {
     assert!(help.contains("unset"));
     assert!(help.contains("step-limit"));
     assert!(help.contains("whichever fires first"));
+    assert!(help.contains("--skip-patch-validation"));
 }

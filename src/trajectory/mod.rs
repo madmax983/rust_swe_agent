@@ -38,6 +38,8 @@ pub enum FailureCategory {
     StepLimit,
     CostLimit,
     WallclockTimeout,
+    PatchApplyInvalid,
+    PatchEmpty,
     AgentInternal,
     Unknown,
 }
