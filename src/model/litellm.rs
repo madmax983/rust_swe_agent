@@ -124,15 +124,18 @@ impl Model for LitellmBackend {
 
         let (input_tokens, output_tokens, cache_read_tokens) =
             resp.usage.as_ref().map_or((0, 0, 0), |u| {
-                let cached = u
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .unwrap_or(0);
+                let cached = u64::from(
+                    u.prompt_tokens_details
+                        .as_ref()
+                        .and_then(|d| d.cached_tokens)
+                        .unwrap_or(0),
+                );
+                let (input_tokens, cache_read_tokens) =
+                    split_prompt_usage(u64::from(u.prompt_tokens), cached);
                 (
-                    u64::from(u.prompt_tokens),
+                    input_tokens,
                     u64::from(u.completion_tokens),
-                    u64::from(cached),
+                    cache_read_tokens,
                 )
             });
 
@@ -186,6 +189,17 @@ fn extract_text_content(choice: &litellm_rs::Choice) -> String {
     }
 }
 
+// LiteLLM commonly reports `prompt_tokens` as the full prompt total while
+// also surfacing cached reads separately, so normalize to the uncached split
+// that the rest of the codebase expects.
+fn split_prompt_usage(prompt_tokens: u64, cached_tokens: u64) -> (u64, u64) {
+    if cached_tokens <= prompt_tokens {
+        (prompt_tokens - cached_tokens, cached_tokens)
+    } else {
+        (prompt_tokens, cached_tokens)
+    }
+}
+
 /// Backwards-compatible alias for code that previously referenced the
 /// direct-reqwest `AnthropicBackend`. The single `LitellmBackend` now
 /// covers all providers; `is_anthropic_model` still gates the explicit-cache
@@ -230,5 +244,19 @@ mod tests {
 
         let b2 = LitellmBackend::new("gpt-4");
         assert!(!b2.supports_explicit_cache());
+    }
+
+    #[test]
+    fn split_prompt_usage_subtracts_cached_subset_from_input_tokens() {
+        let (input_tokens, cache_read_tokens) = split_prompt_usage(1_000, 800);
+        assert_eq!(input_tokens, 200);
+        assert_eq!(cache_read_tokens, 800);
+    }
+
+    #[test]
+    fn split_prompt_usage_preserves_prompt_tokens_when_cached_exceeds_prompt_total() {
+        let (input_tokens, cache_read_tokens) = split_prompt_usage(100, 800);
+        assert_eq!(input_tokens, 100);
+        assert_eq!(cache_read_tokens, 800);
     }
 }
