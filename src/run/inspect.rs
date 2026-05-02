@@ -274,6 +274,10 @@ pub fn render_text(output: &InspectOutput) -> String {
     }
 }
 
+use comfy_table::Table;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+
 fn render_summary_text(report: &SummaryReport) -> String {
     let mut s = String::new();
     s.push_str("\n=== bench inspect summary ===\n");
@@ -291,21 +295,37 @@ fn render_summary_text(report: &SummaryReport) -> String {
     } else {
         s.push_str("Manifest: unavailable\n");
     }
-    s.push_str("\ninstance_id | outcome | failure_category | cost_usd | resolved\n");
-    s.push_str("----------------------------------------------------------------\n");
+    s.push('\n');
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "instance_id",
+            "outcome",
+            "failure_category",
+            "cost_usd",
+            "resolved",
+        ]);
+
     for row in &report.rows {
-        let _ = writeln!(
-            s,
-            "{} | {} | {} | {} | {}",
-            row.instance_id,
-            row.outcome.as_deref().unwrap_or("?"),
-            row.failure_category.map_or("none", failure_label),
+        table.add_row(vec![
+            row.instance_id.clone(),
+            row.outcome.as_deref().unwrap_or("?").to_string(),
+            row.failure_category
+                .map_or("none", failure_label)
+                .to_string(),
             row.cost_usd
                 .map_or_else(|| "?".into(), |c| format!("{c:.4}")),
             row.resolved
                 .map_or("?", |v| if v { "true" } else { "false" })
-        );
+                .to_string(),
+        ]);
     }
+
+    s.push_str(&table.to_string());
+    s.push('\n');
     s
 }
 
