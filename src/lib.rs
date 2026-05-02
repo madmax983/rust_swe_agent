@@ -28,3 +28,6 @@ pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
     FORMAT_VERSION, FailureCategory, MessageRecord, TokenUsage, Trajectory, TrajectoryInfo,
 };
+
+#[cfg(feature = "web-ui")]
+pub mod web_ui;

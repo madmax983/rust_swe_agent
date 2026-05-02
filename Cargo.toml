@@ -53,6 +53,8 @@ litellm-rs = { version = "*", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 comfy-table = "7.2.2"
+axum = { version = "0.8.9", optional = true }
+tower-http = { version = "0.6.8", features = ["fs"], optional = true }
 
 # NOTE on model backend:
 # `litellm-rs` ships a library API (`completion`, message constructors,
@@ -75,6 +77,7 @@ chaos = []
 live-anthropic = []
 markdown-export = []
 csv-export = []
+web-ui = ["dep:axum", "dep:tower-http"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

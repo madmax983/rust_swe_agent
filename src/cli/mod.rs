@@ -9,6 +9,8 @@ use crate::config::Config;
 use crate::error::Error;
 
 pub mod args;
+#[cfg(feature = "web-ui")]
+pub mod ui;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,6 +42,8 @@ pub enum Command {
     },
     /// Reap any leftover `rust-swe-agent=1` labeled containers.
     Cleanup,
+    #[cfg(feature = "web-ui")]
+    Ui(crate::cli::ui::UiCmd),
 }
 
 pub async fn run() -> Result<(), Error> {
@@ -73,6 +77,8 @@ pub async fn run() -> Result<(), Error> {
         } => bench_tail(t).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
+        #[cfg(feature = "web-ui")]
+        Command::Ui(u) => crate::cli::ui::run(u).await,
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
     }

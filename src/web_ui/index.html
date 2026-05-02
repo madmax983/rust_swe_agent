@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust SWE Agent - Trajectory Viewer</title>
+    <style>
+        :root {
+            --bg-color: #f5f7fa;
+            --sidebar-bg: #2c3e50;
+            --sidebar-text: #ecf0f1;
+            --main-bg: #ffffff;
+            --text-color: #333333;
+            --border-color: #e1e4e8;
+            --primary-color: #3498db;
+            --sys-bg: #fdf2e9;
+            --user-bg: #e8f4f8;
+            --assistant-bg: #f0f7e6;
+            --tool-bg: #f4f6f7;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+        }
+
+        #sidebar {
+            width: 300px;
+            background-color: var(--sidebar-bg);
+            color: var(--sidebar-text);
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #1a252f;
+        }
+
+        #sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #1a252f;
+        }
+
+        #sidebar-header h1 {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+
+        #instance-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .instance-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            border-bottom: 1px solid #34495e;
+            transition: background-color 0.2s;
+        }
+
+        .instance-item:hover {
+            background-color: #34495e;
+        }
+
+        .instance-item.active {
+            background-color: var(--primary-color);
+            border-left: 4px solid #fff;
+        }
+
+        #main-content {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-color: var(--main-bg);
+        }
+
+        #toolbar {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background-color: #fafbfc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #metadata-panel {
+            display: flex;
+            gap: 20px;
+            font-size: 0.9rem;
+        }
+
+        .metadata-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .metadata-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: #6a737d;
+            font-weight: 600;
+        }
+
+        .metadata-value {
+            font-weight: 500;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .status-submitted { background-color: #d4edda; color: #155724; }
+        .status-error { background-color: #f8d7da; color: #721c24; }
+        .status-limit { background-color: #fff3cd; color: #856404; }
+
+        #trajectory-view {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .message-header {
+            padding: 10px 15px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+        }
+
+        .message-content {
+            padding: 15px;
+            white-space: pre-wrap;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            overflow-x: auto;
+        }
+
+        .role-system .message-header { background-color: #f6dbbb; }
+        .role-system .message-content { background-color: var(--sys-bg); }
+
+        .role-user .message-header { background-color: #bae1f1; }
+        .role-user .message-content { background-color: var(--user-bg); }
+
+        .role-assistant .message-header { background-color: #d5ebd3; }
+        .role-assistant .message-content { background-color: var(--assistant-bg); }
+
+        .role-tool .message-header { background-color: #e2e6e9; }
+        .role-tool .message-content { background-color: var(--tool-bg); }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+            font-size: 1.2rem;
+            color: #6a737d;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .collapsible-content {
+            transition: max-height 0.3s ease-out;
+            max-height: none;
+        }
+
+        .collapsed .collapsible-content {
+            max-height: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            border-top: none;
+            overflow: hidden;
+        }
+
+        .toggle-icon::before {
+            content: '▼';
+            display: inline-block;
+            margin-right: 8px;
+            transition: transform 0.3s;
+        }
+
+        .collapsed .toggle-icon::before {
+            transform: rotate(-90deg);
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>Vantage UI</h1>
+            <div style="font-size: 0.8rem; margin-top: 5px; color: #95a5a6;">Rust SWE Agent</div>
+        </div>
+        <ul id="instance-list">
+            <li class="loading">Loading...</li>
+        </ul>
+    </div>
+
+    <div id="main-content">
+        <div id="toolbar" class="hidden">
+            <h2 id="instance-title" style="margin: 0; font-size: 1.2rem;"></h2>
+            <div id="metadata-panel">
+                <div class="metadata-item">
+                    <span class="metadata-label">Outcome</span>
+                    <span id="meta-outcome" class="status-badge"></span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Cost</span>
+                    <span id="meta-cost" class="metadata-value"></span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Tokens</span>
+                    <span id="meta-tokens" class="metadata-value"></span>
+                </div>
+                <div class="metadata-item">
+                    <span class="metadata-label">Steps</span>
+                    <span id="meta-steps" class="metadata-value"></span>
+                </div>
+            </div>
+        </div>
+
+        <div id="trajectory-view">
+            <div class="loading">Select an instance from the sidebar</div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchInstances();
+        });
+
+        async function fetchInstances() {
+            try {
+                const response = await fetch('/api/instances');
+                const instances = await response.json();
+
+                const listEl = document.getElementById('instance-list');
+                listEl.innerHTML = '';
+
+                if (instances.length === 0) {
+                    listEl.innerHTML = '<li style="padding: 20px; color: #95a5a6;">No trajectories found in sweep directory.</li>';
+                    return;
+                }
+
+                instances.forEach(id => {
+                    const li = document.createElement('li');
+                    li.className = 'instance-item';
+                    li.textContent = id;
+                    li.onclick = () => loadInstance(id, li);
+                    listEl.appendChild(li);
+                });
+            } catch (error) {
+                console.error('Failed to fetch instances:', error);
+                document.getElementById('instance-list').innerHTML =
+                    '<li style="padding: 20px; color: #e74c3c;">Failed to load instances.</li>';
+            }
+        }
+
+        async function loadInstance(id, element) {
+            // Update active state
+            document.querySelectorAll('.instance-item').forEach(el => el.classList.remove('active'));
+            if (element) element.classList.add('active');
+
+            const viewEl = document.getElementById('trajectory-view');
+            viewEl.innerHTML = '<div class="loading">Loading trajectory...</div>';
+
+            try {
+                const response = await fetch(`/api/instances/${encodeURIComponent(id)}`);
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to load instance');
+                }
+
+                // Assuming InspectOutput shape where transcripts is an array of objects
+                // with instance_id, summary (which has run_info), and steps (messages)
+
+                const data = result.data;
+                let instanceData = null;
+
+                // Handle different possible shapes of inspect output
+                if (data.transcripts && data.transcripts.length > 0) {
+                    instanceData = data.transcripts[0];
+                } else if (data.summaries && data.summaries.length > 0) {
+                    // Fallback if full transcript wasn't loaded
+                    viewEl.innerHTML = '<div class="loading">Trajectory loaded but no detailed messages found.</div>';
+                    updateMetadata(id, data.summaries[0]);
+                    return;
+                }
+
+                if (!instanceData) {
+                    throw new Error("Invalid data format received");
+                }
+
+                updateMetadata(id, instanceData.summary);
+                renderTrajectory(instanceData.steps || []);
+
+            } catch (error) {
+                console.error('Failed to load instance:', error);
+                viewEl.innerHTML = `<div style="padding: 20px; color: #e74c3c;">Error: ${error.message}</div>`;
+            }
+        }
+
+        function updateMetadata(id, summary) {
+            document.getElementById('toolbar').classList.remove('hidden');
+            document.getElementById('instance-title').textContent = id;
+
+            if (summary.run_info) {
+                const info = summary.run_info;
+
+                // Outcome
+                const outcomeEl = document.getElementById('meta-outcome');
+                outcomeEl.textContent = info.outcome || 'unknown';
+                outcomeEl.className = 'status-badge';
+                if (info.outcome === 'submitted') outcomeEl.classList.add('status-submitted');
+                else if (info.outcome === 'error') outcomeEl.classList.add('status-error');
+                else if (info.outcome === 'step_limit_reached') outcomeEl.classList.add('status-limit');
+
+                // Cost
+                document.getElementById('meta-cost').textContent =
+                    info.total_cost_usd !== null ? `$${info.total_cost_usd.toFixed(4)}` : 'N/A';
+
+                // Tokens
+                document.getElementById('meta-tokens').textContent =
+                    info.token_usage ?
+                    (info.token_usage.prompt_tokens + info.token_usage.completion_tokens).toLocaleString() : 'N/A';
+
+                // Steps
+                document.getElementById('meta-steps').textContent =
+                    info.steps !== null ? info.steps : 'N/A';
+            }
+        }
+
+        function renderTrajectory(steps) {
+            const viewEl = document.getElementById('trajectory-view');
+            viewEl.innerHTML = '';
+
+            if (steps.length === 0) {
+                viewEl.innerHTML = '<div style="padding: 20px; color: #666;">No messages in trajectory.</div>';
+                return;
+            }
+
+            steps.forEach((step, index) => {
+                const messageEl = document.createElement('div');
+                messageEl.className = `message role-${step.role}`;
+
+                // Auto-collapse long tool outputs or system prompts
+                if ((step.role === 'tool' && step.content.length > 500) || step.role === 'system') {
+                    messageEl.classList.add('collapsed');
+                }
+
+                const header = document.createElement('div');
+                header.className = 'message-header toggle-icon';
+
+                // Display role and extra info (like timestamp or cost if available)
+                let headerText = step.role.charAt(0).toUpperCase() + step.role.slice(1);
+
+                if (step.role === 'tool') {
+                    // Try to extract command from content or actions
+                    headerText = 'Tool / Bash Output';
+                }
+
+                header.innerHTML = `<span>${headerText}</span><span style="font-size: 0.8em; font-weight: normal;">Step ${index + 1}</span>`;
+                header.onclick = () => messageEl.classList.toggle('collapsed');
+
+                const content = document.createElement('div');
+                content.className = 'message-content collapsible-content';
+
+                // Escape HTML to prevent XSS
+                const textNode = document.createTextNode(step.content);
+                content.appendChild(textNode);
+
+                messageEl.appendChild(header);
+                messageEl.appendChild(content);
+                viewEl.appendChild(messageEl);
+            });
+        }
+    </script>
+</body>
+</html>
