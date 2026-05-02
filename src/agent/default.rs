@@ -140,44 +140,85 @@ pub fn retag_cache_hints(history: &mut [Message]) {
 
 #[async_trait]
 impl Agent for DefaultAgent {
-    // The step body walks through 7 sequential phases (limit checks →
-    // model query → action parse → bash → observation → trajectory
-    // record → bump). Splitting it out would obscure the linear flow
-    // for no real reuse benefit.
-    #[allow(clippy::too_many_lines)]
     async fn step(&mut self) -> Result<StepOutcome, Error> {
         // 1. Limit checks.
-        if self.steps >= self.config.root.agent.step_limit {
-            self.trajectory.info.exit_reason = Some("step_limit".into());
-            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
-            self.trajectory.info.steps = Some(self.steps);
-            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
-            return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
-                limit: self.config.root.agent.step_limit,
-            }));
-        }
-        if let Some(limit) = self.config.root.agent.cost_limit_usd {
-            if self.total_cost_usd >= limit {
-                self.trajectory.info.exit_reason = Some("cost_limit".into());
-                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
-                self.trajectory.info.steps = Some(self.steps);
-                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
-                // Cost limit is also a resource limit; map to the same
-                // coarse outcome as step limit per the three-value spec.
-                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
-                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
-                return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
-                    limit_usd: limit,
-                    spent_usd: self.total_cost_usd,
-                }));
-            }
+        if let Some(exit_reason) = self.check_limits() {
+            return Ok(StepOutcome::Terminate(exit_reason));
         }
 
         // 2. Retag cache hints (one line; backend handles capping).
         retag_cache_hints(&mut self.history);
 
         // 3. model.query.
+        let (resp_content, asst) = self.query_model().await?;
+
+        // 4. Parse action and 5. env.run.
+        let action = extract_action(&resp_content);
+        if let Some(exit) = self.handle_action(action, resp_content, asst).await? {
+            return Ok(StepOutcome::Terminate(exit));
+        }
+
+        self.steps += 1;
+        Ok(StepOutcome::Continue)
+    }
+}
+
+impl DefaultAgent {
+    async fn handle_action(
+        &mut self,
+        action: Action,
+        resp_content: String,
+        mut asst: Message,
+    ) -> Result<Option<ExitReason>, Error> {
+        match action {
+            Action::Submit(output) => {
+                asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
+                self.history.push(Message::assistant(resp_content));
+                self.trajectory.record_message(&asst);
+                self.trajectory.info.exit_reason = Some("submitted".into());
+                self.trajectory.info.failure_category = None;
+                self.trajectory.info.final_output = Some(output.clone());
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.finalize_run_metadata(outcome::SUBMITTED);
+                self.emit_run_ended("submitted", None, Some(output.clone()));
+                Ok(Some(ExitReason::Submitted {
+                    final_output: output,
+                }))
+            }
+            Action::None => {
+                self.trajectory
+                    .info
+                    .failure_category
+                    .get_or_insert(FailureCategory::ModelParse);
+                self.history.push(Message::assistant(resp_content));
+                self.trajectory.record_message(&asst);
+
+                let err = self.renderer.render_str(
+                    &self.config.root.agent.format_error_template,
+                    &serde_json::json!({}),
+                )?;
+                self.stream.emit(StreamEvent::FormatError {
+                    step: self.steps,
+                    content: err.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+                let obs = Message::user(err);
+                self.history.push(obs.clone());
+                self.trajectory.record_message(&obs);
+
+                Ok(None)
+            }
+            Action::Bash(cmd) => {
+                asst.extra.actions = Some(vec![cmd.clone()]);
+                self.execute_action(cmd, resp_content, asst).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn query_model(&mut self) -> Result<(String, Message), Error> {
         let opts = QueryOpts {
             temperature: self.config.root.model.temperature,
             max_tokens: Some(self.config.root.model.max_tokens),
@@ -196,7 +237,6 @@ impl Agent for DefaultAgent {
             .completion_tokens
             .saturating_add(resp.usage.output_tokens);
 
-        // Record assistant message in trajectory with raw + cost.
         let asst_ts = chrono::Utc::now().to_rfc3339();
         let mut asst = Message::assistant(resp.content.clone());
         asst.extra.cost = resp.usage.cost_usd;
@@ -210,63 +250,15 @@ impl Agent for DefaultAgent {
             timestamp: asst_ts,
         });
 
-        // 4. Parse action.
-        let action = extract_action(&resp.content);
-        match &action {
-            Action::Submit(output) => {
-                asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
-                self.history.push(Message::assistant(resp.content.clone()));
-                self.trajectory.record_message(&asst);
-                self.trajectory.info.exit_reason = Some("submitted".into());
-                self.trajectory.info.failure_category = None;
-                self.trajectory.info.final_output = Some(output.clone());
-                self.trajectory.info.steps = Some(self.steps);
-                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
-                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
-                self.finalize_run_metadata(outcome::SUBMITTED);
-                self.emit_run_ended("submitted", None, Some(output.clone()));
-                return Ok(StepOutcome::Terminate(ExitReason::Submitted {
-                    final_output: output.clone(),
-                }));
-            }
-            Action::Bash(cmd) => {
-                asst.extra.actions = Some(vec![cmd.clone()]);
-            }
-            Action::None => {
-                // Keep a breadcrumb that at least one model response could
-                // not be parsed into a valid action. Terminal limit checks
-                // above still take precedence if the run eventually ends on
-                // step/cost exhaustion.
-                self.trajectory
-                    .info
-                    .failure_category
-                    .get_or_insert(FailureCategory::ModelParse);
-                self.history.push(Message::assistant(resp.content.clone()));
-                self.trajectory.record_message(&asst);
-                // Observation = format_error_template, verbatim (no vars in
-                // default template, but we still render to pick up any
-                // future placeholders).
-                let err = self.renderer.render_str(
-                    &self.config.root.agent.format_error_template,
-                    &serde_json::json!({}),
-                )?;
-                self.stream.emit(StreamEvent::FormatError {
-                    step: self.steps,
-                    content: err.clone(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                });
-                let obs = Message::user(err);
-                self.history.push(obs.clone());
-                self.trajectory.record_message(&obs);
-                self.steps += 1;
-                return Ok(StepOutcome::Continue);
-            }
-        }
+        Ok((resp.content, asst))
+    }
 
-        // 5. env.run.
-        let Action::Bash(cmd) = action else {
-            unreachable!("Submit and None handled above");
-        };
+    async fn execute_action(
+        &mut self,
+        cmd: String,
+        resp_content: String,
+        asst: Message,
+    ) -> Result<(), Error> {
         self.stream.emit(StreamEvent::BashStart {
             step: self.steps,
             command: cmd.clone(),
@@ -298,7 +290,7 @@ impl Agent for DefaultAgent {
         )?;
 
         // Record assistant turn in history & trajectory.
-        self.history.push(Message::assistant(resp.content.clone()));
+        self.history.push(Message::assistant(resp_content));
         self.trajectory.record_message(&asst);
 
         // Record user observation.
@@ -319,12 +311,37 @@ impl Agent for DefaultAgent {
             timestamp: obs_ts,
         });
 
-        self.steps += 1;
-        Ok(StepOutcome::Continue)
+        Ok(())
     }
-}
 
-impl DefaultAgent {
+    fn check_limits(&mut self) -> Option<ExitReason> {
+        if self.steps >= self.config.root.agent.step_limit {
+            self.trajectory.info.exit_reason = Some("step_limit".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
+            self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
+            return Some(ExitReason::StepLimit {
+                limit: self.config.root.agent.step_limit,
+            });
+        }
+        if let Some(limit) = self.config.root.agent.cost_limit_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("cost_limit".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
+                return Some(ExitReason::CostLimit {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                });
+            }
+        }
+        None
+    }
+
     fn emit_run_ended(
         &self,
         exit_reason: &str,
