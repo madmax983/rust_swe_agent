@@ -22,7 +22,8 @@ use crate::run::evaluate::{
     round_dp,
 };
 use crate::run::swebench::{
-    FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, effective_runs, resolved_count,
+    FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, TokenBreakdown, effective_runs,
+    resolved_count,
 };
 use crate::trajectory::{FailureCategory, Trajectory, outcome};
 
@@ -117,6 +118,16 @@ pub struct CompareReport {
     pub baseline_total_cost_usd: f64,
     pub candidate_total_cost_usd: f64,
     pub cost_delta_usd: f64,
+    pub baseline_total_input_tokens: u64,
+    pub candidate_total_input_tokens: u64,
+    pub baseline_total_cache_read_tokens: u64,
+    pub candidate_total_cache_read_tokens: u64,
+    pub baseline_total_cache_creation_tokens: u64,
+    pub candidate_total_cache_creation_tokens: u64,
+    pub baseline_total_completion_tokens: u64,
+    pub candidate_total_completion_tokens: u64,
+    pub baseline_cache_hit_rate: f64,
+    pub candidate_cache_hit_rate: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_mean_steps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,57 +206,14 @@ impl CompareReport {
     pub fn human_table(&self) -> String {
         let mut s = String::new();
         s.push_str("\n=== bench compare ===\n");
-        let _ = writeln!(s, "Baseline:           {}", self.baseline_dir.display());
-        let _ = writeln!(s, "Candidate:          {}", self.candidate_dir.display());
-        let _ = writeln!(
-            s,
-            "Tasks (b/c/union):  {} / {} / {}",
-            self.baseline_total,
-            self.candidate_total,
-            self.transitions.values().sum::<usize>()
-        );
-        write_manifest_delta_section(&mut s, &self.manifest_deltas);
-        let _ = writeln!(
-            s,
-            "Resolved:           {} -> {} ({:+})",
-            self.baseline_resolved, self.candidate_resolved, self.resolved_delta
-        );
-        let _ = writeln!(
-            s,
-            "Resolved rate:      {:.2}% -> {:.2}% ({:+.2}pp)",
-            self.baseline_resolved_rate * 100.0,
-            self.candidate_resolved_rate * 100.0,
-            self.resolved_delta_rate * 100.0
-        );
-        let _ = writeln!(
-            s,
-            "Delta CI 95%:       [{:+.2}pp, {:+.2}pp]",
-            self.resolved_delta_ci95.lower * 100.0,
-            self.resolved_delta_ci95.upper * 100.0
-        );
-        let _ = writeln!(
-            s,
-            "Within noise:       {}",
-            if self.within_noise { "true" } else { "false" }
-        );
-        let _ = writeln!(s, "Verdict:            {}", self.verdict.label());
-        let _ = writeln!(
-            s,
-            "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
-            self.baseline_total_cost_usd, self.candidate_total_cost_usd, self.cost_delta_usd
-        );
-        match (
+        write_compare_overview(&mut s, self);
+        write_compare_cost_and_token_section(&mut s, self);
+        write_mean_steps_line(
+            &mut s,
             self.baseline_mean_steps,
             self.candidate_mean_steps,
             self.mean_steps_delta,
-        ) {
-            (Some(b), Some(c), Some(d)) => {
-                let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
-            }
-            _ => {
-                s.push_str("Mean steps:         n/a\n");
-            }
-        }
+        );
         write_transition_matrix(&mut s, &self.transitions);
         write_failure_delta_section(
             &mut s,
@@ -258,15 +226,7 @@ impl CompareReport {
             &self.cost_attribution_warnings,
             &self.cost_attribution_delta,
         );
-        let subset_warnings = if self.cost_attribution_delta.is_empty() {
-            self.subset_warnings.clone()
-        } else {
-            self.subset_warnings
-                .iter()
-                .filter(|warning| !warning.contains("dataset subset differs"))
-                .cloned()
-                .collect()
-        };
+        let subset_warnings = filtered_subset_warnings(self);
         write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
@@ -282,6 +242,113 @@ impl CompareVerdict {
             Self::WithinNoise => "within_noise",
         }
     }
+}
+
+fn write_compare_overview(s: &mut String, report: &CompareReport) {
+    let _ = writeln!(s, "Baseline:           {}", report.baseline_dir.display());
+    let _ = writeln!(s, "Candidate:          {}", report.candidate_dir.display());
+    let _ = writeln!(
+        s,
+        "Tasks (b/c/union):  {} / {} / {}",
+        report.baseline_total,
+        report.candidate_total,
+        report.transitions.values().sum::<usize>()
+    );
+    write_manifest_delta_section(s, &report.manifest_deltas);
+    let _ = writeln!(
+        s,
+        "Resolved:           {} -> {} ({:+})",
+        report.baseline_resolved, report.candidate_resolved, report.resolved_delta
+    );
+    let _ = writeln!(
+        s,
+        "Resolved rate:      {:.2}% -> {:.2}% ({:+.2}pp)",
+        report.baseline_resolved_rate * 100.0,
+        report.candidate_resolved_rate * 100.0,
+        report.resolved_delta_rate * 100.0
+    );
+    let _ = writeln!(
+        s,
+        "Delta CI 95%:       [{:+.2}pp, {:+.2}pp]",
+        report.resolved_delta_ci95.lower * 100.0,
+        report.resolved_delta_ci95.upper * 100.0
+    );
+    let _ = writeln!(
+        s,
+        "Within noise:       {}",
+        if report.within_noise { "true" } else { "false" }
+    );
+    let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
+}
+
+fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) {
+    let _ = writeln!(
+        s,
+        "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
+        report.baseline_total_cost_usd, report.candidate_total_cost_usd, report.cost_delta_usd
+    );
+    write_u64_delta_line(
+        s,
+        "Input tokens:       ",
+        report.baseline_total_input_tokens,
+        report.candidate_total_input_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Cache read tokens:  ",
+        report.baseline_total_cache_read_tokens,
+        report.candidate_total_cache_read_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Cache create toks:  ",
+        report.baseline_total_cache_creation_tokens,
+        report.candidate_total_cache_creation_tokens,
+    );
+    write_u64_delta_line(
+        s,
+        "Completion tokens:  ",
+        report.baseline_total_completion_tokens,
+        report.candidate_total_completion_tokens,
+    );
+    let _ = writeln!(
+        s,
+        "Cache hit rate:     {:.2}% -> {:.2}% ({:+.2}pp)",
+        report.baseline_cache_hit_rate * 100.0,
+        report.candidate_cache_hit_rate * 100.0,
+        (report.candidate_cache_hit_rate - report.baseline_cache_hit_rate) * 100.0
+    );
+}
+
+fn write_u64_delta_line(s: &mut String, label: &str, baseline: u64, candidate: u64) {
+    let delta = i128::from(candidate) - i128::from(baseline);
+    let _ = writeln!(s, "{label}{baseline} -> {candidate} ({delta:+})");
+}
+
+fn write_mean_steps_line(
+    s: &mut String,
+    baseline: Option<f64>,
+    candidate: Option<f64>,
+    delta: Option<f64>,
+) {
+    match (baseline, candidate, delta) {
+        (Some(b), Some(c), Some(d)) => {
+            let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
+        }
+        _ => s.push_str("Mean steps:         n/a\n"),
+    }
+}
+
+fn filtered_subset_warnings(report: &CompareReport) -> Vec<String> {
+    if report.cost_attribution_delta.is_empty() {
+        return report.subset_warnings.clone();
+    }
+    report
+        .subset_warnings
+        .iter()
+        .filter(|warning| !warning.contains("dataset subset differs"))
+        .cloned()
+        .collect()
 }
 
 fn write_manifest_delta_section(s: &mut String, manifest_deltas: &[String]) {
@@ -428,6 +495,12 @@ pub struct LoadedSweep {
     pub instances: HashMap<String, InstanceResult>,
     pub manifest: Option<ProvenanceManifest>,
     pub filter_spec: Option<FilterSpec>,
+}
+
+struct DiffContext<'a> {
+    manifest_deltas: Vec<String>,
+    baseline_model_name: Option<&'a str>,
+    candidate_model_name: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -648,9 +721,17 @@ fn instance_result_from_trajectory(
         Err(_) => return Ok(None),
     };
     let info = traj.info;
-    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
-        (Some(t.prompt_tokens), Some(t.completion_tokens))
-    });
+    let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None, None, None), |t| {
+            (
+                Some(t.prompt_tokens),
+                Some(t.cache_read_tokens),
+                Some(t.cache_creation_tokens),
+                Some(t.completion_tokens),
+            )
+        });
     let resolved =
         info.outcome.as_deref() == Some(outcome::SUBMITTED) && info.failure_category.is_none();
     Ok(Some(InstanceResult {
@@ -661,6 +742,8 @@ fn instance_result_from_trajectory(
         steps: info.steps,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
@@ -744,6 +827,16 @@ fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, Ins
                 .filter_map(|(_, result)| result.prompt_tokens)
                 .fold(0u64, u64::saturating_add),
         );
+        aggregate.cache_read_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.cache_read_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_creation_tokens = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.cache_creation_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
         aggregate.completion_tokens = Some(
             rows.iter()
                 .filter_map(|(_, result)| result.completion_tokens)
@@ -770,6 +863,8 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let candidate = load_sweep(&args.candidate)?;
     let baseline_eval = load_evaluation_results(&args.baseline)?;
     let candidate_eval = load_evaluation_results(&args.candidate)?;
+    let baseline_model_name = baseline.manifest.as_ref().map(|m| m.model.name.as_str());
+    let candidate_model_name = candidate.manifest.as_ref().map(|m| m.model.name.as_str());
     let baseline_resolved_override = baseline_eval.as_ref().map(resolved_overrides_from_eval);
     let candidate_resolved_override = candidate_eval.as_ref().map(resolved_overrides_from_eval);
     let mut report = diff_with_overrides(
@@ -779,7 +874,14 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         &candidate.instances,
         baseline_resolved_override.as_ref(),
         candidate_resolved_override.as_ref(),
-        manifest_delta_lines(baseline.manifest.as_ref(), candidate.manifest.as_ref()),
+        DiffContext {
+            manifest_deltas: manifest_delta_lines(
+                baseline.manifest.as_ref(),
+                candidate.manifest.as_ref(),
+            ),
+            baseline_model_name,
+            candidate_model_name,
+        },
     );
     report.subset_warnings = subset_warnings(
         baseline.filter_spec.as_ref(),
@@ -801,18 +903,18 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             .as_ref()
             .and_then(non_empty_cost_attribution_rows);
         let baseline_fallback_rows = if baseline_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
-                &args.baseline,
-                &baseline.instances,
-            )?))
+            Some(build_cost_attribution_rows_from_run_slots(
+                &load_run_slots(&args.baseline, &baseline.instances)?,
+                baseline_model_name,
+            ))
         } else {
             None
         };
         let candidate_fallback_rows = if candidate_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
-                &args.candidate,
-                &candidate.instances,
-            )?))
+            Some(build_cost_attribution_rows_from_run_slots(
+                &load_run_slots(&args.candidate, &candidate.instances)?,
+                candidate_model_name,
+            ))
         } else {
             None
         };
@@ -895,7 +997,11 @@ pub fn diff<S: std::hash::BuildHasher>(
         candidate,
         None,
         None,
-        Vec::new(),
+        DiffContext {
+            manifest_deltas: Vec::new(),
+            baseline_model_name: None,
+            candidate_model_name: None,
+        },
     )
 }
 
@@ -906,7 +1012,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     candidate: &HashMap<String, InstanceResult, S>,
     baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
-    manifest_deltas: Vec<String>,
+    diff_context: DiffContext<'_>,
 ) -> CompareReport {
     let transition_summary = build_transition_summary(
         baseline,
@@ -921,8 +1027,16 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_resolved_override,
     );
 
-    let baseline_total_cost: f64 = baseline.values().filter_map(|r| r.cost_usd).sum();
-    let candidate_total_cost: f64 = candidate.values().filter_map(|r| r.cost_usd).sum();
+    let baseline_total_cost: f64 = baseline
+        .values()
+        .filter_map(|r| r.effective_cost_usd(diff_context.baseline_model_name))
+        .sum();
+    let candidate_total_cost: f64 = candidate
+        .values()
+        .filter_map(|r| r.effective_cost_usd(diff_context.candidate_model_name))
+        .sum();
+    let baseline_tokens = aggregate_token_breakdown(baseline);
+    let candidate_tokens = aggregate_token_breakdown(candidate);
 
     let baseline_mean_steps = mean_steps(baseline);
     let candidate_mean_steps = mean_steps(candidate);
@@ -956,19 +1070,49 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_total_cost_usd: baseline_total_cost,
         candidate_total_cost_usd: candidate_total_cost,
         cost_delta_usd: candidate_total_cost - baseline_total_cost,
+        baseline_total_input_tokens: baseline_tokens.input_tokens,
+        candidate_total_input_tokens: candidate_tokens.input_tokens,
+        baseline_total_cache_read_tokens: baseline_tokens.cache_read_tokens,
+        candidate_total_cache_read_tokens: candidate_tokens.cache_read_tokens,
+        baseline_total_cache_creation_tokens: baseline_tokens.cache_creation_tokens,
+        candidate_total_cache_creation_tokens: candidate_tokens.cache_creation_tokens,
+        baseline_total_completion_tokens: baseline_tokens.completion_tokens,
+        candidate_total_completion_tokens: candidate_tokens.completion_tokens,
+        baseline_cache_hit_rate: baseline_tokens.cache_hit_rate(),
+        candidate_cache_hit_rate: candidate_tokens.cache_hit_rate(),
         baseline_mean_steps,
         candidate_mean_steps,
         mean_steps_delta,
         failure_category_baseline,
         failure_category_candidate,
         failure_category_delta,
-        manifest_deltas,
+        manifest_deltas: diff_context.manifest_deltas,
         subset_warnings: Vec::new(),
         breakdown_delta: Vec::new(),
         cost_attribution_delta: Vec::new(),
         cost_attribution_warnings: Vec::new(),
         regressions: transition_summary.regressions,
     }
+}
+
+fn aggregate_token_breakdown<S: std::hash::BuildHasher>(
+    rows: &HashMap<String, InstanceResult, S>,
+) -> TokenBreakdown {
+    rows.values()
+        .fold(TokenBreakdown::default(), |mut total, row| {
+            let tokens = row.token_breakdown();
+            total.input_tokens = total.input_tokens.saturating_add(tokens.input_tokens);
+            total.cache_read_tokens = total
+                .cache_read_tokens
+                .saturating_add(tokens.cache_read_tokens);
+            total.cache_creation_tokens = total
+                .cache_creation_tokens
+                .saturating_add(tokens.cache_creation_tokens);
+            total.completion_tokens = total
+                .completion_tokens
+                .saturating_add(tokens.completion_tokens);
+            total
+        })
 }
 
 struct TransitionSummary {
@@ -1509,6 +1653,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
 fn cost_attribution_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    model_name: Option<&str>,
 ) -> HashMap<String, (usize, f64)> {
     let mut out = HashMap::new();
     for (id, row) in items {
@@ -1516,7 +1661,7 @@ fn cost_attribution_map<S: std::hash::BuildHasher>(
         let key = cost_attribution_bucket_label(resolved, row.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += row.cost_usd.unwrap_or(0.0);
+        entry.1 += row.effective_cost_usd(model_name).unwrap_or(0.0);
     }
     out
 }
@@ -1525,30 +1670,35 @@ fn non_empty_cost_attribution_rows(eval: &EvaluationResults) -> Option<&[CostAtt
     (!eval.cost_attribution.is_empty()).then_some(eval.cost_attribution.as_slice())
 }
 
-fn cost_attribution_map_from_run_slots(slots: &[LoadedRunSlot]) -> HashMap<String, (usize, f64)> {
+fn cost_attribution_map_from_run_slots(
+    slots: &[LoadedRunSlot],
+    model_name: Option<&str>,
+) -> HashMap<String, (usize, f64)> {
     let mut out = HashMap::new();
     for slot in slots {
         let resolved = slot.result.resolved_count > 0;
         let key = cost_attribution_bucket_label(resolved, slot.result.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += slot.result.cost_usd.unwrap_or(0.0);
+        entry.1 += slot.result.effective_cost_usd(model_name).unwrap_or(0.0);
     }
     out
 }
 
 fn build_cost_attribution_rows_from_run_slots(
     slots: &[LoadedRunSlot],
+    model_name: Option<&str>,
 ) -> Vec<CostAttributionBucket> {
-    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots))
+    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots, model_name))
 }
 
 #[cfg(test)]
 fn build_cost_attribution_rows_from_results<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    model_name: Option<&str>,
 ) -> Vec<CostAttributionBucket> {
-    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override))
+    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override, model_name))
 }
 
 fn build_cost_attribution_rows_from_map(
@@ -1682,8 +1832,9 @@ fn build_cost_attribution_delta<S: std::hash::BuildHasher>(
     candidate_override: Option<&HashMap<String, ResolutionOverride>>,
     min_delta_usd: f64,
 ) -> Vec<CostAttributionDeltaRow> {
-    let baseline_rows = build_cost_attribution_rows_from_results(baseline, baseline_override);
-    let candidate_rows = build_cost_attribution_rows_from_results(candidate, candidate_override);
+    let baseline_rows = build_cost_attribution_rows_from_results(baseline, baseline_override, None);
+    let candidate_rows =
+        build_cost_attribution_rows_from_results(candidate, candidate_override, None);
     build_cost_attribution_delta_from_rows(&baseline_rows, &candidate_rows, min_delta_usd)
 }
 
@@ -1708,6 +1859,8 @@ mod tests {
             steps: Some(5),
             cost_usd: Some(0.10),
             prompt_tokens: Some(1000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             completion_tokens: Some(200),
             duration_secs: Some(12.0),
             error: None,
@@ -1730,6 +1883,8 @@ mod tests {
             steps: Some(7),
             cost_usd: Some(0.20),
             prompt_tokens: Some(2000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
             completion_tokens: Some(400),
             duration_secs: Some(20.0),
             error: Some("boom".into()),
@@ -1754,6 +1909,8 @@ mod tests {
             steps: None,
             cost_usd: None,
             prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             completion_tokens: None,
             duration_secs: None,
             error: None,
@@ -1789,8 +1946,11 @@ mod tests {
             budget_halted: 0,
             with_patch: instances.len(),
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -1911,8 +2071,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -1966,6 +2129,71 @@ mod tests {
         assert!(t.contains("Regressions (1):"), "got:\n{t}");
         assert!(t.contains("- b"), "got:\n{t}");
         assert!(t.contains("category=step_limit"), "got:\n{t}");
+    }
+
+    #[test]
+    fn human_table_includes_cache_breakdown_and_hit_rate() {
+        let baseline = map_of([InstanceResult {
+            instance_id: "cached".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: Some(3),
+            cost_usd: Some(0.42),
+            prompt_tokens: Some(100),
+            cache_read_tokens: Some(800),
+            cache_creation_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_secs: Some(4.0),
+            error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        }]);
+        let candidate = map_of([InstanceResult {
+            instance_id: "cached".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: Some(3),
+            cost_usd: Some(0.90),
+            prompt_tokens: Some(900),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_secs: Some(4.0),
+            error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        }]);
+        let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        let t = r.human_table();
+        assert!(
+            t.contains("Input tokens:       100 -> 900 (+800)"),
+            "got:\n{t}"
+        );
+        assert!(
+            t.contains("Cache read tokens:  800 -> 0 (-800)"),
+            "got:\n{t}"
+        );
+        assert!(
+            t.contains("Cache create toks:  100 -> 100 (+0)"),
+            "got:\n{t}"
+        );
+        assert!(t.contains("Completion tokens:  50 -> 50 (+0)"), "got:\n{t}");
+        assert!(
+            t.contains("Cache hit rate:     80.00% -> 0.00% (-80.00pp)"),
+            "got:\n{t}"
+        );
     }
 
     #[test]
@@ -2170,8 +2398,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2379,8 +2610,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2462,8 +2696,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 1,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2511,8 +2748,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -2596,8 +2836,11 @@ mod tests {
             budget_halted: 0,
             with_patch: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,

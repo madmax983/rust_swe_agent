@@ -21,15 +21,31 @@ fn binary_path() -> std::path::PathBuf {
 }
 
 fn write_traj(dir: &Path, instance_id: &str, huge_stderr: bool) {
+    write_traj_with_tokens(
+        dir,
+        instance_id,
+        huge_stderr,
+        TokenUsage {
+            prompt_tokens: 123,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            completion_tokens: 45,
+        },
+    );
+}
+
+fn write_traj_with_tokens(
+    dir: &Path,
+    instance_id: &str,
+    huge_stderr: bool,
+    token_usage: TokenUsage,
+) {
     let mut t = Trajectory::new();
     t.info.model_name = Some("deterministic-test".into());
     t.info.outcome = Some(outcome::ERROR.into());
     t.info.failure_category = Some(FailureCategory::StepLimit);
     t.info.total_cost_usd = Some(0.55);
-    t.info.token_usage = Some(rust_swe_agent::trajectory::TokenUsage {
-        prompt_tokens: 123,
-        completion_tokens: 45,
-    });
+    t.info.token_usage = Some(token_usage);
 
     let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho hi\n```");
     asst.extra.actions = Some(vec!["echo hi".into()]);
@@ -98,6 +114,29 @@ fn write_diff_traj(
     cost_usd: f64,
     steps: &[(&str, &str, &str, &str, i32)],
 ) {
+    write_diff_traj_with_tokens(
+        path,
+        instance_id,
+        failure_category,
+        cost_usd,
+        TokenUsage {
+            prompt_tokens: 100,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            completion_tokens: 20,
+        },
+        steps,
+    );
+}
+
+fn write_diff_traj_with_tokens(
+    path: &Path,
+    instance_id: &str,
+    failure_category: Option<FailureCategory>,
+    cost_usd: f64,
+    token_usage: TokenUsage,
+    steps: &[(&str, &str, &str, &str, i32)],
+) {
     let mut t = Trajectory::new();
     t.info
         .other
@@ -109,10 +148,7 @@ fn write_diff_traj(
     });
     t.info.failure_category = failure_category;
     t.info.total_cost_usd = Some(cost_usd);
-    t.info.token_usage = Some(TokenUsage {
-        prompt_tokens: 100,
-        completion_tokens: 20,
-    });
+    t.info.token_usage = Some(token_usage);
     t.info.steps = Some(u32::try_from(steps.len()).unwrap_or(u32::MAX));
 
     for (assistant, command, stdout, stderr, exit_code) in steps {
@@ -153,6 +189,8 @@ fn write_prompted_diff_traj(
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(1);
@@ -188,6 +226,8 @@ fn write_orphan_tool_alignment_traj(path: &Path, instance_id: &str, include_orph
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(2);
@@ -210,6 +250,8 @@ fn write_trailing_prompt_traj(path: &Path, instance_id: &str, include_trailing_p
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     t.info.steps = Some(2);
@@ -368,6 +410,60 @@ fn diff_single_step_divergence_expands_only_that_step() {
     assert!(stdout.contains("assistant.content"), "{stdout}");
     assert!(stdout.contains("bash.command"), "{stdout}");
     assert!(stdout.contains("tool.stdout"), "{stdout}");
+}
+
+#[test]
+fn diff_header_reports_total_prompt_tokens_with_cache_breakdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = dir.path().join("baseline.traj.json");
+    let candidate = dir.path().join("candidate.traj.json");
+    write_diff_traj_with_tokens(
+        &baseline,
+        "abc",
+        None,
+        0.10,
+        TokenUsage {
+            prompt_tokens: 100,
+            cache_read_tokens: 800,
+            cache_creation_tokens: 100,
+            completion_tokens: 20,
+        },
+        &[("```bash\necho hi\n```", "echo hi", "hi\n", "", 0)],
+    );
+    write_diff_traj_with_tokens(
+        &candidate,
+        "abc",
+        None,
+        0.12,
+        TokenUsage {
+            prompt_tokens: 200,
+            cache_read_tokens: 500,
+            cache_creation_tokens: 0,
+            completion_tokens: 30,
+        },
+        &[("```bash\necho hi\n```", "echo hi", "hi\n", "", 0)],
+    );
+
+    let out = Command::new(binary_path())
+        .arg("bench")
+        .arg("inspect")
+        .arg("--diff")
+        .arg(&baseline)
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "tokens: prompt=1000 (input=100 cache_read=800 cache_creation=100) completion=20 -> prompt=700 (input=200 cache_read=500 cache_creation=0) completion=30"
+        ),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -948,6 +1044,42 @@ fn instance_mode_renders_header_and_steps() {
     assert!(stdout.contains("[step 0] assistant"), "{stdout}");
     assert!(stdout.contains("[step 1] bash"), "{stdout}");
     assert!(stdout.contains("resolved:         false"), "{stdout}");
+}
+
+#[test]
+fn instance_mode_reports_total_prompt_tokens_with_cache_breakdown() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj_with_tokens(
+        sweep.path(),
+        "cached",
+        false,
+        TokenUsage {
+            prompt_tokens: 100,
+            cache_read_tokens: 800,
+            cache_creation_tokens: 50,
+            completion_tokens: 20,
+        },
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "cached",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "tokens:           prompt=950 (input=100 cache_read=800 cache_creation=50) completion=20"
+        ),
+        "{stdout}"
+    );
 }
 
 #[test]

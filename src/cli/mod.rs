@@ -509,8 +509,15 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
     };
     let eval = crate::run::evaluate::run(&args)?;
-    let sweep_results = crate::run::compare::load_run(&e.sweep)?;
-    let summary = crate::run::evaluate::summarize(&eval, &sweep_results);
+    let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
+    let summary = crate::run::evaluate::summarize_with_model(
+        &eval,
+        &loaded_sweep.instances,
+        loaded_sweep
+            .manifest
+            .as_ref()
+            .map(|m| m.model.name.as_str()),
+    );
 
     tracing::info!(
         instances = summary.instances,
@@ -518,13 +525,16 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         resolved_rate = summary.resolved_rate,
         pass_at_1 = summary.pass_at_1,
         pass_at_k = summary.pass_at_k,
+        total_input_tokens = summary.total_input_tokens,
+        total_cache_read_tokens = summary.total_cache_read_tokens,
+        total_cache_creation_tokens = summary.total_cache_creation_tokens,
+        total_completion_tokens = summary.total_completion_tokens,
+        total_cost_usd = summary.total_cost_usd,
+        cache_hit_rate = summary.cache_hit_rate,
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
-    println!("resolved: {}", summary.resolved);
-    println!("resolved_rate: {:.4}", summary.resolved_rate);
-    println!("pass@1: {:.4}", summary.pass_at_1);
-    println!("pass@k: {:.4}", summary.pass_at_k);
+    print!("{}", crate::run::evaluate::render_summary_table(&summary));
     if !eval.breakdown.is_empty() {
         print!(
             "{}",
@@ -532,8 +542,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         );
     }
     if !eval.cost_attribution.is_empty() {
-        let missing_cost_count =
-            crate::run::evaluate::cost_missing_count_for_run_slots(&e.sweep, &sweep_results)?;
+        let missing_cost_count = crate::run::evaluate::cost_missing_count_for_run_slots(
+            &e.sweep,
+            &loaded_sweep.instances,
+        )?;
         if missing_cost_count > 0 {
             println!(
                 "warning: cost attribution missing usd_cost for {missing_cost_count} trajectories; treating as $0.00"

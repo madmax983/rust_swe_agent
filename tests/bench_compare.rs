@@ -41,6 +41,8 @@ fn submitted(id: &str) -> InstanceResult {
         steps: Some(4),
         cost_usd: Some(0.05),
         prompt_tokens: Some(500),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
         completion_tokens: Some(100),
         duration_secs: Some(8.0),
         error: None,
@@ -63,6 +65,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         steps: Some(6),
         cost_usd: Some(0.10),
         prompt_tokens: Some(1500),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
         completion_tokens: Some(200),
         duration_secs: Some(15.0),
         error: Some("stub".into()),
@@ -89,17 +93,27 @@ fn rerun_result(id: &str, runs: u32, resolved_count: u32) -> InstanceResult {
 }
 
 fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
-    write_results_with_filter_spec(
-        dir,
-        instances,
-        rust_swe_agent::run::swebench::FilterSpec::default(),
-    );
+    write_results_with_model(dir, instances, None);
+}
+
+fn write_results_with_model(dir: &Path, instances: Vec<InstanceResult>, model_name: Option<&str>) {
+    let filter_spec = rust_swe_agent::run::swebench::FilterSpec::default();
+    write_results_with_filter_spec_and_model(dir, instances, &filter_spec, model_name);
 }
 
 fn write_results_with_filter_spec(
     dir: &Path,
     instances: Vec<InstanceResult>,
-    filter_spec: rust_swe_agent::run::swebench::FilterSpec,
+    filter_spec: &rust_swe_agent::run::swebench::FilterSpec,
+) {
+    write_results_with_filter_spec_and_model(dir, instances, filter_spec, None);
+}
+
+fn write_results_with_filter_spec_and_model(
+    dir: &Path,
+    instances: Vec<InstanceResult>,
+    filter_spec: &rust_swe_agent::run::swebench::FilterSpec,
+    model_name: Option<&str>,
 ) {
     let sweep = SweepResults {
         total: instances.len(),
@@ -116,8 +130,11 @@ fn write_results_with_filter_spec(
         budget_halted: 0,
         with_patch: 0,
         total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,
         pass_at_k: if instances.is_empty() {
@@ -127,8 +144,46 @@ fn write_results_with_filter_spec(
             f64::from(u32::try_from(passed).unwrap())
                 / f64::from(u32::try_from(instances.len()).unwrap())
         },
-        filter_spec,
-        manifest: None,
+        filter_spec: filter_spec.clone(),
+        manifest: model_name.map(|name| rust_swe_agent::run::swebench::ProvenanceManifest {
+            purpose: None,
+            harness: rust_swe_agent::run::swebench::HarnessManifest {
+                name: "rust_swe_agent".into(),
+                version: "test".into(),
+                git_sha: None,
+                git_dirty: None,
+                git_resolution: "test".into(),
+            },
+            dataset: rust_swe_agent::run::swebench::DatasetManifest {
+                path: "test.jsonl".into(),
+                sha256: "test".into(),
+                instance_count: instances.len(),
+                filter_spec: Some(filter_spec.clone()),
+            },
+            prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+                source: "inline".into(),
+                path: None,
+                sha256: "test".into(),
+            },
+            config: rust_swe_agent::run::swebench::ConfigManifest {
+                resolved: "test".into(),
+                overlay_paths: Vec::new(),
+            },
+            model: rust_swe_agent::run::swebench::ModelManifest {
+                name: name.into(),
+                backend: "litellm".into(),
+                backend_version: None,
+                base_url: None,
+            },
+            runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+                started_at_utc: "2026-05-01T00:00:00Z".into(),
+                finished_at_utc: Some("2026-05-01T00:01:00Z".into()),
+                host_os: "linux".into(),
+                resume_mode: false,
+                rust_version: None,
+            },
+            cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+        }),
         cost_limit_usd: None,
         instances,
     };
@@ -200,6 +255,8 @@ fn write_diff_traj(
     t.info.total_cost_usd = Some(0.10);
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -247,6 +304,8 @@ fn write_run_traj(
     t.info.total_cost_usd = cost_usd;
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -276,6 +335,8 @@ fn write_root_traj(
     t.info.total_cost_usd = cost_usd;
     t.info.token_usage = Some(TokenUsage {
         prompt_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 5,
     });
     t.info.steps = Some(1);
@@ -1065,6 +1126,12 @@ resolved: 0\n\
 resolved_rate: 0.0000\n\
 pass@1: 0.0000\n\
 pass@k: 0.0000\n\
+input_tokens: 2000\n\
+cache_read_tokens: 0\n\
+cache_creation_tokens: 0\n\
+completion_tokens: 300\n\
+cache_hit_rate: 0.0000\n\
+total_cost_usd: 0.1500\n\
 axis,bucket,n,resolved,resolved_rate\n\
 repo,unknown,2,0,0.0000\n\
 failure_category,model_api,1,0,0.0000\n\
@@ -1075,6 +1142,94 @@ failure_category,none,1,0,0.0000\n";
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
     assert!(v.get("cost_attribution").is_none(), "{v:?}");
+}
+
+#[test]
+fn compare_uses_manifest_model_for_fallback_cost_repricing() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut baseline = submitted("cached");
+    baseline.cost_usd = Some(0.0);
+    baseline.prompt_tokens = Some(0);
+    baseline.cache_read_tokens = Some(1_000_000);
+    baseline.cache_creation_tokens = Some(0);
+    baseline.completion_tokens = Some(0);
+
+    let mut candidate = submitted("cached");
+    candidate.cost_usd = Some(0.0);
+    candidate.prompt_tokens = Some(0);
+    candidate.cache_read_tokens = Some(1_000_000);
+    candidate.cache_creation_tokens = Some(0);
+    candidate.completion_tokens = Some(0);
+
+    write_results_with_model(
+        baseline_dir.path(),
+        vec![baseline],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+    write_results_with_model(
+        candidate_dir.path(),
+        vec![candidate],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+
+    let report =
+        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+            baseline: baseline_dir.path().to_path_buf(),
+            candidate: candidate_dir.path().to_path_buf(),
+            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            max_regressions: None,
+            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            min_delta_pp: 0.0,
+            cost_attribution: false,
+            cost_attribution_min_delta_usd: 1.0,
+        })
+        .unwrap();
+
+    assert!(
+        (report.baseline_total_cost_usd - 0.3).abs() < 1e-9,
+        "{report:#?}"
+    );
+    assert!(
+        (report.candidate_total_cost_usd - 0.3).abs() < 1e-9,
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn evaluate_uses_manifest_model_for_fallback_cost_repricing() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut cached = submitted("cached");
+    cached.cost_usd = Some(0.0);
+    cached.prompt_tokens = Some(0);
+    cached.cache_read_tokens = Some(1_000_000);
+    cached.cache_creation_tokens = Some(0);
+    cached.completion_tokens = Some(0);
+    write_results_with_model(
+        sweep_dir.path(),
+        vec![cached],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("total_cost_usd: 0.3000"), "{stdout}");
 }
 
 #[test]
@@ -1275,7 +1430,7 @@ fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
     write_results_with_filter_spec(
         baseline_dir.path(),
         vec![submitted("a"), errored("b", FailureCategory::StepLimit)],
-        rust_swe_agent::run::swebench::FilterSpec {
+        &rust_swe_agent::run::swebench::FilterSpec {
             original_count: 10,
             selected_count: 2,
             instance_ids: Some(vec!["a".into(), "b".into()]),
@@ -1289,7 +1444,7 @@ fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
     write_results_with_filter_spec(
         candidate_dir.path(),
         vec![errored("a", FailureCategory::ModelApi), submitted("c")],
-        rust_swe_agent::run::swebench::FilterSpec {
+        &rust_swe_agent::run::swebench::FilterSpec {
             original_count: 10,
             selected_count: 2,
             instance_ids: Some(vec!["a".into(), "c".into()]),

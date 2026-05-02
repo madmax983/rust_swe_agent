@@ -47,6 +47,8 @@ fn write_traj(
     traj.info.total_cost_usd = Some(cost);
     traj.info.token_usage = Some(TokenUsage {
         prompt_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         completion_tokens: 20,
     });
     traj.info.started_at = Some(started_at.into());
@@ -202,6 +204,80 @@ fn snapshot_marks_budget_halt_as_abort() {
     assert_eq!(
         snap.abort_reason.as_deref(),
         Some("budget cap hit: 1 instance(s) never started")
+    );
+}
+
+#[test]
+fn snapshot_uses_total_cost_usd_metadata_when_no_records_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 2,
+            "submitted": 0,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 0,
+            "total_input_tokens": 0,
+            "total_completion_tokens": 0,
+            "total_cost_usd": 1.75,
+            "instances": []
+        }),
+    );
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap()),
+    )
+    .unwrap();
+
+    assert!((snap.cumulative_cost_usd - 1.75).abs() < f64::EPSILON);
+}
+
+#[test]
+fn snapshot_uses_sweep_model_for_anthropic_cache_repricing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 2,
+            "submitted": 1,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 0,
+            "cost_limit_usd": 1.0,
+            "manifest": {
+                "model": {
+                    "name": "anthropic/claude-sonnet-4-6"
+                }
+            },
+            "instances": [{
+                "instance_id": "cached",
+                "exit_reason": "submitted",
+                "outcome": "submitted",
+                "cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_cache_read_tokens": 1_000_000,
+                "total_cache_creation_tokens": 0,
+                "total_completion_tokens": 0
+            }]
+        }),
+    );
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap()),
+    )
+    .unwrap();
+
+    assert!((snap.cumulative_cost_usd - 0.3).abs() < 1e-9, "{snap:#?}");
+    assert_eq!(snap.abort_reason, None, "{snap:#?}");
+    assert!(
+        snap.pct_of_cap_used
+            .is_some_and(|pct| (pct - 30.0).abs() < 1e-9),
+        "{snap:#?}"
     );
 }
 

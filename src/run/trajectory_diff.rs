@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::env::RunResult;
 use crate::error::Error;
-use crate::trajectory::{FailureCategory, MessageRecord, Trajectory};
+use crate::trajectory::{FailureCategory, MessageRecord, TokenUsage, Trajectory};
 
 const DIFF_FIELD_ORDER: [&str; 6] = [
     "prompt.content",
@@ -53,6 +53,12 @@ pub struct TrajectoryDiffHeader {
     pub candidate_cost_usd: Option<f64>,
     pub baseline_prompt_tokens: Option<u64>,
     pub candidate_prompt_tokens: Option<u64>,
+    pub baseline_input_tokens: Option<u64>,
+    pub candidate_input_tokens: Option<u64>,
+    pub baseline_cache_read_tokens: Option<u64>,
+    pub candidate_cache_read_tokens: Option<u64>,
+    pub baseline_cache_creation_tokens: Option<u64>,
+    pub candidate_cache_creation_tokens: Option<u64>,
     pub baseline_completion_tokens: Option<u64>,
     pub candidate_completion_tokens: Option<u64>,
     pub baseline_total_steps: usize,
@@ -205,11 +211,21 @@ pub fn render_text(report: &TrajectoryDiffReport) -> String {
     );
     let _ = writeln!(
         s,
-        "tokens: prompt={} completion={} -> prompt={} completion={}",
-        format_u64(report.header.baseline_prompt_tokens),
-        format_u64(report.header.baseline_completion_tokens),
-        format_u64(report.header.candidate_prompt_tokens),
-        format_u64(report.header.candidate_completion_tokens)
+        "tokens: {} -> {}",
+        render_token_summary(
+            report.header.baseline_prompt_tokens,
+            report.header.baseline_input_tokens,
+            report.header.baseline_cache_read_tokens,
+            report.header.baseline_cache_creation_tokens,
+            report.header.baseline_completion_tokens,
+        ),
+        render_token_summary(
+            report.header.candidate_prompt_tokens,
+            report.header.candidate_input_tokens,
+            report.header.candidate_cache_read_tokens,
+            report.header.candidate_cache_creation_tokens,
+            report.header.candidate_completion_tokens,
+        )
     );
     let _ = writeln!(
         s,
@@ -370,6 +386,8 @@ fn build_header(
     first_divergent_step_index: Option<usize>,
     first_divergent_step_role: Option<String>,
 ) -> TrajectoryDiffHeader {
+    let baseline_tokens = baseline.trajectory.info.token_usage.as_ref();
+    let candidate_tokens = candidate.trajectory.info.token_usage.as_ref();
     TrajectoryDiffHeader {
         baseline_path: baseline.path.clone(),
         candidate_path: candidate.path.clone(),
@@ -381,30 +399,16 @@ fn build_header(
         candidate_attempts: attempts(&candidate.trajectory),
         baseline_cost_usd: baseline.trajectory.info.total_cost_usd,
         candidate_cost_usd: candidate.trajectory.info.total_cost_usd,
-        baseline_prompt_tokens: baseline
-            .trajectory
-            .info
-            .token_usage
-            .as_ref()
-            .map(|usage| usage.prompt_tokens),
-        candidate_prompt_tokens: candidate
-            .trajectory
-            .info
-            .token_usage
-            .as_ref()
-            .map(|usage| usage.prompt_tokens),
-        baseline_completion_tokens: baseline
-            .trajectory
-            .info
-            .token_usage
-            .as_ref()
-            .map(|usage| usage.completion_tokens),
-        candidate_completion_tokens: candidate
-            .trajectory
-            .info
-            .token_usage
-            .as_ref()
-            .map(|usage| usage.completion_tokens),
+        baseline_prompt_tokens: baseline_tokens.map(TokenUsage::total_prompt_tokens),
+        candidate_prompt_tokens: candidate_tokens.map(TokenUsage::total_prompt_tokens),
+        baseline_input_tokens: baseline_tokens.map(|usage| usage.prompt_tokens),
+        candidate_input_tokens: candidate_tokens.map(|usage| usage.prompt_tokens),
+        baseline_cache_read_tokens: baseline_tokens.map(|usage| usage.cache_read_tokens),
+        candidate_cache_read_tokens: candidate_tokens.map(|usage| usage.cache_read_tokens),
+        baseline_cache_creation_tokens: baseline_tokens.map(|usage| usage.cache_creation_tokens),
+        candidate_cache_creation_tokens: candidate_tokens.map(|usage| usage.cache_creation_tokens),
+        baseline_completion_tokens: baseline_tokens.map(|usage| usage.completion_tokens),
+        candidate_completion_tokens: candidate_tokens.map(|usage| usage.completion_tokens),
         baseline_total_steps: baseline
             .trajectory
             .info
@@ -1040,6 +1044,28 @@ fn format_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "?".into(), |v| v.to_string())
 }
 
+fn render_token_summary(
+    prompt_tokens: Option<u64>,
+    input_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_creation_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+) -> String {
+    let prompt = format_u64(prompt_tokens);
+    let completion = format_u64(completion_tokens);
+    let cache_read = cache_read_tokens.unwrap_or(0);
+    let cache_creation = cache_creation_tokens.unwrap_or(0);
+    if cache_read == 0 && cache_creation == 0 {
+        return format!("prompt={prompt} completion={completion}");
+    }
+    format!(
+        "prompt={prompt} (input={} cache_read={} cache_creation={}) completion={completion}",
+        format_u64(input_tokens),
+        cache_read,
+        cache_creation
+    )
+}
+
 fn usize_from_u32(value: u32) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
@@ -1094,6 +1120,8 @@ mod tests {
         t.info.total_cost_usd = Some(0.10);
         t.info.token_usage = Some(TokenUsage {
             prompt_tokens: 100,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             completion_tokens: 20,
         });
         t.info.steps = Some(u32::try_from(steps).unwrap_or(u32::MAX));

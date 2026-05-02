@@ -33,9 +33,12 @@ pub struct DefaultAgent {
     pub total_cost_usd: f64,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
-    /// Accumulated prompt tokens across every model call in this run.
-    /// Sum of `input_tokens + cache_read_tokens + cache_creation_tokens`.
+    /// Accumulated uncached input tokens across every model call in this run.
     pub prompt_tokens: u64,
+    /// Accumulated prompt-cache reads across every model call in this run.
+    pub cache_read_tokens: u64,
+    /// Accumulated prompt-cache creations across every model call in this run.
+    pub cache_creation_tokens: u64,
     /// Accumulated completion tokens across every model call in this run.
     pub completion_tokens: u64,
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
@@ -104,6 +107,8 @@ impl DefaultAgentBuilder {
             total_cost_usd: 0.0,
             started_at_instant: Instant::now(),
             prompt_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             completion_tokens: 0,
             stream,
         })
@@ -180,11 +185,13 @@ impl Agent for DefaultAgent {
         };
         let resp = self.model.query(&self.history, &opts).await?;
         self.total_cost_usd += resp.usage.cost_usd.unwrap_or(0.0);
-        self.prompt_tokens = self.prompt_tokens.saturating_add(
-            resp.usage.input_tokens
-                + resp.usage.cache_read_tokens
-                + resp.usage.cache_creation_tokens,
-        );
+        self.prompt_tokens = self.prompt_tokens.saturating_add(resp.usage.input_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(resp.usage.cache_read_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(resp.usage.cache_creation_tokens);
         self.completion_tokens = self
             .completion_tokens
             .saturating_add(resp.usage.output_tokens);
@@ -342,6 +349,8 @@ impl DefaultAgent {
         self.trajectory.info.outcome = Some(outcome_label.to_owned());
         self.trajectory.info.token_usage = Some(TokenUsage {
             prompt_tokens: self.prompt_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
             completion_tokens: self.completion_tokens,
         });
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
