@@ -224,3 +224,5 @@ mod tests {
         assert_eq!(capped, msgs);
     }
 }
+#[cfg(test)]
+pub mod deterministic_chaos_test;
