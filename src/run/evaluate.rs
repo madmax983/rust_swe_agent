@@ -15,7 +15,7 @@ use crate::trajectory::{FailureCategory, outcome};
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
 pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
 pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
-pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 8] = [
+pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 10] = [
     FailureCategory::EnvSetup,
     FailureCategory::ModelApi,
     FailureCategory::ModelParse,
@@ -23,6 +23,8 @@ pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 8] = [
     FailureCategory::CostLimit,
     FailureCategory::WallclockTimeout,
     FailureCategory::AgentInternal,
+    FailureCategory::PatchApplyInvalid,
+    FailureCategory::PatchEmpty,
     FailureCategory::Unknown,
 ];
 
@@ -837,6 +839,8 @@ pub fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::CostLimit => "cost_limit",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::Unknown => "unknown",
     }
 }

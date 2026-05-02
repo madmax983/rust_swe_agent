@@ -39,6 +39,10 @@ pub enum FailureCategory {
     CostLimit,
     WallclockTimeout,
     AgentInternal,
+    /// Patch was captured but `git apply --check` rejected it at capture time.
+    PatchApplyInvalid,
+    /// Agent submitted but the captured diff was empty (zero bytes).
+    PatchEmpty,
     Unknown,
 }
 

@@ -709,6 +709,8 @@ fn failure_label(category: FailureCategory) -> &'static str {
         FailureCategory::CostLimit => "cost_limit",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::Unknown => "unknown",
     }
 }

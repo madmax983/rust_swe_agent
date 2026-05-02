@@ -318,6 +318,11 @@ pub struct SwebenchCmd {
     #[arg(long, default_value_t = false)]
     pub yes: bool,
 
+    /// Skip `git apply --check` and empty-diff validation after patch capture.
+    /// Escape hatch for non-git environments; not for normal use.
+    #[arg(long, default_value_t = false)]
+    pub skip_patch_validation: bool,
+
     /// Instance count for `bench forecast` calibration.
     #[arg(long, default_value_t = 5)]
     pub calibration_n: usize,
