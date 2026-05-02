@@ -52,7 +52,7 @@ impl StepIdx {
     }
     #[must_use]
     pub const fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
     }
     pub const fn get(self) -> u32 {
         self.0
