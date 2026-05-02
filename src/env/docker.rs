@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::Stdio as StdStdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::{Environment, RunRequest, RunResult};
@@ -130,16 +130,10 @@ impl Environment for DockerEnvironment {
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
         let stdin_task = match req.stdin {
             Some(input) => {
-                let mut stdin_pipe = child.stdin.take().ok_or_else(|| {
+                let stdin_pipe = child.stdin.take().ok_or_else(|| {
                     EnvError::UnexpectedExit("docker exec stdin pipe missing".into())
                 })?;
-                Some(tokio::spawn(async move {
-                    stdin_pipe
-                        .write_all(input.as_bytes())
-                        .await
-                        .map_err(EnvError::Io)?;
-                    stdin_pipe.shutdown().await.map_err(EnvError::Io)
-                }))
+                Some(tokio::spawn(super::write_stdin_input(stdin_pipe, input)))
             }
             None => None,
         };
@@ -163,9 +157,7 @@ impl Environment for DockerEnvironment {
             r2.map_err(EnvError::Io)?;
             let status = child.wait().await.map_err(EnvError::Io)?;
             if let Some(stdin_task) = stdin_task {
-                stdin_task.await.map_err(|e| {
-                    EnvError::UnexpectedExit(format!("docker exec stdin writer task failed: {e}"))
-                })??;
+                super::join_stdin_writer(stdin_task, "docker exec stdin").await?;
             }
             Ok::<_, EnvError>((
                 String::from_utf8_lossy(&stdout_buf).into_owned(),

@@ -6,8 +6,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::task::JoinHandle;
 
 use crate::error::EnvError;
 
@@ -83,6 +86,28 @@ pub trait Environment: Send + Sync {
     /// `LocalEnvironment`), this is a no-op.
     async fn shutdown(&mut self) -> Result<(), EnvError> {
         Ok(())
+    }
+}
+
+pub(crate) async fn write_stdin_input<W>(mut stdin: W, input: String) -> Result<(), std::io::Error>
+where
+    W: AsyncWrite + Unpin,
+{
+    stdin.write_all(input.as_bytes()).await?;
+    stdin.shutdown().await
+}
+
+pub(crate) async fn join_stdin_writer(
+    handle: JoinHandle<Result<(), std::io::Error>>,
+    name: &str,
+) -> Result<(), EnvError> {
+    match handle
+        .await
+        .map_err(|e| EnvError::UnexpectedExit(format!("{name} writer task failed: {e}")))?
+    {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(EnvError::Io(e)),
     }
 }
 

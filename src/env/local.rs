@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
@@ -73,17 +73,11 @@ impl Environment for LocalEnvironment {
         let mut process_guard = ProcessTreeGuard::new(child.id());
         let stdin_task = match req.stdin {
             Some(input) => {
-                let mut stdin_pipe = child
+                let stdin_pipe = child
                     .stdin
                     .take()
                     .ok_or_else(|| EnvError::UnexpectedExit("stdin pipe missing".into()))?;
-                Some(tokio::spawn(async move {
-                    stdin_pipe
-                        .write_all(input.as_bytes())
-                        .await
-                        .map_err(EnvError::Io)?;
-                    stdin_pipe.shutdown().await.map_err(EnvError::Io)
-                }))
+                Some(tokio::spawn(super::write_stdin_input(stdin_pipe, input)))
             }
             None => None,
         };
@@ -104,7 +98,7 @@ impl Environment for LocalEnvironment {
             let status = status.map_err(EnvError::Io)?;
             process_guard.disarm();
             if let Some(stdin_task) = stdin_task {
-                join_writer(stdin_task, "stdin").await?;
+                super::join_stdin_writer(stdin_task, "stdin").await?;
             }
             let stdout = join_reader(stdout_task, "stdout").await?;
             let stderr = join_reader(stderr_task, "stderr").await?;
@@ -129,12 +123,6 @@ impl Environment for LocalEnvironment {
             timed_out: true,
         })
     }
-}
-
-async fn join_writer(handle: JoinHandle<Result<(), EnvError>>, name: &str) -> Result<(), EnvError> {
-    handle
-        .await
-        .map_err(|e| EnvError::UnexpectedExit(format!("{name} writer task failed: {e}")))?
 }
 
 async fn read_pipe_to_string<R>(pipe: &mut R) -> Result<String, EnvError>
@@ -441,6 +429,24 @@ mod tests {
             .unwrap();
         assert_eq!(r.stdout.trim(), "out");
         assert_eq!(r.stderr.trim(), "err");
+    }
+
+    #[tokio::test]
+    async fn early_stdin_close_preserves_child_exit_and_stderr() {
+        let env = LocalEnvironment::new();
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command \"[Console]::Error.WriteLine('real-error'); exit 3\""
+        } else {
+            "echo real-error >&2; exit 3"
+        };
+        let mut req = RunRequest::new(command);
+        req.stdin = Some("x".repeat(16 * 1024 * 1024));
+
+        let r = env.run(req).await.unwrap();
+
+        assert_eq!(r.exit_code, 3);
+        assert_eq!(r.stderr.trim(), "real-error");
+        assert!(!r.timed_out);
     }
 
     #[cfg(windows)]
