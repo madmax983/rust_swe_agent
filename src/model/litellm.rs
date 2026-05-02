@@ -96,8 +96,7 @@ impl Model for LitellmBackend {
         let capped = cap_breakpoints::<BREAKPOINT_CAP>(messages);
 
         let lite_msgs = capped
-            .iter()
-            .map(|m| match m.role {
+            .map(|(m, _hint)| match m.role {
                 Role::System => system_message(m.content.clone()),
                 Role::Assistant => assistant_message(m.content.clone()),
                 // Tool messages map to user role for litellm-rs's flat
