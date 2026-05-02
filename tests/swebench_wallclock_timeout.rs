@@ -68,6 +68,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();

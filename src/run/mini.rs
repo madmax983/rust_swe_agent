@@ -265,16 +265,18 @@ fn classify_error(err: &Error) -> FailureCategory {
     }
 }
 
-/// Validate that `diff` applies cleanly against the repo at `spec.workdir`.
+/// Validate that `diff` applies cleanly against `spec.base_commit` in a clean
+/// checkout, without touching the agent's working tree.
 ///
 /// - Returns `Ok(())` immediately when `spec.skip_patch_validation` is `true`
 ///   or `spec.base_commit` is `None` (standalone runs without a base).
 /// - Returns `Err(PatchValidationFailure::Empty)` when `diff` is empty.
-/// - Returns `Err(PatchValidationFailure::ApplyFailed(_))` when
-///   `git apply --check` exits non-zero.
+/// - Returns `Err(PatchValidationFailure::ApplyFailed(_))` when the worktree
+///   setup or `git apply --check` exits non-zero.
 ///
-/// Read-only: writes the diff to a temp file outside the workdir and does
-/// not stage or modify any tracked file.
+/// A temporary git worktree is created at `base_commit` so the check runs
+/// against the clean base state rather than the (already-modified) working
+/// tree.  The worktree is always removed after the check, success or failure.
 pub(crate) async fn check_patch_validity(
     env: &dyn Environment,
     spec: &PatchCaptureSpec,
@@ -286,29 +288,44 @@ pub(crate) async fn check_patch_validity(
     if diff.is_empty() {
         return Err(PatchValidationFailure::Empty);
     }
-    // Write patch to a temp file so we can reference it by path in the shell
-    // command.  The temp file lives outside the workdir so git never tracks it.
-    let tmp_path = std::env::temp_dir().join(format!(
-        ".patch_validate_{}.patch",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&tmp_path, diff.as_bytes())
+    let base_commit = spec.base_commit.as_deref().unwrap();
+    validate_git_rev(base_commit).map_err(PatchValidationFailure::ApplyFailed)?;
+
+    // Use full nanoseconds for better uniqueness across concurrent calls.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_patch = std::env::temp_dir().join(format!(".patch_validate_{unique}.patch"));
+    let wt_path = std::env::temp_dir().join(format!(".patch_validate_wt_{unique}"));
+
+    std::fs::write(&tmp_patch, diff.as_bytes())
         .map_err(|e| PatchValidationFailure::ApplyFailed(format!("write temp: {e}")))?;
-    let tmp_path_str = tmp_path.to_string_lossy().into_owned();
+
+    let tmp_patch_str = tmp_patch.to_string_lossy().into_owned();
+    let wt_path_str = wt_path.to_string_lossy().into_owned();
+
+    // Create a clean worktree at base_commit, validate the patch there, then
+    // always remove the worktree — even when apply fails.
     let cmd = format!(
-        "git apply --check --no-3way -- {}",
-        shell_quote_path(&tmp_path_str)
+        "git worktree add -q --detach {wt} \"${base_env}\" \
+        && git -C {wt} apply --check --no-3way -- {patch} ; \
+        RC=$? ; git worktree remove --force {wt} 2>/dev/null ; exit $RC",
+        wt = shell_quote_path(&wt_path_str),
+        patch = shell_quote_path(&tmp_patch_str),
+        base_env = PATCH_BASE_ENV,
     );
     let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(30));
     req.cwd = Some(spec.workdir.clone());
+    req.env.insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
+
     let result = env
         .run(req)
         .await
         .map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
-    let _ = std::fs::remove_file(&tmp_path);
+
+    let _ = std::fs::remove_file(&tmp_patch);
+
     if result.timed_out || result.exit_code != 0 {
         return Err(PatchValidationFailure::ApplyFailed(
             result.stderr.trim().to_owned(),
@@ -738,6 +755,8 @@ mod tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-m", "base"]);
         let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+        // Modify workdir (leave unstaged) — worktree approach checks against
+        // a clean checkout at base_sha, so this does not need to be reverted.
         std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
 
         let spec = PatchCaptureSpec {
@@ -747,9 +766,6 @@ mod tests {
             skip_patch_validation: false,
         };
         let diff = capture_patch(&LocalEnvironment::new(), &spec).await.unwrap();
-
-        // Restore workdir to base before checking (git apply --check reads cwd)
-        git(&repo, &["checkout", "hello.txt"]);
 
         let result = check_patch_validity(&LocalEnvironment::new(), &spec, &diff).await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -836,12 +852,84 @@ index 8a1218a..24c5735 100644\n\
         git(&repo, &["commit", "-m", "base"]);
 
         let spec = PatchCaptureSpec {
-            base_commit: None,  // no base → validation is gated off
+            base_commit: None, // no base → validation is gated off
             workdir: repo.clone(),
             patch_path: work.path().join("out.patch"),
             skip_patch_validation: false,
         };
         let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
-        assert!(result.is_ok(), "expected Ok when base_commit is None, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok when base_commit is None, got {result:?}"
+        );
+    }
+
+    // ── End-to-end tests through mini::run() ──────────────────────────────
+
+    /// AC (b): agent submits with no workdir changes → empty diff → outcome
+    /// downgraded to error with failure_category=patch_empty.
+    #[tokio::test]
+    async fn mini_run_empty_diff_yields_patch_empty_outcome() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "content\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        let runs_dir = work.path().join("runs");
+        let patch_path = work.path().join("out.patch");
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+
+        let args = MiniArgs {
+            task: "do nothing".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "empty-diff-test".into(),
+            // Submit immediately without touching the repo → empty diff
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            stream_addr: None,
+            patch_capture: Some(PatchCaptureSpec {
+                base_commit: Some(base_sha),
+                workdir: repo.clone(),
+                patch_path: patch_path.clone(),
+                skip_patch_validation: false,
+            }),
+        };
+
+        run(args).await.unwrap();
+
+        // Trajectory must have outcome=error, failure_category=patch_empty
+        let traj_path = runs_dir.join("empty-diff-test.traj.json");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+
+        assert_eq!(
+            traj["info"]["outcome"].as_str(),
+            Some("error"),
+            "expected error outcome; trajectory:\n{traj_json}"
+        );
+        assert_eq!(
+            traj["info"]["failure_category"].as_str(),
+            Some("patch_empty"),
+            "expected patch_empty failure_category; trajectory:\n{traj_json}"
+        );
+
+        // Patch file must be written even though the diff is empty
+        assert!(patch_path.exists(), "patch file should exist on disk");
+        let patch_content = std::fs::read_to_string(&patch_path).unwrap();
+        assert!(
+            patch_content.is_empty(),
+            "patch file should be empty for a no-op submission"
+        );
     }
 }

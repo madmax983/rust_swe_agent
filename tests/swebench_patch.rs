@@ -130,6 +130,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -225,6 +226,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -304,6 +306,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();

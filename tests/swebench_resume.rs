@@ -147,6 +147,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -243,6 +244,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -308,6 +310,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -373,6 +376,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
@@ -465,6 +469,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
     })
     .await
     .unwrap();
