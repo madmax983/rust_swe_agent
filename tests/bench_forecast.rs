@@ -118,6 +118,10 @@ fn instance(
 }
 
 fn fixture_results() -> SweepResults {
+    fixture_results_with_model(None)
+}
+
+fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
     let instances = vec![
         instance("a", 100, 10, 0.01, 1, 2.0, true),
         instance("b", 200, 20, 0.02, 2, 4.0, false),
@@ -141,7 +145,45 @@ fn fixture_results() -> SweepResults {
         retried_instances: 0,
         pass_at_k: 0.0,
         filter_spec: Default::default(),
-        manifest: None,
+        manifest: model_name.map(|name| rust_swe_agent::run::swebench::ProvenanceManifest {
+            purpose: None,
+            harness: rust_swe_agent::run::swebench::HarnessManifest {
+                name: "rust_swe_agent".into(),
+                version: "test".into(),
+                git_sha: None,
+                git_dirty: None,
+                git_resolution: "test".into(),
+            },
+            dataset: rust_swe_agent::run::swebench::DatasetManifest {
+                path: "test.jsonl".into(),
+                sha256: "test".into(),
+                instance_count: instances.len(),
+                filter_spec: Some(Default::default()),
+            },
+            prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+                source: "inline".into(),
+                path: None,
+                sha256: "test".into(),
+            },
+            config: rust_swe_agent::run::swebench::ConfigManifest {
+                resolved: "test".into(),
+                overlay_paths: Vec::new(),
+            },
+            model: rust_swe_agent::run::swebench::ModelManifest {
+                name: name.into(),
+                backend: "litellm".into(),
+                backend_version: None,
+                base_url: None,
+            },
+            runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+                started_at_utc: "2026-05-01T00:00:00Z".into(),
+                finished_at_utc: Some("2026-05-01T00:01:00Z".into()),
+                host_os: "linux".into(),
+                resume_mode: false,
+                rust_version: None,
+            },
+            cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+        }),
         cost_limit_usd: None,
         instances,
     }
@@ -227,6 +269,50 @@ fn forecast_first_gate_requires_clear_cap_or_yes() {
     let no_cap = forecast_from_results(&fixture_results(), 42, 6, 2, 80.0, None).unwrap();
     assert!(!forecast_gate_allows_sweep(&no_cap, ForecastGate { yes: false }).unwrap());
     assert!(forecast_gate_allows_sweep(&no_cap, ForecastGate { yes: true }).unwrap());
+}
+
+#[test]
+fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
+    let mut results = fixture_results_with_model(Some("anthropic/claude-sonnet-4-6"));
+    results.instances = vec![InstanceResult {
+        instance_id: "cached".into(),
+        exit_reason: "submitted".into(),
+        outcome: Some(outcome::SUBMITTED.into()),
+        failure_category: None,
+        steps: Some(1),
+        cost_usd: Some(0.0),
+        prompt_tokens: Some(0),
+        cache_read_tokens: Some(1_000_000),
+        cache_creation_tokens: Some(0),
+        completion_tokens: Some(0),
+        duration_secs: Some(1.0),
+        error: None,
+        patch_present: true,
+        non_empty_patch: true,
+        attempts: 1,
+        retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 1,
+        pass_at_1: true,
+    }];
+    results.total = 1;
+    results.submitted = 1;
+    results.errored = 0;
+    results.total_prompt_tokens = 0;
+    results.total_cache_read_tokens = 1_000_000;
+    results.total_cache_creation_tokens = 0;
+    results.total_completion_tokens = 0;
+    results.estimated_cost_usd = 0.0;
+
+    let report = forecast_from_results(&results, 42, 1, 1, 80.0, None).unwrap();
+    assert!(
+        (report.forecast.total_cost_usd.point - 0.3).abs() < 1e-9,
+        "{report:#?}"
+    );
+    assert!(
+        (report.per_instance.usd_cost.median - 0.3).abs() < 1e-9,
+        "{report:#?}"
+    );
 }
 
 #[test]

@@ -56,7 +56,9 @@ impl LitellmBackend {
 /// to advertise explicit-cache support — `litellm-rs` will route correctly
 /// either way.
 pub fn is_anthropic_model(name: &str) -> bool {
-    name.split('/').any(|segment| segment.starts_with("claude"))
+    name.to_ascii_lowercase()
+        .split('/')
+        .any(|segment| segment.starts_with("claude") || segment.contains("anthropic.claude"))
 }
 
 /// Provider routing: same convention `litellm-rs` uses internally.
@@ -215,6 +217,7 @@ mod tests {
         assert!(is_anthropic_model("claude-opus-4-7"));
         assert!(is_anthropic_model("anthropic/claude-sonnet-4-6"));
         assert!(is_anthropic_model("openrouter/anthropic/claude-sonnet-4-6"));
+        assert!(is_anthropic_model("openrouter/anthropic.claude-sonnet-4-6"));
         assert!(!is_anthropic_model("gpt-4"));
         assert!(!is_anthropic_model("openrouter/meta/llama-3"));
     }
@@ -241,6 +244,9 @@ mod tests {
 
         let b_prefixed = LitellmBackend::new("openrouter/anthropic/claude-opus-4-7");
         assert!(b_prefixed.supports_explicit_cache());
+
+        let b_dotted = LitellmBackend::new("openrouter/anthropic.claude-opus-4-7");
+        assert!(b_dotted.supports_explicit_cache());
 
         let b2 = LitellmBackend::new("gpt-4");
         assert!(!b2.supports_explicit_cache());

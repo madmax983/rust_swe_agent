@@ -497,6 +497,12 @@ pub struct LoadedSweep {
     pub filter_spec: Option<FilterSpec>,
 }
 
+struct DiffContext<'a> {
+    manifest_deltas: Vec<String>,
+    baseline_model_name: Option<&'a str>,
+    candidate_model_name: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedRunSlot {
     pub instance_id: String,
@@ -857,6 +863,8 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let candidate = load_sweep(&args.candidate)?;
     let baseline_eval = load_evaluation_results(&args.baseline)?;
     let candidate_eval = load_evaluation_results(&args.candidate)?;
+    let baseline_model_name = baseline.manifest.as_ref().map(|m| m.model.name.as_str());
+    let candidate_model_name = candidate.manifest.as_ref().map(|m| m.model.name.as_str());
     let baseline_resolved_override = baseline_eval.as_ref().map(resolved_overrides_from_eval);
     let candidate_resolved_override = candidate_eval.as_ref().map(resolved_overrides_from_eval);
     let mut report = diff_with_overrides(
@@ -866,7 +874,14 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         &candidate.instances,
         baseline_resolved_override.as_ref(),
         candidate_resolved_override.as_ref(),
-        manifest_delta_lines(baseline.manifest.as_ref(), candidate.manifest.as_ref()),
+        DiffContext {
+            manifest_deltas: manifest_delta_lines(
+                baseline.manifest.as_ref(),
+                candidate.manifest.as_ref(),
+            ),
+            baseline_model_name,
+            candidate_model_name,
+        },
     );
     report.subset_warnings = subset_warnings(
         baseline.filter_spec.as_ref(),
@@ -888,18 +903,18 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             .as_ref()
             .and_then(non_empty_cost_attribution_rows);
         let baseline_fallback_rows = if baseline_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
-                &args.baseline,
-                &baseline.instances,
-            )?))
+            Some(build_cost_attribution_rows_from_run_slots(
+                &load_run_slots(&args.baseline, &baseline.instances)?,
+                baseline_model_name,
+            ))
         } else {
             None
         };
         let candidate_fallback_rows = if candidate_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(&load_run_slots(
-                &args.candidate,
-                &candidate.instances,
-            )?))
+            Some(build_cost_attribution_rows_from_run_slots(
+                &load_run_slots(&args.candidate, &candidate.instances)?,
+                candidate_model_name,
+            ))
         } else {
             None
         };
@@ -982,7 +997,11 @@ pub fn diff<S: std::hash::BuildHasher>(
         candidate,
         None,
         None,
-        Vec::new(),
+        DiffContext {
+            manifest_deltas: Vec::new(),
+            baseline_model_name: None,
+            candidate_model_name: None,
+        },
     )
 }
 
@@ -993,7 +1012,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     candidate: &HashMap<String, InstanceResult, S>,
     baseline_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
     candidate_resolved_override: Option<&HashMap<String, ResolutionOverride>>,
-    manifest_deltas: Vec<String>,
+    diff_context: DiffContext<'_>,
 ) -> CompareReport {
     let transition_summary = build_transition_summary(
         baseline,
@@ -1010,11 +1029,11 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
 
     let baseline_total_cost: f64 = baseline
         .values()
-        .filter_map(|r| r.effective_cost_usd(None))
+        .filter_map(|r| r.effective_cost_usd(diff_context.baseline_model_name))
         .sum();
     let candidate_total_cost: f64 = candidate
         .values()
-        .filter_map(|r| r.effective_cost_usd(None))
+        .filter_map(|r| r.effective_cost_usd(diff_context.candidate_model_name))
         .sum();
     let baseline_tokens = aggregate_token_breakdown(baseline);
     let candidate_tokens = aggregate_token_breakdown(candidate);
@@ -1067,7 +1086,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         failure_category_baseline,
         failure_category_candidate,
         failure_category_delta,
-        manifest_deltas,
+        manifest_deltas: diff_context.manifest_deltas,
         subset_warnings: Vec::new(),
         breakdown_delta: Vec::new(),
         cost_attribution_delta: Vec::new(),
@@ -1634,6 +1653,7 @@ fn breakdown_map<S: std::hash::BuildHasher>(
 fn cost_attribution_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    model_name: Option<&str>,
 ) -> HashMap<String, (usize, f64)> {
     let mut out = HashMap::new();
     for (id, row) in items {
@@ -1641,7 +1661,7 @@ fn cost_attribution_map<S: std::hash::BuildHasher>(
         let key = cost_attribution_bucket_label(resolved, row.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += row.effective_cost_usd(None).unwrap_or(0.0);
+        entry.1 += row.effective_cost_usd(model_name).unwrap_or(0.0);
     }
     out
 }
@@ -1650,30 +1670,35 @@ fn non_empty_cost_attribution_rows(eval: &EvaluationResults) -> Option<&[CostAtt
     (!eval.cost_attribution.is_empty()).then_some(eval.cost_attribution.as_slice())
 }
 
-fn cost_attribution_map_from_run_slots(slots: &[LoadedRunSlot]) -> HashMap<String, (usize, f64)> {
+fn cost_attribution_map_from_run_slots(
+    slots: &[LoadedRunSlot],
+    model_name: Option<&str>,
+) -> HashMap<String, (usize, f64)> {
     let mut out = HashMap::new();
     for slot in slots {
         let resolved = slot.result.resolved_count > 0;
         let key = cost_attribution_bucket_label(resolved, slot.result.failure_category).to_owned();
         let entry = out.entry(key).or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += slot.result.effective_cost_usd(None).unwrap_or(0.0);
+        entry.1 += slot.result.effective_cost_usd(model_name).unwrap_or(0.0);
     }
     out
 }
 
 fn build_cost_attribution_rows_from_run_slots(
     slots: &[LoadedRunSlot],
+    model_name: Option<&str>,
 ) -> Vec<CostAttributionBucket> {
-    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots))
+    build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots, model_name))
 }
 
 #[cfg(test)]
 fn build_cost_attribution_rows_from_results<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
     resolved_override: Option<&HashMap<String, ResolutionOverride>>,
+    model_name: Option<&str>,
 ) -> Vec<CostAttributionBucket> {
-    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override))
+    build_cost_attribution_rows_from_map(cost_attribution_map(items, resolved_override, model_name))
 }
 
 fn build_cost_attribution_rows_from_map(
@@ -1807,8 +1832,9 @@ fn build_cost_attribution_delta<S: std::hash::BuildHasher>(
     candidate_override: Option<&HashMap<String, ResolutionOverride>>,
     min_delta_usd: f64,
 ) -> Vec<CostAttributionDeltaRow> {
-    let baseline_rows = build_cost_attribution_rows_from_results(baseline, baseline_override);
-    let candidate_rows = build_cost_attribution_rows_from_results(candidate, candidate_override);
+    let baseline_rows = build_cost_attribution_rows_from_results(baseline, baseline_override, None);
+    let candidate_rows =
+        build_cost_attribution_rows_from_results(candidate, candidate_override, None);
     build_cost_attribution_delta_from_rows(&baseline_rows, &candidate_rows, min_delta_usd)
 }
 

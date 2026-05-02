@@ -509,8 +509,15 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
     };
     let eval = crate::run::evaluate::run(&args)?;
-    let sweep_results = crate::run::compare::load_run(&e.sweep)?;
-    let summary = crate::run::evaluate::summarize(&eval, &sweep_results);
+    let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
+    let summary = crate::run::evaluate::summarize_with_model(
+        &eval,
+        &loaded_sweep.instances,
+        loaded_sweep
+            .manifest
+            .as_ref()
+            .map(|m| m.model.name.as_str()),
+    );
 
     tracing::info!(
         instances = summary.instances,
@@ -535,8 +542,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         );
     }
     if !eval.cost_attribution.is_empty() {
-        let missing_cost_count =
-            crate::run::evaluate::cost_missing_count_for_run_slots(&e.sweep, &sweep_results)?;
+        let missing_cost_count = crate::run::evaluate::cost_missing_count_for_run_slots(
+            &e.sweep,
+            &loaded_sweep.instances,
+        )?;
         if missing_cost_count > 0 {
             println!(
                 "warning: cost attribution missing usd_cost for {missing_cost_count} trajectories; treating as $0.00"

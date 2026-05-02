@@ -235,6 +235,7 @@ pub fn forecast_from_results(
     validate_args(results.instances.len().max(1), confidence_pct)?;
     validate_positive("target-n", target_n)?;
     validate_positive("parallel", parallel)?;
+    let model_name = results.manifest.as_ref().map(|m| m.model.name.as_str());
     let mut instances = results.instances.clone();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     if instances.is_empty() {
@@ -245,7 +246,7 @@ pub fn forecast_from_results(
 
     let input_tokens = values(&instances, |r| r.prompt_tokens.map_or(0.0, as_f64_u64));
     let output_tokens = values(&instances, |r| r.completion_tokens.map_or(0.0, as_f64_u64));
-    let usd_cost = values(&instances, instance_cost_usd);
+    let usd_cost = values(&instances, |r| instance_cost_usd(r, model_name));
     let step_count = values(&instances, |r| r.steps.map_or(0.0, f64::from));
     let wall_clock_seconds = values(&instances, |r| r.duration_secs.unwrap_or(0.0));
     let resolved = instances
@@ -482,8 +483,8 @@ fn values(instances: &[InstanceResult], f: impl Fn(&InstanceResult) -> f64) -> V
     instances.iter().map(f).collect()
 }
 
-fn instance_cost_usd(r: &InstanceResult) -> f64 {
-    r.effective_cost_usd(None).unwrap_or_default()
+fn instance_cost_usd(r: &InstanceResult, model_name: Option<&str>) -> f64 {
+    r.effective_cost_usd(model_name).unwrap_or_default()
 }
 
 fn quantiles(values: &[f64]) -> QuantileSummary {

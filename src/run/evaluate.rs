@@ -203,6 +203,7 @@ pub fn evaluation_path(sweep_dir: &Path) -> PathBuf {
 
 pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let loaded = load_sweep(&args.sweep_dir)?;
+    let model_name = loaded.manifest.as_ref().map(|m| m.model.name.clone());
     if loaded.manifest.as_ref().and_then(|m| m.purpose.as_deref()) == Some("forecast") {
         return Err(Error::Trajectory(
             "bench evaluate: refusing to evaluate forecast calibration output".into(),
@@ -219,8 +220,12 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown);
     if args.cost_attribution {
         let run_slots = load_run_slots(&args.sweep_dir, &results)?;
-        eval.cost_attribution =
-            build_cost_attribution_from_run_slots(&run_slots, &run_output.resolved_by_run).rows;
+        eval.cost_attribution = build_cost_attribution_from_run_slots(
+            &run_slots,
+            &run_output.resolved_by_run,
+            model_name.as_deref(),
+        )
+        .rows;
     }
     std::fs::write(
         evaluation_path(&args.sweep_dir),
@@ -233,6 +238,15 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
 pub fn summarize<S: std::hash::BuildHasher>(
     eval: &EvaluationResults,
     results: &HashMap<String, InstanceResult, S>,
+) -> EvaluationSummary {
+    summarize_with_model(eval, results, None)
+}
+
+#[must_use]
+pub fn summarize_with_model<S: std::hash::BuildHasher>(
+    eval: &EvaluationResults,
+    results: &HashMap<String, InstanceResult, S>,
+    model_name: Option<&str>,
 ) -> EvaluationSummary {
     let instances = eval.instances.len();
     if instances == 0 {
@@ -268,7 +282,7 @@ pub fn summarize<S: std::hash::BuildHasher>(
         });
     let total_cost_usd = results
         .values()
-        .filter_map(|row| row.effective_cost_usd(None))
+        .filter_map(|row| row.effective_cost_usd(model_name))
         .sum();
     let resolved = eval.instances.iter().filter(|row| row.resolved).count();
     let pass_at_1 = eval
@@ -880,13 +894,14 @@ pub(crate) fn cost_missing_count_for_run_slots<S: std::hash::BuildHasher>(
 fn build_cost_attribution<S: std::hash::BuildHasher>(
     evals: &[InstanceEvaluation],
     results: &HashMap<String, InstanceResult, S>,
+    model_name: Option<&str>,
 ) -> CostAttributionReport {
     build_cost_attribution_report(evals.iter().map(|row| {
         let result = results.get(&row.instance_id);
         CostAttributionSample {
             resolved: row.resolved,
             failure_category: result.and_then(|result| result.failure_category),
-            cost_usd: result.and_then(|result| result.effective_cost_usd(None)),
+            cost_usd: result.and_then(|result| result.effective_cost_usd(model_name)),
         }
     }))
 }
@@ -894,6 +909,7 @@ fn build_cost_attribution<S: std::hash::BuildHasher>(
 fn build_cost_attribution_from_run_slots(
     run_slots: &[crate::run::compare::LoadedRunSlot],
     resolved_by_run: &HashMap<RunSlotKey, bool>,
+    model_name: Option<&str>,
 ) -> CostAttributionReport {
     build_cost_attribution_report(run_slots.iter().map(|slot| {
         CostAttributionSample {
@@ -902,7 +918,7 @@ fn build_cost_attribution_from_run_slots(
                 .copied()
                 .unwrap_or(false),
             failure_category: slot.result.failure_category,
-            cost_usd: slot.result.effective_cost_usd(None),
+            cost_usd: slot.result.effective_cost_usd(model_name),
         }
     }))
 }
@@ -1272,7 +1288,7 @@ mod tests {
             ("model-api".to_string(), model_api),
         ]);
 
-        let report = build_cost_attribution(&evals, &results);
+        let report = build_cost_attribution(&evals, &results, None);
         assert_eq!(report.missing_cost_count, 1);
 
         let rows = report
@@ -1332,7 +1348,7 @@ mod tests {
             ("uncategorized".to_string(), uncategorized),
         ]);
 
-        let report = build_cost_attribution(&evals, &results);
+        let report = build_cost_attribution(&evals, &results, None);
         let top_buckets: Vec<&str> = report
             .rows
             .iter()
