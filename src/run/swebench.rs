@@ -1836,7 +1836,7 @@ struct SweepAccounting {
 
 impl SweepAccounting {
     fn add_result(&mut self, result: &InstanceResult) {
-        if result.non_empty_patch {
+        if result.non_empty_patch && result.outcome.as_deref() == Some(outcome::SUBMITTED) {
             self.with_patch += 1;
         }
         self.total_retries = self

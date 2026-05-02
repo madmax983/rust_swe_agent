@@ -327,7 +327,6 @@ pub(crate) async fn check_patch_validity(
         RC=$? ; git worktree remove --force {wt} 2>/dev/null ; exit $RC",
         wt = shell_quote_path(&wt_name),
         patch = shell_quote_path(&patch_name),
-        base_arg = base_arg,
     );
     let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(30));
     req.cwd = Some(spec.workdir.clone());
