@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use crate::error::Error;
 
 pub mod default;
-pub mod interactive;
+pub(crate) mod interactive;
 pub mod parse;
 
 pub use default::DefaultAgent;

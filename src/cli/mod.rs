@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use crate::config::Config;
 use crate::error::Error;
 
-pub mod args;
+pub(crate) mod args;
 
 #[derive(Debug, Parser)]
 #[command(

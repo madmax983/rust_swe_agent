@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use crate::error::ModelError;
 
-pub mod deterministic;
+pub(crate) mod deterministic;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
@@ -225,4 +225,4 @@ mod tests {
     }
 }
 #[cfg(test)]
-pub mod deterministic_chaos_test;
+pub(crate) mod deterministic_chaos_test;

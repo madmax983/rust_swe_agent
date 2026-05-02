@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::error::ConfigError;
 
-pub mod schema;
+pub(crate) mod schema;
 
 pub use schema::{AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg};
 

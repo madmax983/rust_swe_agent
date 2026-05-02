@@ -13,8 +13,8 @@
 
 use serde::Serialize;
 
-pub mod broadcast;
-pub mod sse;
+pub(crate) mod broadcast;
+pub(crate) mod sse;
 
 pub use broadcast::BroadcastSink;
 pub use sse::SseServer;
