@@ -52,6 +52,20 @@ pub struct TokenUsage {
     pub completion_tokens: u64,
 }
 
+impl TokenUsage {
+    #[must_use]
+    pub fn total_prompt_tokens(&self) -> u64 {
+        self.prompt_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_creation_tokens)
+    }
+
+    #[must_use]
+    pub fn has_cached_prompt_tokens(&self) -> bool {
+        self.cache_read_tokens > 0 || self.cache_creation_tokens > 0
+    }
+}
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_zero_u64(value: &u64) -> bool {
     *value == 0

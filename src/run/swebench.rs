@@ -2783,6 +2783,16 @@ mod tests {
     }
 
     #[test]
+    fn cost_estimate_applies_cache_multipliers_for_routed_anthropic_models() {
+        let cache_read =
+            estimate_cost_usd(0, 1_000_000, 0, 0, "openrouter/anthropic/claude-sonnet-4-6");
+        let cache_creation =
+            estimate_cost_usd(0, 0, 1_000_000, 0, "openrouter/anthropic/claude-sonnet-4-6");
+        assert!((cache_read - 0.3).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.75).abs() < 1e-9, "got {cache_creation}");
+    }
+
+    #[test]
     fn cost_estimate_without_model_name_does_not_apply_cache_multipliers() {
         let cache_read = estimate_cost_usd(0, 1_000_000, 0, 0, "");
         let cache_creation = estimate_cost_usd(0, 0, 1_000_000, 0, "");
