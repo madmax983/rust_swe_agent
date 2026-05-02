@@ -299,8 +299,7 @@ pub(crate) async fn check_patch_validity(
     // Use full nanoseconds for better uniqueness across concurrent calls.
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
 
     // Place temp files inside spec.workdir so they are accessible from inside
     // Docker containers (where the workdir is the mounted volume).  Relative
