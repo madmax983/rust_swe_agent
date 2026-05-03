@@ -35,7 +35,14 @@ struct TruncateResult {
     clippy::cast_sign_loss
 )]
 fn truncate_observation_text(input: &str, max_bytes: usize, head_ratio: f64) -> TruncateResult {
-    if max_bytes == 0 || input.len() <= max_bytes {
+    if max_bytes == 0 {
+        return TruncateResult {
+            text: String::new(),
+            bytes_omitted: input.len(),
+            truncated: !input.is_empty(),
+        };
+    }
+    if input.len() <= max_bytes {
         return TruncateResult {
             text: input.to_owned(),
             bytes_omitted: 0,
@@ -644,6 +651,22 @@ mod tests {
         let t = truncate_observation_text(&input, 128, 0.5);
         assert!(t.truncated);
         assert!(t.text.len() <= 128);
+    }
+
+    #[test]
+    fn truncate_observation_text_zero_cap_returns_empty() {
+        let t = truncate_observation_text("abcdef", 0, 0.5);
+        assert!(t.truncated);
+        assert_eq!(t.bytes_omitted, 6);
+        assert!(t.text.is_empty());
+    }
+
+    #[test]
+    fn truncate_observation_text_zero_cap_empty_input_not_truncated() {
+        let t = truncate_observation_text("", 0, 0.5);
+        assert!(!t.truncated);
+        assert_eq!(t.bytes_omitted, 0);
+        assert!(t.text.is_empty());
     }
 
     #[tokio::test]
