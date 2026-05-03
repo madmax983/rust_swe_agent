@@ -4110,7 +4110,7 @@ instance = "inst"
         g.report_429(None).await;
         g.report_429(None).await;
         // Only 2 consecutive 429s without Retry-After — AIMD should NOT trigger
-        assert!(!g.suppressed_slots_count().await > 0);
+        assert_eq!(g.suppressed_slots_count().await, 0);
     }
 
     #[tokio::test]
@@ -4137,7 +4137,7 @@ instance = "inst"
         g.report_429(None).await;
         g.report_429(None).await;
         // Only 2 consecutive no-retry-after 429s after the reset — no AIMD
-        assert!(!g.suppressed_slots_count().await > 0);
+        assert_eq!(g.suppressed_slots_count().await, 0);
     }
 
     #[tokio::test]
