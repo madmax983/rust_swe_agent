@@ -1,11 +1,48 @@
+//! Export utilities for transforming trajectories into human-readable formats.
+//!
+//! While the primary `.traj.json` format is optimized for machine replay and metric
+//! extraction, it can be dense for humans. This module provides exporters (like
+//! [`MarkdownExporter`]) that render the back-and-forth conversation into a clean
+//! narrative document, complete with headers and code blocks.
+//!
+//! You can extend this module with new formats by implementing the [`TrajectoryExporter`] trait.
+
 use super::Trajectory;
 
+/// A contract for types that can convert a [`Trajectory`] into a specialized string format.
+///
+/// Implement this trait to provide a new serialization layout (e.g., Markdown, CSV).
 pub trait TrajectoryExporter {
+    /// Transforms the provided [`Trajectory`] into a formatted `String`.
     fn export(trajectory: &Trajectory) -> String;
 }
 
+/// Transforms a [`Trajectory`] into a structured Markdown document.
+///
+/// It renders the task, outcome, and all messages sequentially under appropriate headers.
+///
+/// ## Examples
+///
+/// ```rust
+/// use rust_swe_agent::trajectory::Trajectory;
+/// use rust_swe_agent::model::Message;
+/// use rust_swe_agent::trajectory::export::{TrajectoryExporter, MarkdownExporter};
+///
+/// let mut traj = Trajectory::new();
+/// traj.info.task = Some("Fix tests".to_string());
+/// traj.record_message(&Message::user("Hello agent"));
+///
+/// let md = MarkdownExporter::export(&traj);
+/// assert!(md.contains("# Trajectory Export"));
+/// assert!(md.contains("**Task:** Fix tests"));
+/// assert!(md.contains("### User"));
+/// assert!(md.contains("Hello agent"));
+/// ```
 pub struct MarkdownExporter;
 
+/// Transforms a [`Trajectory`] into a flat CSV file, with `role` and `content` columns.
+///
+/// Note: This exporter properly handles and escapes embedded quotes and newlines in message content.
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
