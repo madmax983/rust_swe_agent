@@ -543,10 +543,7 @@ impl SweepResults {
     }
 }
 
-fn write_rate_limit_summary(
-    s: &mut String,
-    rl: Option<&crate::run::rate_limit::RateLimitEvents>,
-) {
+fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
     let Some(rl) = rl else { return };
     let _ = writeln!(s, "Rate-limit events:");
     let _ = writeln!(s, "  Throttled calls:    {}", rl.throttled_calls);
@@ -1064,26 +1061,27 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         accounting.add_result(&r.result);
     }
 
-    let spawn_one = |run: SweepRun,
-                     set: &mut tokio::task::JoinSet<RunSlotResult>,
-                     governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>| {
-        let params = RunOneParams {
-            output_dir: args.output_dir.clone(),
-            cfg: args.config.clone(),
-            deterministic_responses: args.deterministic_responses.clone(),
-            deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
-            retry_policy: retry_policy.clone(),
-            task_timeout_secs: args.task_timeout_secs,
-            skip_patch_validation: args.skip_patch_validation,
-            governor,
+    let spawn_one =
+        |run: SweepRun,
+         set: &mut tokio::task::JoinSet<RunSlotResult>,
+         governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>| {
+            let params = RunOneParams {
+                output_dir: args.output_dir.clone(),
+                cfg: args.config.clone(),
+                deterministic_responses: args.deterministic_responses.clone(),
+                deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+                retry_policy: retry_policy.clone(),
+                task_timeout_secs: args.task_timeout_secs,
+                skip_patch_validation: args.skip_patch_validation,
+                governor,
+            };
+            set.spawn(async move {
+                RunSlotResult::new(
+                    run.run_index,
+                    run_one(run.inst, run.run_index, params).await,
+                )
+            });
         };
-        set.spawn(async move {
-            RunSlotResult::new(
-                run.run_index,
-                run_one(run.inst, run.run_index, params).await,
-            )
-        });
-    };
 
     if halted {
         // Resume already exhausted the budget; everything that was queued
@@ -1102,10 +1100,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 spawn_one(inst, &mut set, governor_arc.clone());
                 in_flight += 1;
                 if let Some(g) = &governor_arc {
-                    g.update_peak_concurrent(
-                        u32::try_from(in_flight).unwrap_or(u32::MAX),
-                    )
-                    .await;
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
                 }
             } else {
                 break;
@@ -1207,10 +1203,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 spawn_one(inst, &mut set, governor_arc.clone());
                 in_flight += 1;
                 if let Some(g) = &governor_arc {
-                    g.update_peak_concurrent(
-                        u32::try_from(in_flight).unwrap_or(u32::MAX),
-                    )
-                    .await;
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
                 }
             }
         }
@@ -1291,7 +1285,6 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     Ok(sweep)
 }
-
 
 #[allow(clippy::too_many_lines)]
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
@@ -2490,8 +2483,10 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
 
         // If the attempt hit a rate-limit error, report it to the governor
         // so the global Retry-After floor is set for all workers.
-        if let (Some(g), Some(crate::error::Error::Model(crate::error::ModelError::RateLimited(msg)))) =
-            (&governor, &run_err)
+        if let (
+            Some(g),
+            Some(crate::error::Error::Model(crate::error::ModelError::RateLimited(msg))),
+        ) = (&governor, &run_err)
         {
             let retry_after =
                 crate::run::rate_limit::RateLimitGovernor::parse_retry_after_from_error(msg);
@@ -4092,8 +4087,8 @@ instance = "inst"
 
     #[tokio::test]
     async fn governor_retry_after_applies_globally_to_concurrent_workers() {
-        use std::sync::Arc;
         use crate::run::rate_limit::RateLimitGovernor;
+        use std::sync::Arc;
         let g = Arc::new(RateLimitGovernor::new(Some(6000), None, 4).unwrap());
         // Worker 1 reports a 429 with Retry-After: 1
         g.report_429(Some(1)).await;
@@ -4152,7 +4147,10 @@ instance = "inst"
         // Report a 429 (counts as throttled)
         g.report_429(Some(1)).await;
         let events = g.events().await;
-        assert!(events.throttled_calls > 0, "throttled_calls should be incremented");
+        assert!(
+            events.throttled_calls > 0,
+            "throttled_calls should be incremented"
+        );
         assert_eq!(events.configured_max_rpm, Some(6000));
     }
 
@@ -4181,10 +4179,7 @@ instance = "inst"
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let target = now_unix + 60;
-        // Decompose target unix ts back to civil so we can format an HTTP-date.
-        // Using a fixed date far in the future to avoid off-by-one around midnight.
-        // Instead, just check that a hard-coded past date returns Some(0).
+        // Use a fixed past/future date rather than decomposing a computed timestamp.
         let past_msg = "retry-after: Thu, 01 Jan 1970 00:00:00 GMT";
         assert_eq!(
             RateLimitGovernor::parse_retry_after_from_error(past_msg),
@@ -4217,10 +4212,7 @@ instance = "inst"
     #[test]
     fn config_sweep_keys_round_trip_toml() {
         use crate::config::Config;
-        let cfg = Config::from_toml_str(
-            "[sweep]\nmax_rpm = 4000\nmax_input_tpm = 400000",
-        )
-        .unwrap();
+        let cfg = Config::from_toml_str("[sweep]\nmax_rpm = 4000\nmax_input_tpm = 400000").unwrap();
         assert_eq!(cfg.root.sweep.max_rpm, Some(4000));
         assert_eq!(cfg.root.sweep.max_input_tpm, Some(400_000));
     }

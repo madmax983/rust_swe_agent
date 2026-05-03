@@ -357,9 +357,18 @@ fn parse_http_date_secs_from_now(s: &str) -> Option<u64> {
     }
     let day: i64 = parts[1].parse().ok()?;
     let month: i64 = match parts[2].to_lowercase().as_str() {
-        "jan" => 1, "feb" => 2, "mar" => 3, "apr" => 4,
-        "may" => 5, "jun" => 6, "jul" => 7, "aug" => 8,
-        "sep" => 9, "oct" => 10, "nov" => 11, "dec" => 12,
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
         _ => return None,
     };
     let year: i64 = parts[3].parse().ok()?;
@@ -380,7 +389,14 @@ fn parse_http_date_secs_from_now(s: &str) -> Option<u64> {
 
 /// Convert a proleptic Gregorian civil date + time to a Unix timestamp (seconds
 /// since 1970-01-01T00:00:00Z). Uses Howard Hinnant's days-since-epoch formula.
-pub(crate) fn civil_to_unix(year: i64, month: i64, day: i64, h: u64, m: u64, s: u64) -> Option<u64> {
+pub(crate) fn civil_to_unix(
+    year: i64,
+    month: i64,
+    day: i64,
+    h: u64,
+    m: u64,
+    s: u64,
+) -> Option<u64> {
     // Shift so March is month 1, to simplify leap-day arithmetic.
     let (y, mp) = if month <= 2 {
         (year - 1, month + 9)
