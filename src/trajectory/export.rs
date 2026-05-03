@@ -77,6 +77,11 @@ impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
         let mut mermaid = String::new();
         mermaid.push_str("sequenceDiagram\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let _ = writeln!(mermaid, "    title {task}");
+        }
+
         mermaid.push_str("    participant S as System\n");
         mermaid.push_str("    participant U as User\n");
         mermaid.push_str("    participant A as Assistant\n");
@@ -91,7 +96,12 @@ impl TrajectoryExporter for MermaidExporter {
                 _ => "U",
             };
 
-            let safe_content = msg.content.replace('\n', "<br>").replace(';', ",");
+            let safe_content = msg.content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace(';', "#59;")
+                .replace('\n', "<br>");
 
             if role_abbr == "S" {
                 let _ = writeln!(mermaid, "    S->>S: {safe_content}");
@@ -99,6 +109,10 @@ impl TrajectoryExporter for MermaidExporter {
                 let _ = writeln!(mermaid, "    {prev_role}->>{role_abbr}: {safe_content}");
                 prev_role = role_abbr;
             }
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let _ = writeln!(mermaid, "\n    Note over S,T: Outcome: {outcome}");
         }
 
         mermaid
@@ -161,20 +175,23 @@ mod tests {
         t.info.task = Some("Add a feature".to_string());
         t.info.outcome = Some(outcome::SUBMITTED.to_string());
 
-        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::system("System prompt; echo 1 >&2"));
         t.record_message(&Message::user("Hello agent\nMulti-line"));
         t.record_message(&Message::assistant("Hello \"user\""));
 
         let mermaid = MermaidExporter::export(&t);
 
         assert!(mermaid.starts_with("sequenceDiagram"));
+        assert!(mermaid.contains("title Add a feature"));
         assert!(mermaid.contains("participant S as System"));
         assert!(mermaid.contains("participant U as User"));
         assert!(mermaid.contains("participant A as Assistant"));
         assert!(mermaid.contains("participant T as Tool"));
 
-        assert!(mermaid.contains("S->>S: System prompt"));
-        assert!(mermaid.contains("U->>U: Hello agent"));
+        assert!(mermaid.contains("S->>S: System prompt#59; echo 1 &gt#59;&amp#59;2"));
+        assert!(mermaid.contains("U->>U: Hello agent<br>Multi-line"));
         assert!(mermaid.contains("U->>A: Hello \"user\""));
+
+        assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
     }
 }
