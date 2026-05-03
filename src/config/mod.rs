@@ -10,7 +10,7 @@ use crate::error::ConfigError;
 
 pub mod schema;
 
-pub use schema::{AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg};
+pub use schema::{AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg, SweepCfg};
 
 const DEFAULT_TOML: &str = include_str!("defaults/default.toml");
 const MAX_INCLUDE_DEPTH: usize = 16;

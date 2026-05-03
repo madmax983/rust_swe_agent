@@ -147,6 +147,12 @@ pub struct CompareReport {
     pub cost_attribution_delta: Vec<CostAttributionDeltaRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cost_attribution_warnings: Vec<String>,
+    /// Rate-limit telemetry from the baseline sweep, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
+    /// Rate-limit telemetry from the candidate sweep, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
     /// Tasks that passed in the baseline but failed in the candidate.
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
@@ -208,6 +214,7 @@ impl CompareReport {
         s.push_str("\n=== bench compare ===\n");
         write_compare_overview(&mut s, self);
         write_compare_cost_and_token_section(&mut s, self);
+        write_rate_limit_events_section(&mut s, self);
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -323,6 +330,42 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
 fn write_u64_delta_line(s: &mut String, label: &str, baseline: u64, candidate: u64) {
     let delta = i128::from(candidate) - i128::from(baseline);
     let _ = writeln!(s, "{label}{baseline} -> {candidate} ({delta:+})");
+}
+
+fn write_rate_limit_events_section(s: &mut String, report: &CompareReport) {
+    let (b, c) = match (
+        report.baseline_rate_limit_events.as_ref(),
+        report.candidate_rate_limit_events.as_ref(),
+    ) {
+        (None, None) => return,
+        (b, c) => (b, c),
+    };
+    s.push_str("Rate-limit events:\n");
+    let b_calls = b.map_or(0, |e| e.throttled_calls);
+    let c_calls = c.map_or(0, |e| e.throttled_calls);
+    let _ = writeln!(
+        s,
+        "  Throttled calls:    {} -> {} ({:+})",
+        b_calls,
+        c_calls,
+        i128::from(c_calls) - i128::from(b_calls)
+    );
+    let b_secs = b.map_or(0.0, |e| e.total_throttled_seconds);
+    let c_secs = c.map_or(0.0, |e| e.total_throttled_seconds);
+    let _ = writeln!(
+        s,
+        "  Throttled secs:     {b_secs:.1} -> {c_secs:.1} ({:+.1})",
+        c_secs - b_secs
+    );
+    let b_peak = b.map_or(0, |e| e.peak_concurrent);
+    let c_peak = c.map_or(0, |e| e.peak_concurrent);
+    let _ = writeln!(
+        s,
+        "  Peak concurrent:    {} -> {} ({:+})",
+        b_peak,
+        c_peak,
+        i64::from(c_peak) - i64::from(b_peak)
+    );
 }
 
 fn write_mean_steps_line(
@@ -495,6 +538,7 @@ pub struct LoadedSweep {
     pub instances: HashMap<String, InstanceResult>,
     pub manifest: Option<ProvenanceManifest>,
     pub filter_spec: Option<FilterSpec>,
+    pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
 }
 
 struct DiffContext<'a> {
@@ -519,6 +563,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             .and_then(|v| v.get("filter_spec").cloned())
             .is_some();
         let sweep: SweepResults = serde_json::from_str(&text)?;
+        let rate_limit_events = sweep.rate_limit_events.clone();
         let partial_incomplete = sweep
             .manifest
             .as_ref()
@@ -557,6 +602,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 } else {
                     None
                 },
+                rate_limit_events,
             });
         }
         return Ok(LoadedSweep {
@@ -571,6 +617,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             } else {
                 None
             },
+            rate_limit_events,
         });
     }
     if !dir.exists() {
@@ -585,6 +632,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         instances: out,
         manifest: None,
         filter_spec: None,
+        rate_limit_events: None,
     })
 }
 
@@ -887,6 +935,8 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         baseline.filter_spec.as_ref(),
         candidate.filter_spec.as_ref(),
     );
+    report.baseline_rate_limit_events = baseline.rate_limit_events;
+    report.candidate_rate_limit_events = candidate.rate_limit_events;
     report.breakdown_delta = build_breakdown_delta(
         &baseline.instances,
         &candidate.instances,
@@ -1091,6 +1141,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         breakdown_delta: Vec::new(),
         cost_attribution_delta: Vec::new(),
         cost_attribution_warnings: Vec::new(),
+        baseline_rate_limit_events: None,
+        candidate_rate_limit_events: None,
         regressions: transition_summary.regressions,
     }
 }
@@ -1962,6 +2014,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances,
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -2089,6 +2142,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
+            rate_limit_events: None,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -2418,6 +2472,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a")],
+            rate_limit_events: None,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -2670,6 +2725,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -2720,6 +2776,7 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             instances: vec![submitted("a")],
+            rate_limit_events: None,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -2812,6 +2869,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -2904,6 +2962,7 @@ mod tests {
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
+            rate_limit_events: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -2912,5 +2971,128 @@ mod tests {
         .unwrap();
         let loaded = load_sweep(dir.path()).unwrap();
         assert!(loaded.instances.contains_key("resume-old"));
+    }
+
+    // ── Coverage: write_rate_limit_events_section ─────────────────────────────
+
+    fn make_rate_limit_events(
+        calls: u64,
+        secs: f64,
+        peak: u32,
+    ) -> crate::run::rate_limit::RateLimitEvents {
+        crate::run::rate_limit::RateLimitEvents {
+            throttled_calls: calls,
+            total_throttled_seconds: secs,
+            peak_concurrent: peak,
+            configured_max_rpm: Some(4000),
+            configured_max_input_tpm: None,
+        }
+    }
+
+    #[test]
+    fn human_table_includes_rate_limit_events_when_both_sides_present() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let mut r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        r.baseline_rate_limit_events = Some(make_rate_limit_events(5, 2.0, 3));
+        r.candidate_rate_limit_events = Some(make_rate_limit_events(10, 4.5, 5));
+        let t = r.human_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "section header missing: {t}"
+        );
+        assert!(
+            t.contains("Throttled calls:"),
+            "throttled calls line missing: {t}"
+        );
+        assert!(t.contains("5 -> 10 (+5)"), "delta counts wrong: {t}");
+        assert!(
+            t.contains("Throttled secs:"),
+            "throttled secs line missing: {t}"
+        );
+        assert!(t.contains("2.0 -> 4.5 (+2.5)"), "delta secs wrong: {t}");
+        assert!(
+            t.contains("Peak concurrent:"),
+            "peak concurrent line missing: {t}"
+        );
+        assert!(t.contains("3 -> 5 (+2)"), "delta peak wrong: {t}");
+    }
+
+    #[test]
+    fn human_table_rate_limit_section_absent_when_both_sides_none() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        let t = r.human_table();
+        assert!(
+            !t.contains("Rate-limit events:"),
+            "section should be absent when neither side has events: {t}"
+        );
+    }
+
+    #[test]
+    fn human_table_rate_limit_section_handles_one_sided_events() {
+        // Only candidate has events — baseline shows zero placeholders.
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let mut r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        r.candidate_rate_limit_events = Some(make_rate_limit_events(7, 3.0, 4));
+        let t = r.human_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "section header missing: {t}"
+        );
+        // baseline placeholder is 0
+        assert!(
+            t.contains("0 -> 7 (+7)"),
+            "one-sided throttled calls wrong: {t}"
+        );
+    }
+
+    #[test]
+    fn load_sweep_propagates_rate_limit_events() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let events = crate::run::rate_limit::RateLimitEvents {
+            throttled_calls: 3,
+            total_throttled_seconds: 1.5,
+            peak_concurrent: 2,
+            configured_max_rpm: Some(600),
+            configured_max_input_tpm: None,
+        };
+        let sweep = SweepResults {
+            total: 0,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: Some(events),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        let ev = loaded.rate_limit_events.unwrap();
+        assert_eq!(ev.throttled_calls, 3);
+        assert_eq!(ev.configured_max_rpm, Some(600));
     }
 }

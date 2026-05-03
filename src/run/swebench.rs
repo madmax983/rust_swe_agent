@@ -256,6 +256,10 @@ pub struct SweepResults {
     pub cost_limit_usd: Option<f64>,
     #[serde(default)]
     pub instances: Vec<InstanceResult>,
+    /// Rate-limit telemetry emitted when `--max-rpm` or `--max-input-tpm` is
+    /// set. `None` when neither flag was provided (opt-in, no behavior change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -512,6 +516,7 @@ impl SweepResults {
         if unclassified_legacy > 0 {
             let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
         }
+        write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
         s
     }
 
@@ -535,6 +540,20 @@ impl SweepResults {
         let mut iter = self.instances.iter().map(effective_runs);
         let first = iter.next()?;
         iter.all(|runs| runs == first).then_some(first)
+    }
+}
+
+fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
+    let Some(rl) = rl else { return };
+    let _ = writeln!(s, "Rate-limit events:");
+    let _ = writeln!(s, "  Throttled calls:    {}", rl.throttled_calls);
+    let _ = writeln!(s, "  Throttled secs:     {:.1}", rl.total_throttled_seconds);
+    let _ = writeln!(s, "  Peak concurrent:    {}", rl.peak_concurrent);
+    if let Some(rpm) = rl.configured_max_rpm {
+        let _ = writeln!(s, "  Configured max-rpm: {rpm}");
+    }
+    if let Some(tpm) = rl.configured_max_input_tpm {
+        let _ = writeln!(s, "  Configured max-tpm: {tpm}");
     }
 }
 
@@ -630,6 +649,12 @@ pub struct SwebenchArgs {
     /// When `true`, skip `git apply --check` and empty-diff validation after
     /// patch capture. Escape hatch for non-git environments; default is off.
     pub skip_patch_validation: bool,
+    /// Optional aggregate request-rate ceiling across all workers (requests/min).
+    /// When `None`, no RPM cap is enforced (opt-in, no behavior change).
+    pub max_rpm: Option<u32>,
+    /// Optional aggregate input-token-rate ceiling across all workers (tokens/min).
+    /// When `None`, no TPM cap is enforced (opt-in, no behavior change).
+    pub max_input_tpm: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -839,6 +864,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             manifest: None,
             cost_limit_usd: args.cost_limit_usd,
             instances: Vec::new(),
+            rate_limit_events: None,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -902,6 +928,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         manifest: Some(initial_manifest),
         cost_limit_usd: args.cost_limit_usd,
         instances: Vec::new(),
+        rate_limit_events: None,
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&initial)?)?;
     #[cfg(test)]
@@ -928,6 +955,18 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             }
         }
     };
+
+    // Create the rate-limit governor only when at least one flag is set.
+    // Wrapping in Arc lets each spawned task share it without cloning.
+    let governor_arc: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>> =
+        crate::run::rate_limit::RateLimitGovernor::new(
+            args.max_rpm,
+            args.max_input_tpm,
+            u32::try_from(args.parallel.max(1)).unwrap_or(u32::MAX),
+        )
+        .map(std::sync::Arc::new);
+
+    let mut in_flight: usize = 0;
 
     for inst in instances {
         // Resume short-circuit: a valid on-disk trajectory + (when the run
@@ -1022,23 +1061,27 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         accounting.add_result(&r.result);
     }
 
-    let spawn_one = |run: SweepRun, set: &mut tokio::task::JoinSet<RunSlotResult>| {
-        let params = RunOneParams {
-            output_dir: args.output_dir.clone(),
-            cfg: args.config.clone(),
-            deterministic_responses: args.deterministic_responses.clone(),
-            deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
-            retry_policy: retry_policy.clone(),
-            task_timeout_secs: args.task_timeout_secs,
-            skip_patch_validation: args.skip_patch_validation,
+    let spawn_one =
+        |run: SweepRun,
+         set: &mut tokio::task::JoinSet<RunSlotResult>,
+         governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>| {
+            let params = RunOneParams {
+                output_dir: args.output_dir.clone(),
+                cfg: args.config.clone(),
+                deterministic_responses: args.deterministic_responses.clone(),
+                deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+                retry_policy: retry_policy.clone(),
+                task_timeout_secs: args.task_timeout_secs,
+                skip_patch_validation: args.skip_patch_validation,
+                governor,
+            };
+            set.spawn(async move {
+                RunSlotResult::new(
+                    run.run_index,
+                    run_one(run.inst, run.run_index, params).await,
+                )
+            });
         };
-        set.spawn(async move {
-            RunSlotResult::new(
-                run.run_index,
-                run_one(run.inst, run.run_index, params).await,
-            )
-        });
-    };
 
     if halted {
         // Resume already exhausted the budget; everything that was queued
@@ -1054,7 +1097,12 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // Initial fill.
         for _ in 0..parallelism {
             if let Some(inst) = pending.pop_front() {
-                spawn_one(inst, &mut set);
+                spawn_one(inst, &mut set, governor_arc.clone());
+                in_flight += 1;
+                if let Some(g) = &governor_arc {
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
+                }
             } else {
                 break;
             }
@@ -1062,6 +1110,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     while let Some(j) = set.join_next().await {
+        in_flight = in_flight.saturating_sub(1);
         match j {
             Ok(r) => {
                 match r.result.outcome.as_deref() {
@@ -1123,6 +1172,24 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // exhausted, drain the queue into `budget_halt` results without
         // spawning. Otherwise, dispatch one — keeping the in-flight
         // count at `parallelism` until the queue drains.
+        //
+        // AIMD: tick the governor before deciding; it may restore a slot
+        // and log a structured event. When AIMD is active and no slot has
+        // been restored yet, skip this spawn cycle (let in-flight count
+        // naturally drop until restoration resumes).
+        if let Some(g) = &governor_arc {
+            if g.tick_aimd().await {
+                tracing::info!(
+                    structured_event = "aimd_restore",
+                    "rate-limit: AIMD restored 1 worker slot"
+                );
+            }
+        }
+        let aimd_suppressed_count = match &governor_arc {
+            Some(g) => g.suppressed_slots_count().await,
+            None => 0,
+        };
+        let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
         if halted {
             while let Some(inst) = pending.pop_front() {
                 results.push(RunSlotResult::new(
@@ -1131,8 +1198,15 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 ));
                 budget_halted += 1;
             }
-        } else if let Some(inst) = pending.pop_front() {
-            spawn_one(inst, &mut set);
+        } else if in_flight < effective_parallelism {
+            if let Some(inst) = pending.pop_front() {
+                spawn_one(inst, &mut set, governor_arc.clone());
+                in_flight += 1;
+                if let Some(g) = &governor_arc {
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
+                }
+            }
         }
     }
 
@@ -1202,6 +1276,10 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         )),
         cost_limit_usd: args.cost_limit_usd,
         instances: instance_results,
+        rate_limit_events: match governor_arc.as_ref() {
+            Some(g) => Some(g.events().await),
+            None => None,
+        },
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
@@ -2329,6 +2407,7 @@ struct RunOneParams {
     retry_policy: RetryPolicy,
     task_timeout_secs: Option<u64>,
     skip_patch_validation: bool,
+    governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2341,6 +2420,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         retry_policy,
         task_timeout_secs,
         skip_patch_validation,
+        governor,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -2369,6 +2449,14 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
 
     while attempts <= retry_policy.max_retries {
         attempts += 1;
+
+        // Rate-limit gate: block (not spin) until the governor permits the
+        // next attempt. Does NOT count against task_timeout_secs because
+        // the timeout is applied inside mini::run, not here.
+        if let Some(g) = &governor {
+            g.acquire(0).await;
+        }
+
         let det_for_attempt = deterministic_responses
             .as_ref()
             .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
@@ -2392,6 +2480,18 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             }),
         };
         let run_err = crate::run::mini::run(args).await.err();
+
+        // If the attempt hit a rate-limit error, report it to the governor
+        // so the global Retry-After floor is set for all workers.
+        if let (
+            Some(g),
+            Some(crate::error::Error::Model(crate::error::ModelError::RateLimited(msg))),
+        ) = (&governor, &run_err)
+        {
+            let retry_after =
+                crate::run::rate_limit::RateLimitGovernor::parse_retry_after_from_error(msg);
+            g.report_429(retry_after).await;
+        }
         let info = load_fresh_trajectory_info(&traj_path, before_fp);
         let outcome_str = info
             .as_ref()
@@ -2953,6 +3053,7 @@ mod tests {
             cost_limit_usd: None,
             cache_hit_rate: 0.8,
             instances: vec![],
+            rate_limit_events: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -3014,6 +3115,7 @@ mod tests {
             cost_limit_usd: Some(1.0),
             cache_hit_rate: 0.0,
             instances: vec![],
+            rate_limit_events: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -3112,6 +3214,8 @@ mod tests {
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3163,6 +3267,8 @@ mod tests {
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3224,6 +3330,8 @@ instance = "inst"
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -3309,6 +3417,8 @@ instance = "inst"
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))
@@ -3808,5 +3918,555 @@ instance = "inst"
         let out = render_preflight_report(&checks, "text", "doctor").unwrap();
         assert!(out.contains("[ok] a"));
         assert!(out.contains("[warn] b"));
+    }
+
+    // ── Issue #44: rate-limit governor ────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_events_serializes_to_json() {
+        use crate::run::rate_limit::RateLimitEvents;
+        let events = RateLimitEvents {
+            throttled_calls: 7,
+            total_throttled_seconds: 2.5,
+            peak_concurrent: 8,
+            configured_max_rpm: Some(4000),
+            configured_max_input_tpm: Some(400_000),
+        };
+        let json = serde_json::to_string(&events).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["throttled_calls"], 7);
+        assert_eq!(v["total_throttled_seconds"], 2.5);
+        assert_eq!(v["peak_concurrent"], 8);
+        assert_eq!(v["configured_max_rpm"], 4000);
+        assert_eq!(v["configured_max_input_tpm"], 400_000u64);
+    }
+
+    #[test]
+    fn sweep_results_has_rate_limit_events_field() {
+        // rate_limit_events: None should be omitted from JSON (skip_serializing_if)
+        let s = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            rate_limit_events: None,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.get("rate_limit_events").is_none(),
+            "None rate_limit_events should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn swebench_args_has_max_rpm_and_max_input_tpm_fields() {
+        let args = SwebenchArgs {
+            dataset_path: PathBuf::from("d.jsonl"),
+            output_dir: PathBuf::from("out"),
+            parallel: 4,
+            reruns: 1,
+            config: Config::defaults().unwrap(),
+            resume: false,
+            cost_limit_usd: None,
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: vec![],
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+            skip_patch_validation: false,
+            max_rpm: Some(4000),
+            max_input_tpm: Some(400_000),
+        };
+        assert_eq!(args.max_rpm, Some(4000));
+        assert_eq!(args.max_input_tpm, Some(400_000));
+    }
+
+    #[test]
+    fn governor_is_none_when_no_rate_limit_flags() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(None, None, 4);
+        assert!(g.is_none(), "governor must be None when no flags are set");
+    }
+
+    #[test]
+    fn governor_is_some_when_max_rpm_set() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(600), None, 4);
+        assert!(g.is_some());
+    }
+
+    #[test]
+    fn governor_is_some_when_max_input_tpm_set() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(None, Some(100_000), 4);
+        assert!(g.is_some());
+    }
+
+    #[tokio::test]
+    async fn governor_acquire_is_immediate_when_bucket_has_capacity() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 6000 RPM = 100 req/sec bucket; first call should be instant
+        let g = RateLimitGovernor::new(Some(6000), None, 1).unwrap();
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "first acquire should be immediate"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_acquire_blocks_when_rpm_bucket_empty() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 60 RPM = 1 req/sec; drain the bucket then acquire should block ~1s
+        let g = RateLimitGovernor::new(Some(60), None, 1).unwrap();
+        // Drain the initial token
+        g.acquire(0).await;
+        // Second acquire must wait for refill
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "should block ~1s for 60 RPM bucket, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_global_retry_after_blocks_subsequent_acquire() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // High RPM so bucket is not the bottleneck
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // Simulate a 429 with Retry-After: 1s
+        g.report_429(Some(1)).await;
+        // acquire should now block ~1s
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "acquire should wait for global retry-after, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_retry_after_applies_globally_to_concurrent_workers() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        use std::sync::Arc;
+        let g = Arc::new(RateLimitGovernor::new(Some(6000), None, 4).unwrap());
+        // Worker 1 reports a 429 with Retry-After: 1
+        g.report_429(Some(1)).await;
+        // Worker 2 (concurrent) should also respect the global floor
+        let g2 = g.clone();
+        let start = std::time::Instant::now();
+        g2.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "global retry-after should block all workers, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_aimd_not_triggered_before_three_429s() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Only 2 consecutive 429s without Retry-After — AIMD should NOT trigger
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_aimd_triggers_after_three_consecutive_429s_without_retry_after() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        assert!(
+            g.suppressed_slots_count().await > 0,
+            "AIMD should suppress after 3 consecutive 429s without Retry-After"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_retry_after_resets_aimd_counter() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Retry-After resets the counter
+        g.report_429(Some(1)).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Only 2 consecutive no-retry-after 429s after the reset — no AIMD
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_events_tracks_throttled_calls() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // Report a 429 (counts as throttled)
+        g.report_429(Some(1)).await;
+        let events = g.events().await;
+        assert!(
+            events.throttled_calls > 0,
+            "throttled_calls should be incremented"
+        );
+        assert_eq!(events.configured_max_rpm, Some(6000));
+    }
+
+    #[test]
+    fn parse_retry_after_from_error_extracts_seconds() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("rate limited: retry-after: 30"),
+            Some(30)
+        );
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("429 Too Many Requests"),
+            None
+        );
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: 5 seconds"),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_handles_http_date_in_future() {
+        use crate::run::rate_limit::{RateLimitGovernor, civil_to_unix};
+        // Build a date 60 s in the future and verify the parser returns ~60.
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Use a fixed past/future date rather than decomposing a computed timestamp.
+        let past_msg = "retry-after: Thu, 01 Jan 1970 00:00:00 GMT";
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(past_msg),
+            Some(0),
+            "past HTTP-date should return 0 (saturating sub)"
+        );
+        // Verify the civil_to_unix epoch anchor.
+        assert_eq!(
+            civil_to_unix(1970, 1, 1, 0, 0, 0),
+            Some(0),
+            "unix epoch should be 0"
+        );
+        assert_eq!(
+            civil_to_unix(2026, 10, 21, 12, 0, 0),
+            Some(1_792_584_000),
+            "known timestamp"
+        );
+        // Future HTTP-date yields Some(non-zero).
+        let future_msg = "retry-after: Wed, 21 Oct 2026 12:00:00 GMT";
+        let parsed = RateLimitGovernor::parse_retry_after_from_error(future_msg).unwrap();
+        let expected = 1_792_584_000u64.saturating_sub(now_unix);
+        assert_eq!(parsed, expected, "future HTTP-date seconds mismatch");
+        // Numeric still works alongside HTTP-date support.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: 42"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn config_sweep_keys_round_trip_toml() {
+        use crate::config::Config;
+        let cfg = Config::from_toml_str("[sweep]\nmax_rpm = 4000\nmax_input_tpm = 400000").unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, Some(4000));
+        assert_eq!(cfg.root.sweep.max_input_tpm, Some(400_000));
+    }
+
+    #[test]
+    fn config_sweep_defaults_are_none() {
+        use crate::config::Config;
+        let cfg = Config::defaults().unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, None);
+        assert_eq!(cfg.root.sweep.max_input_tpm, None);
+    }
+
+    #[tokio::test]
+    async fn deterministic_model_rate_limit_sentinel_returns_error() {
+        use crate::model::{DeterministicModel, Model, QueryOpts};
+        // Sentinel prefix "__rate_limited__:2" should cause ModelError::RateLimited
+        let model = DeterministicModel::new(vec!["__rate_limited__:2".to_owned()]);
+        let result = model.query(&[], &QueryOpts::default()).await;
+        match result {
+            Err(crate::error::ModelError::RateLimited(msg)) => {
+                assert!(
+                    msg.contains("retry-after: 2"),
+                    "error should include retry-after seconds, got: {msg}"
+                );
+            }
+            other => panic!("expected RateLimited error, got: {other:?}"),
+        }
+    }
+
+    // ── Coverage: write_rate_limit_summary ───────────────────────────────────
+
+    #[test]
+    fn summary_table_includes_rate_limit_section_when_events_present() {
+        use crate::run::rate_limit::RateLimitEvents;
+        let s = SweepResults {
+            total: 2,
+            submitted: 2,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 2,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: Some(RateLimitEvents {
+                throttled_calls: 12,
+                total_throttled_seconds: 4.5,
+                peak_concurrent: 6,
+                configured_max_rpm: Some(4000),
+                configured_max_input_tpm: Some(400_000),
+            }),
+        };
+        let t = s.summary_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "missing section header: {t}"
+        );
+        assert!(
+            t.contains("Throttled calls:    12"),
+            "missing throttled_calls: {t}"
+        );
+        assert!(
+            t.contains("Throttled secs:     4.5"),
+            "missing throttled_secs: {t}"
+        );
+        assert!(
+            t.contains("Peak concurrent:    6"),
+            "missing peak_concurrent: {t}"
+        );
+        assert!(
+            t.contains("Configured max-rpm: 4000"),
+            "missing max-rpm: {t}"
+        );
+        assert!(
+            t.contains("Configured max-tpm: 400000"),
+            "missing max-tpm: {t}"
+        );
+    }
+
+    #[test]
+    fn summary_table_no_rate_limit_section_when_events_absent() {
+        let s = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: None,
+        };
+        let t = s.summary_table();
+        assert!(
+            !t.contains("Rate-limit events:"),
+            "rate-limit section should be absent when events is None: {t}"
+        );
+    }
+
+    // ── Coverage: governor TPM gating and tick_aimd ──────────────────────────
+
+    #[tokio::test]
+    async fn governor_tpm_gates_when_estimate_exceeds_bucket() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 60 TPM = 1 token/sec. Start with 1 token (initial bucket).
+        // First acquire with estimate=1 drains it; second should block.
+        let g = RateLimitGovernor::new(None, Some(60), 1).unwrap();
+        g.acquire(1).await; // drains the initial 1-token bucket
+        let start = std::time::Instant::now();
+        g.acquire(1).await; // must wait ~1 s for 1 TPM token to refill
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "TPM gate should block ~1s when bucket is empty, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_restores_suppressed_slot() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // Trigger AIMD with 3 consecutive no-retry-after 429s.
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        let suppressed = g.suppressed_slots_count().await;
+        assert!(suppressed > 0, "AIMD should have suppressed slots");
+        // tick_aimd before the restoration window returns false
+        let restored = g.tick_aimd().await;
+        assert!(!restored, "tick_aimd should not restore before hold period");
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_no_op_when_no_suppression() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // No 429s reported; suppressed_slots == 0 — tick_aimd must be a no-op.
+        assert!(!g.tick_aimd().await);
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_update_peak_concurrent_tracks_maximum() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.update_peak_concurrent(3).await;
+        g.update_peak_concurrent(7).await;
+        g.update_peak_concurrent(2).await;
+        let events = g.events().await;
+        assert_eq!(events.peak_concurrent, 7, "peak should be the maximum seen");
+    }
+
+    // ── Coverage: HTTP-date parse failure paths ──────────────────────────────
+
+    #[test]
+    fn parse_retry_after_returns_none_for_malformed_http_date() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // Too few parts.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: Wed 21 Oct 2026"),
+            None
+        );
+        // Non-GMT timezone.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00:00 UTC"
+            ),
+            None
+        );
+        // Invalid month name.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Xyz 2026 12:00:00 GMT"
+            ),
+            None
+        );
+        // Malformed time field (not HH:MM:SS).
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00 GMT"
+            ),
+            None
+        );
+        // Non-numeric day.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, XX Oct 2026 12:00:00 GMT"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn civil_to_unix_returns_none_for_pre_epoch_date() {
+        use crate::run::rate_limit::civil_to_unix;
+        assert_eq!(
+            civil_to_unix(1969, 12, 31, 23, 59, 59),
+            None,
+            "pre-epoch date should return None"
+        );
+        assert_eq!(civil_to_unix(1970, 1, 1, 0, 0, 0), Some(0));
+    }
+
+    // ── Coverage: zero-limit treated as no-op ────────────────────────────────
+
+    #[test]
+    fn governor_new_treats_zero_rpm_as_none() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // max_rpm=0 with no TPM → governor should be None (no rate limiting).
+        assert!(
+            RateLimitGovernor::new(Some(0), None, 4).is_none(),
+            "zero RPM should be treated as unset"
+        );
+        // max_input_tpm=0 with no RPM → also None.
+        assert!(
+            RateLimitGovernor::new(None, Some(0), 4).is_none(),
+            "zero TPM should be treated as unset"
+        );
+        // Both zero → None.
+        assert!(
+            RateLimitGovernor::new(Some(0), Some(0), 4).is_none(),
+            "both zero should be treated as unset"
+        );
+        // Non-zero RPM alongside zero TPM → governor active on RPM only.
+        assert!(
+            RateLimitGovernor::new(Some(600), Some(0), 4).is_some(),
+            "non-zero RPM with zero TPM should still create a governor"
+        );
     }
 }

@@ -87,6 +87,18 @@ pub struct PromptCfg {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SweepCfg {
+    /// Cap aggregate provider request rate across all workers.
+    /// Mirrors the `--max-rpm` CLI flag; the CLI value takes precedence.
+    #[serde(default)]
+    pub max_rpm: Option<u32>,
+    /// Cap aggregate input-token rate across all workers (tokens per minute).
+    /// Mirrors the `--max-input-tpm` CLI flag; the CLI value takes precedence.
+    #[serde(default)]
+    pub max_input_tpm: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RootCfg {
     #[serde(default)]
     pub agent: AgentCfg,
@@ -96,6 +108,8 @@ pub struct RootCfg {
     pub environment: EnvCfg,
     #[serde(default)]
     pub prompts: PromptCfg,
+    #[serde(default)]
+    pub sweep: SweepCfg,
     /// Optional `extends: <path>` field — handled before serde sees this
     /// struct, but we accept/ignore it here for round-tripping.
     #[serde(default, skip_serializing_if = "Option::is_none")]

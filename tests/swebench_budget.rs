@@ -154,6 +154,8 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -321,6 +323,8 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -397,6 +401,8 @@ async fn sweep_without_limit_runs_all_tasks() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -460,6 +466,8 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -585,6 +593,8 @@ async fn resume_skipped_costs_count_against_budget() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -679,6 +689,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             resolved_count: 0,
             pass_at_1: false,
         }],
+        rate_limit_events: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -726,6 +737,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -816,6 +829,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             resolved_count: 0,
             pass_at_1: false,
         }],
+        rate_limit_events: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -855,6 +869,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -924,6 +940,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             resolved_count: 0,
             pass_at_1: false,
         }],
+        rate_limit_events: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -989,6 +1006,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();

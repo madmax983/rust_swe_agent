@@ -7,6 +7,7 @@ pub mod forecast;
 pub mod hello_world;
 pub mod inspect;
 pub mod mini;
+pub mod rate_limit;
 pub mod replay;
 pub mod swebench;
 pub mod tail;
