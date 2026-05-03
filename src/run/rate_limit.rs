@@ -336,7 +336,7 @@ impl RateLimitGovernor {
         let lower = msg.to_lowercase();
         for prefix in ["retry-after: ", "retry_after: ", "retry after: "] {
             if let Some(pos) = lower.find(prefix) {
-                let rest = msg[pos + prefix.len()..].trim();
+                let rest = lower[pos + prefix.len()..].trim();
                 // Try numeric seconds first.
                 let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 if let Ok(secs) = num.parse::<u64>() {
@@ -420,4 +420,21 @@ pub(crate) fn civil_to_unix(
     #[allow(clippy::cast_sign_loss)]
     let total = days as u64 * 86_400 + h * 3_600 + m * 60 + s;
     Some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_retry_after_multibyte_lowercase() {
+        // 'Ⱥ' (U+023A) is 2 bytes, but its lowercase 'ⱥ' (U+2C65) is 3 bytes.
+        // If the code uses the byte index from the lowercased string to slice
+        // the original string, it will panic due to unaligned char boundaries.
+        let msg = "Ⱥretry-after: 10";
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(msg),
+            Some(10)
+        );
+    }
 }
