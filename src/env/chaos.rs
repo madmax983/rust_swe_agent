@@ -1,3 +1,13 @@
+//! The Chaos Engineer's favorite tool: `ChaosEnvironment`.
+//!
+//! This module provides a decorator for any [`Environment`] that deterministically
+//! injects simulated failures into bash executions. It's designed to test an agent's
+//! resilience to transient errors (like sudden timeouts) without needing an
+//! unpredictable, flaky underlying system.
+//!
+//! By forcing `timed_out` results at set intervals, we can ensure the agent loop
+//! gracefully recovers instead of panicking.
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5,7 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::env::{Environment, RunRequest, RunResult};
 use crate::error::EnvError;
 
-/// A decorator that wraps an inner `Environment` and injects failures deterministically.
+/// A decorator that wraps an inner [`Environment`] and injects failures deterministically.
+///
+/// It counts invocations and, on every Nth invocation, returns a synthesized timeout failure
+/// rather than actually delegating the command to the underlying environment.
 pub struct ChaosEnvironment {
     inner: Box<dyn Environment>,
     invocation_count: Arc<AtomicUsize>,
@@ -13,6 +26,35 @@ pub struct ChaosEnvironment {
 }
 
 impl ChaosEnvironment {
+    /// Creates a new `ChaosEnvironment` wrapping the provided `inner` environment.
+    ///
+    /// The `fail_every` parameter controls the failure frequency. For example, if `fail_every`
+    /// is `3`, the 3rd, 6th, and 9th calls to [`Environment::run`] will be simulated timeouts.
+    /// If `fail_every` is `0`, no failures are ever injected.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::env::{Environment, LocalEnvironment, RunRequest};
+    /// use rust_swe_agent::env::chaos::ChaosEnvironment;
+    ///
+    /// # tokio_test::block_on(async {
+    /// let local = Box::new(LocalEnvironment::new());
+    /// let chaos = ChaosEnvironment::new(local, 2); // Fail every 2nd command
+    ///
+    /// let req = RunRequest::new("echo hello");
+    ///
+    /// // 1st run: Success
+    /// let res1 = chaos.run(req.clone()).await.unwrap();
+    /// assert_eq!(res1.exit_code, 0);
+    /// assert_eq!(res1.timed_out, false);
+    ///
+    /// // 2nd run: Deterministic failure
+    /// let res2 = chaos.run(req).await.unwrap();
+    /// assert_eq!(res2.exit_code, -1);
+    /// assert_eq!(res2.timed_out, true);
+    /// # })
+    /// ```
     pub fn new(inner: Box<dyn Environment>, fail_every: usize) -> Self {
         Self {
             inner,
