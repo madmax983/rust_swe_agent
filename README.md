@@ -1,4 +1,4 @@
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madmax983/rust-swe-agent)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madmax983/rust_swe_agent)
 
 # rust_swe_agent
 A minimal rust port of mini-swe-agent.
