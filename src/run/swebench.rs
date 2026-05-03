@@ -3970,6 +3970,8 @@ instance = "inst"
             manifest: None,
             cost_limit_usd: None,
             instances: vec![],
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             rate_limit_events: None,
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -4012,6 +4014,7 @@ instance = "inst"
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: false,
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
         };
