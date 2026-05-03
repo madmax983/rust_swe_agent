@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use rust_swe_agent::agent::default::{DefaultAgentBuilder, retag_cache_hints};
+use rust_swe_agent::error::EnvError;
 use rust_swe_agent::{
     Agent, CacheHint, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
-    Message, Role, ToolHookCfg,
+    Message, Role, RunRequest, RunResult, ToolHookCfg,
 };
 
 #[tokio::test]
@@ -267,6 +269,81 @@ async fn failing_post_tool_use_hook_is_reported_but_does_not_abort() {
     assert!(observation.content.contains("hook failed"));
 }
 
+#[tokio::test]
+async fn post_tool_use_env_payload_is_capped_for_large_outputs() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
+        name: "payload-check".into(),
+        command: "echo hook-ok".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\nproduce lots\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LargeOutputHookEnv::default());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+}
+
+#[tokio::test]
+async fn post_tool_use_environment_error_is_reported_not_propagated() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
+        name: "spawn-fail".into(),
+        command: "echo hook".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho primary\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(HookSpawnFailureEnv::default());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let observation = agent
+        .history
+        .iter()
+        .find(|m| m.role == Role::User && m.content.contains("[spawn-fail]"));
+    let Some(observation) = observation else {
+        panic!(
+            "hook environment error should be model-visible: {:#?}",
+            agent.history
+        );
+    };
+    assert!(observation.content.contains("[spawn-fail] exit_code=-1"));
+    assert!(observation.content.contains("hook environment error"));
+}
+
 fn hook_command(vars: &[&str]) -> String {
     if cfg!(windows) {
         vars.chunks_exact(2)
@@ -286,5 +363,90 @@ fn failing_hook_command() -> String {
         "echo hook failed & exit /B 7".into()
     } else {
         "printf 'hook failed\\n'; exit 7".into()
+    }
+}
+
+#[derive(Default)]
+struct LargeOutputHookEnv {
+    calls: std::sync::Mutex<u32>,
+}
+
+#[derive(Default)]
+struct HookSpawnFailureEnv {
+    calls: std::sync::Mutex<u32>,
+}
+
+#[async_trait]
+impl Environment for HookSpawnFailureEnv {
+    async fn run(&self, _req: RunRequest) -> Result<RunResult, EnvError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        match *calls {
+            1 => Ok(RunResult {
+                stdout: "primary\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            }),
+            2 => Err(EnvError::CommandFailed("simulated spawn failure".into())),
+            other => Err(EnvError::CommandFailed(format!(
+                "unexpected env call {other}"
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl Environment for LargeOutputHookEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        match *calls {
+            1 => Ok(RunResult {
+                stdout: "x".repeat(200_000),
+                stderr: "y".repeat(100_000),
+                exit_code: 0,
+                timed_out: false,
+            }),
+            2 => {
+                for key in [
+                    "RUST_SWE_AGENT_STDOUT",
+                    "RUST_SWE_AGENT_STDERR",
+                    "RUST_SWE_AGENT_OUTPUT",
+                    "RUST_SWE_AGENT_CONTEXT_JSON",
+                ] {
+                    let Some(value) = req.env.get(key) else {
+                        return Err(EnvError::CommandFailed(format!("missing env key {key}")));
+                    };
+                    if value.len() > 32_768 {
+                        return Err(EnvError::CommandFailed(format!(
+                            "{key} was not capped before hook spawn: {} bytes",
+                            value.len()
+                        )));
+                    }
+                }
+                let context_json = req.env.get("RUST_SWE_AGENT_CONTEXT_JSON").unwrap();
+                let context: serde_json::Value = serde_json::from_str(context_json).unwrap();
+                let stdout = context["stdout"].as_str().unwrap();
+                assert!(
+                    stdout.len() <= 1024,
+                    "context stdout should be capped, got {} bytes",
+                    stdout.len()
+                );
+                assert!(
+                    stdout.contains("[truncated: original_bytes=200000]"),
+                    "context stdout should explain truncation: {stdout}"
+                );
+                Ok(RunResult {
+                    stdout: "hook-ok\n".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                })
+            }
+            other => Err(EnvError::CommandFailed(format!(
+                "unexpected env call {other}"
+            ))),
+        }
     }
 }

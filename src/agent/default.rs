@@ -24,6 +24,8 @@ use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
 
+const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
+
 pub struct DefaultAgent {
     pub config: Config,
     pub model: Arc<dyn Model>,
@@ -445,7 +447,22 @@ impl DefaultAgent {
         let mut req = RunRequest::new(rendered_command.clone())
             .with_timeout(Duration::from_secs(timeout_secs));
         req.env = tool_hook_env(&context)?;
-        let hook_result = self.env.run(req).await?;
+        let hook_result = match self.env.run(req).await {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("hook environment error: {err}");
+                return Ok(ToolHookResult {
+                    phase,
+                    name: hook.name.clone(),
+                    command: rendered_command,
+                    stdout: String::new(),
+                    stderr: message.clone(),
+                    output: message,
+                    exit_code: -1,
+                    timed_out: false,
+                });
+            }
+        };
 
         Ok(ToolHookResult {
             phase,
@@ -555,38 +572,47 @@ fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
 
 fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
     let mut env = BTreeMap::new();
+    let env_context = capped_env_context(context);
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_HOOK_NAME",
-        &context["hook"]["name"],
+        &env_context["hook"]["name"],
     );
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_HOOK_PHASE",
-        &context["hook"]["phase"],
+        &env_context["hook"]["phase"],
     );
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_TOOL_NAME",
-        &context["tool"]["name"],
+        &env_context["tool"]["name"],
     );
-    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &context["task"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &context["model"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &context["step"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_EXIT_CODE", &context["returncode"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STDOUT", &context["stdout"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STDERR", &context["stderr"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_OUTPUT", &context["output"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_TIMED_OUT", &context["timed_out"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_COMMAND", &env_context["command"]);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_EXIT_CODE",
+        &env_context["returncode"],
+    );
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STDOUT", &env_context["stdout"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STDERR", &env_context["stderr"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_OUTPUT", &env_context["output"]);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TIMED_OUT",
+        &env_context["timed_out"],
+    );
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_TOTAL_COST_USD",
-        &context["total_cost_usd"],
+        &env_context["total_cost_usd"],
     );
     env.insert(
         "RUST_SWE_AGENT_CONTEXT_JSON".into(),
-        serde_json::to_string(context)?,
+        serde_json::to_string(&env_context)?,
     );
     Ok(env)
 }
@@ -599,7 +625,41 @@ fn insert_json_str(env: &mut BTreeMap<String, String>, key: &str, value: &serde_
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
     };
-    env.insert(key.into(), s);
+    env.insert(key.into(), truncate_for_hook_env(&s));
+}
+
+fn capped_env_context(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(truncate_for_hook_env(s)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(capped_env_context).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), capped_env_context(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn truncate_for_hook_env(value: &str) -> String {
+    if value.len() <= MAX_TOOL_HOOK_ENV_VALUE_BYTES {
+        return value.to_owned();
+    }
+
+    let marker = format!("\n[truncated: original_bytes={}]", value.len());
+    let keep_bytes = MAX_TOOL_HOOK_ENV_VALUE_BYTES.saturating_sub(marker.len());
+    let keep_bytes = floor_char_boundary(value, keep_bytes);
+    format!("{}{}", &value[..keep_bytes], marker)
+}
+
+fn floor_char_boundary(value: &str, mut idx: usize) -> usize {
+    idx = idx.min(value.len());
+    while !value.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 #[cfg(test)]

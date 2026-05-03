@@ -67,6 +67,13 @@ The same data is exposed as environment variables:
 - `RUST_SWE_AGENT_TOTAL_COST_USD`
 - `RUST_SWE_AGENT_CONTEXT_JSON`
 
+Environment variable values are capped before spawning hook processes to avoid
+OS argv+env size limits. Large strings include a truncation marker such as
+`[truncated: original_bytes=200000]`. `RUST_SWE_AGENT_CONTEXT_JSON` remains
+valid JSON, but its string fields are capped the same way. Hooks that need
+lossless large output should read artifacts from the workspace rather than the
+environment.
+
 ## Future Hooks
 
 Good next slices are pre-model context hooks, model-response hooks, and a
