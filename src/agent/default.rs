@@ -410,6 +410,16 @@ impl Agent for DefaultAgent {
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
+        let pre_hook_results_for_observation = truncate_hook_results_for_observation(
+            &pre_hook_results,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
+        let post_hook_results_for_observation = truncate_hook_results_for_observation(
+            &post_hook_results,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
             &self.config.root.agent.observation_template,
@@ -422,8 +432,8 @@ impl Agent for DefaultAgent {
                 "command": cmd,
                 "step": self.steps,
                 "tool_use_blocked": tool_use_blocked,
-                "pre_tool_use_hooks": pre_hook_results,
-                "post_tool_use_hooks": post_hook_results,
+                "pre_tool_use_hooks": pre_hook_results_for_observation,
+                "post_tool_use_hooks": post_hook_results_for_observation,
             }),
         )?;
 
@@ -654,6 +664,30 @@ impl ToolHookResult {
     const fn blocks_tool_use(&self) -> bool {
         matches!(self.phase, ToolHookPhase::PreToolUse) && (self.exit_code != 0 || self.timed_out)
     }
+
+    fn truncated_for_observation(&self, max_bytes: usize, head_ratio: f64) -> Self {
+        Self {
+            phase: self.phase,
+            name: self.name.clone(),
+            command: self.command.clone(),
+            stdout: truncate_observation_text(&self.stdout, max_bytes, head_ratio).text,
+            stderr: truncate_observation_text(&self.stderr, max_bytes, head_ratio).text,
+            output: truncate_observation_text(&self.output, max_bytes, head_ratio).text,
+            exit_code: self.exit_code,
+            timed_out: self.timed_out,
+        }
+    }
+}
+
+fn truncate_hook_results_for_observation(
+    results: &[ToolHookResult],
+    max_bytes: usize,
+    head_ratio: f64,
+) -> Vec<ToolHookResult> {
+    results
+        .iter()
+        .map(|result| result.truncated_for_observation(max_bytes, head_ratio))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -710,7 +744,7 @@ fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>
     insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
     insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
     insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_COMMAND", &env_context["command"]);
+    insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_EXIT_CODE",
@@ -737,14 +771,25 @@ fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>
 }
 
 fn insert_json_str(env: &mut BTreeMap<String, String>, key: &str, value: &serde_json::Value) {
-    let s = match value {
+    env.insert(key.into(), truncate_for_hook_env(&json_str(value)));
+}
+
+fn insert_json_str_untruncated(
+    env: &mut BTreeMap<String, String>,
+    key: &str,
+    value: &serde_json::Value,
+) {
+    env.insert(key.into(), json_str(value));
+}
+
+fn json_str(value: &serde_json::Value) -> String {
+    match value {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
-    };
-    env.insert(key.into(), truncate_for_hook_env(&s));
+    }
 }
 
 fn capped_env_context(value: &serde_json::Value) -> serde_json::Value {

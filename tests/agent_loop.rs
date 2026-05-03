@@ -345,6 +345,55 @@ async fn post_tool_use_environment_error_is_reported_not_propagated() {
 }
 
 #[tokio::test]
+async fn post_tool_use_hook_output_is_truncated_before_observation_rendering() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.observation_max_bytes = 256;
+    cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
+        name: "large-probe".into(),
+        command: "echo hook".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho primary\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LargeHookOutputEnv::default());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let observation = agent
+        .history
+        .iter()
+        .find(|m| m.role == Role::User && m.content.contains("[large-probe]"));
+    let Some(observation) = observation else {
+        panic!(
+            "large post hook observation should be model-visible: {:#?}",
+            agent.history
+        );
+    };
+    assert!(
+        observation.content.len() < 2_000,
+        "hook output should be capped before template rendering, got {} bytes",
+        observation.content.len()
+    );
+    assert!(observation.content.contains("[truncated"));
+}
+
+#[tokio::test]
 async fn pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_tool() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
@@ -387,6 +436,38 @@ async fn pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_to
     );
 }
 
+#[tokio::test]
+async fn pre_tool_use_hook_env_preserves_full_command_for_policy_checks() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "policy".into(),
+        command: "echo hook".into(),
+        timeout_secs: None,
+    }];
+
+    let long_command = format!("echo {} BLOCKED_SUFFIX", "x".repeat(2_000));
+    let model = Arc::new(DeterministicModel::new(vec![
+        format!("```bash\n{long_command}\n```"),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(CommandPolicyHookEnv::default());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+}
+
 fn hook_command(vars: &[&str]) -> String {
     if cfg!(windows) {
         vars.chunks_exact(2)
@@ -419,6 +500,16 @@ struct HookSpawnFailureEnv {
     calls: std::sync::Mutex<u32>,
 }
 
+#[derive(Default)]
+struct LargeHookOutputEnv {
+    calls: std::sync::Mutex<u32>,
+}
+
+#[derive(Default)]
+struct CommandPolicyHookEnv {
+    calls: std::sync::Mutex<u32>,
+}
+
 struct PreHookSpawnFailureEnv;
 
 #[async_trait]
@@ -427,6 +518,66 @@ impl Environment for PreHookSpawnFailureEnv {
         Err(EnvError::CommandFailed(
             "simulated pre hook spawn failure".into(),
         ))
+    }
+}
+
+#[async_trait]
+impl Environment for LargeHookOutputEnv {
+    async fn run(&self, _req: RunRequest) -> Result<RunResult, EnvError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        match *calls {
+            1 => Ok(RunResult {
+                stdout: "primary\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            }),
+            2 => Ok(RunResult {
+                stdout: format!("hook stdout {}\n", "x".repeat(50_000)),
+                stderr: format!("hook stderr {}\n", "y".repeat(50_000)),
+                exit_code: 0,
+                timed_out: false,
+            }),
+            other => Err(EnvError::CommandFailed(format!(
+                "unexpected env call {other}"
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl Environment for CommandPolicyHookEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        match *calls {
+            1 => {
+                let Some(command) = req.env.get("RUST_SWE_AGENT_COMMAND") else {
+                    return Err(EnvError::CommandFailed("missing command env".into()));
+                };
+                if !command.ends_with("BLOCKED_SUFFIX") {
+                    return Err(EnvError::CommandFailed(format!(
+                        "policy suffix missing from command env: {command}"
+                    )));
+                }
+                Ok(RunResult {
+                    stdout: "policy-ok\n".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                })
+            }
+            2 => Ok(RunResult {
+                stdout: "primary\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            }),
+            other => Err(EnvError::CommandFailed(format!(
+                "unexpected env call {other}"
+            ))),
+        }
     }
 }
 
