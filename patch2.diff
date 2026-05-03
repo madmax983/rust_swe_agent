@@ -1,0 +1,35 @@
+--- src/cli/mod.rs
++++ src/cli/mod.rs
+@@ -646,12 +646,13 @@
+             "inspect: --sweep is required unless --diff is used".into(),
+         ))
+     })?;
+-    let out = crate::run::inspect::run(&crate::run::inspect::InspectArgs {
+-        sweep: sweep.clone(),
+-        instance: i.instance.clone(),
++    let args = crate::run::inspect::InspectArgs {
++        sweep,
++        instance: i.instance,
+         filter: i.filter,
+         full: i.full,
+-    })?;
++    };
++    let out = crate::run::inspect::run(&args)?;
+     match format {
+         crate::run::inspect::InspectFormat::Text => {
+             print!("{}", crate::run::inspect::render_text(&out));
+@@ -661,12 +662,12 @@
+         }
+         #[cfg(feature = "html-export")]
+         crate::run::inspect::InspectFormat::Html => {
+-            let instance_id = i.instance.ok_or_else(|| {
++            let instance_id = args.instance.as_ref().ok_or_else(|| {
+                 Error::Config(crate::error::ConfigError::Invalid(
+                     "inspect: --instance is required for html format".into(),
+                 ))
+             })?;
+-            let traj_path = crate::run::inspect::resolve_trajectory_path(&sweep, &instance_id)
++            let traj_path = crate::run::inspect::resolve_trajectory_path(&args.sweep, instance_id)
+                 .ok_or_else(|| Error::Trajectory(format!("no trajectory found for {instance_id}")))?;
+             let text = std::fs::read_to_string(&traj_path)?;
+             let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)?;
