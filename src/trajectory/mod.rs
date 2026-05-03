@@ -372,6 +372,14 @@ mod tests {
         assert!(!extra_is_empty(&extra));
 
         extra.cost = None;
+        extra.response = Some(serde_json::json!("resp"));
+        assert!(!extra_is_empty(&extra));
+
+        extra.response = None;
+        extra.timestamp = Some("2024-01-01".into());
+        assert!(!extra_is_empty(&extra));
+
+        extra.timestamp = None;
         extra.other.insert("key".into(), serde_json::json!("val"));
         assert!(!extra_is_empty(&extra));
     }
