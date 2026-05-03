@@ -16,12 +16,55 @@ block, or the sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own
 line followed by the final output block.
 '''
 # Template rendered over each command's RunResult to form the next
-# user-observation message.
+# user-observation message. `pre_tool_use_hooks` and
+# `post_tool_use_hooks` are populated by `[[agent.hooks.*]]` entries.
 observation_template = '''
+{% if tool_use_blocked %}
+Tool use blocked by PreToolUse hook.
+
+{% endif %}
 Exit code: {{ returncode }}
 Output:
 {{ output }}
+{% if pre_tool_use_hooks %}
+
+PreToolUse hooks:
+{% for hook in pre_tool_use_hooks %}
+[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}
+{% if hook.stdout %}stdout:
+{{ hook.stdout }}{% endif %}
+{% if hook.stderr %}stderr:
+{{ hook.stderr }}{% endif %}
+{% endfor %}
+{% endif %}
+{% if post_tool_use_hooks %}
+
+PostToolUse hooks:
+{% for hook in post_tool_use_hooks %}
+[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}
+{% if hook.stdout %}stdout:
+{{ hook.stdout }}{% endif %}
+{% if hook.stderr %}stderr:
+{{ hook.stderr }}{% endif %}
+{% endfor %}
+{% endif %}
 '''
+# Default timeout for tool hooks unless a hook overrides `timeout_secs`.
+tool_hook_timeout_secs = 10
+#
+# Optional tool hooks. PreToolUse hooks run before each bash command; a
+# nonzero exit code or timeout blocks the command and reports the hook result
+# to the model. PostToolUse hooks run after successful command execution and
+# are diagnostic only.
+#
+# [[agent.hooks.pre_tool_use]]
+# name = "guard"
+# command = "test \"$RUST_SWE_AGENT_COMMAND\" != \"rm -rf /\""
+# timeout_secs = 5
+#
+# [[agent.hooks.post_tool_use]]
+# name = "git-status"
+# command = "git status --short"
 
 [model]
 # String name. Routed by prefix to backend (claude* -> Anthropic).

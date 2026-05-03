@@ -9,3 +9,6 @@ A minimal rust port of mini-swe-agent.
   and failure mix for running SWE-bench sweeps.
 - [`bench evaluate`](docs/spec-evaluation.md): evaluator output, rerun metrics,
   pass@k, and compare regression gates.
+- [`agent scriptability`](docs/spec-scriptability.md): config-defined
+  `PreToolUse` and `PostToolUse` hooks for extending the tiny agent loop
+  without new Rust tools.
