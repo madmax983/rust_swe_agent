@@ -133,7 +133,9 @@ impl TrajectoryExporter for HtmlExporter {
         html.push_str(".message { margin-bottom: 20px; padding: 15px; border-radius: 5px; }\n");
         html.push_str(".system { background-color: #f0f0f0; border-left: 5px solid #ccc; }\n");
         html.push_str(".user { background-color: #e6f3ff; border-left: 5px solid #0066cc; }\n");
-        html.push_str(".assistant { background-color: #e6ffe6; border-left: 5px solid #00cc00; }\n");
+        html.push_str(
+            ".assistant { background-color: #e6ffe6; border-left: 5px solid #00cc00; }\n",
+        );
         html.push_str(".tool { background-color: #fff0e6; border-left: 5px solid #ff6600; }\n");
         html.push_str("pre { white-space: pre-wrap; word-wrap: break-word; }\n");
         html.push_str("</style>\n</head>\n<body>\n");
@@ -141,11 +143,7 @@ impl TrajectoryExporter for HtmlExporter {
         html.push_str("<h1>Trajectory Export</h1>\n");
 
         if let Some(task) = &trajectory.info.task {
-            let _ = writeln!(
-                html,
-                "<p><strong>Task:</strong> {}</p>",
-                html_escape(task)
-            );
+            let _ = writeln!(html, "<p><strong>Task:</strong> {}</p>", html_escape(task));
         }
 
         if let Some(outcome) = &trajectory.info.outcome {
@@ -186,10 +184,10 @@ impl TrajectoryExporter for HtmlExporter {
 #[cfg(feature = "html-export")]
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&#39;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]

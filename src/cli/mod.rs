@@ -668,7 +668,9 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
                 ))
             })?;
             let traj_path = crate::run::inspect::resolve_trajectory_path(&args.sweep, instance_id)
-                .ok_or_else(|| Error::Trajectory(format!("no trajectory found for {instance_id}")))?;
+                .ok_or_else(|| {
+                    Error::Trajectory(format!("no trajectory found for {instance_id}"))
+                })?;
             let text = std::fs::read_to_string(&traj_path)?;
             let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)?;
             println!("{}", <crate::trajectory::export::HtmlExporter as crate::trajectory::export::TrajectoryExporter>::export(&traj));
