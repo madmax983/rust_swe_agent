@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use rust_swe_agent::agent::default::{DefaultAgentBuilder, retag_cache_hints};
 use rust_swe_agent::error::EnvError;
 use rust_swe_agent::{
-    Agent, CacheHint, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
+    Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
     Message, Role, RunRequest, RunResult, ToolHookCfg,
 };
 
@@ -344,6 +344,49 @@ async fn post_tool_use_environment_error_is_reported_not_propagated() {
     assert!(observation.content.contains("hook environment error"));
 }
 
+#[tokio::test]
+async fn pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_tool() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "spawn-fail".into(),
+        command: "echo hook".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho primary\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(PreHookSpawnFailureEnv);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let err = agent.run().await.unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Env(EnvError::CommandFailed(message))
+            if message == "simulated pre hook spawn failure"
+    ));
+    assert!(
+        agent
+            .history
+            .iter()
+            .all(|m| !m.content.contains("Tool use blocked")),
+        "pre-hook infrastructure errors should not be model-visible policy denials: {:#?}",
+        agent.history
+    );
+}
+
 fn hook_command(vars: &[&str]) -> String {
     if cfg!(windows) {
         vars.chunks_exact(2)
@@ -374,6 +417,17 @@ struct LargeOutputHookEnv {
 #[derive(Default)]
 struct HookSpawnFailureEnv {
     calls: std::sync::Mutex<u32>,
+}
+
+struct PreHookSpawnFailureEnv;
+
+#[async_trait]
+impl Environment for PreHookSpawnFailureEnv {
+    async fn run(&self, _req: RunRequest) -> Result<RunResult, EnvError> {
+        Err(EnvError::CommandFailed(
+            "simulated pre hook spawn failure".into(),
+        ))
+    }
 }
 
 #[async_trait]

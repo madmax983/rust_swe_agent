@@ -566,6 +566,9 @@ impl DefaultAgent {
         let hook_result = match self.env.run(req).await {
             Ok(result) => result,
             Err(err) => {
+                if matches!(phase, ToolHookPhase::PreToolUse) {
+                    return Err(err.into());
+                }
                 let message = format!("hook environment error: {err}");
                 return Ok(ToolHookResult {
                     phase,
