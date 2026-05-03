@@ -38,6 +38,10 @@ pub struct MiniCmd {
     /// Max agent steps.
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
+    #[arg(long)]
+    pub observation_max_bytes: Option<usize>,
+    #[arg(long)]
+    pub observation_head_ratio: Option<f64>,
 
     /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
     /// Orthogonal to `--step-limit`; whichever fires first wins.
@@ -208,6 +212,10 @@ pub struct SwebenchCmd {
 
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
+    #[arg(long)]
+    pub observation_max_bytes: Option<usize>,
+    #[arg(long)]
+    pub observation_head_ratio: Option<f64>,
 
     /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
     /// Orthogonal to `--step-limit`; whichever fires first wins.

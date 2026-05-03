@@ -22,6 +22,8 @@ Exit code: {{ returncode }}
 Output:
 {{ output }}
 '''
+observation_max_bytes = 16384
+observation_head_ratio = 0.5
 
 [model]
 # String name. Routed by prefix to backend (claude* -> Anthropic).
