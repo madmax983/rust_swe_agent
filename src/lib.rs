@@ -15,7 +15,7 @@ pub mod template;
 pub mod trajectory;
 
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
-pub use config::Config;
+pub use config::{Config, ToolHookCfg, ToolHooksCfg};
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};

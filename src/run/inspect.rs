@@ -11,7 +11,7 @@ use crate::env::RunResult;
 use crate::error::Error;
 use crate::run::evaluate::EvaluationResults;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
-use crate::trajectory::{FailureCategory, Trajectory};
+use crate::trajectory::{FailureCategory, TokenUsage, Trajectory};
 
 const TRUNCATE_MAX_LINES: usize = 40;
 const TRUNCATE_MAX_BYTES: usize = 2 * 1024;
@@ -66,6 +66,12 @@ pub struct InspectReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
@@ -100,7 +106,7 @@ pub struct SummaryReport {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InspectOutput {
-    Instance(InspectReport),
+    Instance(Box<InspectReport>),
     Summary(Box<SummaryReport>),
 }
 
@@ -133,7 +139,7 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     let resolved_map = load_resolved_overrides(&args.sweep)?;
     let report =
         build_instance_report(&args.sweep, &instance_id, args.full, resolved_map.as_ref())?;
-    Ok(InspectOutput::Instance(report))
+    Ok(InspectOutput::Instance(Box::new(report)))
 }
 
 fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
@@ -191,6 +197,9 @@ fn build_instance_report(
                 failure_category: None,
                 total_cost_usd: None,
                 prompt_tokens: None,
+                input_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
                 completion_tokens: None,
                 resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
                 warnings,
@@ -252,6 +261,7 @@ fn build_instance_report(
         }
     }
 
+    let token_usage = traj.info.token_usage.as_ref();
     Ok(InspectReport {
         sweep_dir: sweep.to_path_buf(),
         instance_id: Some(instance_id.to_owned()),
@@ -259,8 +269,11 @@ fn build_instance_report(
         outcome: traj.info.outcome,
         failure_category: traj.info.failure_category,
         total_cost_usd: traj.info.total_cost_usd,
-        prompt_tokens: traj.info.token_usage.as_ref().map(|t| t.prompt_tokens),
-        completion_tokens: traj.info.token_usage.as_ref().map(|t| t.completion_tokens),
+        prompt_tokens: token_usage.map(TokenUsage::total_prompt_tokens),
+        input_tokens: token_usage.map(|t| t.prompt_tokens),
+        cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
+        cache_creation_tokens: token_usage.map(|t| t.cache_creation_tokens),
+        completion_tokens: token_usage.map(|t| t.completion_tokens),
         resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
         warnings,
         steps,
@@ -273,6 +286,10 @@ pub fn render_text(output: &InspectOutput) -> String {
         InspectOutput::Summary(s) => render_summary_text(s),
     }
 }
+
+use comfy_table::Table;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
 
 fn render_summary_text(report: &SummaryReport) -> String {
     let mut s = String::new();
@@ -291,21 +308,37 @@ fn render_summary_text(report: &SummaryReport) -> String {
     } else {
         s.push_str("Manifest: unavailable\n");
     }
-    s.push_str("\ninstance_id | outcome | failure_category | cost_usd | resolved\n");
-    s.push_str("----------------------------------------------------------------\n");
+    s.push('\n');
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "instance_id",
+            "outcome",
+            "failure_category",
+            "cost_usd",
+            "resolved",
+        ]);
+
     for row in &report.rows {
-        let _ = writeln!(
-            s,
-            "{} | {} | {} | {} | {}",
-            row.instance_id,
-            row.outcome.as_deref().unwrap_or("?"),
-            row.failure_category.map_or("none", failure_label),
+        table.add_row(vec![
+            row.instance_id.clone(),
+            row.outcome.as_deref().unwrap_or("?").to_string(),
+            row.failure_category
+                .map_or("none", failure_label)
+                .to_string(),
             row.cost_usd
                 .map_or_else(|| "?".into(), |c| format!("{c:.4}")),
             row.resolved
                 .map_or("?", |v| if v { "true" } else { "false" })
-        );
+                .to_string(),
+        ]);
     }
+
+    s.push_str(&table.to_string());
+    s.push('\n');
     s
 }
 
@@ -342,13 +375,14 @@ fn render_instance_text(report: &InspectReport) -> String {
     );
     let _ = writeln!(
         s,
-        "tokens:           prompt={} completion={}",
-        report
-            .prompt_tokens
-            .map_or_else(|| "?".into(), |v| v.to_string()),
-        report
-            .completion_tokens
-            .map_or_else(|| "?".into(), |v| v.to_string()),
+        "tokens:           {}",
+        render_token_summary(
+            report.prompt_tokens,
+            report.input_tokens,
+            report.cache_read_tokens,
+            report.cache_creation_tokens,
+            report.completion_tokens,
+        ),
     );
     if let Some(r) = report.resolved {
         let _ = writeln!(s, "resolved:         {r}");
@@ -392,6 +426,32 @@ fn render_instance_text(report: &InspectReport) -> String {
         }
     }
     s
+}
+
+fn render_token_summary(
+    prompt_tokens: Option<u64>,
+    input_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_creation_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+) -> String {
+    let prompt = format_optional_u64(prompt_tokens);
+    let completion = format_optional_u64(completion_tokens);
+    let cache_read = cache_read_tokens.unwrap_or(0);
+    let cache_creation = cache_creation_tokens.unwrap_or(0);
+    if cache_read == 0 && cache_creation == 0 {
+        return format!("prompt={prompt} completion={completion}");
+    }
+    format!(
+        "prompt={prompt} (input={} cache_read={} cache_creation={}) completion={completion}",
+        format_optional_u64(input_tokens),
+        cache_read,
+        cache_creation
+    )
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "?".into(), |v| v.to_string())
 }
 
 fn infer_bash_from_previous_assistant(traj: &Trajectory, msg_idx: usize) -> Option<String> {
@@ -464,6 +524,10 @@ fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
     let nested = sweep.join(instance_id).join("trajectory.json");
     if nested.exists() {
         return Some(nested);
+    }
+    let nested_run = sweep.join(instance_id).join("run-1.traj.json");
+    if nested_run.exists() {
+        return Some(nested_run);
     }
     let flat = sweep.join(format!("{instance_id}.traj.json"));
     flat.exists().then_some(flat)
@@ -539,7 +603,10 @@ fn failure_label(c: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::Unknown => "unknown",
     }
 }

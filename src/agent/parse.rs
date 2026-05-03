@@ -46,6 +46,38 @@ fn extract_first_any_block(s: &str) -> Option<String> {
     Some(body[..end].trim_end_matches('\n').to_owned())
 }
 
+/// Extracts the intended `Action` (bash command, submit, or none) from a model's response string.
+///
+/// This function acts as the critical bridge between the LLM's unstructured text and the agent's
+/// structured environment. It scans the provided `content` for either a bash code block or the
+/// explicit submission sentinel.
+///
+/// If a response contains both a bash command and the submit sentinel (on its own line),
+/// the submit sentinel always takes precedence.
+///
+/// ## Examples
+///
+/// Extracting a basic shell command:
+///
+/// ```
+/// use rust_swe_agent::agent::{extract_action, Action};
+///
+/// let response = "I will check the directory contents:\n```bash\nls -la\n```";
+/// let action = extract_action(response);
+///
+/// assert_eq!(action, Action::Bash("ls -la".to_string()));
+/// ```
+///
+/// Handling a task submission:
+///
+/// ```
+/// use rust_swe_agent::agent::{extract_action, Action};
+///
+/// let response = "I am done.\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nBug fixed!\n```";
+/// let action = extract_action(response);
+///
+/// assert_eq!(action, Action::Submit("Bug fixed!".to_string()));
+/// ```
 pub fn extract_action(content: &str) -> Action {
     // 1) Submit wins if the sentinel appears on its own line.
     let sentinel_on_own_line = content.lines().any(|l| l.trim() == SUBMIT_SENTINEL);

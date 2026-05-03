@@ -41,7 +41,16 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
     std::fs::create_dir_all(&output).unwrap();
 
     let ids = [
-        "ok", "env", "api", "parse", "step", "cost", "internal", "unknown", "legacy",
+        "ok",
+        "env",
+        "api",
+        "parse",
+        "step",
+        "cost",
+        "wallclock",
+        "internal",
+        "unknown",
+        "legacy",
     ];
     write_dataset(&dataset, &ids);
 
@@ -62,6 +71,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         ("parse", FailureCategory::ModelParse),
         ("step", FailureCategory::StepLimit),
         ("cost", FailureCategory::CostLimit),
+        ("wallclock", FailureCategory::WallclockTimeout),
         ("internal", FailureCategory::AgentInternal),
         ("unknown", FailureCategory::Unknown),
     ] {
@@ -94,13 +104,17 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 2,
+        reruns: 1,
         config: cfg,
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -116,6 +130,9 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -143,6 +160,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
             "parse" => assert_eq!(r.failure_category, Some(FailureCategory::ModelParse)),
             "step" => assert_eq!(r.failure_category, Some(FailureCategory::StepLimit)),
             "cost" => assert_eq!(r.failure_category, Some(FailureCategory::CostLimit)),
+            "wallclock" => assert_eq!(r.failure_category, Some(FailureCategory::WallclockTimeout)),
             "internal" => assert_eq!(r.failure_category, Some(FailureCategory::AgentInternal)),
             "unknown" => assert_eq!(r.failure_category, Some(FailureCategory::Unknown)),
             other => panic!("unexpected id: {other}"),
@@ -156,6 +174,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
     assert!(table.contains("  - model_parse: 1"), "got: {table}");
     assert!(table.contains("  - step_limit: 1"), "got: {table}");
     assert!(table.contains("  - cost_limit: 1"), "got: {table}");
+    assert!(table.contains("  - wallclock_timeout: 1"), "got: {table}");
     assert!(table.contains("  - agent_internal: 1"), "got: {table}");
     assert!(table.contains("  - unknown: 1"), "got: {table}");
     assert!(

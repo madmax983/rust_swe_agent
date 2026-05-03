@@ -45,8 +45,13 @@ fn init_repo(dir: &Path) {
 }
 
 fn cfg(workdir: &Path) -> Config {
-    let yaml = format!("environment:\n  workdir: {}\n", workdir.display());
-    Config::from_yaml_str(&yaml).unwrap()
+    let workdir = workdir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
+    Config::from_toml_str(&toml).unwrap()
 }
 
 fn submit_response() -> String {
@@ -80,13 +85,17 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -102,6 +111,9 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -124,13 +136,17 @@ async fn retries_on_injected_transient_category_then_recovers() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -146,6 +162,9 @@ async fn retries_on_injected_transient_category_then_recovers() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -175,13 +194,17 @@ async fn max_retries_zero_disables_retry() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -197,6 +220,9 @@ async fn max_retries_zero_disables_retry() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -227,13 +253,17 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: Some("a,b".into()),
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -252,6 +282,9 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -263,13 +296,17 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         dataset_path: work.path().join("dataset.jsonl"),
         output_dir: no_retry_output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: Some("b".into()),
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 2,
         retry_on: Some("step_limit".into()),
         retry_backoff_base_ms: 0,
@@ -285,6 +322,9 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -314,13 +354,17 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         dataset_path: dataset.clone(),
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: false,
         cost_limit_usd: Some(0.10),
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -336,6 +380,9 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -369,13 +416,17 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         dataset_path: dataset.clone(),
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -391,6 +442,9 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -400,13 +454,17 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         dataset_path: dataset,
         output_dir: output,
         parallel: 1,
+        reruns: 1,
         config: cfg(&repo),
         resume: true,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -422,6 +480,9 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();

@@ -1,5 +1,5 @@
-//! Config loading: start from the embedded default YAML, then overlay any
-//! user-specified YAML on top via recursive merge. `extends: <path>` inside
+//! Config loading: start from the embedded default TOML, then overlay any
+//! user-specified TOML on top via recursive merge. `extends: <path>` inside
 //! a config pulls in a parent first (same merge rule).
 
 use std::path::{Path, PathBuf};
@@ -10,15 +10,18 @@ use crate::error::ConfigError;
 
 pub mod schema;
 
-pub use schema::{AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg};
+pub use schema::{
+    AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg, SweepCfg, ToolHookCfg,
+    ToolHooksCfg,
+};
 
-const DEFAULT_YAML: &str = include_str!("defaults/default.yaml");
+const DEFAULT_TOML: &str = include_str!("defaults/default.toml");
 const MAX_INCLUDE_DEPTH: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub root: RootCfg,
-    /// The raw merged YAML as JSON-shaped value. Templates can be resolved
+    /// The raw merged config as JSON-shaped value. Templates can be resolved
     /// against fields we don't know about.
     pub raw: Value,
 }
@@ -26,15 +29,15 @@ pub struct Config {
 impl Config {
     /// Load the embedded default config only.
     pub fn defaults() -> Result<Self, ConfigError> {
-        let v = yaml_to_json(DEFAULT_YAML)?;
+        let v = toml_to_json(DEFAULT_TOML)?;
         let root: RootCfg =
             serde_json::from_value(v.clone()).map_err(|e| ConfigError::Invalid(e.to_string()))?;
         Ok(Self { root, raw: v })
     }
 
-    /// Load a user YAML, resolving `extends:` chains. Defaults are the base.
+    /// Load a user TOML, resolving `extends:` chains. Defaults are the base.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let defaults = yaml_to_json(DEFAULT_YAML)?;
+        let defaults = toml_to_json(DEFAULT_TOML)?;
         let user = load_with_extends(path, 0)?;
         let merged = recursive_merge(defaults, user);
         let root: RootCfg = serde_json::from_value(merged.clone())
@@ -42,10 +45,10 @@ impl Config {
         Ok(Self { root, raw: merged })
     }
 
-    /// Construct from a YAML string, starting from defaults. Used in tests.
-    pub fn from_yaml_str(s: &str) -> Result<Self, ConfigError> {
-        let defaults = yaml_to_json(DEFAULT_YAML)?;
-        let user = yaml_to_json(s)?;
+    /// Construct from a TOML string, starting from defaults. Used in tests.
+    pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
+        let defaults = toml_to_json(DEFAULT_TOML)?;
+        let user = toml_to_json(s)?;
         let merged = recursive_merge(defaults, user);
         let root: RootCfg = serde_json::from_value(merged.clone())
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
@@ -59,7 +62,7 @@ fn load_with_extends(path: &Path, depth: usize) -> Result<Value, ConfigError> {
     }
     let text = std::fs::read_to_string(path)
         .map_err(|_| ConfigError::NotFound(path.display().to_string()))?;
-    let v = yaml_to_json(&text)?;
+    let v = toml_to_json(&text)?;
 
     if let Some(parent_path) = v.get("extends").and_then(Value::as_str) {
         let parent_pb = resolve_relative(path, parent_path);
@@ -85,9 +88,9 @@ fn resolve_relative(base: &Path, target: &str) -> PathBuf {
     }
 }
 
-fn yaml_to_json(s: &str) -> Result<Value, ConfigError> {
-    let yaml: serde_yaml::Value = serde_yaml::from_str(s)?;
-    serde_json::to_value(yaml).map_err(|e| ConfigError::Invalid(e.to_string()))
+fn toml_to_json(s: &str) -> Result<Value, ConfigError> {
+    let toml_val: toml::Value = toml::from_str(s)?;
+    serde_json::to_value(toml_val).map_err(|e| ConfigError::Invalid(e.to_string()))
 }
 
 /// Deep merge: `overlay` wins for non-object leaves; object keys recurse.
@@ -123,13 +126,14 @@ mod tests {
 
     #[test]
     fn user_overrides_default() {
-        let yaml = r#"
-agent:
-  step_limit: 10
-model:
-  name: claude-sonnet-4-6
+        let toml = r#"
+[agent]
+step_limit = 10
+
+[model]
+name = "claude-sonnet-4-6"
 "#;
-        let c = Config::from_yaml_str(yaml).unwrap();
+        let c = Config::from_toml_str(toml).unwrap();
         assert_eq!(c.root.agent.step_limit, 10);
         assert_eq!(c.root.model.name, "claude-sonnet-4-6");
         // Unchanged default survives.
@@ -145,6 +149,12 @@ model:
             merged,
             serde_json::json!({"a": {"x": 1, "y": 20, "z": 30}, "b": 3, "c": 4})
         );
+    }
+
+    #[test]
+    fn invalid_toml_returns_toml_error() {
+        let err = Config::from_toml_str("[[[ not valid toml").unwrap_err();
+        assert!(matches!(err, ConfigError::Toml(_)));
     }
 
     #[test]

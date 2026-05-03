@@ -161,24 +161,23 @@ pub trait Model: Send + Sync {
 /// Anthropic caps explicit cache breakpoints at 4. Enforce defensively:
 /// if more than 4 messages carry `Breakpoint`, keep the **first** four
 /// (stable/oldest cached prefix, which is what we want for a system prompt
-/// + long-lived context) and demote the rest to `None`. Returns the
-/// possibly-rewritten message list.
-pub fn cap_breakpoints<const N: usize>(messages: &[Message]) -> Vec<Message> {
+/// + long-lived context) and demote the rest to `None`. Returns an iterator
+/// over `(&Message, CacheHint)`.
+pub fn cap_breakpoints<const N: usize>(
+    messages: &[Message],
+) -> impl Iterator<Item = (&Message, CacheHint)> + '_ {
     let mut kept = 0usize;
-    messages
-        .iter()
-        .cloned()
-        .map(|mut m| {
-            if matches!(m.cache_hint, CacheHint::Breakpoint) {
-                if kept >= N {
-                    m.cache_hint = CacheHint::None;
-                } else {
-                    kept += 1;
-                }
+    messages.iter().map(move |m| {
+        let mut hint = m.cache_hint;
+        if matches!(hint, CacheHint::Breakpoint) {
+            if kept >= N {
+                hint = CacheHint::None;
+            } else {
+                kept += 1;
             }
-            m
-        })
-        .collect()
+        }
+        (m, hint)
+    })
 }
 
 #[cfg(test)]
@@ -195,18 +194,18 @@ mod tests {
             })
             .collect();
 
-        let capped = cap_breakpoints::<4>(&msgs);
+        let capped: Vec<_> = cap_breakpoints::<4>(&msgs).collect();
         let bp_count = capped
             .iter()
-            .filter(|m| matches!(m.cache_hint, CacheHint::Breakpoint))
+            .filter(|(_, hint)| matches!(hint, &CacheHint::Breakpoint))
             .count();
         assert_eq!(bp_count, 4);
         // First four keep Breakpoint; last two get demoted.
-        for m in &capped[..4] {
-            assert!(matches!(m.cache_hint, CacheHint::Breakpoint));
+        for (_, hint) in &capped[..4] {
+            assert!(matches!(hint, CacheHint::Breakpoint));
         }
-        for m in &capped[4..] {
-            assert!(matches!(m.cache_hint, CacheHint::None));
+        for (_, hint) in &capped[4..] {
+            assert!(matches!(hint, CacheHint::None));
         }
     }
 
@@ -220,7 +219,11 @@ mod tests {
             },
             Message::user("u"),
         ];
-        let capped = cap_breakpoints::<4>(&msgs);
-        assert_eq!(capped, msgs);
+        let capped: Vec<_> = cap_breakpoints::<4>(&msgs).collect();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].1, CacheHint::Breakpoint);
+        assert_eq!(capped[1].1, CacheHint::None);
     }
 }
+#[cfg(test)]
+pub mod deterministic_chaos_test;

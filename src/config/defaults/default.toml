@@ -1,0 +1,111 @@
+# Default config for rust-swe-agent. Mirrors mini-swe-agent's
+# `config/mini.yaml` in shape. Fields documented inline.
+
+[agent]
+# Which agent impl to instantiate. One of: "default", "interactive".
+kind = "default"
+# Max conversational steps. Prevents runaway loops.
+step_limit = 50
+# Template rendered when the model's response contains no valid action.
+format_error_template = '''
+Your response did not include a shell command. Respond with a single
+```bash
+# command here
+```
+block, or the sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own
+line followed by the final output block.
+'''
+# Template rendered over each command's RunResult to form the next
+# user-observation message. `pre_tool_use_hooks` and
+# `post_tool_use_hooks` are populated by `[[agent.hooks.*]]` entries.
+observation_template = '''
+{% if tool_use_blocked %}
+Tool use blocked by PreToolUse hook.
+
+{% endif %}
+Exit code: {{ returncode }}
+Output:
+{{ output }}
+{% if pre_tool_use_hooks %}
+
+PreToolUse hooks:
+{% for hook in pre_tool_use_hooks %}
+[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}
+{% if hook.stdout %}stdout:
+{{ hook.stdout }}{% endif %}
+{% if hook.stderr %}stderr:
+{{ hook.stderr }}{% endif %}
+{% endfor %}
+{% endif %}
+{% if post_tool_use_hooks %}
+
+PostToolUse hooks:
+{% for hook in post_tool_use_hooks %}
+[{{ hook.name }}] exit_code={{ hook.exit_code }} timed_out={{ hook.timed_out }}
+{% if hook.stdout %}stdout:
+{{ hook.stdout }}{% endif %}
+{% if hook.stderr %}stderr:
+{{ hook.stderr }}{% endif %}
+{% endfor %}
+{% endif %}
+'''
+observation_max_bytes = 16384
+observation_head_ratio = 0.5
+
+# Default timeout for tool hooks unless a hook overrides `timeout_secs`.
+tool_hook_timeout_secs = 10
+#
+# Optional tool hooks. PreToolUse hooks run before each bash command; a
+# nonzero exit code or timeout blocks the command and reports the hook result
+# to the model. PostToolUse hooks run after successful command execution and
+# are diagnostic only.
+#
+# [[agent.hooks.pre_tool_use]]
+# name = "guard"
+# command = "test \"$RUST_SWE_AGENT_COMMAND\" != \"rm -rf /\""
+# timeout_secs = 5
+#
+# [[agent.hooks.post_tool_use]]
+# name = "git-status"
+# command = "git status --short"
+
+[model]
+# String name. Routed by prefix to backend (claude* -> Anthropic).
+name = "claude-opus-4-7"
+# temperature omitted — uses backend default (maps to null in schema)
+max_tokens = 4096
+
+[environment]
+# "local" or "docker".
+kind = "local"
+# Per-command timeout in seconds.
+timeout_secs = 60
+workdir = "/workspace"
+
+[sweep]
+# Adaptive rate-limit governor (issue #44). Both keys are opt-in: when unset,
+# no ceiling is applied and behavior is identical to pre-#44 builds.
+#
+# Cap aggregate provider *requests per minute* across all parallel workers.
+# Maps to --max-rpm on the CLI. CLI value always wins over this key.
+# max_rpm = 4000
+#
+# Cap aggregate *input tokens per minute* across all parallel workers.
+# Maps to --max-input-tpm on the CLI. CLI value always wins over this key.
+# max_input_tpm = 400000
+
+[prompts]
+system = '''
+You are a skilled software engineer working at a terminal. You have
+access to a bash shell. Each response must contain exactly one action:
+either a single ```bash block to execute, or the literal sentinel
+`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a
+final output block.
+'''
+instance = '''
+Task: {{ task }}
+{% if extra_context %}
+Additional context:
+{{ extra_context }}
+{% endif %}
+'''

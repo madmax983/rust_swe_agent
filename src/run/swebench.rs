@@ -24,8 +24,9 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::error::Error;
+use crate::model::litellm::is_anthropic_model;
 use crate::model::{Model, ModelUsage};
-use crate::trajectory::{FailureCategory, Trajectory, outcome};
+use crate::trajectory::{FailureCategory, Trajectory, exit_reason, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
 /// sweep-level USD budget was exhausted. Distinct from `error` and
@@ -37,17 +38,78 @@ pub const EXIT_REASON_BUDGET_HALT: &str = "budget_halt";
 /// counts so downstream tooling can re-price as needed.
 pub const SONNET_INPUT_USD_PER_MTOK: f64 = 3.0;
 pub const SONNET_OUTPUT_USD_PER_MTOK: f64 = 15.0;
+pub const ANTHROPIC_CACHE_READ_MULTIPLIER: f64 = 0.10;
+pub const ANTHROPIC_CACHE_CREATION_MULTIPLIER: f64 = 1.25;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenBreakdown {
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl TokenBreakdown {
+    #[must_use]
+    pub fn prompt_tokens(self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_creation_tokens)
+    }
+
+    #[must_use]
+    pub fn total_tokens(self) -> u64 {
+        self.prompt_tokens().saturating_add(self.completion_tokens)
+    }
+
+    #[must_use]
+    pub fn has_billable_tokens(self) -> bool {
+        self.prompt_tokens() > 0 || self.completion_tokens > 0
+    }
+
+    #[must_use]
+    pub fn cache_hit_rate(self) -> f64 {
+        let total_prompt = self.prompt_tokens();
+        if total_prompt == 0 {
+            return 0.0;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        {
+            self.cache_read_tokens as f64 / total_prompt as f64
+        }
+    }
+}
 
 #[must_use]
-pub fn estimate_cost_usd(prompt_tokens: u64, completion_tokens: u64) -> f64 {
+pub fn estimate_cost_usd(
+    prompt_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    completion_tokens: u64,
+    model: &str,
+) -> f64 {
+    let (cache_read_multiplier, cache_creation_multiplier) = if is_anthropic_model(model) {
+        (
+            ANTHROPIC_CACHE_READ_MULTIPLIER,
+            ANTHROPIC_CACHE_CREATION_MULTIPLIER,
+        )
+    } else {
+        (1.0, 1.0)
+    };
     #[allow(clippy::cast_precision_loss)]
     let p = prompt_tokens as f64;
     #[allow(clippy::cast_precision_loss)]
+    let cr = cache_read_tokens as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let cc = cache_creation_tokens as f64;
+    #[allow(clippy::cast_precision_loss)]
     let c = completion_tokens as f64;
-    (c / 1_000_000.0).mul_add(
-        SONNET_OUTPUT_USD_PER_MTOK,
-        p / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK,
-    )
+    let input_cost = p / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK;
+    let cache_read_cost = cr / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_read_multiplier;
+    let cache_creation_cost =
+        cc / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_creation_multiplier;
+    let completion_cost = c / 1_000_000.0 * SONNET_OUTPUT_USD_PER_MTOK;
+    input_cost + cache_read_cost + cache_creation_cost + completion_cost
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,9 +141,25 @@ pub struct InstanceResult {
     pub steps: Option<u32>,
     #[serde(default)]
     pub cost_usd: Option<f64>,
-    #[serde(default)]
+    #[serde(default, rename = "total_input_tokens", alias = "prompt_tokens")]
     pub prompt_tokens: Option<u64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "total_cache_read_tokens",
+        alias = "cache_read_tokens"
+    )]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(
+        default,
+        rename = "total_cache_creation_tokens",
+        alias = "cache_creation_tokens"
+    )]
+    pub cache_creation_tokens: Option<u64>,
+    #[serde(
+        default,
+        rename = "total_completion_tokens",
+        alias = "completion_tokens"
+    )]
     pub completion_tokens: Option<u64>,
     #[serde(default)]
     pub duration_secs: Option<f64>,
@@ -105,6 +183,18 @@ pub struct InstanceResult {
     /// Failure categories that triggered retries before the terminal attempt.
     #[serde(default)]
     pub retry_reasons: Vec<FailureCategory>,
+    /// Number of independent samples requested for this instance. Legacy
+    /// summaries that predate reruns deserialize as `0`; consumers should use
+    /// `effective_runs` to treat those rows as single-shot.
+    #[serde(default)]
+    pub runs: u32,
+    /// Number of resolved samples out of `runs`.
+    #[serde(default)]
+    pub resolved_count: u32,
+    /// Whether the first sample resolved. Equivalent to the historical
+    /// single-shot pass/fail value when `runs == 1`.
+    #[serde(default)]
+    pub pass_at_1: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,18 +214,36 @@ pub struct SweepResults {
     /// Equal to `submitted` minus the count of empty-diff submissions.
     #[serde(default)]
     pub with_patch: usize,
+    /// Instances downgraded from `submitted` because the captured diff was
+    /// empty at capture time.
     #[serde(default)]
+    pub patch_empty: usize,
+    /// Instances downgraded from `submitted` because `git apply --check`
+    /// rejected the patch at capture time.
+    #[serde(default)]
+    pub patch_apply_invalid: usize,
+    #[serde(default, rename = "total_input_tokens", alias = "total_prompt_tokens")]
     pub total_prompt_tokens: u64,
     #[serde(default)]
-    pub total_completion_tokens: u64,
+    pub total_cache_read_tokens: u64,
     #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_completion_tokens: u64,
+    #[serde(default, rename = "total_cost_usd", alias = "estimated_cost_usd")]
     pub estimated_cost_usd: f64,
+    #[serde(default)]
+    pub cache_hit_rate: f64,
     /// Total retry attempts executed across all instances.
     #[serde(default)]
     pub retries: u64,
     /// Number of instances that retried at least once.
     #[serde(default)]
     pub retried_instances: usize,
+    /// Mean any-of-k resolution rate across instances, where k is each row's
+    /// `runs` count. For single-shot sweeps this is equivalent to pass@1.
+    #[serde(default)]
+    pub pass_at_k: f64,
     /// Resolved dataset subset spec used for this run.
     #[serde(default)]
     pub filter_spec: FilterSpec,
@@ -148,6 +256,10 @@ pub struct SweepResults {
     pub cost_limit_usd: Option<f64>,
     #[serde(default)]
     pub instances: Vec<InstanceResult>,
+    /// Rate-limit telemetry emitted when `--max-rpm` or `--max-input-tpm` is
+    /// set. `None` when neither flag was provided (opt-in, no behavior change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -164,10 +276,30 @@ pub struct FilterSpec {
     pub sample: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stratify_by: Option<StratifyBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stratify_mode: Option<StratifyMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StratifyBy {
+    Repo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StratifyMode {
+    #[default]
+    Proportional,
+    Balanced,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
     pub harness: HarnessManifest,
     pub dataset: DatasetManifest,
     pub prompt_template: PromptTemplateManifest,
@@ -240,29 +372,80 @@ pub struct CliManifest {
     pub argv: Vec<String>,
 }
 
+impl InstanceResult {
+    #[must_use]
+    pub fn token_breakdown(&self) -> TokenBreakdown {
+        TokenBreakdown {
+            input_tokens: self.prompt_tokens.unwrap_or(0),
+            cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
+            cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
+            completion_tokens: self.completion_tokens.unwrap_or(0),
+        }
+    }
+
+    #[must_use]
+    pub fn effective_cost_usd(&self, model: Option<&str>) -> Option<f64> {
+        let tokens = self.token_breakdown();
+        if let Some(cost) = self.cost_usd {
+            if cost != 0.0 || !tokens.has_billable_tokens() {
+                return Some(cost);
+            }
+        }
+        tokens.has_billable_tokens().then(|| {
+            estimate_cost_usd(
+                tokens.input_tokens,
+                tokens.cache_read_tokens,
+                tokens.cache_creation_tokens,
+                tokens.completion_tokens,
+                model.unwrap_or(""),
+            )
+        })
+    }
+}
+
 impl SweepResults {
+    #[must_use]
+    pub fn token_breakdown(&self) -> TokenBreakdown {
+        TokenBreakdown {
+            input_tokens: self.total_prompt_tokens,
+            cache_read_tokens: self.total_cache_read_tokens,
+            cache_creation_tokens: self.total_cache_creation_tokens,
+            completion_tokens: self.total_completion_tokens,
+        }
+    }
+
     /// Render the post-sweep summary table. A flat plain-text block so it
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
     pub fn summary_table(&self) -> String {
-        #[allow(clippy::cast_precision_loss)]
-        let submit_rate_pct = if self.total == 0 {
-            0.0
-        } else {
-            (self.submitted as f64 / self.total as f64) * 100.0
-        };
-        let total_tokens = self
-            .total_prompt_tokens
-            .saturating_add(self.total_completion_tokens);
+        let submit_rate_pct = self.submit_rate_pct();
+        let tokens = self.token_breakdown();
+        let total_tokens = tokens.total_tokens();
+        let effective_tasks = self.effective_task_count();
+        let uniform_runs = self.uniform_runs_per_instance();
+        let pass_at_k_label = uniform_runs.map_or_else(|| "k".to_owned(), |k| k.to_string());
         let mut s = String::new();
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
+        write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
         let _ = writeln!(s, "Submitted:          {}", self.submitted);
         let _ = writeln!(
             s,
             "With patch:         {} — non-empty diff against base_commit",
             self.with_patch
         );
+        if self.patch_empty > 0 || self.patch_apply_invalid > 0 {
+            let _ = writeln!(
+                s,
+                "Patch-empty:        {} — empty diff downgraded from submitted",
+                self.patch_empty
+            );
+            let _ = writeln!(
+                s,
+                "Patch-invalid:      {} — git apply --check failed at capture",
+                self.patch_apply_invalid
+            );
+        }
         let _ = writeln!(
             s,
             "Skipped:            {} — trajectory already on disk",
@@ -279,12 +462,28 @@ impl SweepResults {
             self.retries, self.retried_instances
         );
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
-        let _ = writeln!(s, "Prompt tokens:      {}", self.total_prompt_tokens);
+        let _ = writeln!(
+            s,
+            "Pass@{pass_at_k_label}:            {:.2}%",
+            self.pass_at_k * 100.0
+        );
+        let _ = writeln!(s, "Input tokens:       {}", self.total_prompt_tokens);
+        let _ = writeln!(s, "Cache read tokens:  {}", self.total_cache_read_tokens);
+        let _ = writeln!(
+            s,
+            "Cache create toks:  {}",
+            self.total_cache_creation_tokens
+        );
         let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
+        let _ = writeln!(
+            s,
+            "Cache hit rate:     {:.2}%",
+            tokens.cache_hit_rate() * 100.0
+        );
         let _ = writeln!(s, "Total tokens:       {total_tokens}");
         let _ = writeln!(
             s,
-            "Estimated cost:     ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
+            "Total cost:         ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
             self.estimated_cost_usd
         );
         if let Some(limit) = self.cost_limit_usd {
@@ -317,7 +516,66 @@ impl SweepResults {
         if unclassified_legacy > 0 {
             let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
         }
+        write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
         s
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn submit_rate_pct(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.submitted as f64 / self.total as f64) * 100.0
+        }
+    }
+
+    fn effective_task_count(&self) -> usize {
+        self.instances
+            .iter()
+            .map(|row| usize::try_from(effective_runs(row)).unwrap_or(usize::MAX))
+            .sum()
+    }
+
+    fn uniform_runs_per_instance(&self) -> Option<u32> {
+        let mut iter = self.instances.iter().map(effective_runs);
+        let first = iter.next()?;
+        iter.all(|runs| runs == first).then_some(first)
+    }
+}
+
+fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
+    let Some(rl) = rl else { return };
+    let _ = writeln!(s, "Rate-limit events:");
+    let _ = writeln!(s, "  Throttled calls:    {}", rl.throttled_calls);
+    let _ = writeln!(s, "  Throttled secs:     {:.1}", rl.total_throttled_seconds);
+    let _ = writeln!(s, "  Peak concurrent:    {}", rl.peak_concurrent);
+    if let Some(rpm) = rl.configured_max_rpm {
+        let _ = writeln!(s, "  Configured max-rpm: {rpm}");
+    }
+    if let Some(tpm) = rl.configured_max_input_tpm {
+        let _ = writeln!(s, "  Configured max-tpm: {tpm}");
+    }
+}
+
+fn write_effective_task_line(
+    s: &mut String,
+    total_tasks: usize,
+    effective_tasks: usize,
+    uniform_runs: Option<u32>,
+) {
+    if effective_tasks == total_tasks {
+        return;
+    }
+    if let Some(runs) = uniform_runs {
+        let _ = writeln!(
+            s,
+            "Effective tasks:    {effective_tasks} ({total_tasks} instances * {runs} runs)"
+        );
+    } else {
+        let _ = writeln!(
+            s,
+            "Effective tasks:    {effective_tasks} (sum of per-instance runs)"
+        );
     }
 }
 
@@ -327,6 +585,8 @@ pub struct SwebenchArgs {
     pub output_dir: PathBuf,
     pub parallel: usize,
     pub config: Config,
+    /// Independent samples per selected SWE-bench instance.
+    pub reruns: u32,
     /// When true, tasks whose trajectory file already exists and parses as
     /// valid JSON are skipped before any agent (or Docker container, or
     /// model API call) is launched for them.
@@ -339,6 +599,9 @@ pub struct SwebenchArgs {
     /// tasks contribute to the running total at their stored cost so a
     /// resumed sweep cannot blow past the limit.
     pub cost_limit_usd: Option<f64>,
+    /// Optional wallclock budget applied independently to each task's agent
+    /// loop. Orthogonal to step and cost limits; whichever fires first wins.
+    pub task_timeout_secs: Option<u64>,
     /// Dataset subset selector. Either comma-separated ids or
     /// `@path/to/file.txt` (one id per line).
     pub instance_ids: Option<String>,
@@ -348,6 +611,10 @@ pub struct SwebenchArgs {
     pub sample: Option<usize>,
     /// RNG seed used by `sample`.
     pub seed: Option<u64>,
+    /// Stratification key used while sampling.
+    pub stratify_by: Option<StratifyBy>,
+    /// Allocation mode used while stratifying.
+    pub stratify_mode: StratifyMode,
     /// Retry transiently-failed instances up to N additional attempts.
     /// `0` preserves the historical no-retry behavior.
     pub max_retries: u32,
@@ -379,6 +646,15 @@ pub struct SwebenchArgs {
     pub preflight_check_timeout_s: u64,
     pub preflight_total_timeout_s: u64,
     pub preflight_mode: String,
+    /// When `true`, skip `git apply --check` and empty-diff validation after
+    /// patch capture. Escape hatch for non-git environments; default is off.
+    pub skip_patch_validation: bool,
+    /// Optional aggregate request-rate ceiling across all workers (requests/min).
+    /// When `None`, no RPM cap is enforced (opt-in, no behavior change).
+    pub max_rpm: Option<u32>,
+    /// Optional aggregate input-token-rate ceiling across all workers (tokens/min).
+    /// When `None`, no TPM cap is enforced (opt-in, no behavior change).
+    pub max_input_tpm: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,7 +691,7 @@ fn default_attempts() -> u32 {
 /// the resume-skip check stays in lockstep with the writer.
 #[must_use]
 pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    output_dir.join(format!("{instance_id}.traj.json"))
+    trajectory_path_for_run(output_dir, instance_id, 1)
 }
 
 /// Path where the SWE-bench-style unified diff is written for an instance.
@@ -423,7 +699,61 @@ pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> P
 /// captured for a previously-submitted run.
 #[must_use]
 pub fn patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    patch_path_for_run(output_dir, instance_id, 1)
+}
+
+#[must_use]
+pub fn trajectory_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    output_dir
+        .join(instance_id)
+        .join(format!("run-{run_index}.traj.json"))
+}
+
+#[must_use]
+pub fn patch_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    output_dir
+        .join(instance_id)
+        .join(format!("run-{run_index}.patch"))
+}
+
+fn legacy_trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
+    output_dir.join(format!("{instance_id}.traj.json"))
+}
+
+fn legacy_patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
     output_dir.join(format!("{instance_id}.patch"))
+}
+
+fn existing_trajectory_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    let nested = trajectory_path_for_run(output_dir, instance_id, run_index);
+    if nested.exists() || run_index != 1 {
+        return nested;
+    }
+    legacy_trajectory_path_for(output_dir, instance_id)
+}
+
+fn existing_patch_path_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> PathBuf {
+    let nested = patch_path_for_run(output_dir, instance_id, run_index);
+    if nested.exists() || run_index != 1 {
+        return nested;
+    }
+    legacy_patch_path_for(output_dir, instance_id)
 }
 
 /// Path of the aggregated SWE-bench predictions file written at the end of
@@ -434,6 +764,11 @@ pub fn predictions_path(output_dir: &std::path::Path) -> PathBuf {
     output_dir.join("all_preds.jsonl")
 }
 
+#[must_use]
+pub fn predictions_path_for_run(output_dir: &std::path::Path, run_index: u32) -> PathBuf {
+    output_dir.join(format!("all_preds.run-{run_index}.jsonl"))
+}
+
 /// Inspect a trajectory path on disk. Returns `Some(info)` only when the file
 /// exists *and* parses as valid trajectory JSON; truncated or corrupt files
 /// (e.g. a mid-write crash) yield `None` so the task re-runs.
@@ -442,7 +777,20 @@ pub fn existing_trajectory_info(
     output_dir: &std::path::Path,
     instance_id: &str,
 ) -> Option<crate::trajectory::TrajectoryInfo> {
-    read_trajectory_info(&trajectory_path_for(output_dir, instance_id))
+    existing_trajectory_info_for_run(output_dir, instance_id, 1)
+}
+
+#[must_use]
+pub fn existing_trajectory_info_for_run(
+    output_dir: &std::path::Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Option<crate::trajectory::TrajectoryInfo> {
+    read_trajectory_info(&existing_trajectory_path_for_run(
+        output_dir,
+        instance_id,
+        run_index,
+    ))
 }
 
 pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Error> {
@@ -478,6 +826,11 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // without yielding reusable pieces.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
+    if args.reruns == 0 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench swebench: --rerun must be at least 1".into(),
+        )));
+    }
     if !args.skip_preflight {
         let report = run_preflight(&args).await?;
         print_preflight_report(&report, &args.preflight_format, &args.preflight_mode)?;
@@ -496,15 +849,22 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             failures_by_category: BTreeMap::new(),
             budget_halted: 0,
             with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec::default(),
             manifest: None,
             cost_limit_usd: args.cost_limit_usd,
             instances: Vec::new(),
+            rate_limit_events: None,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -526,10 +886,14 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let instances = load_dataset_from_bytes(&dataset_bytes)?;
     let (instances, filter_spec) = apply_subset(
         instances,
-        args.instance_ids.as_deref(),
-        args.limit,
-        args.sample,
-        args.seed,
+        &ApplySubsetParams {
+            instance_ids_arg: args.instance_ids.as_deref(),
+            limit: args.limit,
+            sample: args.sample,
+            seed: args.seed,
+            stratify_by: args.stratify_by,
+            stratify_mode: args.stratify_mode,
+        },
     )?;
     let total = instances.len();
     let summary_path = args.output_dir.join("results.json");
@@ -549,15 +913,22 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         failures_by_category: BTreeMap::new(),
         budget_halted: 0,
         with_patch: 0,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
         total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,
+        pass_at_k: 0.0,
         filter_spec: filter_spec.clone(),
         manifest: Some(initial_manifest),
         cost_limit_usd: args.cost_limit_usd,
         instances: Vec::new(),
+        rate_limit_events: None,
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&initial)?)?;
     #[cfg(test)]
@@ -566,17 +937,16 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         "test panic after initial manifest write"
     );
     let mut set = tokio::task::JoinSet::new();
-    let mut skipped_results: Vec<InstanceResult> = Vec::new();
-    let mut pending: std::collections::VecDeque<SweBenchInstance> =
-        std::collections::VecDeque::new();
+    let mut skipped_results: Vec<RunSlotResult> = Vec::new();
+    let mut pending: std::collections::VecDeque<SweepRun> = std::collections::VecDeque::new();
 
-    // Sweep-level cumulative USD spend, computed via `estimate_cost_usd`
-    // from each task's prompt/completion tokens. Resume-skipped tasks
-    // contribute their stored cost up front so a resumed sweep cannot
-    // blow past the limit by re-summing only freshly-run tasks.
+    // Sweep-level cumulative USD spend. Prefer the provider-recorded
+    // per-instance `cost_usd`; fall back to token-based re-pricing for
+    // older artifacts that only carried token counts.
     let mut cumulative_cost = 0.0f64;
     let mut halted = false;
     let limit = args.cost_limit_usd;
+    let model_name = args.config.root.model.name.clone();
     let bump_cost = |cost: f64, cumulative: &mut f64, halted: &mut bool| {
         *cumulative += cost;
         if let Some(l) = limit {
@@ -586,84 +956,100 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
     };
 
+    // Create the rate-limit governor only when at least one flag is set.
+    // Wrapping in Arc lets each spawned task share it without cloning.
+    let governor_arc: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>> =
+        crate::run::rate_limit::RateLimitGovernor::new(
+            args.max_rpm,
+            args.max_input_tpm,
+            u32::try_from(args.parallel.max(1)).unwrap_or(u32::MAX),
+        )
+        .map(std::sync::Arc::new);
+
+    let mut in_flight: usize = 0;
+
     for inst in instances {
         // Resume short-circuit: a valid on-disk trajectory + (when the run
         // was submitted) a patch file mean this task is fully archived
         // from a prior sweep. Skip it before we even consider dispatch —
         // no worker slot, no Docker container, no model API call.
-        if args.resume {
-            if let Some(info) = existing_trajectory_info(&args.output_dir, &inst.instance_id) {
-                let patch_path = patch_path_for(&args.output_dir, &inst.instance_id);
-                let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
-                let retryable_resume = args.retry_on_resume
-                    && info
-                        .failure_category
-                        .is_some_and(|cat| retry_policy.is_retry_category(cat));
-                if retryable_resume {
-                    let prior = resume_snapshot_for_instance(
-                        &args.output_dir,
-                        &inst.instance_id,
-                        &info,
-                        &patch_path,
-                        &prior_results,
-                    );
-                    bump_cost(
-                        estimate_cost_usd(
-                            prior.prompt_tokens.unwrap_or(0),
-                            prior.completion_tokens.unwrap_or(0),
-                        ),
-                        &mut cumulative_cost,
-                        &mut halted,
-                    );
-                    if halted {
-                        skipped_results.push(budget_halt_result(&inst.instance_id));
+        for run_index in 1..=args.reruns {
+            if args.resume {
+                if let Some(info) =
+                    existing_trajectory_info_for_run(&args.output_dir, &inst.instance_id, run_index)
+                {
+                    let patch_path =
+                        existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
+                    let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+                    let retryable_resume = args.retry_on_resume
+                        && info
+                            .failure_category
+                            .is_some_and(|cat| retry_policy.is_retry_category(cat));
+                    if retryable_resume {
+                        let prior = resume_snapshot_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                            &info,
+                            &patch_path,
+                            &prior_results,
+                        );
+                        bump_cost(
+                            prior.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            &mut cumulative_cost,
+                            &mut halted,
+                        );
+                        if halted {
+                            skipped_results.push(RunSlotResult::new(
+                                run_index,
+                                budget_halt_result(&inst.instance_id),
+                            ));
+                            continue;
+                        }
+                    }
+                    if !retryable_resume && (!needs_patch || patch_path.exists()) {
+                        let r = resume_snapshot_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                            &info,
+                            &patch_path,
+                            &prior_results,
+                        );
+                        bump_cost(
+                            r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            &mut cumulative_cost,
+                            &mut halted,
+                        );
+                        skipped_results.push(RunSlotResult::new(run_index, r));
                         continue;
                     }
-                }
-                if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                    let r = resume_snapshot_for_instance(
-                        &args.output_dir,
-                        &inst.instance_id,
-                        &info,
-                        &patch_path,
-                        &prior_results,
+                    tracing::info!(
+                        instance = %inst.instance_id,
+                        run_index,
+                        "resume: trajectory present but patch missing — re-running"
                     );
-                    bump_cost(
-                        estimate_cost_usd(
-                            r.prompt_tokens.unwrap_or(0),
-                            r.completion_tokens.unwrap_or(0),
-                        ),
-                        &mut cumulative_cost,
-                        &mut halted,
-                    );
-                    skipped_results.push(r);
-                    continue;
                 }
-                tracing::info!(
-                    instance = %inst.instance_id,
-                    "resume: trajectory present but patch missing — re-running"
-                );
             }
+            pending.push_back(SweepRun {
+                inst: inst.clone(),
+                run_index,
+            });
         }
-        pending.push_back(inst);
     }
 
     let mut results = skipped_results;
     let skipped = results
         .iter()
-        .filter(|r| r.exit_reason == "skipped_resume")
+        .filter(|r| r.result.exit_reason == "skipped_resume")
         .count();
     let mut submitted = 0;
     let mut errored = 0;
     let mut budget_halted = results
         .iter()
-        .filter(|r| r.exit_reason == EXIT_REASON_BUDGET_HALT)
+        .filter(|r| r.result.exit_reason == EXIT_REASON_BUDGET_HALT)
         .count();
-    let mut with_patch = 0;
-    let mut total_prompt = 0u64;
-    let mut total_completion = 0u64;
-    let mut total_retries = 0u64;
-    let mut retried_instances = 0usize;
+    let mut accounting = SweepAccounting::default();
     let parallelism = args.parallel.max(1);
 
     // Consumer-driven dispatch: spawn at most `parallelism` tasks at a
@@ -671,37 +1057,52 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     // the previous result and (re-)checked the halt flag. A semaphore
     // would close the same race only after the new permit was claimed —
     // by which time another agent has already started an API call.
-    let spawn_one = |inst: SweBenchInstance, set: &mut tokio::task::JoinSet<InstanceResult>| {
-        let output_dir = args.output_dir.clone();
-        let cfg = args.config.clone();
-        let deterministic = args.deterministic_responses.clone();
-        let det_usage = args.deterministic_usage_per_call.clone();
-        let retry_policy = retry_policy.clone();
-        set.spawn(async move {
-            run_one(
-                inst,
-                output_dir,
-                cfg,
-                deterministic,
-                det_usage,
-                retry_policy,
-            )
-            .await
-        });
-    };
+    for r in &results {
+        accounting.add_result(&r.result);
+    }
+
+    let spawn_one =
+        |run: SweepRun,
+         set: &mut tokio::task::JoinSet<RunSlotResult>,
+         governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>| {
+            let params = RunOneParams {
+                output_dir: args.output_dir.clone(),
+                cfg: args.config.clone(),
+                deterministic_responses: args.deterministic_responses.clone(),
+                deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+                retry_policy: retry_policy.clone(),
+                task_timeout_secs: args.task_timeout_secs,
+                skip_patch_validation: args.skip_patch_validation,
+                governor,
+            };
+            set.spawn(async move {
+                RunSlotResult::new(
+                    run.run_index,
+                    run_one(run.inst, run.run_index, params).await,
+                )
+            });
+        };
 
     if halted {
         // Resume already exhausted the budget; everything that was queued
         // never starts.
         while let Some(inst) = pending.pop_front() {
-            results.push(budget_halt_result(&inst.instance_id));
+            results.push(RunSlotResult::new(
+                inst.run_index,
+                budget_halt_result(&inst.inst.instance_id),
+            ));
             budget_halted += 1;
         }
     } else {
         // Initial fill.
         for _ in 0..parallelism {
             if let Some(inst) = pending.pop_front() {
-                spawn_one(inst, &mut set);
+                spawn_one(inst, &mut set, governor_arc.clone());
+                in_flight += 1;
+                if let Some(g) = &governor_arc {
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
+                }
             } else {
                 break;
             }
@@ -709,34 +1110,22 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     while let Some(j) = set.join_next().await {
+        in_flight = in_flight.saturating_sub(1);
         match j {
             Ok(r) => {
-                match r.outcome.as_deref() {
+                match r.result.outcome.as_deref() {
                     Some(outcome::SUBMITTED) => submitted += 1,
                     Some(outcome::ERROR) => errored += 1,
                     _ => {}
                 }
-                if r.non_empty_patch {
-                    with_patch += 1;
-                }
-                total_retries =
-                    total_retries.saturating_add(u64::from(r.attempts.saturating_sub(1)));
-                if r.attempts > 1 {
-                    retried_instances += 1;
-                }
-                if let Some(p) = r.prompt_tokens {
-                    total_prompt = total_prompt.saturating_add(p);
-                }
-                if let Some(c) = r.completion_tokens {
-                    total_completion = total_completion.saturating_add(c);
-                }
+                accounting.add_result(&r.result);
                 // Sweep-level budget bookkeeping. Tasks that completed
                 // (whether submitted or errored) consumed real API budget
                 // and count toward the cap.
-                let cost = estimate_cost_usd(
-                    r.prompt_tokens.unwrap_or(0),
-                    r.completion_tokens.unwrap_or(0),
-                );
+                let cost = r
+                    .result
+                    .effective_cost_usd(Some(&model_name))
+                    .unwrap_or(0.0);
                 let was_halted = halted;
                 bump_cost(cost, &mut cumulative_cost, &mut halted);
                 if halted && !was_halted {
@@ -752,22 +1141,30 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             }
             Err(e) => {
                 errored += 1;
-                results.push(InstanceResult {
-                    instance_id: "<join_error>".into(),
-                    exit_reason: "error".into(),
-                    outcome: Some(outcome::ERROR.into()),
-                    failure_category: Some(FailureCategory::AgentInternal),
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: Some(e.to_string()),
-                    patch_present: false,
-                    non_empty_patch: false,
-                    attempts: 1,
-                    retry_reasons: Vec::new(),
-                });
+                results.push(RunSlotResult::new(
+                    1,
+                    InstanceResult {
+                        instance_id: "<join_error>".into(),
+                        exit_reason: "error".into(),
+                        outcome: Some(outcome::ERROR.into()),
+                        failure_category: Some(FailureCategory::AgentInternal),
+                        steps: None,
+                        cost_usd: None,
+                        prompt_tokens: None,
+                        cache_read_tokens: None,
+                        cache_creation_tokens: None,
+                        completion_tokens: None,
+                        duration_secs: None,
+                        error: Some(e.to_string()),
+                        patch_present: false,
+                        non_empty_patch: false,
+                        attempts: 1,
+                        retry_reasons: Vec::new(),
+                        runs: 1,
+                        resolved_count: 0,
+                        pass_at_1: false,
+                    },
+                ));
             }
         }
 
@@ -775,31 +1172,79 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         // exhausted, drain the queue into `budget_halt` results without
         // spawning. Otherwise, dispatch one — keeping the in-flight
         // count at `parallelism` until the queue drains.
+        //
+        // AIMD: tick the governor before deciding; it may restore a slot
+        // and log a structured event. When AIMD is active and no slot has
+        // been restored yet, skip this spawn cycle (let in-flight count
+        // naturally drop until restoration resumes).
+        if let Some(g) = &governor_arc {
+            if g.tick_aimd().await {
+                tracing::info!(
+                    structured_event = "aimd_restore",
+                    "rate-limit: AIMD restored 1 worker slot"
+                );
+            }
+        }
+        let aimd_suppressed_count = match &governor_arc {
+            Some(g) => g.suppressed_slots_count().await,
+            None => 0,
+        };
+        let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
         if halted {
             while let Some(inst) = pending.pop_front() {
-                results.push(budget_halt_result(&inst.instance_id));
+                results.push(RunSlotResult::new(
+                    inst.run_index,
+                    budget_halt_result(&inst.inst.instance_id),
+                ));
                 budget_halted += 1;
             }
-        } else if let Some(inst) = pending.pop_front() {
-            spawn_one(inst, &mut set);
+        } else if in_flight < effective_parallelism {
+            if let Some(inst) = pending.pop_front() {
+                spawn_one(inst, &mut set, governor_arc.clone());
+                in_flight += 1;
+                if let Some(g) = &governor_arc {
+                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                        .await;
+                }
+            }
         }
     }
 
-    // Skipped instances loaded from disk also contribute to the patch
-    // counter so resumed sweeps report cumulative `with_patch` correctly.
-    for r in &results {
-        if r.exit_reason == "skipped_resume" && r.non_empty_patch {
-            with_patch += 1;
-        }
-    }
+    let instance_results = aggregate_run_results(&results, args.reruns);
+    let pass_at_k = pass_at_k(&instance_results);
     let mut failures_by_category: BTreeMap<FailureCategory, usize> = BTreeMap::new();
     for r in &results {
-        if let Some(cat) = r.failure_category {
+        if let Some(cat) = r.result.failure_category {
             *failures_by_category.entry(cat).or_insert(0) += 1;
         }
     }
 
     write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
+
+    let token_breakdown = accounting.tokens;
+    let total_cost_usd = sum_f64(
+        instance_results
+            .iter()
+            .filter_map(|result| result.effective_cost_usd(Some(&model_name))),
+    )
+    .unwrap_or_else(|| {
+        estimate_cost_usd(
+            token_breakdown.input_tokens,
+            token_breakdown.cache_read_tokens,
+            token_breakdown.cache_creation_tokens,
+            token_breakdown.completion_tokens,
+            &model_name,
+        )
+    });
+
+    let patch_empty = failures_by_category
+        .get(&FailureCategory::PatchEmpty)
+        .copied()
+        .unwrap_or(0);
+    let patch_apply_invalid = failures_by_category
+        .get(&FailureCategory::PatchApplyInvalid)
+        .copied()
+        .unwrap_or(0);
 
     let sweep = SweepResults {
         total,
@@ -808,12 +1253,18 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         errored,
         failures_by_category,
         budget_halted,
-        with_patch,
-        total_prompt_tokens: total_prompt,
-        total_completion_tokens: total_completion,
-        estimated_cost_usd: estimate_cost_usd(total_prompt, total_completion),
-        retries: total_retries,
-        retried_instances,
+        with_patch: accounting.with_patch,
+        patch_empty,
+        patch_apply_invalid,
+        total_prompt_tokens: token_breakdown.input_tokens,
+        total_cache_read_tokens: token_breakdown.cache_read_tokens,
+        total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
+        total_completion_tokens: token_breakdown.completion_tokens,
+        estimated_cost_usd: total_cost_usd,
+        cache_hit_rate: token_breakdown.cache_hit_rate(),
+        retries: accounting.total_retries,
+        retried_instances: accounting.retried_instances,
+        pass_at_k,
         filter_spec,
         manifest: Some(build_manifest(
             &args,
@@ -824,7 +1275,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             Some(chrono::Utc::now().to_rfc3339()),
         )),
         cost_limit_usd: args.cost_limit_usd,
-        instances: results,
+        instances: instance_results,
+        rate_limit_events: match governor_arc.as_ref() {
+            Some(g) => Some(g.events().await),
+            None => None,
+        },
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
@@ -859,11 +1314,25 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let limit = args.limit;
     let sample = args.sample;
     let seed = args.seed;
+    let stratify_by = args.stratify_by;
+    let stratify_mode = args.stratify_mode;
     let (subset, _) = timed_sync(
         "dataset.subset",
         args.preflight_check_timeout_s,
         deadline,
-        move || apply_subset(instances, instance_ids.as_deref(), limit, sample, seed),
+        move || {
+            apply_subset(
+                instances,
+                &ApplySubsetParams {
+                    instance_ids_arg: instance_ids.as_deref(),
+                    limit,
+                    sample,
+                    seed,
+                    stratify_by,
+                    stratify_mode,
+                },
+            )
+        },
     )
     .await?;
     checks.push(CheckResult {
@@ -886,13 +1355,13 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     ensure_total_deadline(deadline)?;
     match args.config.root.environment.kind {
         crate::config::EnvKind::Local => {
-            for bin in ["bash", "git", "patch"] {
+            for bin in local_preflight_tools() {
                 ensure_total_deadline(deadline)?;
                 let ok = timed_sync(
                     "env.local_tools",
                     args.preflight_check_timeout_s,
                     deadline,
-                    move || Command::new("which").arg(bin).output(),
+                    move || local_tool_probe(bin).output(),
                 )
                 .await?
                 .status
@@ -1017,8 +1486,35 @@ fn render_preflight_report(
 }
 
 fn print_preflight_report(checks: &[CheckResult], format: &str, mode: &str) -> Result<(), Error> {
+    if format == "silent" {
+        return Ok(());
+    }
     print!("{}", render_preflight_report(checks, format, mode)?);
     Ok(())
+}
+
+#[cfg(windows)]
+fn local_preflight_tools() -> &'static [&'static str] {
+    &["cmd.exe", "git"]
+}
+
+#[cfg(not(windows))]
+fn local_preflight_tools() -> &'static [&'static str] {
+    &["bash", "git", "patch"]
+}
+
+#[cfg(windows)]
+fn local_tool_probe(bin: &str) -> Command {
+    let mut cmd = Command::new("where.exe");
+    cmd.arg(bin);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn local_tool_probe(bin: &str) -> Command {
+    let mut cmd = Command::new("which");
+    cmd.arg(bin);
+    cmd
 }
 
 async fn timed_sync<T, E, F>(
@@ -1067,8 +1563,9 @@ fn build_manifest(
     );
     let mut config_raw = effective_runtime_config(&args.config);
     redact_json_secrets(&mut config_raw);
-    let resolved = serde_yaml::to_string(&config_raw).unwrap_or_else(|_| "--- {}\n".to_owned());
+    let resolved = toml::to_string(&strip_json_nulls(config_raw)).unwrap_or_default();
     ProvenanceManifest {
+        purpose: None,
         harness: resolve_harness_manifest(),
         dataset: DatasetManifest {
             path: args.dataset_path.display().to_string(),
@@ -1281,6 +1778,21 @@ fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]
     }
 }
 
+fn strip_json_nulls(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_json_nulls(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(a) => {
+            serde_json::Value::Array(a.into_iter().map(strip_json_nulls).collect())
+        }
+        other => other,
+    }
+}
+
 fn json_key_is_sensitive(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
     matches!(
@@ -1359,6 +1871,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         steps: None,
         cost_usd: None,
         prompt_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         completion_tokens: None,
         duration_secs: None,
         error: None,
@@ -1366,42 +1880,260 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         non_empty_patch: false,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 0,
+        pass_at_1: false,
     }
 }
 
-/// Write `all_preds.jsonl` containing one line per *submitted* instance
-/// with a patch artifact on disk. Schema: `{instance_id, model_patch,
-/// model_name_or_path}` — the minimum sb-cli accepts. Non-submitted and
-/// patch-capture-failed instances are excluded by design so sb-cli
-/// reports them as unresolved rather than misattributes a stale diff.
+#[derive(Debug, Clone)]
+struct SweepRun {
+    inst: SweBenchInstance,
+    run_index: u32,
+}
+
+#[derive(Debug, Clone)]
+struct RunSlotResult {
+    run_index: u32,
+    result: InstanceResult,
+}
+
+impl RunSlotResult {
+    fn new(run_index: u32, result: InstanceResult) -> Self {
+        Self { run_index, result }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SweepAccounting {
+    with_patch: usize,
+    tokens: TokenBreakdown,
+    total_retries: u64,
+    retried_instances: usize,
+}
+
+impl SweepAccounting {
+    fn add_result(&mut self, result: &InstanceResult) {
+        if result.non_empty_patch && result.outcome.as_deref() == Some(outcome::SUBMITTED) {
+            self.with_patch += 1;
+        }
+        self.total_retries = self
+            .total_retries
+            .saturating_add(u64::from(result.attempts.saturating_sub(1)));
+        if result.attempts > 1 {
+            self.retried_instances += 1;
+        }
+        if let Some(prompt_tokens) = result.prompt_tokens {
+            self.tokens.input_tokens = self.tokens.input_tokens.saturating_add(prompt_tokens);
+        }
+        if let Some(cache_read_tokens) = result.cache_read_tokens {
+            self.tokens.cache_read_tokens = self
+                .tokens
+                .cache_read_tokens
+                .saturating_add(cache_read_tokens);
+        }
+        if let Some(cache_creation_tokens) = result.cache_creation_tokens {
+            self.tokens.cache_creation_tokens = self
+                .tokens
+                .cache_creation_tokens
+                .saturating_add(cache_creation_tokens);
+        }
+        if let Some(completion_tokens) = result.completion_tokens {
+            self.tokens.completion_tokens = self
+                .tokens
+                .completion_tokens
+                .saturating_add(completion_tokens);
+        }
+    }
+}
+
+fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
+    let mut grouped: BTreeMap<&str, Vec<&RunSlotResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry(r.result.instance_id.as_str())
+            .or_default()
+            .push(r);
+    }
+
+    let mut out = Vec::with_capacity(grouped.len());
+    for (instance_id, mut rows) in grouped {
+        rows.sort_by_key(|r| r.run_index);
+        let Some(first) = rows.first().map(|r| &r.result) else {
+            continue;
+        };
+        let mut aggregate = first.clone();
+        instance_id.clone_into(&mut aggregate.instance_id);
+        aggregate.exit_reason.clone_from(&first.exit_reason);
+        aggregate.outcome.clone_from(&first.outcome);
+        aggregate.failure_category = first.failure_category;
+        aggregate.steps = first.steps;
+        aggregate.cost_usd = sum_f64(rows.iter().filter_map(|r| r.result.cost_usd));
+        aggregate.prompt_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.prompt_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_read_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.cache_read_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.cache_creation_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.cache_creation_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.completion_tokens = Some(
+            rows.iter()
+                .filter_map(|r| r.result.completion_tokens)
+                .fold(0u64, u64::saturating_add),
+        );
+        aggregate.duration_secs = sum_f64(rows.iter().filter_map(|r| r.result.duration_secs));
+        aggregate.error.clone_from(&first.error);
+        aggregate.patch_present = rows.iter().any(|r| r.result.patch_present);
+        aggregate.non_empty_patch = rows.iter().any(|r| r.result.non_empty_patch);
+        aggregate.attempts = rows
+            .iter()
+            .map(|r| r.result.attempts)
+            .fold(0u32, u32::saturating_add);
+        aggregate.retry_reasons = rows
+            .iter()
+            .flat_map(|r| r.result.retry_reasons.iter().copied())
+            .collect();
+        aggregate.runs = requested_runs;
+        aggregate.resolved_count = rows
+            .iter()
+            .filter(|r| is_resolved_instance_result(&r.result))
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        aggregate.pass_at_1 = rows
+            .iter()
+            .find(|r| r.run_index == 1)
+            .is_some_and(|r| is_resolved_instance_result(&r.result));
+        out.push(aggregate);
+    }
+    out
+}
+
+fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut seen = false;
+    let mut total = 0.0;
+    for value in values {
+        seen = true;
+        total += value;
+    }
+    seen.then_some(total)
+}
+
+fn pass_at_k(instances: &[InstanceResult]) -> f64 {
+    if instances.is_empty() {
+        return 0.0;
+    }
+    let passed = instances
+        .iter()
+        .filter(|row| resolved_count(row) > 0)
+        .count();
+    #[allow(clippy::cast_precision_loss)]
+    {
+        passed as f64 / instances.len() as f64
+    }
+}
+
+#[must_use]
+pub fn effective_runs(row: &InstanceResult) -> u32 {
+    if row.runs == 0 { 1 } else { row.runs }
+}
+
+#[must_use]
+pub fn resolved_count(row: &InstanceResult) -> u32 {
+    if row.runs == 0 {
+        u32::from(is_resolved_instance_result(row))
+    } else {
+        row.resolved_count.min(row.runs)
+    }
+}
+
+#[must_use]
+pub fn pass_at_1(row: &InstanceResult) -> bool {
+    if row.runs == 0 {
+        is_resolved_instance_result(row)
+    } else {
+        row.pass_at_1
+    }
+}
+
+#[must_use]
+pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
+    row.outcome.as_deref() == Some(outcome::SUBMITTED) && row.failure_category.is_none()
+}
+
+/// Write aggregate and per-run prediction files. `all_preds.jsonl` is a
+/// complete artifact log with unique prediction IDs across reruns; each
+/// `all_preds.run-k.jsonl` keeps original SWE-bench IDs and is safe to hand
+/// to sb-cli, which rejects duplicate `instance_id` rows.
 fn write_predictions_file(
     output_dir: &std::path::Path,
-    results: &[InstanceResult],
+    results: &[RunSlotResult],
     model_name: &str,
 ) -> Result<(), Error> {
-    let path = predictions_path(output_dir);
-    let mut text = String::new();
+    let max_run = results.iter().map(|r| r.run_index).max().unwrap_or(1);
+    let use_unique_prediction_ids = max_run > 1;
+    let mut aggregate = String::new();
+    let mut per_run: BTreeMap<u32, String> = BTreeMap::new();
     for r in results {
-        if r.outcome.as_deref() != Some(outcome::SUBMITTED) {
+        if r.result.outcome.as_deref() != Some(outcome::SUBMITTED) {
             continue;
         }
-        if !r.patch_present {
+        if !r.result.patch_present {
             // A submitted-but-patch-missing instance only happens on a
             // resume that found the trajectory but no `.patch`; we already
             // re-queued it above so this branch is defensive.
             continue;
         }
-        let patch_path = patch_path_for(output_dir, &r.instance_id);
+        let patch_path =
+            existing_patch_path_for_run(output_dir, &r.result.instance_id, r.run_index);
         let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
-        let line = serde_json::json!({
-            "instance_id": r.instance_id,
+        let run_line = serde_json::json!({
+            "instance_id": r.result.instance_id,
             "model_patch": model_patch,
             "model_name_or_path": model_name,
+            "run_index": r.run_index,
         });
-        text.push_str(&serde_json::to_string(&line)?);
-        text.push('\n');
+        let _ = writeln!(
+            per_run.entry(r.run_index).or_default(),
+            "{}",
+            serde_json::to_string(&run_line)?
+        );
+
+        let aggregate_instance_id = if use_unique_prediction_ids {
+            format!("{}::run-{}", r.result.instance_id, r.run_index)
+        } else {
+            r.result.instance_id.clone()
+        };
+        let aggregate_line = if use_unique_prediction_ids {
+            serde_json::json!({
+                "instance_id": aggregate_instance_id,
+                "original_instance_id": r.result.instance_id,
+                "run_index": r.run_index,
+                "model_patch": model_patch,
+                "model_name_or_path": model_name,
+            })
+        } else {
+            serde_json::json!({
+                "instance_id": aggregate_instance_id,
+                "model_patch": model_patch,
+                "model_name_or_path": model_name,
+            })
+        };
+        aggregate.push_str(&serde_json::to_string(&aggregate_line)?);
+        aggregate.push('\n');
     }
-    std::fs::write(&path, text)?;
+    std::fs::write(predictions_path(output_dir), aggregate)?;
+    for (run_index, text) in per_run {
+        std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
+    }
     Ok(())
 }
 
@@ -1414,9 +2146,17 @@ fn skipped_result_from_info(
     info: &crate::trajectory::TrajectoryInfo,
     patch_path: &std::path::Path,
 ) -> InstanceResult {
-    let (prompt_tokens, completion_tokens) = info.token_usage.as_ref().map_or((None, None), |t| {
-        (Some(t.prompt_tokens), Some(t.completion_tokens))
-    });
+    let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
+        .token_usage
+        .as_ref()
+        .map_or((None, None, None, None), |t| {
+            (
+                Some(t.prompt_tokens),
+                Some(t.cache_read_tokens),
+                Some(t.cache_creation_tokens),
+                Some(t.completion_tokens),
+            )
+        });
     let (patch_present, non_empty_patch) = match std::fs::metadata(patch_path) {
         Ok(m) => (true, m.len() > 0),
         Err(_) => (false, false),
@@ -1429,6 +2169,8 @@ fn skipped_result_from_info(
         steps: info.steps,
         cost_usd: info.total_cost_usd,
         prompt_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
@@ -1436,6 +2178,12 @@ fn skipped_result_from_info(
         non_empty_patch,
         attempts: 1,
         retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: u32::from(
+            info.outcome.as_deref() == Some(outcome::SUBMITTED) && info.failure_category.is_none(),
+        ),
+        pass_at_1: info.outcome.as_deref() == Some(outcome::SUBMITTED)
+            && info.failure_category.is_none(),
     }
 }
 
@@ -1448,6 +2196,9 @@ fn skipped_result_from_prior_result(
     out.error = None;
     out.patch_present = traj_based.patch_present;
     out.non_empty_patch = traj_based.non_empty_patch;
+    out.runs = 1;
+    out.resolved_count = u32::from(is_resolved_instance_result(&out));
+    out.pass_at_1 = is_resolved_instance_result(&out);
     out
 }
 
@@ -1489,9 +2240,10 @@ fn load_prior_results_by_instance(output_dir: &std::path::Path) -> PriorResults 
     }
 }
 
-fn resume_snapshot_for_instance(
+fn resume_snapshot_for_run(
     output_dir: &std::path::Path,
     instance_id: &str,
+    run_index: u32,
     info: &crate::trajectory::TrajectoryInfo,
     patch_path: &std::path::Path,
     prior: &PriorResults,
@@ -1500,7 +2252,14 @@ fn resume_snapshot_for_instance(
     let Some(prior_result) = prior.by_id.get(instance_id) else {
         return traj_based;
     };
-    if !prior_result_matches_trajectory(output_dir, instance_id, prior_result, &traj_based, prior) {
+    if !prior_result_matches_trajectory(
+        output_dir,
+        instance_id,
+        run_index,
+        prior_result,
+        &traj_based,
+        prior,
+    ) {
         return traj_based;
     }
     skipped_result_from_prior_result(prior_result, &traj_based)
@@ -1509,10 +2268,14 @@ fn resume_snapshot_for_instance(
 fn prior_result_matches_trajectory(
     output_dir: &std::path::Path,
     instance_id: &str,
+    run_index: u32,
     prior_result: &InstanceResult,
     traj_result: &InstanceResult,
     prior: &PriorResults,
 ) -> bool {
+    if effective_runs(prior_result) != 1 {
+        return false;
+    }
     if prior_result.outcome != traj_result.outcome
         || prior_result.failure_category != traj_result.failure_category
         || prior_result.steps != traj_result.steps
@@ -1522,9 +2285,13 @@ fn prior_result_matches_trajectory(
     let Some(results_mtime) = prior.results_mtime else {
         return false;
     };
-    let traj_mtime = std::fs::metadata(trajectory_path_for(output_dir, instance_id))
-        .ok()
-        .and_then(|m| m.modified().ok());
+    let traj_mtime = std::fs::metadata(existing_trajectory_path_for_run(
+        output_dir,
+        instance_id,
+        run_index,
+    ))
+    .ok()
+    .and_then(|m| m.modified().ok());
     let Some(traj_mtime) = traj_mtime else {
         return false;
     };
@@ -1600,7 +2367,10 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "model_parse" => Ok(FailureCategory::ModelParse),
         "step_limit" => Ok(FailureCategory::StepLimit),
         "cost_limit" => Ok(FailureCategory::CostLimit),
+        "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
+        "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
+        "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
@@ -1628,15 +2398,30 @@ fn deterministic_for_attempt(all: &[String], attempt: u32, retry_mode: bool) -> 
     all.last().cloned().into_iter().collect()
 }
 
-#[allow(clippy::too_many_lines)]
-async fn run_one(
-    inst: SweBenchInstance,
+#[derive(Clone)]
+struct RunOneParams {
     output_dir: PathBuf,
-    mut cfg: Config,
+    cfg: Config,
     deterministic_responses: Option<Vec<String>>,
     deterministic_usage_per_call: Option<ModelUsage>,
     retry_policy: RetryPolicy,
-) -> InstanceResult {
+    task_timeout_secs: Option<u64>,
+    skip_patch_validation: bool,
+    governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -> InstanceResult {
+    let RunOneParams {
+        output_dir,
+        mut cfg,
+        deterministic_responses,
+        deterministic_usage_per_call,
+        retry_policy,
+        task_timeout_secs,
+        skip_patch_validation,
+        governor,
+    } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
     // A scripted model implies a local-only sweep — `image` from the dataset
@@ -1648,38 +2433,65 @@ async fn run_one(
         }
     }
     let workdir = PathBuf::from(cfg.root.environment.workdir.clone());
-    let patch_path = patch_path_for(&output_dir, &id);
+    let patch_path = patch_path_for_run(&output_dir, &id, run_index);
+    let run_output_dir = output_dir.join(&id);
+    let trajectory_name = format!("run-{run_index}");
     let base_commit = inst.base_commit.clone();
     let mut attempts = 0u32;
     let mut retry_reasons = Vec::new();
     let mut total_prompt_tokens = 0u64;
+    let mut total_cache_read_tokens = 0u64;
+    let mut total_cache_creation_tokens = 0u64;
     let mut total_completion_tokens = 0u64;
-    let mut total_recorded_cost_usd = Some(0.0f64);
+    let model_name = cfg.root.model.name.clone();
+    let mut total_recorded_cost_usd = 0.0f64;
     let mut terminal: Option<InstanceResult> = None;
 
     while attempts <= retry_policy.max_retries {
         attempts += 1;
+
+        // Rate-limit gate: block (not spin) until the governor permits the
+        // next attempt. Does NOT count against task_timeout_secs because
+        // the timeout is applied inside mini::run, not here.
+        if let Some(g) = &governor {
+            g.acquire(0).await;
+        }
+
         let det_for_attempt = deterministic_responses
             .as_ref()
             .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
-        let traj_path = output_dir.join(format!("{id}.traj.json"));
+        let traj_path = trajectory_path_for_run(&output_dir, &id, run_index);
         let before_fp = trajectory_fingerprint(&traj_path);
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
             config: cfg.clone(),
-            output_dir: output_dir.clone(),
-            trajectory_name: id.clone(),
+            output_dir: run_output_dir.clone(),
+            trajectory_name: trajectory_name.clone(),
             deterministic_responses: det_for_attempt,
             deterministic_usage_per_call: deterministic_usage_per_call.clone(),
+            task_timeout_secs,
             stream_addr: None,
             patch_capture: Some(crate::run::mini::PatchCaptureSpec {
                 base_commit: base_commit.clone(),
                 workdir: workdir.clone(),
                 patch_path: patch_path.clone(),
+                skip_patch_validation,
             }),
         };
         let run_err = crate::run::mini::run(args).await.err();
+
+        // If the attempt hit a rate-limit error, report it to the governor
+        // so the global Retry-After floor is set for all workers.
+        if let (
+            Some(g),
+            Some(crate::error::Error::Model(crate::error::ModelError::RateLimited(msg))),
+        ) = (&governor, &run_err)
+        {
+            let retry_after =
+                crate::run::rate_limit::RateLimitGovernor::parse_retry_after_from_error(msg);
+            g.report_429(retry_after).await;
+        }
         let info = load_fresh_trajectory_info(&traj_path, before_fp);
         let outcome_str = info
             .as_ref()
@@ -1690,17 +2502,38 @@ async fn run_one(
             .as_ref()
             .and_then(|i| i.exit_reason.clone())
             .unwrap_or_else(|| outcome_str.clone());
-        let (prompt_tokens, completion_tokens) = info
+        let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) = info
             .as_ref()
             .and_then(|i| i.token_usage.as_ref())
-            .map_or((0, 0), |t| (t.prompt_tokens, t.completion_tokens));
+            .map_or((0, 0, 0, 0), |t| {
+                (
+                    t.prompt_tokens,
+                    t.cache_read_tokens,
+                    t.cache_creation_tokens,
+                    t.completion_tokens,
+                )
+            });
         total_prompt_tokens = total_prompt_tokens.saturating_add(prompt_tokens);
+        total_cache_read_tokens = total_cache_read_tokens.saturating_add(cache_read_tokens);
+        total_cache_creation_tokens =
+            total_cache_creation_tokens.saturating_add(cache_creation_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
         let attempt_recorded_cost = info.as_ref().and_then(|i| i.total_cost_usd);
-        total_recorded_cost_usd = match (total_recorded_cost_usd, attempt_recorded_cost) {
-            (Some(total), Some(attempt)) => Some(total + attempt),
-            _ => None,
+        let has_token_usage = prompt_tokens > 0
+            || cache_read_tokens > 0
+            || cache_creation_tokens > 0
+            || completion_tokens > 0;
+        let attempt_effective_cost = match attempt_recorded_cost {
+            Some(cost) if cost != 0.0 || !has_token_usage => cost,
+            Some(_) | None => estimate_cost_usd(
+                prompt_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                completion_tokens,
+                &model_name,
+            ),
         };
+        total_recorded_cost_usd += attempt_effective_cost;
 
         let (patch_present, non_empty_patch) = match std::fs::metadata(&patch_path) {
             Ok(m) => (true, m.len() > 0),
@@ -1714,6 +2547,7 @@ async fn run_one(
                 .or_else(|| match exit_reason.as_str() {
                     "step_limit" => Some(FailureCategory::StepLimit),
                     "cost_limit" => Some(FailureCategory::CostLimit),
+                    exit_reason::WALLCLOCK_TIMEOUT => Some(FailureCategory::WallclockTimeout),
                     _ => run_err
                         .as_ref()
                         .map(classify_error)
@@ -1726,8 +2560,10 @@ async fn run_one(
             outcome: Some(outcome_str.clone()),
             failure_category,
             steps: info.as_ref().and_then(|i| i.steps),
-            cost_usd: total_recorded_cost_usd,
+            cost_usd: Some(total_recorded_cost_usd),
             prompt_tokens: Some(total_prompt_tokens),
+            cache_read_tokens: Some(total_cache_read_tokens),
+            cache_creation_tokens: Some(total_cache_creation_tokens),
             completion_tokens: Some(total_completion_tokens),
             duration_secs: info.as_ref().and_then(|i| i.duration_secs),
             error: run_err.map(|e| e.to_string()),
@@ -1735,6 +2571,11 @@ async fn run_one(
             non_empty_patch,
             attempts,
             retry_reasons: retry_reasons.clone(),
+            runs: 1,
+            resolved_count: u32::from(
+                outcome_str == outcome::SUBMITTED && failure_category.is_none(),
+            ),
+            pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
         };
         let retryable = current
             .failure_category
@@ -1771,7 +2612,11 @@ fn is_failed_instance(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::ERROR)
         || matches!(
             r.failure_category,
-            Some(FailureCategory::StepLimit | FailureCategory::CostLimit)
+            Some(
+                FailureCategory::StepLimit
+                    | FailureCategory::CostLimit
+                    | FailureCategory::WallclockTimeout
+            )
         )
 }
 
@@ -1782,7 +2627,10 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
+        FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::Unknown => "unknown",
     }
 }
@@ -1808,21 +2656,50 @@ fn load_fresh_trajectory_info(
     read_trajectory_info(path)
 }
 
-fn apply_subset(
-    mut instances: Vec<SweBenchInstance>,
-    instance_ids_arg: Option<&str>,
-    limit: Option<usize>,
-    sample: Option<usize>,
-    seed: Option<u64>,
-) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
-    if seed.is_some() && sample.is_none() {
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ApplySubsetParams<'a> {
+    pub instance_ids_arg: Option<&'a str>,
+    pub limit: Option<usize>,
+    pub sample: Option<usize>,
+    pub seed: Option<u64>,
+    pub stratify_by: Option<StratifyBy>,
+    pub stratify_mode: StratifyMode,
+}
+
+fn validate_subset_params(
+    params: &ApplySubsetParams<'_>,
+    requested_ids: Option<&Vec<String>>,
+) -> Result<(), Error> {
+    if params.seed.is_some() && params.sample.is_none() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "`--seed` requires `--sample`".into(),
         )));
     }
+    if params.stratify_by.is_some() && params.sample.is_none() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-by` requires `--sample`".into(),
+        )));
+    }
+    if params.stratify_by.is_none() && params.stratify_mode != StratifyMode::Proportional {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-mode` requires `--stratify-by`".into(),
+        )));
+    }
+    if params.stratify_by.is_some() && requested_ids.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-by` cannot be combined with `--instance-ids`".into(),
+        )));
+    }
+    Ok(())
+}
 
+pub(crate) fn apply_subset(
+    mut instances: Vec<SweBenchInstance>,
+    params: &ApplySubsetParams<'_>,
+) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
     let original_count = instances.len();
-    let requested_ids = parse_instance_ids_arg(instance_ids_arg)?;
+    let requested_ids = parse_instance_ids_arg(params.instance_ids_arg)?;
+    validate_subset_params(params, requested_ids.as_ref())?;
 
     if let Some(ids) = requested_ids.as_ref() {
         let dataset_ids: HashSet<&str> = instances.iter().map(|i| i.instance_id.as_str()).collect();
@@ -1841,23 +2718,28 @@ fn apply_subset(
         instances.retain(|i| include.contains(i.instance_id.as_str()));
     }
 
-    if let Some(n) = sample {
-        let seed_value = seed.ok_or_else(|| {
+    if let Some(n) = params.sample {
+        let seed_value = params.seed.ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(
                 "`--sample` requires `--seed`".into(),
             ))
         })?;
         if n < instances.len() {
-            let mut rng = XorShift64::new(seed_value);
-            for i in (1..instances.len()).rev() {
-                let j = rng.next_usize() % (i + 1);
-                instances.swap(i, j);
+            if params.stratify_by == Some(StratifyBy::Repo) {
+                instances =
+                    stratified_sample_by_repo(instances, n, seed_value, params.stratify_mode);
+            } else {
+                let mut rng = XorShift64::new(seed_value);
+                for i in (1..instances.len()).rev() {
+                    let j = rng.next_usize() % (i + 1);
+                    instances.swap(i, j);
+                }
+                instances.truncate(n);
             }
-            instances.truncate(n);
         }
     }
 
-    if let Some(n) = limit {
+    if let Some(n) = params.limit {
         if n < instances.len() {
             instances.truncate(n);
         }
@@ -1873,11 +2755,95 @@ fn apply_subset(
         original_count,
         selected_count: instances.len(),
         instance_ids: requested_ids,
-        limit,
-        sample,
-        seed,
+        limit: params.limit,
+        sample: params.sample,
+        seed: params.seed,
+        stratify_by: params.stratify_by,
+        stratify_mode: params.stratify_by.map(|_| params.stratify_mode),
     };
     Ok((instances, spec))
+}
+
+fn stratified_sample_by_repo(
+    instances: Vec<SweBenchInstance>,
+    n: usize,
+    seed: u64,
+    mode: StratifyMode,
+) -> Vec<SweBenchInstance> {
+    let mut map: BTreeMap<String, Vec<SweBenchInstance>> = BTreeMap::new();
+    for inst in instances {
+        let key = inst.repo.clone().unwrap_or_else(|| "<unknown>".to_owned());
+        map.entry(key).or_default().push(inst);
+    }
+    let groups: Vec<(String, Vec<SweBenchInstance>)> = map.into_iter().collect();
+    let total = groups.iter().map(|(_, v)| v.len()).sum::<usize>();
+    let mut targets = vec![0usize; groups.len()];
+    match mode {
+        StratifyMode::Balanced => {
+            if !groups.is_empty() {
+                let groups_len_u64 = u64::try_from(groups.len()).unwrap_or(u64::MAX);
+                let start_u64 = seed % groups_len_u64;
+                let start = usize::try_from(start_u64).unwrap_or(0);
+                let mut cursor = 0usize;
+                for _ in 0..n {
+                    for _ in 0..groups.len() {
+                        let i = (start + cursor) % groups.len();
+                        cursor = cursor.wrapping_add(1);
+                        if targets[i] < groups[i].1.len() {
+                            targets[i] += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        StratifyMode::Proportional => {
+            let mut rem: Vec<(usize, usize, usize)> = Vec::new();
+            for (i, (_, g)) in groups.iter().enumerate() {
+                let numer = n * g.len();
+                targets[i] = numer / total;
+                rem.push((numer % total, g.len(), i));
+            }
+            let mut left = n.saturating_sub(targets.iter().sum::<usize>());
+            // Deterministic tie-breaker: larger remainder, then more capacity,
+            // then seeded pseudo-random order by group index.
+            rem.sort_by(|a, b| {
+                b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)).then_with(|| {
+                    let ah = simple_hash(&format!("{seed}:{}", a.2));
+                    let bh = simple_hash(&format!("{seed}:{}", b.2));
+                    ah.cmp(&bh)
+                })
+            });
+            for (_, cap, i) in rem {
+                if left == 0 {
+                    break;
+                }
+                if targets[i] < cap {
+                    targets[i] += 1;
+                    left -= 1;
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    for (i, (_, mut g)) in groups.into_iter().enumerate() {
+        let mut rng = XorShift64::new(seed ^ simple_hash(&format!("{i}")));
+        for j in (1..g.len()).rev() {
+            let k = rng.next_usize() % (j + 1);
+            g.swap(j, k);
+        }
+        out.extend(g.into_iter().take(targets[i]));
+    }
+    // Preserve stratified composition while preventing repo-clustered output
+    // order, since a later `--limit` truncation should not always bias toward
+    // lexicographically early repos.
+    let mut rng = XorShift64::new(seed ^ simple_hash("stratified-final-shuffle"));
+    for i in (1..out.len()).rev() {
+        let j = rng.next_usize() % (i + 1);
+        out.swap(i, j);
+    }
+    out
 }
 
 fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<String>>, Error> {
@@ -1960,11 +2926,96 @@ mod tests {
 
     #[test]
     fn cost_estimate_uses_sonnet_pricing() {
-        // 1M prompt + 1M completion = $3 + $15 = $18.
-        let c = estimate_cost_usd(1_000_000, 1_000_000);
+        // 1M cold input + 1M completion = $3 + $15 = $18.
+        let c = estimate_cost_usd(1_000_000, 0, 0, 1_000_000, "claude-3-5-sonnet");
         assert!((c - 18.0).abs() < 1e-9, "got {c}");
         // Zero in, zero out.
-        assert!(estimate_cost_usd(0, 0).abs() < 1e-9);
+        assert!(estimate_cost_usd(0, 0, 0, 0, "claude-3-5-sonnet").abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_estimate_applies_cache_multipliers_for_anthropic() {
+        let cold = estimate_cost_usd(1_000_000, 0, 0, 0, "claude-3-5-sonnet");
+        let cache_read = estimate_cost_usd(0, 1_000_000, 0, 0, "claude-3-5-sonnet");
+        let cache_creation = estimate_cost_usd(0, 0, 1_000_000, 0, "claude-3-5-sonnet");
+        assert!((cold - 3.0).abs() < 1e-9, "got {cold}");
+        assert!((cache_read - 0.3).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.75).abs() < 1e-9, "got {cache_creation}");
+        assert!(cache_read < cold);
+        assert!(cache_creation > cold);
+    }
+
+    #[test]
+    fn cost_estimate_applies_cache_multipliers_for_routed_anthropic_models() {
+        let cache_read =
+            estimate_cost_usd(0, 1_000_000, 0, 0, "openrouter/anthropic/claude-sonnet-4-6");
+        let cache_creation =
+            estimate_cost_usd(0, 0, 1_000_000, 0, "openrouter/anthropic/claude-sonnet-4-6");
+        assert!((cache_read - 0.3).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.75).abs() < 1e-9, "got {cache_creation}");
+    }
+
+    #[test]
+    fn cost_estimate_without_model_name_does_not_apply_cache_multipliers() {
+        let cache_read = estimate_cost_usd(0, 1_000_000, 0, 0, "");
+        let cache_creation = estimate_cost_usd(0, 0, 1_000_000, 0, "");
+        assert!((cache_read - 3.0).abs() < 1e-9, "got {cache_read}");
+        assert!((cache_creation - 3.0).abs() < 1e-9, "got {cache_creation}");
+    }
+
+    #[test]
+    fn legacy_prompt_token_alias_keeps_full_prompt_pricing() {
+        let legacy: InstanceResult = serde_json::from_value(serde_json::json!({
+            "instance_id": "legacy",
+            "exit_reason": "submitted",
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 0
+        }))
+        .unwrap();
+        assert_eq!(legacy.prompt_tokens, Some(1_000_000));
+        assert_eq!(legacy.cache_read_tokens, None);
+        assert_eq!(legacy.cache_creation_tokens, None);
+        assert!(
+            (legacy
+                .effective_cost_usd(Some("claude-3-5-sonnet"))
+                .unwrap_or_default()
+                - 3.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn zero_stored_cost_falls_back_to_token_pricing() {
+        let row = InstanceResult {
+            instance_id: "zero-cost".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: None,
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(100_000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(100_000),
+            duration_secs: None,
+            error: None,
+            patch_present: false,
+            non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+        };
+        let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
+        assert!(
+            (row.effective_cost_usd(Some("openai/gpt-4o-mini"))
+                .unwrap_or_default()
+                - expected)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]
@@ -1977,11 +3028,22 @@ mod tests {
             failures_by_category: BTreeMap::new(),
             budget_halted: 0,
             with_patch: 3,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 250_000,
+            total_cache_read_tokens: 2_000_000,
+            total_cache_creation_tokens: 250_000,
             total_completion_tokens: 50_000,
-            estimated_cost_usd: estimate_cost_usd(250_000, 50_000),
+            estimated_cost_usd: estimate_cost_usd(
+                250_000,
+                2_000_000,
+                250_000,
+                50_000,
+                "claude-3-5-sonnet",
+            ),
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec {
                 original_count: 10,
                 selected_count: 10,
@@ -1989,7 +3051,9 @@ mod tests {
             },
             manifest: None,
             cost_limit_usd: None,
+            cache_hit_rate: 0.8,
             instances: vec![],
+            rate_limit_events: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -2007,8 +3071,13 @@ mod tests {
             "missing budget_halted row in: {t}"
         );
         assert!(t.contains("Submit rate:        40.00%"));
-        assert!(t.contains("Total tokens:       300000"));
-        assert!(t.contains("Estimated cost:     $1.5000"));
+        assert!(t.contains("Input tokens:       250000"));
+        assert!(t.contains("Cache read tokens:  2000000"));
+        assert!(t.contains("Cache create toks:  250000"));
+        assert!(t.contains("Completion tokens:  50000"));
+        assert!(t.contains("Cache hit rate:     80.00%"));
+        assert!(t.contains("Total tokens:       2550000"));
+        assert!(t.contains("Total cost:         $3.0375"));
         // Without a configured limit, the summary should not advertise one.
         assert!(
             !t.contains("Sweep cost limit:"),
@@ -2027,11 +3096,16 @@ mod tests {
             failures_by_category: BTreeMap::new(),
             budget_halted: 2,
             with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
             total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
             retries: 0,
             retried_instances: 0,
+            pass_at_k: 0.0,
             filter_spec: FilterSpec {
                 original_count: 5,
                 selected_count: 5,
@@ -2039,7 +3113,9 @@ mod tests {
             },
             manifest: None,
             cost_limit_usd: Some(1.0),
+            cache_hit_rate: 0.0,
             instances: vec![],
+            rate_limit_events: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -2091,6 +3167,18 @@ mod tests {
     }
 
     #[test]
+    fn strip_json_nulls_removes_nulls_and_traverses_arrays() {
+        let v = serde_json::json!({
+            "a": null,
+            "b": 1,
+            "c": [{"x": null, "y": 2}],
+        });
+        let stripped = strip_json_nulls(v);
+        // null object keys are stripped; array elements are recursed into
+        assert_eq!(stripped, serde_json::json!({"b": 1, "c": [{"y": 2}]}));
+    }
+
+    #[test]
     fn manifest_config_uses_effective_runtime_overrides() {
         let mut cfg = Config::defaults().unwrap();
         cfg.root.agent.step_limit = 7;
@@ -2099,13 +3187,17 @@ mod tests {
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: cfg,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 1,
@@ -2121,6 +3213,9 @@ mod tests {
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let manifest = build_manifest(
             &args,
@@ -2130,8 +3225,13 @@ mod tests {
             "2026-01-01T00:00:00Z",
             None,
         );
-        assert!(manifest.config.resolved.contains("step_limit: 7"));
-        assert!(manifest.config.resolved.contains("name: override-model"));
+        assert!(manifest.config.resolved.contains("step_limit = 7"));
+        assert!(
+            manifest
+                .config
+                .resolved
+                .contains(r#"name = "override-model""#)
+        );
     }
 
     #[test]
@@ -2140,13 +3240,17 @@ mod tests {
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: Config::defaults().unwrap(),
             resume: true,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 1,
@@ -2162,6 +3266,9 @@ mod tests {
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let manifest = build_manifest(
             &args,
@@ -2176,19 +3283,19 @@ mod tests {
 
     #[test]
     fn prompt_template_hash_changes_when_overlay_edits_prompt() {
-        let cfg_a = Config::from_yaml_str(
+        let cfg_a = Config::from_toml_str(
             r#"
-prompts:
-  system: "sys-a"
-  instance: "inst"
+[prompts]
+system = "sys-a"
+instance = "inst"
 "#,
         )
         .unwrap();
-        let cfg_b = Config::from_yaml_str(
+        let cfg_b = Config::from_toml_str(
             r#"
-prompts:
-  system: "sys-b"
-  instance: "inst"
+[prompts]
+system = "sys-b"
+instance = "inst"
 "#,
         )
         .unwrap();
@@ -2196,13 +3303,17 @@ prompts:
             dataset_path: PathBuf::from("dataset.jsonl"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
+            reruns: 1,
             config: cfg_a,
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 1,
@@ -2218,6 +3329,9 @@ prompts:
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -2276,13 +3390,17 @@ prompts:
             dataset_path: dataset,
             output_dir: out.clone(),
             parallel: 1,
+            reruns: 1,
             config: Config::defaults().unwrap(),
             resume: false,
             cost_limit_usd: None,
+            task_timeout_secs: None,
             instance_ids: None,
             limit: None,
             sample: None,
             seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 1,
@@ -2298,6 +3416,9 @@ prompts:
             preflight_check_timeout_s: 10,
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))
@@ -2334,6 +3455,7 @@ prompts:
             messages: vec![],
         };
         let path = trajectory_path_for(dir.path(), "inst-1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_json::to_string(&traj).unwrap()).unwrap();
 
         let info = existing_trajectory_info(dir.path(), "inst-1").unwrap();
@@ -2344,6 +3466,7 @@ prompts:
     fn existing_trajectory_info_returns_none_for_truncated_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = trajectory_path_for(dir.path(), "inst-2");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{\"trajectory_format\": \"mini-swe-agent-1.").unwrap();
         assert!(existing_trajectory_info(dir.path(), "inst-2").is_none());
     }
@@ -2444,14 +3567,27 @@ prompts:
                 other: serde_json::Map::new(),
             },
         ];
-        let (filtered, spec) =
-            apply_subset(instances.clone(), Some("b"), None, None, None).unwrap();
+        let (filtered, spec) = apply_subset(
+            instances.clone(),
+            &ApplySubsetParams {
+                instance_ids_arg: Some("b"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].instance_id, "b");
         assert_eq!(spec.original_count, 2);
         assert_eq!(spec.selected_count, 1);
 
-        let err = apply_subset(instances, Some("missing"), None, None, None).unwrap_err();
+        let err = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("missing"),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown id(s): missing"), "{err}");
     }
 
@@ -2466,8 +3602,24 @@ prompts:
             other: serde_json::Map::new(),
         };
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
-        let (a, _) = apply_subset(instances.clone(), None, None, Some(3), Some(42)).unwrap();
-        let (b, _) = apply_subset(instances, None, None, Some(3), Some(42)).unwrap();
+        let (a, _) = apply_subset(
+            instances.clone(),
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(42),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (b, _) = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(42),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let a_ids: Vec<_> = a.into_iter().map(|i| i.instance_id).collect();
         let b_ids: Vec<_> = b.into_iter().map(|i| i.instance_id).collect();
         assert_eq!(a_ids, b_ids);
@@ -2484,8 +3636,17 @@ prompts:
             other: serde_json::Map::new(),
         };
         let instances = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e"), mk("f")];
-        let (filtered, spec) =
-            apply_subset(instances, Some("a,b,c,d,e"), Some(2), Some(4), Some(7)).unwrap();
+        let (filtered, spec) = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a,b,c,d,e"),
+                limit: Some(2),
+                sample: Some(4),
+                seed: Some(7),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(spec.original_count, 6);
         assert_eq!(spec.selected_count, 2);
         assert_eq!(spec.limit, Some(2));
@@ -2498,6 +3659,156 @@ prompts:
     }
 
     #[test]
+    fn stratified_sample_balanced_spreads_across_repos() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![
+            mk("a1", "a"),
+            mk("a2", "a"),
+            mk("b1", "b"),
+            mk("b2", "b"),
+            mk("c1", "c"),
+            mk("c2", "c"),
+        ];
+        let (filtered, _) = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                sample: Some(3),
+                seed: Some(123),
+                stratify_by: Some(StratifyBy::Repo),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let repos: HashSet<_> = filtered
+            .into_iter()
+            .map(|inst| inst.repo.unwrap_or_default())
+            .collect();
+        assert_eq!(repos.len(), 3);
+    }
+
+    #[test]
+    fn stratified_sample_requires_sample_and_excludes_instance_ids() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![mk("a1", "a"), mk("b1", "b")];
+
+        let err = apply_subset(
+            instances.clone(),
+            &ApplySubsetParams {
+                stratify_by: Some(StratifyBy::Repo),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`--stratify-by` requires `--sample`")
+        );
+
+        let err = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a1"),
+                sample: Some(1),
+                seed: Some(1),
+                stratify_by: Some(StratifyBy::Repo),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`--stratify-by` cannot be combined with `--instance-ids`")
+        );
+    }
+
+    #[test]
+    fn stratify_mode_requires_stratify_by() {
+        let inst = SweBenchInstance {
+            instance_id: "a1".into(),
+            repo: Some("a".into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let err = apply_subset(
+            vec![inst],
+            &ApplySubsetParams {
+                sample: Some(1),
+                seed: Some(1),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("`--stratify-mode` requires `--stratify-by`")
+        );
+    }
+
+    #[test]
+    fn stratified_sample_then_limit_is_not_repo_clustered() {
+        let mk = |id: &str, repo: &str| SweBenchInstance {
+            instance_id: id.into(),
+            repo: Some(repo.into()),
+            base_commit: None,
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let instances = vec![
+            mk("a1", "a"),
+            mk("a2", "a"),
+            mk("b1", "b"),
+            mk("b2", "b"),
+            mk("c1", "c"),
+            mk("c2", "c"),
+        ];
+
+        let (filtered, _) = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                limit: Some(3),
+                sample: Some(6),
+                seed: Some(5),
+                stratify_by: Some(StratifyBy::Repo),
+                stratify_mode: StratifyMode::Balanced,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let repos: HashSet<_> = filtered
+            .iter()
+            .map(|inst| inst.repo.clone().unwrap_or_default())
+            .collect();
+        assert!(
+            repos.len() > 1,
+            "expected mixed repos after limit; got {:?}",
+            filtered
+                .iter()
+                .map(|inst| (&inst.instance_id, &inst.repo))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn subset_empty_set_errors() {
         let instances = vec![SweBenchInstance {
             instance_id: "a".into(),
@@ -2507,7 +3818,15 @@ prompts:
             image: None,
             other: serde_json::Map::new(),
         }];
-        let err = apply_subset(instances, Some("a"), Some(0), None, None).unwrap_err();
+        let err = apply_subset(
+            instances,
+            &ApplySubsetParams {
+                instance_ids_arg: Some("a"),
+                limit: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("produced zero instances"),
             "unexpected err: {err}"
@@ -2599,5 +3918,555 @@ prompts:
         let out = render_preflight_report(&checks, "text", "doctor").unwrap();
         assert!(out.contains("[ok] a"));
         assert!(out.contains("[warn] b"));
+    }
+
+    // ── Issue #44: rate-limit governor ────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_events_serializes_to_json() {
+        use crate::run::rate_limit::RateLimitEvents;
+        let events = RateLimitEvents {
+            throttled_calls: 7,
+            total_throttled_seconds: 2.5,
+            peak_concurrent: 8,
+            configured_max_rpm: Some(4000),
+            configured_max_input_tpm: Some(400_000),
+        };
+        let json = serde_json::to_string(&events).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["throttled_calls"], 7);
+        assert_eq!(v["total_throttled_seconds"], 2.5);
+        assert_eq!(v["peak_concurrent"], 8);
+        assert_eq!(v["configured_max_rpm"], 4000);
+        assert_eq!(v["configured_max_input_tpm"], 400_000u64);
+    }
+
+    #[test]
+    fn sweep_results_has_rate_limit_events_field() {
+        // rate_limit_events: None should be omitted from JSON (skip_serializing_if)
+        let s = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            rate_limit_events: None,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.get("rate_limit_events").is_none(),
+            "None rate_limit_events should be omitted from JSON"
+        );
+    }
+
+    #[test]
+    fn swebench_args_has_max_rpm_and_max_input_tpm_fields() {
+        let args = SwebenchArgs {
+            dataset_path: PathBuf::from("d.jsonl"),
+            output_dir: PathBuf::from("out"),
+            parallel: 4,
+            reruns: 1,
+            config: Config::defaults().unwrap(),
+            resume: false,
+            cost_limit_usd: None,
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: None,
+            deterministic_usage_per_call: None,
+            config_overlay_paths: vec![],
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+            skip_patch_validation: false,
+            max_rpm: Some(4000),
+            max_input_tpm: Some(400_000),
+        };
+        assert_eq!(args.max_rpm, Some(4000));
+        assert_eq!(args.max_input_tpm, Some(400_000));
+    }
+
+    #[test]
+    fn governor_is_none_when_no_rate_limit_flags() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(None, None, 4);
+        assert!(g.is_none(), "governor must be None when no flags are set");
+    }
+
+    #[test]
+    fn governor_is_some_when_max_rpm_set() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(600), None, 4);
+        assert!(g.is_some());
+    }
+
+    #[test]
+    fn governor_is_some_when_max_input_tpm_set() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(None, Some(100_000), 4);
+        assert!(g.is_some());
+    }
+
+    #[tokio::test]
+    async fn governor_acquire_is_immediate_when_bucket_has_capacity() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 6000 RPM = 100 req/sec bucket; first call should be instant
+        let g = RateLimitGovernor::new(Some(6000), None, 1).unwrap();
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "first acquire should be immediate"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_acquire_blocks_when_rpm_bucket_empty() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 60 RPM = 1 req/sec; drain the bucket then acquire should block ~1s
+        let g = RateLimitGovernor::new(Some(60), None, 1).unwrap();
+        // Drain the initial token
+        g.acquire(0).await;
+        // Second acquire must wait for refill
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "should block ~1s for 60 RPM bucket, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_global_retry_after_blocks_subsequent_acquire() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // High RPM so bucket is not the bottleneck
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // Simulate a 429 with Retry-After: 1s
+        g.report_429(Some(1)).await;
+        // acquire should now block ~1s
+        let start = std::time::Instant::now();
+        g.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "acquire should wait for global retry-after, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_retry_after_applies_globally_to_concurrent_workers() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        use std::sync::Arc;
+        let g = Arc::new(RateLimitGovernor::new(Some(6000), None, 4).unwrap());
+        // Worker 1 reports a 429 with Retry-After: 1
+        g.report_429(Some(1)).await;
+        // Worker 2 (concurrent) should also respect the global floor
+        let g2 = g.clone();
+        let start = std::time::Instant::now();
+        g2.acquire(0).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "global retry-after should block all workers, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_aimd_not_triggered_before_three_429s() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Only 2 consecutive 429s without Retry-After — AIMD should NOT trigger
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_aimd_triggers_after_three_consecutive_429s_without_retry_after() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        assert!(
+            g.suppressed_slots_count().await > 0,
+            "AIMD should suppress after 3 consecutive 429s without Retry-After"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_retry_after_resets_aimd_counter() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Retry-After resets the counter
+        g.report_429(Some(1)).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        // Only 2 consecutive no-retry-after 429s after the reset — no AIMD
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_events_tracks_throttled_calls() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // Report a 429 (counts as throttled)
+        g.report_429(Some(1)).await;
+        let events = g.events().await;
+        assert!(
+            events.throttled_calls > 0,
+            "throttled_calls should be incremented"
+        );
+        assert_eq!(events.configured_max_rpm, Some(6000));
+    }
+
+    #[test]
+    fn parse_retry_after_from_error_extracts_seconds() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("rate limited: retry-after: 30"),
+            Some(30)
+        );
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("429 Too Many Requests"),
+            None
+        );
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: 5 seconds"),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_handles_http_date_in_future() {
+        use crate::run::rate_limit::{RateLimitGovernor, civil_to_unix};
+        // Build a date 60 s in the future and verify the parser returns ~60.
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Use a fixed past/future date rather than decomposing a computed timestamp.
+        let past_msg = "retry-after: Thu, 01 Jan 1970 00:00:00 GMT";
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(past_msg),
+            Some(0),
+            "past HTTP-date should return 0 (saturating sub)"
+        );
+        // Verify the civil_to_unix epoch anchor.
+        assert_eq!(
+            civil_to_unix(1970, 1, 1, 0, 0, 0),
+            Some(0),
+            "unix epoch should be 0"
+        );
+        assert_eq!(
+            civil_to_unix(2026, 10, 21, 12, 0, 0),
+            Some(1_792_584_000),
+            "known timestamp"
+        );
+        // Future HTTP-date yields Some(non-zero).
+        let future_msg = "retry-after: Wed, 21 Oct 2026 12:00:00 GMT";
+        let parsed = RateLimitGovernor::parse_retry_after_from_error(future_msg).unwrap();
+        let expected = 1_792_584_000u64.saturating_sub(now_unix);
+        assert_eq!(parsed, expected, "future HTTP-date seconds mismatch");
+        // Numeric still works alongside HTTP-date support.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: 42"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn config_sweep_keys_round_trip_toml() {
+        use crate::config::Config;
+        let cfg = Config::from_toml_str("[sweep]\nmax_rpm = 4000\nmax_input_tpm = 400000").unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, Some(4000));
+        assert_eq!(cfg.root.sweep.max_input_tpm, Some(400_000));
+    }
+
+    #[test]
+    fn config_sweep_defaults_are_none() {
+        use crate::config::Config;
+        let cfg = Config::defaults().unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, None);
+        assert_eq!(cfg.root.sweep.max_input_tpm, None);
+    }
+
+    #[tokio::test]
+    async fn deterministic_model_rate_limit_sentinel_returns_error() {
+        use crate::model::{DeterministicModel, Model, QueryOpts};
+        // Sentinel prefix "__rate_limited__:2" should cause ModelError::RateLimited
+        let model = DeterministicModel::new(vec!["__rate_limited__:2".to_owned()]);
+        let result = model.query(&[], &QueryOpts::default()).await;
+        match result {
+            Err(crate::error::ModelError::RateLimited(msg)) => {
+                assert!(
+                    msg.contains("retry-after: 2"),
+                    "error should include retry-after seconds, got: {msg}"
+                );
+            }
+            other => panic!("expected RateLimited error, got: {other:?}"),
+        }
+    }
+
+    // ── Coverage: write_rate_limit_summary ───────────────────────────────────
+
+    #[test]
+    fn summary_table_includes_rate_limit_section_when_events_present() {
+        use crate::run::rate_limit::RateLimitEvents;
+        let s = SweepResults {
+            total: 2,
+            submitted: 2,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 2,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: Some(RateLimitEvents {
+                throttled_calls: 12,
+                total_throttled_seconds: 4.5,
+                peak_concurrent: 6,
+                configured_max_rpm: Some(4000),
+                configured_max_input_tpm: Some(400_000),
+            }),
+        };
+        let t = s.summary_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "missing section header: {t}"
+        );
+        assert!(
+            t.contains("Throttled calls:    12"),
+            "missing throttled_calls: {t}"
+        );
+        assert!(
+            t.contains("Throttled secs:     4.5"),
+            "missing throttled_secs: {t}"
+        );
+        assert!(
+            t.contains("Peak concurrent:    6"),
+            "missing peak_concurrent: {t}"
+        );
+        assert!(
+            t.contains("Configured max-rpm: 4000"),
+            "missing max-rpm: {t}"
+        );
+        assert!(
+            t.contains("Configured max-tpm: 400000"),
+            "missing max-tpm: {t}"
+        );
+    }
+
+    #[test]
+    fn summary_table_no_rate_limit_section_when_events_absent() {
+        let s = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: None,
+        };
+        let t = s.summary_table();
+        assert!(
+            !t.contains("Rate-limit events:"),
+            "rate-limit section should be absent when events is None: {t}"
+        );
+    }
+
+    // ── Coverage: governor TPM gating and tick_aimd ──────────────────────────
+
+    #[tokio::test]
+    async fn governor_tpm_gates_when_estimate_exceeds_bucket() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 60 TPM = 1 token/sec. Start with 1 token (initial bucket).
+        // First acquire with estimate=1 drains it; second should block.
+        let g = RateLimitGovernor::new(None, Some(60), 1).unwrap();
+        g.acquire(1).await; // drains the initial 1-token bucket
+        let start = std::time::Instant::now();
+        g.acquire(1).await; // must wait ~1 s for 1 TPM token to refill
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "TPM gate should block ~1s when bucket is empty, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_restores_suppressed_slot() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // Trigger AIMD with 3 consecutive no-retry-after 429s.
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        let suppressed = g.suppressed_slots_count().await;
+        assert!(suppressed > 0, "AIMD should have suppressed slots");
+        // tick_aimd before the restoration window returns false
+        let restored = g.tick_aimd().await;
+        assert!(!restored, "tick_aimd should not restore before hold period");
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_no_op_when_no_suppression() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // No 429s reported; suppressed_slots == 0 — tick_aimd must be a no-op.
+        assert!(!g.tick_aimd().await);
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_update_peak_concurrent_tracks_maximum() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.update_peak_concurrent(3).await;
+        g.update_peak_concurrent(7).await;
+        g.update_peak_concurrent(2).await;
+        let events = g.events().await;
+        assert_eq!(events.peak_concurrent, 7, "peak should be the maximum seen");
+    }
+
+    // ── Coverage: HTTP-date parse failure paths ──────────────────────────────
+
+    #[test]
+    fn parse_retry_after_returns_none_for_malformed_http_date() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // Too few parts.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: Wed 21 Oct 2026"),
+            None
+        );
+        // Non-GMT timezone.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00:00 UTC"
+            ),
+            None
+        );
+        // Invalid month name.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Xyz 2026 12:00:00 GMT"
+            ),
+            None
+        );
+        // Malformed time field (not HH:MM:SS).
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00 GMT"
+            ),
+            None
+        );
+        // Non-numeric day.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, XX Oct 2026 12:00:00 GMT"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn civil_to_unix_returns_none_for_pre_epoch_date() {
+        use crate::run::rate_limit::civil_to_unix;
+        assert_eq!(
+            civil_to_unix(1969, 12, 31, 23, 59, 59),
+            None,
+            "pre-epoch date should return None"
+        );
+        assert_eq!(civil_to_unix(1970, 1, 1, 0, 0, 0), Some(0));
+    }
+
+    // ── Coverage: zero-limit treated as no-op ────────────────────────────────
+
+    #[test]
+    fn governor_new_treats_zero_rpm_as_none() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // max_rpm=0 with no TPM → governor should be None (no rate limiting).
+        assert!(
+            RateLimitGovernor::new(Some(0), None, 4).is_none(),
+            "zero RPM should be treated as unset"
+        );
+        // max_input_tpm=0 with no RPM → also None.
+        assert!(
+            RateLimitGovernor::new(None, Some(0), 4).is_none(),
+            "zero TPM should be treated as unset"
+        );
+        // Both zero → None.
+        assert!(
+            RateLimitGovernor::new(Some(0), Some(0), 4).is_none(),
+            "both zero should be treated as unset"
+        );
+        // Non-zero RPM alongside zero TPM → governor active on RPM only.
+        assert!(
+            RateLimitGovernor::new(Some(600), Some(0), 4).is_some(),
+            "non-zero RPM with zero TPM should still create a governor"
+        );
     }
 }

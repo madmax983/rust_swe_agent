@@ -97,6 +97,14 @@ impl Model for DeterministicModel {
             })?
         };
 
+        // Sentinel: "__rate_limited__:N" → ModelError::RateLimited with
+        // "retry-after: N" so the sweep's rate-limit governor test harness
+        // can inject 429 responses deterministically without a real provider.
+        if let Some(secs_str) = content.strip_prefix("__rate_limited__:") {
+            let msg = format!("rate limited: retry-after: {secs_str}");
+            return Err(ModelError::RateLimited(msg));
+        }
+
         // Default usage is all zeroes — replay runs and CI tests produce
         // valid trajectories without implying any real API spend. Tests
         // that need to exercise cost/budget paths inject non-zero usage

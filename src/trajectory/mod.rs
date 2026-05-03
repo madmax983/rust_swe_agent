@@ -15,13 +15,17 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 /// Coarse run outcome. Exactly one of three values, suitable for computing
 /// pass@1-style metrics from trajectory files alone:
 /// `"submitted"` | `"step_limit_reached"` | `"error"`.
-#[cfg(feature = "markdown-export")]
+#[cfg(any(feature = "markdown-export", feature = "csv-export"))]
 pub mod export;
 
 pub mod outcome {
     pub const SUBMITTED: &str = "submitted";
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
     pub const ERROR: &str = "error";
+}
+
+pub mod exit_reason {
+    pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 
 /// Closed set of non-success terminal failure modes for sweeps.
@@ -33,14 +37,42 @@ pub enum FailureCategory {
     ModelParse,
     StepLimit,
     CostLimit,
+    WallclockTimeout,
     AgentInternal,
+    /// Patch was captured but `git apply --check` rejected it at capture time.
+    PatchApplyInvalid,
+    /// Agent submitted but the captured diff was empty (zero bytes).
+    PatchEmpty,
     Unknown,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub prompt_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_read_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_creation_tokens: u64,
     pub completion_tokens: u64,
+}
+
+impl TokenUsage {
+    #[must_use]
+    pub fn total_prompt_tokens(&self) -> u64 {
+        self.prompt_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_creation_tokens)
+    }
+
+    #[must_use]
+    pub fn has_cached_prompt_tokens(&self) -> bool {
+        self.cache_read_tokens > 0 || self.cache_creation_tokens > 0
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -201,6 +233,8 @@ mod tests {
         t.info.outcome = Some(outcome::SUBMITTED.into());
         t.info.token_usage = Some(TokenUsage {
             prompt_tokens: 1234,
+            cache_read_tokens: 567,
+            cache_creation_tokens: 89,
             completion_tokens: 56,
         });
         t.info.duration_secs = Some(12.5);
@@ -208,6 +242,8 @@ mod tests {
         let json = t.to_json_pretty().unwrap();
         assert!(json.contains("\"outcome\": \"submitted\""));
         assert!(json.contains("\"prompt_tokens\": 1234"));
+        assert!(json.contains("\"cache_read_tokens\": 567"));
+        assert!(json.contains("\"cache_creation_tokens\": 89"));
         assert!(json.contains("\"completion_tokens\": 56"));
         assert!(json.contains("\"duration_secs\": 12.5"));
 
@@ -217,10 +253,36 @@ mod tests {
             back.info.token_usage,
             Some(TokenUsage {
                 prompt_tokens: 1234,
+                cache_read_tokens: 567,
+                cache_creation_tokens: 89,
                 completion_tokens: 56
             })
         );
         assert_eq!(back.info.duration_secs, Some(12.5));
+    }
+
+    #[test]
+    fn legacy_token_usage_without_cache_fields_defaults_to_zero() {
+        let json = r#"{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "info": {
+    "token_usage": {
+      "prompt_tokens": 1000,
+      "completion_tokens": 25
+    }
+  },
+  "messages": []
+}"#;
+        let back: Trajectory = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back.info.token_usage,
+            Some(TokenUsage {
+                prompt_tokens: 1000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                completion_tokens: 25,
+            })
+        );
     }
 
     #[test]
@@ -244,5 +306,81 @@ mod tests {
             t.info.other.get("future_field"),
             Some(&serde_json::json!("y"))
         );
+    }
+
+    #[test]
+    fn token_usage_total_prompt_tokens_calculates_correctly() {
+        let cases = vec![
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    completion_tokens: 50,
+                },
+                100,
+                false,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 50,
+                    cache_creation_tokens: 0,
+                    completion_tokens: 50,
+                },
+                150,
+                true,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 25,
+                    completion_tokens: 50,
+                },
+                125,
+                true,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: u64::MAX - 10,
+                    cache_read_tokens: 20,
+                    cache_creation_tokens: 5,
+                    completion_tokens: 50,
+                },
+                u64::MAX,
+                true,
+            ),
+        ];
+
+        for (usage, expected_total, expected_cached) in cases {
+            assert_eq!(usage.total_prompt_tokens(), expected_total);
+            assert_eq!(usage.has_cached_prompt_tokens(), expected_cached);
+        }
+    }
+
+    #[test]
+    fn extra_is_empty_checks_all_fields() {
+        let mut extra = MessageExtra::default();
+        assert!(extra_is_empty(&extra));
+
+        extra.actions = Some(vec!["action".into()]);
+        assert!(!extra_is_empty(&extra));
+
+        extra.actions = None;
+        extra.cost = Some(1.0);
+        assert!(!extra_is_empty(&extra));
+
+        extra.cost = None;
+        extra.response = Some(serde_json::json!("resp"));
+        assert!(!extra_is_empty(&extra));
+
+        extra.response = None;
+        extra.timestamp = Some("2024-01-01".into());
+        assert!(!extra_is_empty(&extra));
+
+        extra.timestamp = None;
+        extra.other.insert("key".into(), serde_json::json!("val"));
+        assert!(!extra_is_empty(&extra));
     }
 }

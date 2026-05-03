@@ -23,7 +23,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+toml = "0.8"
 
 # Errors / logging
 thiserror = "1"
@@ -52,6 +52,7 @@ litellm-rs = { version = "*", default-features = false }
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+comfy-table = "7.2.2"
 
 # NOTE on model backend:
 # `litellm-rs` ships a library API (`completion`, message constructors,
@@ -62,7 +63,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 proptest = "1"
-insta = { version = "1", features = ["json", "yaml"] }
+insta = { version = "1", features = ["json"] }
 tempfile = "3"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -74,6 +75,7 @@ chaos = []
 live-anthropic = []
 markdown-export = []
 webhook = []
+csv-export = []
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

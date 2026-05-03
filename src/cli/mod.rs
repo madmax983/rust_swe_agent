@@ -1,5 +1,8 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
 
+use std::io::{IsTerminal as _, Write as _};
+use std::time::Duration;
+
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
@@ -51,6 +54,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Swebench(s),
         } => bench_swebench(s).await,
         Command::Bench {
+            cmd: args::BenchCmd::Forecast(s),
+        } => bench_forecast(s).await,
+        Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
         } => bench_doctor(s).await,
         Command::Bench {
@@ -62,6 +68,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Inspect(i),
         } => bench_inspect(i),
+        Command::Bench {
+            cmd: args::BenchCmd::Tail(t),
+        } => bench_tail(t).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -72,7 +81,10 @@ pub async fn run() -> Result<(), Error> {
 fn init_logging(level: &str) {
     let filter = tracing_subscriber::EnvFilter::try_new(level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
@@ -82,6 +94,13 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     };
     cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
+    if let Some(v) = m.observation_max_bytes {
+        cfg.root.agent.observation_max_bytes = v;
+    }
+    if let Some(v) = m.observation_head_ratio {
+        validate_observation_head_ratio(v)?;
+        cfg.root.agent.observation_head_ratio = v;
+    }
     if let Some(kind) = &m.env {
         cfg.root.environment.kind = match kind.as_str() {
             "local" => crate::config::EnvKind::Local,
@@ -119,6 +138,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         trajectory_name,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
+        task_timeout_secs: m.task_timeout_secs,
         stream_addr,
         patch_capture: None,
     };
@@ -155,41 +175,40 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 }
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
-    let mut cfg = match &s.config {
-        Some(p) => Config::load(p)?,
-        None => Config::defaults()?,
-    };
-    cfg.root.model.name.clone_from(&s.model);
-    cfg.root.agent.step_limit = s.step_limit;
+    let mut sweep_cmd = s;
+    if sweep_cmd.forecast_first {
+        match run_forecast_from_cmd(sweep_cmd.clone()).await? {
+            crate::run::forecast::ForecastOutcome::Report(report) => {
+                print_forecast_report(&report, &sweep_cmd.format)?;
+                crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
+                if !crate::run::forecast::forecast_gate_allows_sweep(
+                    &report,
+                    crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
+                )? {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "forecast-first blocked sweep: {} (pass --yes to proceed anyway)",
+                        report.threshold.message
+                    ))));
+                }
+            }
+            crate::run::forecast::ForecastOutcome::DryRun(results) => {
+                print_dry_run_summary(&results, &sweep_cmd.format);
+                return Ok(());
+            }
+        }
+        if sweep_cmd.sample.is_none() {
+            sweep_cmd.seed = None;
+        }
+    }
 
-    let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
-        dataset_path: s.dataset_path,
-        output_dir: s.output,
-        parallel: s.parallel,
-        config: cfg,
-        resume: s.resume,
-        cost_limit_usd: s.sweep_cost_limit_usd,
-        instance_ids: s.instance_ids,
-        limit: s.limit,
-        sample: s.sample,
-        seed: s.seed,
-        max_retries: s.max_retries,
-        retry_on: s.retry_on,
-        retry_backoff_base_ms: s.retry_backoff_base_ms,
-        retry_backoff_cap_s: s.retry_backoff_cap_s,
-        retry_on_resume: s.retry_on_resume,
-        deterministic_responses: None,
-        deterministic_usage_per_call: None,
-        config_overlay_paths: s.config.into_iter().collect(),
-        dry_run: s.dry_run,
-        skip_preflight: s.skip_preflight,
-        preflight_format: s.format,
-        skip_model_probe: s.skip_model_probe,
-        preflight_check_timeout_s: s.preflight_check_timeout_s,
-        preflight_total_timeout_s: s.preflight_total_timeout_s,
-        preflight_mode: if s.dry_run { "dry_run" } else { "sweep" }.into(),
-    })
-    .await?;
+    let cfg = swebench_config_from_cmd(&sweep_cmd)?;
+    let preflight_mode = if sweep_cmd.dry_run {
+        "dry_run"
+    } else {
+        "sweep"
+    };
+    let results =
+        crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)).await?;
 
     tracing::info!(
         total = results.total,
@@ -212,23 +231,152 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
 async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
     let output_format = s.format.clone();
+    let cfg = swebench_config_from_cmd(&s)?;
+    let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")).await?;
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
+    Ok(())
+}
+
+async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
+    let output_format = s.format.clone();
+    let fail_over_cap = s.fail_over_cap;
+    match run_forecast_from_cmd(s).await? {
+        crate::run::forecast::ForecastOutcome::Report(report) => {
+            print_forecast_report(&report, &output_format)?;
+            crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+        }
+        crate::run::forecast::ForecastOutcome::DryRun(results) => {
+            print_dry_run_summary(&results, &output_format);
+            Ok(())
+        }
+    }
+}
+
+async fn run_forecast_from_cmd(
+    mut s: args::SwebenchCmd,
+) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    let calibration_n = s.calibration_n;
+    let seed = s.seed.unwrap_or(42);
+    let target_n = s.target_n;
+    let confidence_pct = s.confidence;
+    if s.sample.is_none() {
+        s.seed = None;
+    }
+    let cfg = swebench_config_from_cmd(&s)?;
+    let sweep = swebench_args_from_cmd(s, cfg, "forecast");
+    crate::run::forecast::run(crate::run::forecast::ForecastArgs {
+        sweep,
+        calibration_n,
+        seed,
+        target_n,
+        confidence_pct,
+    })
+    .await
+}
+
+fn print_dry_run_summary(results: &crate::run::swebench::SweepResults, output_format: &str) {
+    if output_format != "json" {
+        print!("{}", results.summary_table());
+    }
+}
+
+fn print_forecast_report(
+    report: &crate::run::forecast::ForecastReport,
+    output_format: &str,
+) -> Result<(), Error> {
+    match output_format {
+        "text" => {
+            print!("{}", crate::run::forecast::render_text(report));
+            Ok(())
+        }
+        "json" => {
+            println!("{}", crate::run::forecast::to_json(report)?);
+            Ok(())
+        }
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text` or `json`)"
+        )))),
+    }
+}
+
+fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
+    if s.stratify_by.is_none() && s.stratify_mode.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "`--stratify-mode` requires `--stratify-by`".into(),
+        )));
+    }
     let mut cfg = match &s.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
     cfg.root.model.name.clone_from(&s.model);
     cfg.root.agent.step_limit = s.step_limit;
-    let results = crate::run::swebench::run(crate::run::swebench::SwebenchArgs {
+    if let Some(v) = s.observation_max_bytes {
+        cfg.root.agent.observation_max_bytes = v;
+    }
+    if let Some(v) = s.observation_head_ratio {
+        validate_observation_head_ratio(v)?;
+        cfg.root.agent.observation_head_ratio = v;
+    }
+    if let Some(kind) = &s.env {
+        cfg.root.environment.kind = match kind.as_str() {
+            "local" => crate::config::EnvKind::Local,
+            "docker" => crate::config::EnvKind::Docker,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "unknown --env `{other}` (expected `local` or `docker`)"
+                ))));
+            }
+        };
+    }
+    if let Some(img) = s.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    Ok(cfg)
+}
+
+fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--observation-head-ratio must be a finite value in [0,1], got {value}"
+        ))))
+    }
+}
+
+fn swebench_args_from_cmd(
+    s: args::SwebenchCmd,
+    cfg: Config,
+    preflight_mode: &str,
+) -> crate::run::swebench::SwebenchArgs {
+    let cfg_max_rpm = cfg.root.sweep.max_rpm;
+    let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
+    crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
         parallel: s.parallel,
         config: cfg,
+        reruns: s.reruns,
         resume: s.resume,
         cost_limit_usd: s.sweep_cost_limit_usd,
+        task_timeout_secs: s.task_timeout_secs,
         instance_ids: s.instance_ids,
         limit: s.limit,
         sample: s.sample,
         seed: s.seed,
+        stratify_by: s.stratify_by.map(|v| match v {
+            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        }),
+        stratify_mode: match s
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
+            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        },
         max_retries: s.max_retries,
         retry_on: s.retry_on,
         retry_backoff_base_ms: s.retry_backoff_base_ms,
@@ -237,39 +385,49 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         config_overlay_paths: s.config.into_iter().collect(),
-        dry_run: true,
+        dry_run: s.dry_run,
         skip_preflight: s.skip_preflight,
         preflight_format: s.format,
         skip_model_probe: s.skip_model_probe,
         preflight_check_timeout_s: s.preflight_check_timeout_s,
         preflight_total_timeout_s: s.preflight_total_timeout_s,
-        preflight_mode: "doctor".into(),
-    })
-    .await?;
-    if output_format != "json" {
-        print!("{}", results.summary_table());
+        preflight_mode: preflight_mode.into(),
+        skip_patch_validation: s.skip_patch_validation,
+        max_rpm: s.max_rpm.or(cfg_max_rpm),
+        max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
     }
-    Ok(())
 }
 
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
-    let format = match c.format.as_str() {
-        "text" => crate::run::compare::CompareFormat::Text,
-        "json" => crate::run::compare::CompareFormat::Json,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
-            ))));
-        }
-    };
+    if c.inspect_diff.is_some() && c.emit_diff_script.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "compare: pass only one of --inspect-diff or --emit-diff-script".into(),
+        )));
+    }
+
+    if let Some(instance_id) = c.inspect_diff {
+        let format = parse_trajectory_diff_format(&c.format)?;
+        let report = crate::run::trajectory_diff::diff_sweep_instance(
+            &c.baseline,
+            &c.candidate,
+            &instance_id,
+            c.show_noise,
+        )?;
+        print_trajectory_diff(&report, format)?;
+        return Ok(());
+    }
+
+    let format = parse_compare_format(&c.format)?;
     let breakdown = parse_breakdown_selection(&c.breakdown, false)?;
     let report = crate::run::compare::compute(&crate::run::compare::CompareArgs {
-        baseline: c.baseline,
-        candidate: c.candidate,
+        baseline: c.baseline.clone(),
+        candidate: c.candidate.clone(),
         format,
         max_regressions: c.max_regressions,
         breakdown,
         min_delta_pp: c.breakdown_min_delta_pp / 100.0,
+        cost_attribution: matches!(c.cost_attribution, args::OnOffArg::On),
+        cost_attribution_min_delta_usd: c.cost_attribution_min_delta_usd,
     })?;
     match format {
         crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
@@ -277,14 +435,62 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             println!("{}", report.to_json_pretty()?);
         }
     }
+    if let Some(path) = c.emit_diff_script {
+        crate::run::compare::write_diff_script(&report, &path)?;
+    }
     if let Some(max) = c.max_regressions {
-        if report.regression_count() > max {
+        if report.regression_count() > max
+            && report.verdict == crate::run::compare::CompareVerdict::Regression
+        {
             tracing::error!(
                 regressions = report.regression_count(),
                 max = max,
+                ci_lower = report.resolved_delta_ci95.lower,
+                ci_upper = report.resolved_delta_ci95.upper,
                 "compare: regression count exceeds --max-regressions threshold"
             );
             std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn parse_compare_format(raw: &str) -> Result<crate::run::compare::CompareFormat, Error> {
+    match raw {
+        "text" => Ok(crate::run::compare::CompareFormat::Text),
+        "json" => Ok(crate::run::compare::CompareFormat::Json),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text` or `json`)"
+        )))),
+    }
+}
+
+fn parse_trajectory_diff_format(
+    raw: &str,
+) -> Result<crate::run::trajectory_diff::TrajectoryDiffFormat, Error> {
+    match raw {
+        "text" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Text),
+        "json" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Json),
+        "unified" => Ok(crate::run::trajectory_diff::TrajectoryDiffFormat::Unified),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --format `{other}` (expected `text`, `json`, or `unified`)"
+        )))),
+    }
+}
+
+fn print_trajectory_diff(
+    report: &crate::run::trajectory_diff::TrajectoryDiffReport,
+    format: crate::run::trajectory_diff::TrajectoryDiffFormat,
+) -> Result<(), Error> {
+    match format {
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Text => {
+            print!("{}", crate::run::trajectory_diff::render_text(report));
+        }
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(report)?);
+        }
+        crate::run::trajectory_diff::TrajectoryDiffFormat::Unified => {
+            print!("{}", crate::run::trajectory_diff::render_unified(report));
         }
     }
     Ok(())
@@ -329,21 +535,68 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         sb_split: e.sb_split,
         run_id: e.run_id,
         breakdown,
+        cost_attribution: matches!(e.cost_attribution, args::OnOffArg::On),
     };
     let eval = crate::run::evaluate::run(&args)?;
+    let loaded_sweep = crate::run::compare::load_sweep(&e.sweep)?;
+    let summary = crate::run::evaluate::summarize_with_model(
+        &eval,
+        &loaded_sweep.instances,
+        loaded_sweep
+            .manifest
+            .as_ref()
+            .map(|m| m.model.name.as_str()),
+    );
 
-    let resolved = eval.instances.iter().filter(|x| x.resolved).count();
     tracing::info!(
-        instances = eval.instances.len(),
-        resolved,
+        instances = summary.instances,
+        resolved = summary.resolved,
+        resolved_rate = summary.resolved_rate,
+        pass_at_1 = summary.pass_at_1,
+        pass_at_k = summary.pass_at_k,
+        total_input_tokens = summary.total_input_tokens,
+        total_cache_read_tokens = summary.total_cache_read_tokens,
+        total_cache_creation_tokens = summary.total_cache_creation_tokens,
+        total_completion_tokens = summary.total_completion_tokens,
+        total_cost_usd = summary.total_cost_usd,
+        cache_hit_rate = summary.cache_hit_rate,
         evaluation_path = %crate::run::evaluate::evaluation_path(&e.sweep).display(),
         "evaluation complete"
     );
-    println!("resolved: {resolved}");
+    print!("{}", crate::run::evaluate::render_summary_table(&summary));
+    if let Some(rl) = &loaded_sweep.rate_limit_events {
+        println!("rate_limit_throttled_calls: {}", rl.throttled_calls);
+        println!(
+            "rate_limit_throttled_secs: {:.1}",
+            rl.total_throttled_seconds
+        );
+        println!("rate_limit_peak_concurrent: {}", rl.peak_concurrent);
+        if let Some(rpm) = rl.configured_max_rpm {
+            println!("rate_limit_configured_max_rpm: {rpm}");
+        }
+        if let Some(tpm) = rl.configured_max_input_tpm {
+            println!("rate_limit_configured_max_input_tpm: {tpm}");
+        }
+    }
     if !eval.breakdown.is_empty() {
         print!(
             "{}",
             crate::run::evaluate::render_breakdown_table(&eval.breakdown)
+        );
+    }
+    if !eval.cost_attribution.is_empty() {
+        let missing_cost_count = crate::run::evaluate::cost_missing_count_for_run_slots(
+            &e.sweep,
+            &loaded_sweep.instances,
+        )?;
+        if missing_cost_count > 0 {
+            println!(
+                "warning: cost attribution missing usd_cost for {missing_cost_count} trajectories; treating as $0.00"
+            );
+        }
+        print!(
+            "{}",
+            crate::run::evaluate::render_cost_attribution_table(&eval.cost_attribution)
         );
     }
     Ok(())
@@ -378,6 +631,29 @@ fn parse_breakdown_selection(
 }
 
 fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
+    if !i.diff.is_empty() {
+        if i.instance.is_some() || i.filter.is_some() || i.sweep.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --diff cannot be combined with --sweep, --instance, or --filter".into(),
+            )));
+        }
+        if i.diff.len() != 2 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --diff expects exactly two trajectory paths".into(),
+            )));
+        }
+        let format = parse_trajectory_diff_format(&i.format)?;
+        let report = crate::run::trajectory_diff::diff_paths(
+            &crate::run::trajectory_diff::TrajectoryDiffArgs {
+                baseline: i.diff[0].clone(),
+                candidate: i.diff[1].clone(),
+                show_noise: i.show_noise,
+            },
+        )?;
+        print_trajectory_diff(&report, format)?;
+        return Ok(());
+    }
+
     let format = match i.format.as_str() {
         "text" => crate::run::inspect::InspectFormat::Text,
         "json" => crate::run::inspect::InspectFormat::Json,
@@ -387,8 +663,13 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
             ))));
         }
     };
+    let sweep = i.sweep.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --sweep is required unless --diff is used".into(),
+        ))
+    })?;
     let out = crate::run::inspect::run(&crate::run::inspect::InspectArgs {
-        sweep: i.sweep,
+        sweep,
         instance: i.instance,
         filter: i.filter,
         full: i.full,
@@ -402,4 +683,75 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TailFormat {
+    Text,
+    Json,
+}
+
+async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
+    if t.interval_ms == 0 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "tail: --interval-ms must be greater than 0".into(),
+        )));
+    }
+    let format = match t.format.as_str() {
+        "text" => TailFormat::Text,
+        "json" => TailFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let mut stdout = std::io::stdout();
+    let clear_tty = format == TailFormat::Text && !t.once && stdout.is_terminal();
+    loop {
+        let options = crate::run::tail::SnapshotOptions::default();
+        let snapshot = crate::run::tail::snapshot(&t.sweep, &options)?;
+        if clear_tty {
+            write!(stdout, "\x1b[2J\x1b[H")?;
+        }
+        match format {
+            TailFormat::Text => {
+                write!(stdout, "{}", crate::run::tail::render_text(&snapshot))?;
+            }
+            TailFormat::Json => {
+                writeln!(stdout, "{}", serde_json::to_string(&snapshot)?)?;
+            }
+        }
+        stdout.flush()?;
+
+        if let Some(reason) = snapshot.abort_reason {
+            eprintln!("bench tail: {reason}");
+            std::process::exit(1);
+        }
+        if t.once || snapshot.is_complete {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(t.interval_ms)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::validate_observation_head_ratio;
+
+    #[test]
+    fn observation_head_ratio_accepts_closed_unit_interval() {
+        assert!(validate_observation_head_ratio(0.0).is_ok());
+        assert!(validate_observation_head_ratio(0.5).is_ok());
+        assert!(validate_observation_head_ratio(1.0).is_ok());
+    }
+
+    #[test]
+    fn observation_head_ratio_rejects_invalid_values() {
+        assert!(validate_observation_head_ratio(-0.01).is_err());
+        assert!(validate_observation_head_ratio(1.01).is_err());
+        assert!(validate_observation_head_ratio(f64::NAN).is_err());
+        assert!(validate_observation_head_ratio(f64::INFINITY).is_err());
+    }
 }

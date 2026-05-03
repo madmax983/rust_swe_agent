@@ -2,7 +2,24 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StratifyByArg {
+    Repo,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StratifyModeArg {
+    Proportional,
+    Balanced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OnOffArg {
+    On,
+    Off,
+}
 
 #[derive(Debug, Args)]
 pub struct MiniCmd {
@@ -21,8 +38,17 @@ pub struct MiniCmd {
     /// Max agent steps.
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
+    #[arg(long)]
+    pub observation_max_bytes: Option<usize>,
+    #[arg(long)]
+    pub observation_head_ratio: Option<f64>,
 
-    /// Optional path to a YAML config (overlays defaults).
+    /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
+    /// Orthogonal to `--step-limit`; whichever fires first wins.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
+    /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -47,6 +73,11 @@ pub struct MiniCmd {
     /// unset, no server is started.
     #[arg(long)]
     pub stream: Option<String>,
+
+    /// Skip `git apply --check` and empty-diff validation after patch capture.
+    /// Escape hatch for non-git environments; not for normal use.
+    #[arg(long, default_value_t = false)]
+    pub skip_patch_validation: bool,
 }
 
 #[derive(Debug, Args)]
@@ -61,7 +92,7 @@ pub struct ReplayCmd {
     #[arg(long)]
     pub trajectory_path: PathBuf,
 
-    /// Optional path to a YAML config (overlays defaults).
+    /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -86,6 +117,8 @@ pub struct ReplayCmd {
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
     Swebench(SwebenchCmd),
+    /// Forecast sweep cost from a reproducible calibration slice.
+    Forecast(SwebenchCmd),
     /// Validate sweep inputs without launching tasks.
     Doctor(SwebenchCmd),
     /// Diff two completed sweep runs by instance id; surfaces regressions
@@ -95,6 +128,8 @@ pub enum BenchCmd {
     Evaluate(EvaluateCmd),
     /// Inspect a single trajectory or list filtered instance summaries.
     Inspect(InspectCmd),
+    /// Tail live aggregate progress for a running sweep directory.
+    Tail(TailCmd),
 }
 
 #[derive(Debug, Args)]
@@ -112,7 +147,8 @@ pub struct CompareCmd {
     pub candidate: PathBuf,
 
     /// Output format: `text` (default, terminal-friendly) or `json`
-    /// (machine-readable diff document).
+    /// (machine-readable report). `unified` is accepted with
+    /// `--inspect-diff`.
     #[arg(long, default_value = "text")]
     pub format: String,
 
@@ -130,28 +166,72 @@ pub struct CompareCmd {
     /// Threshold in percentage points used to highlight large breakdown deltas.
     #[arg(long = "breakdown-min-delta-pp", default_value_t = 5.0)]
     pub breakdown_min_delta_pp: f64,
+
+    /// Attribute sweep USD cost to terminal buckets in the compare report.
+    #[arg(long, value_enum, default_value_t = OnOffArg::On)]
+    pub cost_attribution: OnOffArg,
+
+    /// Highlight cost-attribution deltas whose absolute USD change meets this threshold.
+    #[arg(long = "cost-attribution-min-delta-usd", default_value_t = 1.0)]
+    pub cost_attribution_min_delta_usd: f64,
+
+    /// Render `bench inspect --diff` for this instance id by locating both
+    /// trajectory files inside the baseline and candidate sweep directories.
+    #[arg(long)]
+    pub inspect_diff: Option<String>,
+
+    /// Write a shell script with one `bench inspect --diff` command per
+    /// regressed instance. The script is not executed automatically.
+    #[arg(long)]
+    pub emit_diff_script: Option<PathBuf>,
+
+    /// Include whitespace-only and timestamp-only trajectory differences in
+    /// inspect-diff output.
+    #[arg(long, default_value_t = false)]
+    pub show_noise: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchCmd {
     #[arg(long)]
     pub dataset_path: PathBuf,
 
-    #[arg(long)]
+    #[arg(long, alias = "output-dir")]
     pub output: PathBuf,
 
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+
+    /// Run each selected SWE-bench instance N independent times.
+    #[arg(long = "rerun", alias = "samples", default_value_t = 1)]
+    pub reruns: u32,
 
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,
 
     #[arg(long, default_value_t = 50)]
     pub step_limit: u32,
+    #[arg(long)]
+    pub observation_max_bytes: Option<usize>,
+    #[arg(long)]
+    pub observation_head_ratio: Option<f64>,
+
+    /// Per-task wallclock timeout in seconds. Default: unset (no timeout).
+    /// Orthogonal to `--step-limit`; whichever fires first wins.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
 
     #[arg(long)]
     pub config: Option<PathBuf>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
 
     /// Skip tasks whose output trajectory file already exists on disk and
     /// parses as valid JSON. Lets an interrupted sweep resume without
@@ -187,6 +267,14 @@ pub struct SwebenchCmd {
     /// RNG seed used by `--sample`.
     #[arg(long)]
     pub seed: Option<u64>,
+
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
 
     /// Retry transiently-failed instances up to N additional attempts.
     /// `0` disables retries entirely.
@@ -233,6 +321,49 @@ pub struct SwebenchCmd {
     /// Max total seconds for all preflight checks.
     #[arg(long, default_value_t = 60)]
     pub preflight_total_timeout_s: u64,
+
+    /// Run a calibration forecast before the real sweep and launch only
+    /// when the forecast clears `--sweep-cost-limit-usd` or `--yes` is set.
+    #[arg(long, default_value_t = false)]
+    pub forecast_first: bool,
+
+    /// Proceed after `--forecast-first` even without a clear cost-cap pass.
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
+
+    /// Skip `git apply --check` and empty-diff validation after patch capture.
+    /// Escape hatch for non-git environments; not for normal use.
+    #[arg(long, default_value_t = false)]
+    pub skip_patch_validation: bool,
+
+    /// Instance count for `bench forecast` calibration.
+    #[arg(long, default_value_t = 5)]
+    pub calibration_n: usize,
+
+    /// Forecast target instance count. Defaults to full post-filter dataset.
+    #[arg(long)]
+    pub target_n: Option<usize>,
+
+    /// Confidence level percentage for forecast intervals.
+    #[arg(long, default_value_t = 80.0)]
+    pub confidence: f64,
+
+    /// Exit non-zero when the forecast projects the sweep will exceed cap.
+    #[arg(long, default_value_t = false)]
+    pub fail_over_cap: bool,
+
+    /// Cap aggregate provider request rate across all workers (requests/min).
+    /// When set, workers block (not spin) until budget is available.
+    /// Does NOT count blocked time against `--task-timeout`.
+    /// When unset, no RPM ceiling is enforced (opt-in, no behavior change).
+    #[arg(long)]
+    pub max_rpm: Option<u32>,
+
+    /// Cap aggregate input-token rate across all workers (tokens/min).
+    /// When set, workers block until the TPM bucket has capacity.
+    /// When unset, no TPM ceiling is enforced (opt-in, no behavior change).
+    #[arg(long)]
+    pub max_input_tpm: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -272,13 +403,17 @@ pub struct EvaluateCmd {
     /// Optional metric breakdown axes (`repo,failure_category`) or `none`.
     #[arg(long, default_value = "repo,failure_category")]
     pub breakdown: String,
+
+    /// Attribute sweep USD cost to terminal buckets in the evaluation report.
+    #[arg(long, value_enum, default_value_t = OnOffArg::On)]
+    pub cost_attribution: OnOffArg,
 }
 
 #[derive(Debug, Args)]
 pub struct InspectCmd {
     /// Completed sweep directory produced by `bench swebench`.
     #[arg(long)]
-    pub sweep: PathBuf,
+    pub sweep: Option<PathBuf>,
 
     /// One specific instance id to render as a human-readable transcript.
     #[arg(long)]
@@ -288,11 +423,38 @@ pub struct InspectCmd {
     #[arg(long)]
     pub filter: Option<String>,
 
-    /// Output format: `text` (default) or `json`.
+    /// Diff two trajectory JSON files for the same instance.
+    #[arg(long, value_names = ["BASELINE", "CANDIDATE"], num_args = 2)]
+    pub diff: Vec<PathBuf>,
+
+    /// Include whitespace-only and timestamp-only differences in diff mode.
+    #[arg(long, default_value_t = false)]
+    pub show_noise: bool,
+
+    /// Output format: `text` (default), `json`, or `unified` in diff mode.
     #[arg(long, default_value = "text")]
     pub format: String,
 
     /// Disable stdout/stderr truncation in transcript mode.
     #[arg(long, default_value_t = false)]
     pub full: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TailCmd {
+    /// Sweep output directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Refresh interval for streaming mode.
+    #[arg(long, default_value_t = 2000)]
+    pub interval_ms: u64,
+
+    /// Print one snapshot and exit.
+    #[arg(long, default_value_t = false)]
+    pub once: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }

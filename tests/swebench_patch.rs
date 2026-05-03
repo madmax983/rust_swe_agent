@@ -14,7 +14,9 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{SwebenchArgs, run};
+use rust_swe_agent::run::swebench::{
+    SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
+};
 use rust_swe_agent::trajectory::{Trajectory, outcome};
 
 /// Initialize a git repo at `dir` with one tracked file at the base
@@ -64,6 +66,13 @@ fn write_dataset(path: &Path, instance_ids: &[&str], base_commit: &str) {
     std::fs::write(path, s).unwrap();
 }
 
+fn toml_escape_path(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 #[tokio::test]
 async fn sweep_emits_patch_artifact_for_modifying_agent() {
     let work = tempfile::tempdir().unwrap();
@@ -86,22 +95,26 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nmodified\n```".into(),
     ];
 
-    let yaml = format!(
-        "environment:\n  workdir: {}\nmodel:\n  name: scripted-test-model\n",
-        repo.display()
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
+        toml_escape_path(&repo)
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -117,6 +130,9 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -125,7 +141,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
     assert_eq!(results.submitted, 1);
     assert_eq!(results.with_patch, 1);
 
-    let mod_patch = output.join("mod-instance.patch");
+    let mod_patch = patch_path_for_run(&output, "mod-instance", 1);
     assert!(mod_patch.exists());
     let patch_text = std::fs::read_to_string(&mod_patch).unwrap();
     assert!(!patch_text.is_empty(), "expected non-empty diff");
@@ -175,22 +191,26 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     std::fs::create_dir_all(&output).unwrap();
     write_dataset(&dataset, &["noop-instance"], &base_commit);
 
-    let yaml = format!(
-        "environment:\n  workdir: {}\nmodel:\n  name: scripted-test-model\n",
-        repo.display()
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
+        toml_escape_path(&repo)
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -208,6 +228,9 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -216,7 +239,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     // Empty diff still counts as submitted but not as `with_patch`.
     assert_eq!(results.with_patch, 0);
 
-    let patch_path = output.join("noop-instance.patch");
+    let patch_path = patch_path_for_run(&output, "noop-instance", 1);
     assert!(patch_path.exists(), "empty patch must still be written");
     assert!(
         std::fs::read_to_string(&patch_path).unwrap().is_empty(),
@@ -232,7 +255,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     assert_eq!(v.get("model_patch").and_then(|v| v.as_str()), Some(""));
 
     let traj: Trajectory = serde_json::from_str(
-        &std::fs::read_to_string(output.join("noop-instance.traj.json")).unwrap(),
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "noop-instance", 1)).unwrap(),
     )
     .unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::SUBMITTED));
@@ -250,22 +273,26 @@ async fn missing_workdir_marks_outcome_as_error() {
     write_dataset(&dataset, &["broken"], "deadbeef");
 
     // Workdir points at a path that doesn't exist; `git diff` will fail.
-    let yaml = format!(
-        "environment:\n  workdir: {}\n",
-        work.path().join("does-not-exist").display()
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n",
+        toml_escape_path(&work.path().join("does-not-exist"))
     );
-    let cfg = Config::from_yaml_str(&yaml).unwrap();
+    let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
         dataset_path: dataset,
         output_dir: output.clone(),
         parallel: 1,
+        reruns: 1,
         config: cfg,
         resume: false,
         cost_limit_usd: None,
+        task_timeout_secs: None,
         instance_ids: None,
         limit: None,
         sample: None,
         seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -283,6 +310,9 @@ async fn missing_workdir_marks_outcome_as_error() {
         preflight_check_timeout_s: 10,
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
     })
     .await
     .unwrap();
@@ -294,7 +324,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     assert_eq!(results.submitted, 0);
 
     // Trajectory records the patch_error in `info.other` and outcome=error.
-    let traj_path = output.join("broken.traj.json");
+    let traj_path = trajectory_path_for_run(&output, "broken", 1);
     let traj: Trajectory =
         serde_json::from_str(&std::fs::read_to_string(&traj_path).unwrap()).unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
@@ -305,7 +335,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     );
 
     // No `.patch` file written for the failed capture.
-    assert!(!output.join("broken.patch").exists());
+    assert!(!patch_path_for_run(&output, "broken", 1).exists());
 
     // all_preds.jsonl exists but contains no lines (no submitted instances).
     let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();

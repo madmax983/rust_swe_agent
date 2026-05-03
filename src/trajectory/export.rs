@@ -6,7 +6,36 @@ pub trait TrajectoryExporter {
 
 pub struct MarkdownExporter;
 
+#[cfg(feature = "csv-export")]
+pub struct CsvExporter;
+
 use std::fmt::Write;
+
+#[cfg(feature = "csv-export")]
+impl TrajectoryExporter for CsvExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut csv = String::new();
+        csv.push_str("role,content\n");
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+
+            let escaped_content = if msg.content.contains('"')
+                || msg.content.contains(',')
+                || msg.content.contains('\n')
+                || msg.content.contains('\r')
+            {
+                format!("\"{}\"", msg.content.replace('"', "\"\""))
+            } else {
+                msg.content.clone()
+            };
+
+            let _ = writeln!(csv, "{role},{escaped_content}");
+        }
+
+        csv
+    }
+}
 
 impl TrajectoryExporter for MarkdownExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -68,5 +97,24 @@ mod tests {
         assert!(md.contains("Hello agent"));
         assert!(md.contains("### Assistant"));
         assert!(md.contains("Hello user"));
+    }
+
+    #[cfg(feature = "csv-export")]
+    #[test]
+    fn test_csv_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let csv = CsvExporter::export(&t);
+
+        assert!(csv.starts_with("role,content"));
+        assert!(csv.contains("system,System prompt"));
+        assert!(csv.contains("user,\"Hello agent\nMulti-line\""));
+        assert!(csv.contains("assistant,\"Hello \"\"user\"\"\""));
     }
 }
