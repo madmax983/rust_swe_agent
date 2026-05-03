@@ -927,6 +927,11 @@ fn canonical_field_value(step: &TrajectoryDiffStep, field: &str, baseline: bool)
 }
 
 fn push_canonical_field_lines(lines: &mut Vec<String>, field: &str, value: &str) {
+    if value.is_empty() {
+        lines.push(format!("{field}: "));
+        return;
+    }
+
     let stripped = value.strip_suffix('\n').unwrap_or(value);
 
     if stripped.is_empty() {
