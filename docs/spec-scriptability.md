@@ -34,7 +34,7 @@ exit codes are reported but do not abort the agent run.
 
 ## Context Contract
 
-Hook commands can use MiniJinja variables:
+Hook commands can use MiniJinja variables (note: prefer environment variables for shell safety):
 
 - `{{ hook.phase }}`: `pre_tool_use` or `post_tool_use`
 - `{{ hook.name }}`
