@@ -4360,7 +4360,6 @@ instance = "inst"
     #[tokio::test]
     async fn governor_tick_aimd_restores_suppressed_slot() {
         use crate::run::rate_limit::RateLimitGovernor;
-        use std::time::Duration;
         // Trigger AIMD with 3 consecutive no-retry-after 429s.
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
         g.report_429(None).await;
