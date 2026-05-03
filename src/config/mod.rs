@@ -161,4 +161,81 @@ name = "claude-sonnet-4-6"
         let merged = recursive_merge(base, overlay);
         assert_eq!(merged, serde_json::json!({"xs": [9]}));
     }
+
+    #[test]
+    fn config_load_resolves_extends() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let parent_path = dir.path().join("parent.toml");
+        let mut parent_file = std::fs::File::create(&parent_path).unwrap();
+        writeln!(
+            parent_file,
+            "[agent]\nstep_limit = 99\n[model]\nname = \"parent-model\""
+        )
+        .unwrap();
+
+        let child_path = dir.path().join("child.toml");
+        let mut child_file = std::fs::File::create(&child_path).unwrap();
+        writeln!(
+            child_file,
+            "extends = \"parent.toml\"\n[model]\nname = \"child-model\""
+        )
+        .unwrap();
+
+        let c = Config::load(&child_path).unwrap();
+        assert_eq!(c.root.agent.step_limit, 99); // from parent
+        assert_eq!(c.root.model.name, "child-model"); // overridden by child
+
+        // The raw object should not have extends
+        assert!(c.raw.get("extends").is_none());
+    }
+
+    #[test]
+    fn config_load_not_found() {
+        let c = Config::load(Path::new("/does/not/exist/ever.toml"));
+        assert!(matches!(c, Err(ConfigError::NotFound(_))));
+    }
+
+    #[test]
+    fn config_load_exceeds_depth() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_path = dir.path().join("a.toml");
+        let b_path = dir.path().join("b.toml");
+
+        let mut a_file = std::fs::File::create(&a_path).unwrap();
+        writeln!(a_file, "extends = \"b.toml\"").unwrap();
+
+        let mut b_file = std::fs::File::create(&b_path).unwrap();
+        writeln!(b_file, "extends = \"a.toml\"").unwrap();
+
+        let err = Config::load(&a_path).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::IncludeDepthExceeded(MAX_INCLUDE_DEPTH)
+        ));
+    }
+
+    #[test]
+    fn resolve_relative_handles_absolute_and_relative() {
+        let base = PathBuf::from("/etc/swe/config.toml");
+
+        let abs_target = "/var/lib/other.toml";
+        let pb_abs = resolve_relative(&base, abs_target);
+        assert_eq!(pb_abs, PathBuf::from(abs_target));
+
+        let rel_target = "sibling.toml";
+        let pb_rel = resolve_relative(&base, rel_target);
+        assert_eq!(pb_rel, PathBuf::from("/etc/swe/sibling.toml"));
+    }
+
+    #[test]
+    fn resolve_relative_handles_base_without_parent() {
+        let base = PathBuf::from("/");
+        let rel_target = "sibling.toml";
+        let pb_rel = resolve_relative(&base, rel_target);
+        assert_eq!(pb_rel, PathBuf::from("sibling.toml"));
+    }
 }

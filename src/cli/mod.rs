@@ -755,3 +755,88 @@ mod tests {
         assert!(validate_observation_head_ratio(f64::INFINITY).is_err());
     }
 }
+
+#[test]
+fn test_compare_diff_mutex() {
+    let cmd = crate::cli::args::CompareCmd {
+        baseline: std::path::PathBuf::from("a"),
+        candidate: std::path::PathBuf::from("b"),
+        format: "text".into(),
+        show_noise: false,
+        inspect_diff: Some("foo".into()),
+        emit_diff_script: Some(std::path::PathBuf::from("bar")),
+        max_regressions: None,
+        breakdown: String::new(),
+        breakdown_min_delta_pp: 0.0,
+        cost_attribution: crate::cli::args::OnOffArg::Off,
+        cost_attribution_min_delta_usd: 0.0,
+    };
+    let err = bench_compare(cmd);
+    assert!(err.is_err());
+    let Err(err_val) = err else {
+        panic!("Expected error but got Ok")
+    };
+    assert!(err_val.to_string().contains("pass only one"));
+}
+
+#[test]
+fn test_bench_evaluate_backend_error() {
+    let cmd = crate::cli::args::EvaluateCmd {
+        sweep: std::path::PathBuf::from("foo"),
+        dataset: None,
+        backend: "unknown".into(),
+        breakdown: String::new(),
+        cost_attribution: crate::cli::args::OnOffArg::Off,
+        parallel: 4,
+        run_id: None,
+        sb_subset: String::new(),
+        sb_split: String::new(),
+        timeout_per_instance: 0,
+    };
+    let err = bench_evaluate(cmd);
+    assert!(err.is_err());
+    let Err(err_val) = err else {
+        panic!("Expected error but got Ok")
+    };
+    assert!(err_val.to_string().contains("unknown --backend"));
+}
+
+#[test]
+fn test_inspect_missing_sweep() {
+    let cmd = crate::cli::args::InspectCmd {
+        diff: vec![],
+        sweep: None,
+        instance: None,
+        filter: None,
+        full: false,
+        format: "unknown".into(),
+        show_noise: false,
+    };
+    // Expect an error because sweep is missing
+    let err = bench_inspect(cmd);
+    assert!(err.is_err());
+}
+
+#[test]
+
+fn test_bench_compare_format_error() {
+    let cmd = crate::cli::args::CompareCmd {
+        baseline: std::path::PathBuf::from("a"),
+        candidate: std::path::PathBuf::from("b"),
+        format: "unknown".into(),
+        show_noise: false,
+        inspect_diff: Some("foo".into()),
+        emit_diff_script: None,
+        max_regressions: None,
+        breakdown: String::new(),
+        breakdown_min_delta_pp: 0.0,
+        cost_attribution: crate::cli::args::OnOffArg::Off,
+        cost_attribution_min_delta_usd: 0.0,
+    };
+    let err = bench_compare(cmd);
+    assert!(err.is_err());
+    let Err(err_val) = err else {
+        panic!("Expected error but got Ok")
+    };
+    assert!(err_val.to_string().contains("unknown --format"));
+}
