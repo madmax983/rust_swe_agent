@@ -403,7 +403,9 @@ impl Agent for DefaultAgent {
         );
         obs_extra.other.insert(
             "observation_truncated".into(),
-            serde_json::json!(trunc_stdout.truncated || trunc_stderr.truncated),
+            serde_json::json!(
+                trunc_stdout.truncated || trunc_stderr.truncated || trunc_output.truncated
+            ),
         );
         obs_extra.other.insert(
             "stdout_bytes_omitted".into(),
@@ -687,5 +689,37 @@ mod tests {
             .find(|m| m.role == Role::User && m.content.contains("truncated"))
             .unwrap();
         assert!(obs.content.len() <= 512);
+    }
+
+    #[tokio::test]
+    async fn observation_truncated_true_when_only_combined_output_is_elided() {
+        let mut a = make_agent(vec![
+            "```bash\npython - <<'PY'\nimport sys\nprint('o'*300)\nprint('e'*300, file=sys.stderr)\nPY\n```"
+                .into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]);
+        a.config.root.agent.observation_max_bytes = 512;
+        a.config.root.agent.observation_template = "{{ output }}".into();
+        let _ = a.run().await.unwrap();
+        let rec = a
+            .trajectory
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && m.extra.other.contains_key("observation_truncated"))
+            .unwrap();
+        assert_eq!(
+            rec.extra.other["stdout_bytes_omitted"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            rec.extra.other["stderr_bytes_omitted"],
+            serde_json::json!(0)
+        );
+        assert!(rec.extra.other["output_bytes_omitted"].as_u64().unwrap() > 0);
+        assert_eq!(
+            rec.extra.other["observation_truncated"],
+            serde_json::json!(true)
+        );
     }
 }
