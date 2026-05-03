@@ -92,6 +92,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    const WEBHOOK_TEST_IO_TIMEOUT: Duration = Duration::from_secs(1);
+
     #[tokio::test]
     async fn test_webhook_sink_emits_http_post() {
         // Spin up a local TCP listener to act as our mock HTTP server.
@@ -111,10 +113,10 @@ mod tests {
         sink.emit(event.clone());
 
         // Wait for the incoming connection from reqwest and read the payload.
-        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut socket = accept_webhook_connection(&listener).await;
 
         let mut buf = vec![0; 1024];
-        let n = socket.read(&mut buf).await.unwrap();
+        let n = read_webhook_bytes(&mut socket, &mut buf).await;
         let request_str = String::from_utf8_lossy(&buf[..n]);
 
         // Verify it's a POST request
@@ -171,10 +173,7 @@ mod tests {
 
         rt.block_on(async move {
             let listener = TcpListener::from_std(std_listener).unwrap();
-            let (socket, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
-                .await
-                .unwrap()
-                .unwrap();
+            let socket = accept_webhook_connection(&listener).await;
 
             let request = read_http_request(socket).await;
             assert!(request.contains("\"task\":\"first\""));
@@ -193,12 +192,31 @@ mod tests {
         }
     }
 
+    async fn accept_webhook_connection(listener: &TcpListener) -> tokio::net::TcpStream {
+        match tokio::time::timeout(WEBHOOK_TEST_IO_TIMEOUT, listener.accept()).await {
+            Ok(Ok((socket, _))) => socket,
+            Ok(Err(e)) => panic!("failed to accept webhook POST connection: {e}"),
+            Err(e) => panic!("timed out waiting for webhook POST connection: {e}"),
+        }
+    }
+
+    async fn read_webhook_bytes<R>(reader: &mut R, buf: &mut [u8]) -> usize
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        match tokio::time::timeout(WEBHOOK_TEST_IO_TIMEOUT, reader.read(buf)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => panic!("failed to read webhook POST request: {e}"),
+            Err(e) => panic!("timed out reading webhook POST request: {e}"),
+        }
+    }
+
     async fn read_http_request(mut socket: tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();
         let mut chunk = [0_u8; 1024];
 
         loop {
-            let n = socket.read(&mut chunk).await.unwrap();
+            let n = read_webhook_bytes(&mut socket, &mut chunk).await;
             if n == 0 {
                 break;
             }
