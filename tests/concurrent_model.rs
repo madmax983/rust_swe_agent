@@ -3,8 +3,8 @@
 use rust_swe_agent::model::deterministic::DeterministicModel;
 use rust_swe_agent::model::{Model, QueryOpts};
 
-#[test]
-fn test_deterministic_model_concurrent_query() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_deterministic_model_concurrent_query() {
     let model = std::sync::Arc::new(DeterministicModel::new(vec![
         "A".into(),
         "B".into(),
@@ -13,23 +13,19 @@ fn test_deterministic_model_concurrent_query() {
     ]));
 
     let m1 = model.clone();
-    let t1 = std::thread::spawn(move || {
+    let h1 = tokio::spawn(async move {
         let opts = QueryOpts::default();
-        let _ = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(m1.query(&[], &opts));
+        let _ = m1.query(&[], &opts).await;
     });
 
     let m2 = model.clone();
-    let t2 = std::thread::spawn(move || {
+    let h2 = tokio::spawn(async move {
         let opts = QueryOpts::default();
-        let _ = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(m2.query(&[], &opts));
+        let _ = m2.query(&[], &opts).await;
     });
 
-    t1.join().unwrap();
-    t2.join().unwrap();
+    let _ = h1.await;
+    let _ = h2.await;
 
     assert_eq!(model.call_count(), 2);
 }
