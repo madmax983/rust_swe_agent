@@ -49,6 +49,9 @@ PostToolUse hooks:
 {% endfor %}
 {% endif %}
 '''
+observation_max_bytes = 16384
+observation_head_ratio = 0.5
+
 # Default timeout for tool hooks unless a hook overrides `timeout_secs`.
 tool_hook_timeout_secs = 10
 #

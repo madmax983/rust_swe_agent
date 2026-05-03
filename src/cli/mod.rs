@@ -94,6 +94,13 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     };
     cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
+    if let Some(v) = m.observation_max_bytes {
+        cfg.root.agent.observation_max_bytes = v;
+    }
+    if let Some(v) = m.observation_head_ratio {
+        validate_observation_head_ratio(v)?;
+        cfg.root.agent.observation_head_ratio = v;
+    }
     if let Some(kind) = &m.env {
         cfg.root.environment.kind = match kind.as_str() {
             "local" => crate::config::EnvKind::Local,
@@ -306,6 +313,13 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     };
     cfg.root.model.name.clone_from(&s.model);
     cfg.root.agent.step_limit = s.step_limit;
+    if let Some(v) = s.observation_max_bytes {
+        cfg.root.agent.observation_max_bytes = v;
+    }
+    if let Some(v) = s.observation_head_ratio {
+        validate_observation_head_ratio(v)?;
+        cfg.root.agent.observation_head_ratio = v;
+    }
     if let Some(kind) = &s.env {
         cfg.root.environment.kind = match kind.as_str() {
             "local" => crate::config::EnvKind::Local,
@@ -321,6 +335,16 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
         cfg.root.environment.docker_image = Some(img);
     }
     Ok(cfg)
+}
+
+fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--observation-head-ratio must be a finite value in [0,1], got {value}"
+        ))))
+    }
 }
 
 fn swebench_args_from_cmd(
@@ -708,5 +732,26 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(t.interval_ms)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::validate_observation_head_ratio;
+
+    #[test]
+    fn observation_head_ratio_accepts_closed_unit_interval() {
+        assert!(validate_observation_head_ratio(0.0).is_ok());
+        assert!(validate_observation_head_ratio(0.5).is_ok());
+        assert!(validate_observation_head_ratio(1.0).is_ok());
+    }
+
+    #[test]
+    fn observation_head_ratio_rejects_invalid_values() {
+        assert!(validate_observation_head_ratio(-0.01).is_err());
+        assert!(validate_observation_head_ratio(1.01).is_err());
+        assert!(validate_observation_head_ratio(f64::NAN).is_err());
+        assert!(validate_observation_head_ratio(f64::INFINITY).is_err());
     }
 }
