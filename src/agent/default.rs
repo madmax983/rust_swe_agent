@@ -29,6 +29,11 @@ struct TruncateResult {
     truncated: bool,
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn truncate_observation_text(input: &str, max_bytes: usize, head_ratio: f64) -> TruncateResult {
     if max_bytes == 0 || input.len() <= max_bytes {
         return TruncateResult {
@@ -662,7 +667,7 @@ mod tests {
         let stdout = run_result.extra.other["run_result"]["stdout"]
             .as_str()
             .unwrap();
-        assert_eq!(stdout.len(), 100001);
+        assert_eq!(stdout.len(), 100_001);
     }
 
     #[tokio::test]
