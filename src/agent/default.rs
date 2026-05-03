@@ -22,6 +22,83 @@ use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
 
+#[derive(Debug, Clone)]
+struct TruncateResult {
+    text: String,
+    bytes_omitted: usize,
+    truncated: bool,
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn truncate_observation_text(input: &str, max_bytes: usize, head_ratio: f64) -> TruncateResult {
+    if max_bytes == 0 {
+        return TruncateResult {
+            text: String::new(),
+            bytes_omitted: input.len(),
+            truncated: !input.is_empty(),
+        };
+    }
+    if input.len() <= max_bytes {
+        return TruncateResult {
+            text: input.to_owned(),
+            bytes_omitted: 0,
+            truncated: false,
+        };
+    }
+    let marker_base = "\n... [truncated] ...\n";
+    let marker_budget = marker_base.len().min(max_bytes.saturating_sub(1));
+    let content_budget = max_bytes.saturating_sub(marker_budget);
+    let head_budget = ((content_budget as f64) * head_ratio.clamp(0.0, 1.0)).floor() as usize;
+    let tail_budget = content_budget.saturating_sub(head_budget);
+    let head_end = floor_char_boundary(input, head_budget.min(input.len()));
+    let tail_start = ceil_char_boundary(input, input.len().saturating_sub(tail_budget));
+    let (head_end, tail_start) = if tail_start < head_end {
+        (head_end, head_end)
+    } else {
+        (head_end, tail_start)
+    };
+    let head = &input[..head_end];
+    let tail = &input[tail_start..];
+    let omitted = input.len().saturating_sub(head.len() + tail.len());
+    let elided_lines = input[head_end..tail_start]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count();
+    let marker = format!("\n... [truncated {omitted} bytes, {elided_lines} lines] ...\n");
+    let marker = if marker.len() <= marker_budget {
+        marker
+    } else {
+        marker_base[..floor_char_boundary(marker_base, marker_budget)].to_owned()
+    };
+    let text = format!("{head}{marker}{tail}");
+    debug_assert!(text.len() <= max_bytes);
+    TruncateResult {
+        text,
+        bytes_omitted: omitted,
+        truncated: true,
+    }
+}
+
+fn floor_char_boundary(input: &str, idx: usize) -> usize {
+    let mut i = idx.min(input.len());
+    while i > 0 && !input.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(input: &str, idx: usize) -> usize {
+    let mut i = idx.min(input.len());
+    while i < input.len() && !input.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 pub struct DefaultAgent {
     pub config: Config,
     pub model: Arc<dyn Model>,
@@ -285,14 +362,35 @@ impl Agent for DefaultAgent {
             timestamp: chrono::Utc::now().to_rfc3339(),
         });
 
+        let trunc_stdout = truncate_observation_text(
+            &result.stdout,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
+        let trunc_stderr = truncate_observation_text(
+            &result.stderr,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
+        let merged_output = match (trunc_stdout.text.is_empty(), trunc_stderr.text.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => trunc_stdout.text.clone(),
+            (true, false) => trunc_stderr.text.clone(),
+            (false, false) => format!("{}\n{}", trunc_stdout.text, trunc_stderr.text),
+        };
+        let trunc_output = truncate_observation_text(
+            &merged_output,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
             &self.config.root.agent.observation_template,
             &serde_json::json!({
                 "returncode": result.exit_code,
-                "output": result.combined_output(),
-                "stdout": result.stdout,
-                "stderr": result.stderr,
+                "output": trunc_output.text,
+                "stdout": trunc_stdout.text,
+                "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
             }),
         )?;
@@ -309,6 +407,24 @@ impl Agent for DefaultAgent {
         obs_extra.other.insert(
             "run_result".into(),
             serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        );
+        obs_extra.other.insert(
+            "observation_truncated".into(),
+            serde_json::json!(
+                trunc_stdout.truncated || trunc_stderr.truncated || trunc_output.truncated
+            ),
+        );
+        obs_extra.other.insert(
+            "stdout_bytes_omitted".into(),
+            serde_json::json!(trunc_stdout.bytes_omitted),
+        );
+        obs_extra.other.insert(
+            "stderr_bytes_omitted".into(),
+            serde_json::json!(trunc_stderr.bytes_omitted),
+        );
+        obs_extra.other.insert(
+            "output_bytes_omitted".into(),
+            serde_json::json!(trunc_output.bytes_omitted),
         );
         obs_extra.timestamp = Some(obs_ts.clone());
         self.trajectory.record_with_extra(&obs_msg, obs_extra);
@@ -510,5 +626,123 @@ mod tests {
         retag_cache_hints(&mut h);
         assert!(matches!(h[3].cache_hint, CacheHint::Auto));
         assert!(matches!(h[0].cache_hint, CacheHint::Breakpoint));
+    }
+
+    #[test]
+    fn truncate_observation_text_elides_middle() {
+        let input = "aaaaabbbbbcccccdddddeeeee";
+        let t = truncate_observation_text(input, 20, 0.5);
+        assert!(t.truncated);
+        assert!(t.bytes_omitted > 0);
+        assert!(t.text.contains("[truncated"));
+    }
+
+    #[test]
+    fn truncate_observation_text_handles_utf8_boundaries() {
+        let input = "αβγδεζηθικλμνξοπρστυφχψω";
+        let t = truncate_observation_text(input, 11, 0.5);
+        assert!(t.truncated);
+        assert!(std::str::from_utf8(t.text.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_observation_text_respects_max_bytes_hard_cap() {
+        let input = "x".repeat(10_000);
+        let t = truncate_observation_text(&input, 128, 0.5);
+        assert!(t.truncated);
+        assert!(t.text.len() <= 128);
+    }
+
+    #[test]
+    fn truncate_observation_text_zero_cap_returns_empty() {
+        let t = truncate_observation_text("abcdef", 0, 0.5);
+        assert!(t.truncated);
+        assert_eq!(t.bytes_omitted, 6);
+        assert!(t.text.is_empty());
+    }
+
+    #[test]
+    fn truncate_observation_text_zero_cap_empty_input_not_truncated() {
+        let t = truncate_observation_text("", 0, 0.5);
+        assert!(!t.truncated);
+        assert_eq!(t.bytes_omitted, 0);
+        assert!(t.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_stdout_is_truncated_for_model_but_preserved_on_disk() {
+        let mut a = make_agent(vec![
+            "```bash\npython - <<'PY'\nprint('x'*100000)\nPY\n```".into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]);
+        a.config.root.agent.observation_max_bytes = 1024;
+        let _ = a.run().await.unwrap();
+        let obs = a
+            .history
+            .iter()
+            .find(|m| m.role == Role::User && m.content.contains("Exit code"))
+            .unwrap();
+        assert!(obs.content.len() < 4000);
+        let run_result = a
+            .trajectory
+            .messages
+            .iter()
+            .find(|m| m.role == "user" && m.extra.other.contains_key("run_result"))
+            .unwrap();
+        let stdout = run_result.extra.other["run_result"]["stdout"]
+            .as_str()
+            .unwrap();
+        assert_eq!(stdout.len(), 100_001);
+    }
+
+    #[tokio::test]
+    async fn combined_output_field_is_capped_when_stdout_and_stderr_are_large() {
+        let mut a = make_agent(vec![
+            "```bash\npython - <<'PY'\nimport sys\nprint('o'*6000)\nprint('e'*6000, file=sys.stderr)\nPY\n```"
+                .into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]);
+        a.config.root.agent.observation_max_bytes = 512;
+        a.config.root.agent.observation_template = "{{ output }}".into();
+        let _ = a.run().await.unwrap();
+        let obs = a
+            .history
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User && m.content.contains("truncated"))
+            .unwrap();
+        assert!(obs.content.len() <= 512);
+    }
+
+    #[tokio::test]
+    async fn observation_truncated_true_when_only_combined_output_is_elided() {
+        let mut a = make_agent(vec![
+            "```bash\npython - <<'PY'\nimport sys\nprint('o'*300)\nprint('e'*300, file=sys.stderr)\nPY\n```"
+                .into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]);
+        a.config.root.agent.observation_max_bytes = 512;
+        a.config.root.agent.observation_template = "{{ output }}".into();
+        let _ = a.run().await.unwrap();
+        let rec = a
+            .trajectory
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && m.extra.other.contains_key("observation_truncated"))
+            .unwrap();
+        assert_eq!(
+            rec.extra.other["stdout_bytes_omitted"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            rec.extra.other["stderr_bytes_omitted"],
+            serde_json::json!(0)
+        );
+        assert!(rec.extra.other["output_bytes_omitted"].as_u64().unwrap() > 0);
+        assert_eq!(
+            rec.extra.other["observation_truncated"],
+            serde_json::json!(true)
+        );
     }
 }

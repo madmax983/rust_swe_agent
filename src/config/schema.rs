@@ -31,6 +31,10 @@ pub struct AgentCfg {
     pub format_error_template: String,
     #[serde(default = "default_observation_template")]
     pub observation_template: String,
+    #[serde(default = "default_observation_max_bytes")]
+    pub observation_max_bytes: usize,
+    #[serde(default = "default_observation_head_ratio")]
+    pub observation_head_ratio: f64,
 }
 
 fn default_step_limit() -> u32 {
@@ -43,6 +47,14 @@ fn default_format_error_template() -> String {
 
 fn default_observation_template() -> String {
     "Exit code: {{ returncode }}\nOutput:\n{{ output }}".into()
+}
+
+fn default_observation_max_bytes() -> usize {
+    16_384
+}
+
+fn default_observation_head_ratio() -> f64 {
+    0.5
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
