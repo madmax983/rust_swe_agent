@@ -927,15 +927,13 @@ fn canonical_field_value(step: &TrajectoryDiffStep, field: &str, baseline: bool)
 }
 
 fn push_canonical_field_lines(lines: &mut Vec<String>, field: &str, value: &str) {
-    let mut parts = value.split('\n').collect::<Vec<_>>();
-    if parts.last().is_some_and(|part| part.is_empty()) {
-        parts.pop();
-    }
-    if parts.is_empty() {
+    let stripped = value.strip_suffix('\n').unwrap_or(value);
+
+    if stripped.is_empty() {
         lines.push(format!("{field}: "));
         return;
     }
-    for part in parts {
+    for part in stripped.split('\n') {
         lines.push(format!("{field}: {part}"));
     }
 }
@@ -1157,5 +1155,54 @@ mod tests {
         }
 
         std::fs::write(path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod push_canonical_field_lines_tests {
+    use super::*;
+
+    #[test]
+    fn test_push_canonical_field_lines() {
+        let mut lines = Vec::new();
+
+        // Test empty string
+        push_canonical_field_lines(&mut lines, "prompt.content", "");
+        assert_eq!(lines, vec!["prompt.content: "]);
+
+        lines.clear();
+        // Test single line
+        push_canonical_field_lines(&mut lines, "prompt.content", "single line");
+        assert_eq!(lines, vec!["prompt.content: single line"]);
+
+        lines.clear();
+        // Test multiple lines
+        push_canonical_field_lines(&mut lines, "prompt.content", "line1\nline2\nline3");
+        assert_eq!(
+            lines,
+            vec![
+                "prompt.content: line1",
+                "prompt.content: line2",
+                "prompt.content: line3",
+            ]
+        );
+
+        lines.clear();
+        // Test trailing newline
+        push_canonical_field_lines(&mut lines, "prompt.content", "line1\nline2\n");
+        assert_eq!(
+            lines,
+            vec!["prompt.content: line1", "prompt.content: line2",]
+        );
+
+        lines.clear();
+        // Test multiple trailing newlines
+        push_canonical_field_lines(&mut lines, "prompt.content", "line1\n\n");
+        assert_eq!(lines, vec!["prompt.content: line1", "prompt.content: ",]);
+
+        lines.clear();
+        // Test only newlines
+        push_canonical_field_lines(&mut lines, "prompt.content", "\n\n");
+        assert_eq!(lines, vec!["prompt.content: ", "prompt.content: ",]);
     }
 }
