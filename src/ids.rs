@@ -64,3 +64,36 @@ impl fmt::Display for StepIdx {
         self.0.fmt(f)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_string_id_creation_and_conversion() {
+        let task_id = TaskId::new("task-123");
+        assert_eq!(task_id.as_str(), "task-123");
+        assert_eq!(task_id.to_string(), "task-123");
+
+        let task_id_from_string = TaskId::from("task-123".to_string());
+        assert_eq!(task_id, task_id_from_string);
+
+        let task_id_from_str = TaskId::from("task-123");
+        assert_eq!(task_id, task_id_from_str);
+
+        let container_id = ContainerId::new("container-456");
+        assert_eq!(container_id.as_str(), "container-456");
+        assert_eq!(container_id.to_string(), "container-456");
+    }
+
+    #[test]
+    fn test_step_idx() {
+        let step = StepIdx::zero();
+        assert_eq!(step.get(), 0);
+        assert_eq!(step.to_string(), "0");
+
+        let next_step = step.next();
+        assert_eq!(next_step.get(), 1);
+        assert_eq!(next_step.to_string(), "1");
+    }
+}

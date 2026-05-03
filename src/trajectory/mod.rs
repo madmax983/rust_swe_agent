@@ -307,4 +307,80 @@ mod tests {
             Some(&serde_json::json!("y"))
         );
     }
+
+    #[test]
+    fn token_usage_total_prompt_tokens_calculates_correctly() {
+        let cases = vec![
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    completion_tokens: 50,
+                },
+                100,
+                false,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 50,
+                    cache_creation_tokens: 0,
+                    completion_tokens: 50,
+                },
+                150,
+                true,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: 100,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 25,
+                    completion_tokens: 50,
+                },
+                125,
+                true,
+            ),
+            (
+                TokenUsage {
+                    prompt_tokens: u64::MAX - 10,
+                    cache_read_tokens: 20,
+                    cache_creation_tokens: 5,
+                    completion_tokens: 50,
+                },
+                u64::MAX,
+                true,
+            ),
+        ];
+
+        for (usage, expected_total, expected_cached) in cases {
+            assert_eq!(usage.total_prompt_tokens(), expected_total);
+            assert_eq!(usage.has_cached_prompt_tokens(), expected_cached);
+        }
+    }
+
+    #[test]
+    fn extra_is_empty_checks_all_fields() {
+        let mut extra = MessageExtra::default();
+        assert!(extra_is_empty(&extra));
+
+        extra.actions = Some(vec!["action".into()]);
+        assert!(!extra_is_empty(&extra));
+
+        extra.actions = None;
+        extra.cost = Some(1.0);
+        assert!(!extra_is_empty(&extra));
+
+        extra.cost = None;
+        extra.response = Some(serde_json::json!("resp"));
+        assert!(!extra_is_empty(&extra));
+
+        extra.response = None;
+        extra.timestamp = Some("2024-01-01".into());
+        assert!(!extra_is_empty(&extra));
+
+        extra.timestamp = None;
+        extra.other.insert("key".into(), serde_json::json!("val"));
+        assert!(!extra_is_empty(&extra));
+    }
 }
