@@ -2972,4 +2972,127 @@ mod tests {
         let loaded = load_sweep(dir.path()).unwrap();
         assert!(loaded.instances.contains_key("resume-old"));
     }
+
+    // ── Coverage: write_rate_limit_events_section ─────────────────────────────
+
+    fn make_rate_limit_events(
+        calls: u64,
+        secs: f64,
+        peak: u32,
+    ) -> crate::run::rate_limit::RateLimitEvents {
+        crate::run::rate_limit::RateLimitEvents {
+            throttled_calls: calls,
+            total_throttled_seconds: secs,
+            peak_concurrent: peak,
+            configured_max_rpm: Some(4000),
+            configured_max_input_tpm: None,
+        }
+    }
+
+    #[test]
+    fn human_table_includes_rate_limit_events_when_both_sides_present() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let mut r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        r.baseline_rate_limit_events = Some(make_rate_limit_events(5, 2.0, 3));
+        r.candidate_rate_limit_events = Some(make_rate_limit_events(10, 4.5, 5));
+        let t = r.human_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "section header missing: {t}"
+        );
+        assert!(
+            t.contains("Throttled calls:"),
+            "throttled calls line missing: {t}"
+        );
+        assert!(t.contains("5 -> 10 (+5)"), "delta counts wrong: {t}");
+        assert!(
+            t.contains("Throttled secs:"),
+            "throttled secs line missing: {t}"
+        );
+        assert!(t.contains("2.0 -> 4.5 (+2.5)"), "delta secs wrong: {t}");
+        assert!(
+            t.contains("Peak concurrent:"),
+            "peak concurrent line missing: {t}"
+        );
+        assert!(t.contains("3 -> 5 (+2)"), "delta peak wrong: {t}");
+    }
+
+    #[test]
+    fn human_table_rate_limit_section_absent_when_both_sides_none() {
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        let t = r.human_table();
+        assert!(
+            !t.contains("Rate-limit events:"),
+            "section should be absent when neither side has events: {t}"
+        );
+    }
+
+    #[test]
+    fn human_table_rate_limit_section_handles_one_sided_events() {
+        // Only candidate has events — baseline shows zero placeholders.
+        let baseline = map_of([submitted("a")]);
+        let candidate = map_of([submitted("a")]);
+        let mut r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
+        r.candidate_rate_limit_events = Some(make_rate_limit_events(7, 3.0, 4));
+        let t = r.human_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "section header missing: {t}"
+        );
+        // baseline placeholder is 0
+        assert!(
+            t.contains("0 -> 7 (+7)"),
+            "one-sided throttled calls wrong: {t}"
+        );
+    }
+
+    #[test]
+    fn load_sweep_propagates_rate_limit_events() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let events = crate::run::rate_limit::RateLimitEvents {
+            throttled_calls: 3,
+            total_throttled_seconds: 1.5,
+            peak_concurrent: 2,
+            configured_max_rpm: Some(600),
+            configured_max_input_tpm: None,
+        };
+        let sweep = SweepResults {
+            total: 0,
+            submitted: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: Some(events),
+        };
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string_pretty(&sweep).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_sweep(dir.path()).unwrap();
+        let ev = loaded.rate_limit_events.unwrap();
+        assert_eq!(ev.throttled_calls, 3);
+        assert_eq!(ev.configured_max_rpm, Some(600));
+    }
 }

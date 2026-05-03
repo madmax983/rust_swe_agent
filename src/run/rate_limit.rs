@@ -125,8 +125,14 @@ impl RateLimitGovernor {
     /// Construct a governor. Returns `None` when both `max_rpm` and
     /// `max_input_tpm` are `None` — opt-in only, no behavior change for
     /// existing users.
+    ///
+    /// Values of `0` are treated as unset: `Some(0)` → `None`. This avoids a
+    /// divide-by-zero panic in the token-bucket refill calculation and makes
+    /// `--max-rpm 0` a no-op rather than a hard crash.
     #[must_use]
     pub fn new(max_rpm: Option<u32>, max_input_tpm: Option<u64>, parallelism: u32) -> Option<Self> {
+        let max_rpm = max_rpm.filter(|&v| v > 0);
+        let max_input_tpm = max_input_tpm.filter(|&v| v > 0);
         if max_rpm.is_none() && max_input_tpm.is_none() {
             return None;
         }

@@ -4241,4 +4241,233 @@ instance = "inst"
             other => panic!("expected RateLimited error, got: {other:?}"),
         }
     }
+
+    // ── Coverage: write_rate_limit_summary ───────────────────────────────────
+
+    #[test]
+    fn summary_table_includes_rate_limit_section_when_events_present() {
+        use crate::run::rate_limit::RateLimitEvents;
+        let s = SweepResults {
+            total: 2,
+            submitted: 2,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 2,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: Some(RateLimitEvents {
+                throttled_calls: 12,
+                total_throttled_seconds: 4.5,
+                peak_concurrent: 6,
+                configured_max_rpm: Some(4000),
+                configured_max_input_tpm: Some(400_000),
+            }),
+        };
+        let t = s.summary_table();
+        assert!(
+            t.contains("Rate-limit events:"),
+            "missing section header: {t}"
+        );
+        assert!(
+            t.contains("Throttled calls:    12"),
+            "missing throttled_calls: {t}"
+        );
+        assert!(
+            t.contains("Throttled secs:     4.5"),
+            "missing throttled_secs: {t}"
+        );
+        assert!(
+            t.contains("Peak concurrent:    6"),
+            "missing peak_concurrent: {t}"
+        );
+        assert!(
+            t.contains("Configured max-rpm: 4000"),
+            "missing max-rpm: {t}"
+        );
+        assert!(
+            t.contains("Configured max-tpm: 400000"),
+            "missing max-tpm: {t}"
+        );
+    }
+
+    #[test]
+    fn summary_table_no_rate_limit_section_when_events_absent() {
+        let s = SweepResults {
+            total: 1,
+            submitted: 1,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: vec![],
+            rate_limit_events: None,
+        };
+        let t = s.summary_table();
+        assert!(
+            !t.contains("Rate-limit events:"),
+            "rate-limit section should be absent when events is None: {t}"
+        );
+    }
+
+    // ── Coverage: governor TPM gating and tick_aimd ──────────────────────────
+
+    #[tokio::test]
+    async fn governor_tpm_gates_when_estimate_exceeds_bucket() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // 60 TPM = 1 token/sec. Start with 1 token (initial bucket).
+        // First acquire with estimate=1 drains it; second should block.
+        let g = RateLimitGovernor::new(None, Some(60), 1).unwrap();
+        g.acquire(1).await; // drains the initial 1-token bucket
+        let start = std::time::Instant::now();
+        g.acquire(1).await; // must wait ~1 s for 1 TPM token to refill
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(800),
+            "TPM gate should block ~1s when bucket is empty, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_restores_suppressed_slot() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        use std::time::Duration;
+        // Trigger AIMD with 3 consecutive no-retry-after 429s.
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.report_429(None).await;
+        g.report_429(None).await;
+        g.report_429(None).await;
+        let suppressed = g.suppressed_slots_count().await;
+        assert!(suppressed > 0, "AIMD should have suppressed slots");
+        // tick_aimd before the restoration window returns false
+        let restored = g.tick_aimd().await;
+        assert!(!restored, "tick_aimd should not restore before hold period");
+    }
+
+    #[tokio::test]
+    async fn governor_tick_aimd_no_op_when_no_suppression() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        // No 429s reported; suppressed_slots == 0 — tick_aimd must be a no-op.
+        assert!(!g.tick_aimd().await);
+        assert_eq!(g.suppressed_slots_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn governor_update_peak_concurrent_tracks_maximum() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
+        g.update_peak_concurrent(3).await;
+        g.update_peak_concurrent(7).await;
+        g.update_peak_concurrent(2).await;
+        let events = g.events().await;
+        assert_eq!(events.peak_concurrent, 7, "peak should be the maximum seen");
+    }
+
+    // ── Coverage: HTTP-date parse failure paths ──────────────────────────────
+
+    #[test]
+    fn parse_retry_after_returns_none_for_malformed_http_date() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // Too few parts.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: Wed 21 Oct 2026"),
+            None
+        );
+        // Non-GMT timezone.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00:00 UTC"
+            ),
+            None
+        );
+        // Invalid month name.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Xyz 2026 12:00:00 GMT"
+            ),
+            None
+        );
+        // Malformed time field (not HH:MM:SS).
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, 21 Oct 2026 12:00 GMT"
+            ),
+            None
+        );
+        // Non-numeric day.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(
+                "retry-after: Wed, XX Oct 2026 12:00:00 GMT"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn civil_to_unix_returns_none_for_pre_epoch_date() {
+        use crate::run::rate_limit::civil_to_unix;
+        assert_eq!(
+            civil_to_unix(1969, 12, 31, 23, 59, 59),
+            None,
+            "pre-epoch date should return None"
+        );
+        assert_eq!(civil_to_unix(1970, 1, 1, 0, 0, 0), Some(0));
+    }
+
+    // ── Coverage: zero-limit treated as no-op ────────────────────────────────
+
+    #[test]
+    fn governor_new_treats_zero_rpm_as_none() {
+        use crate::run::rate_limit::RateLimitGovernor;
+        // max_rpm=0 with no TPM → governor should be None (no rate limiting).
+        assert!(
+            RateLimitGovernor::new(Some(0), None, 4).is_none(),
+            "zero RPM should be treated as unset"
+        );
+        // max_input_tpm=0 with no RPM → also None.
+        assert!(
+            RateLimitGovernor::new(None, Some(0), 4).is_none(),
+            "zero TPM should be treated as unset"
+        );
+        // Both zero → None.
+        assert!(
+            RateLimitGovernor::new(Some(0), Some(0), 4).is_none(),
+            "both zero should be treated as unset"
+        );
+        // Non-zero RPM alongside zero TPM → governor active on RPM only.
+        assert!(
+            RateLimitGovernor::new(Some(600), Some(0), 4).is_some(),
+            "non-zero RPM with zero TPM should still create a governor"
+        );
+    }
 }
