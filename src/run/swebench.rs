@@ -516,6 +516,7 @@ impl SweepResults {
         if unclassified_legacy > 0 {
             let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
         }
+        write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
         s
     }
 
@@ -539,6 +540,23 @@ impl SweepResults {
         let mut iter = self.instances.iter().map(effective_runs);
         let first = iter.next()?;
         iter.all(|runs| runs == first).then_some(first)
+    }
+}
+
+fn write_rate_limit_summary(
+    s: &mut String,
+    rl: Option<&crate::run::rate_limit::RateLimitEvents>,
+) {
+    let Some(rl) = rl else { return };
+    let _ = writeln!(s, "Rate-limit events:");
+    let _ = writeln!(s, "  Throttled calls:    {}", rl.throttled_calls);
+    let _ = writeln!(s, "  Throttled secs:     {:.1}", rl.total_throttled_seconds);
+    let _ = writeln!(s, "  Peak concurrent:    {}", rl.peak_concurrent);
+    if let Some(rpm) = rl.configured_max_rpm {
+        let _ = writeln!(s, "  Configured max-rpm: {rpm}");
+    }
+    if let Some(tpm) = rl.configured_max_input_tpm {
+        let _ = writeln!(s, "  Configured max-tpm: {tpm}");
     }
 }
 
@@ -4155,6 +4173,66 @@ instance = "inst"
             RateLimitGovernor::parse_retry_after_from_error("retry-after: 5 seconds"),
             Some(5)
         );
+    }
+
+    #[test]
+    fn parse_retry_after_handles_http_date_in_future() {
+        use crate::run::rate_limit::{RateLimitGovernor, civil_to_unix};
+        // Build a date 60 s in the future and verify the parser returns ~60.
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let target = now_unix + 60;
+        // Decompose target unix ts back to civil so we can format an HTTP-date.
+        // Using a fixed date far in the future to avoid off-by-one around midnight.
+        // Instead, just check that a hard-coded past date returns Some(0).
+        let past_msg = "retry-after: Thu, 01 Jan 1970 00:00:00 GMT";
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error(past_msg),
+            Some(0),
+            "past HTTP-date should return 0 (saturating sub)"
+        );
+        // Verify the civil_to_unix epoch anchor.
+        assert_eq!(
+            civil_to_unix(1970, 1, 1, 0, 0, 0),
+            Some(0),
+            "unix epoch should be 0"
+        );
+        assert_eq!(
+            civil_to_unix(2026, 10, 21, 12, 0, 0),
+            Some(1_792_584_000),
+            "known timestamp"
+        );
+        // Future HTTP-date yields Some(non-zero).
+        let future_msg = "retry-after: Wed, 21 Oct 2026 12:00:00 GMT";
+        let parsed = RateLimitGovernor::parse_retry_after_from_error(future_msg).unwrap();
+        let expected = 1_792_584_000u64.saturating_sub(now_unix);
+        assert_eq!(parsed, expected, "future HTTP-date seconds mismatch");
+        // Numeric still works alongside HTTP-date support.
+        assert_eq!(
+            RateLimitGovernor::parse_retry_after_from_error("retry-after: 42"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn config_sweep_keys_round_trip_toml() {
+        use crate::config::Config;
+        let cfg = Config::from_toml_str(
+            "[sweep]\nmax_rpm = 4000\nmax_input_tpm = 400000",
+        )
+        .unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, Some(4000));
+        assert_eq!(cfg.root.sweep.max_input_tpm, Some(400_000));
+    }
+
+    #[test]
+    fn config_sweep_defaults_are_none() {
+        use crate::config::Config;
+        let cfg = Config::defaults().unwrap();
+        assert_eq!(cfg.root.sweep.max_rpm, None);
+        assert_eq!(cfg.root.sweep.max_input_tpm, None);
     }
 
     #[tokio::test]

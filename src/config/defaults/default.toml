@@ -36,6 +36,18 @@ kind = "local"
 timeout_secs = 60
 workdir = "/workspace"
 
+[sweep]
+# Adaptive rate-limit governor (issue #44). Both keys are opt-in: when unset,
+# no ceiling is applied and behavior is identical to pre-#44 builds.
+#
+# Cap aggregate provider *requests per minute* across all parallel workers.
+# Maps to --max-rpm on the CLI. CLI value always wins over this key.
+# max_rpm = 4000
+#
+# Cap aggregate *input tokens per minute* across all parallel workers.
+# Maps to --max-input-tpm on the CLI. CLI value always wins over this key.
+# max_input_tpm = 400000
+
 [prompts]
 system = '''
 You are a skilled software engineer working at a terminal. You have

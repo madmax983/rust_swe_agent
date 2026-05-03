@@ -320,22 +320,81 @@ impl RateLimitGovernor {
     }
 
     /// Parse a `Retry-After` duration (in seconds) from a provider error
-    /// message string. Handles common patterns emitted by LiteLLM / Anthropic:
-    /// - `"retry-after: N"`
-    /// - `"retry_after: N"`
+    /// message string. Handles:
+    /// - Numeric: `"retry-after: 30"` / `"retry_after: 30"`
+    /// - HTTP-date: `"retry-after: Wed, 21 Oct 2026 12:00:00 GMT"`
     /// Returns `None` when no recognizable pattern is found.
     #[must_use]
     pub fn parse_retry_after_from_error(msg: &str) -> Option<u64> {
         let lower = msg.to_lowercase();
         for prefix in ["retry-after: ", "retry_after: ", "retry after: "] {
             if let Some(pos) = lower.find(prefix) {
-                let rest = &lower[pos + prefix.len()..];
+                let rest = msg[pos + prefix.len()..].trim();
+                // Try numeric seconds first.
                 let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
                 if let Ok(secs) = num.parse::<u64>() {
+                    return Some(secs);
+                }
+                // Try HTTP-date: "Wed, 21 Oct 2026 12:00:00 GMT"
+                if let Some(secs) = parse_http_date_secs_from_now(rest) {
                     return Some(secs);
                 }
             }
         }
         None
     }
+}
+
+/// Parse an RFC 7231 HTTP-date string and return seconds until that instant.
+/// Returns `None` on parse failure or if the date is in the past.
+/// Format: `<day-name>, <day> <month> <year> <HH>:<MM>:<SS> GMT`
+fn parse_http_date_secs_from_now(s: &str) -> Option<u64> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    // ["Wed,", "21", "Oct", "2026", "12:00:00", "GMT"]
+    if parts.len() != 6 || !parts[5].eq_ignore_ascii_case("gmt") {
+        return None;
+    }
+    let day: i64 = parts[1].parse().ok()?;
+    let month: i64 = match parts[2].to_lowercase().as_str() {
+        "jan" => 1, "feb" => 2, "mar" => 3, "apr" => 4,
+        "may" => 5, "jun" => 6, "jul" => 7, "aug" => 8,
+        "sep" => 9, "oct" => 10, "nov" => 11, "dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts[3].parse().ok()?;
+    let time: Vec<&str> = parts[4].split(':').collect();
+    if time.len() != 3 {
+        return None;
+    }
+    let h: u64 = time[0].parse().ok()?;
+    let m: u64 = time[1].parse().ok()?;
+    let sc: u64 = time[2].parse().ok()?;
+    let target_unix = civil_to_unix(year, month, day, h, m, sc)?;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(target_unix.saturating_sub(now_unix))
+}
+
+/// Convert a proleptic Gregorian civil date + time to a Unix timestamp (seconds
+/// since 1970-01-01T00:00:00Z). Uses Howard Hinnant's days-since-epoch formula.
+pub(crate) fn civil_to_unix(year: i64, month: i64, day: i64, h: u64, m: u64, s: u64) -> Option<u64> {
+    // Shift so March is month 1, to simplify leap-day arithmetic.
+    let (y, mp) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400); // year-of-era [0, 399]
+    let doy = (153 * mp + 2) / 5 + day - 1; // day-of-year [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day-of-era [0, 146096]
+    let days: i64 = era * 146_097 + doe - 719_468; // days since 1970-01-01
+    if days < 0 {
+        return None;
+    }
+    #[allow(clippy::cast_sign_loss)]
+    let total = days as u64 * 86_400 + h * 3_600 + m * 60 + s;
+    Some(total)
 }

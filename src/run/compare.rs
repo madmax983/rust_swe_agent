@@ -147,6 +147,12 @@ pub struct CompareReport {
     pub cost_attribution_delta: Vec<CostAttributionDeltaRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cost_attribution_warnings: Vec<String>,
+    /// Rate-limit telemetry from the baseline sweep, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
+    /// Rate-limit telemetry from the candidate sweep, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
     /// Tasks that passed in the baseline but failed in the candidate.
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
@@ -208,6 +214,7 @@ impl CompareReport {
         s.push_str("\n=== bench compare ===\n");
         write_compare_overview(&mut s, self);
         write_compare_cost_and_token_section(&mut s, self);
+        write_rate_limit_events_section(&mut s, self);
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -323,6 +330,42 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
 fn write_u64_delta_line(s: &mut String, label: &str, baseline: u64, candidate: u64) {
     let delta = i128::from(candidate) - i128::from(baseline);
     let _ = writeln!(s, "{label}{baseline} -> {candidate} ({delta:+})");
+}
+
+fn write_rate_limit_events_section(s: &mut String, report: &CompareReport) {
+    let (b, c) = match (
+        report.baseline_rate_limit_events.as_ref(),
+        report.candidate_rate_limit_events.as_ref(),
+    ) {
+        (None, None) => return,
+        (b, c) => (b, c),
+    };
+    s.push_str("Rate-limit events:\n");
+    let b_calls = b.map_or(0, |e| e.throttled_calls);
+    let c_calls = c.map_or(0, |e| e.throttled_calls);
+    let _ = writeln!(
+        s,
+        "  Throttled calls:    {} -> {} ({:+})",
+        b_calls,
+        c_calls,
+        i128::from(c_calls) - i128::from(b_calls)
+    );
+    let b_secs = b.map_or(0.0, |e| e.total_throttled_seconds);
+    let c_secs = c.map_or(0.0, |e| e.total_throttled_seconds);
+    let _ = writeln!(
+        s,
+        "  Throttled secs:     {b_secs:.1} -> {c_secs:.1} ({:+.1})",
+        c_secs - b_secs
+    );
+    let b_peak = b.map_or(0, |e| e.peak_concurrent);
+    let c_peak = c.map_or(0, |e| e.peak_concurrent);
+    let _ = writeln!(
+        s,
+        "  Peak concurrent:    {} -> {} ({:+})",
+        b_peak,
+        c_peak,
+        i64::from(c_peak) - i64::from(b_peak)
+    );
 }
 
 fn write_mean_steps_line(
@@ -495,6 +538,7 @@ pub struct LoadedSweep {
     pub instances: HashMap<String, InstanceResult>,
     pub manifest: Option<ProvenanceManifest>,
     pub filter_spec: Option<FilterSpec>,
+    pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
 }
 
 struct DiffContext<'a> {
@@ -519,6 +563,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             .and_then(|v| v.get("filter_spec").cloned())
             .is_some();
         let sweep: SweepResults = serde_json::from_str(&text)?;
+        let rate_limit_events = sweep.rate_limit_events.clone();
         let partial_incomplete = sweep
             .manifest
             .as_ref()
@@ -557,6 +602,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 } else {
                     None
                 },
+                rate_limit_events,
             });
         }
         return Ok(LoadedSweep {
@@ -571,6 +617,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             } else {
                 None
             },
+            rate_limit_events,
         });
     }
     if !dir.exists() {
@@ -585,6 +632,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         instances: out,
         manifest: None,
         filter_spec: None,
+        rate_limit_events: None,
     })
 }
 
@@ -887,6 +935,8 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         baseline.filter_spec.as_ref(),
         candidate.filter_spec.as_ref(),
     );
+    report.baseline_rate_limit_events = baseline.rate_limit_events;
+    report.candidate_rate_limit_events = candidate.rate_limit_events;
     report.breakdown_delta = build_breakdown_delta(
         &baseline.instances,
         &candidate.instances,
@@ -1091,6 +1141,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         breakdown_delta: Vec::new(),
         cost_attribution_delta: Vec::new(),
         cost_attribution_warnings: Vec::new(),
+        baseline_rate_limit_events: None,
+        candidate_rate_limit_events: None,
         regressions: transition_summary.regressions,
     }
 }

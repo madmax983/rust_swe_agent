@@ -328,6 +328,8 @@ fn swebench_args_from_cmd(
     cfg: Config,
     preflight_mode: &str,
 ) -> crate::run::swebench::SwebenchArgs {
+    let cfg_max_rpm = cfg.root.sweep.max_rpm;
+    let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
     crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
@@ -367,8 +369,8 @@ fn swebench_args_from_cmd(
         preflight_total_timeout_s: s.preflight_total_timeout_s,
         preflight_mode: preflight_mode.into(),
         skip_patch_validation: s.skip_patch_validation,
-        max_rpm: s.max_rpm,
-        max_input_tpm: s.max_input_tpm,
+        max_rpm: s.max_rpm.or(cfg_max_rpm),
+        max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
     }
 }
 
@@ -538,6 +540,20 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         "evaluation complete"
     );
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
+    if let Some(rl) = &loaded_sweep.rate_limit_events {
+        println!("rate_limit_throttled_calls: {}", rl.throttled_calls);
+        println!(
+            "rate_limit_throttled_secs: {:.1}",
+            rl.total_throttled_seconds
+        );
+        println!("rate_limit_peak_concurrent: {}", rl.peak_concurrent);
+        if let Some(rpm) = rl.configured_max_rpm {
+            println!("rate_limit_configured_max_rpm: {rpm}");
+        }
+        if let Some(tpm) = rl.configured_max_input_tpm {
+            println!("rate_limit_configured_max_input_tpm: {tpm}");
+        }
+    }
     if !eval.breakdown.is_empty() {
         print!(
             "{}",
