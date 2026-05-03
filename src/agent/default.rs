@@ -360,17 +360,23 @@ impl Agent for DefaultAgent {
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
+        let merged_output = match (trunc_stdout.text.is_empty(), trunc_stderr.text.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => trunc_stdout.text.clone(),
+            (true, false) => trunc_stderr.text.clone(),
+            (false, false) => format!("{}\n{}", trunc_stdout.text, trunc_stderr.text),
+        };
+        let trunc_output = truncate_observation_text(
+            &merged_output,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
             &self.config.root.agent.observation_template,
             &serde_json::json!({
                 "returncode": result.exit_code,
-                "output": match (trunc_stdout.text.is_empty(), trunc_stderr.text.is_empty()) {
-                    (true, true) => String::new(),
-                    (false, true) => trunc_stdout.text.clone(),
-                    (true, false) => trunc_stderr.text.clone(),
-                    (false, false) => format!("{}\n{}", trunc_stdout.text, trunc_stderr.text),
-                },
+                "output": trunc_output.text,
                 "stdout": trunc_stdout.text,
                 "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
@@ -401,6 +407,10 @@ impl Agent for DefaultAgent {
         obs_extra.other.insert(
             "stderr_bytes_omitted".into(),
             serde_json::json!(trunc_stderr.bytes_omitted),
+        );
+        obs_extra.other.insert(
+            "output_bytes_omitted".into(),
+            serde_json::json!(trunc_output.bytes_omitted),
         );
         obs_extra.timestamp = Some(obs_ts.clone());
         self.trajectory.record_with_extra(&obs_msg, obs_extra);
@@ -653,5 +663,24 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(stdout.len(), 100001);
+    }
+
+    #[tokio::test]
+    async fn combined_output_field_is_capped_when_stdout_and_stderr_are_large() {
+        let mut a = make_agent(vec![
+            "```bash\npython - <<'PY'\nimport sys\nprint('o'*6000)\nprint('e'*6000, file=sys.stderr)\nPY\n```"
+                .into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ]);
+        a.config.root.agent.observation_max_bytes = 512;
+        a.config.root.agent.observation_template = "{{ output }}".into();
+        let _ = a.run().await.unwrap();
+        let obs = a
+            .history
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User && m.content.contains("truncated"))
+            .unwrap();
+        assert!(obs.content.len() <= 512);
     }
 }
