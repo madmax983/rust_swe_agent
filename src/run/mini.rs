@@ -317,26 +317,39 @@ pub(crate) async fn check_patch_validity(
     // Windows `%VAR%`).
     let base_arg = patch_base_shell_arg(base_commit);
 
-    // Create a clean worktree at base_commit (relative path, valid in Docker),
-    // validate the patch there, then always remove the worktree even on failure.
-    // `../{patch_name}` navigates from inside the worktree back to spec.workdir.
-    let cmd = format!(
-        "git worktree add -q --detach {wt} {base_arg} \
-        && git -C {wt} apply --check --no-3way -- ../{patch} ; \
-        RC=$? ; git worktree remove --force {wt} 2>/dev/null ; exit $RC",
-        wt = shell_quote_path(&wt_name),
-        patch = shell_quote_path(&patch_name),
-    );
-    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(30));
-    req.cwd = Some(spec.workdir.clone());
-    req.env
+    // Use separate commands instead of a shell compound expression. That keeps
+    // local Windows `cmd.exe`, POSIX shells, and Docker bash from disagreeing
+    // about quoting, redirects, and `$?` syntax.
+    let mut add_req = RunRequest::new(format!("git worktree add -q --detach {wt_name} {base_arg}"))
+        .with_timeout(Duration::from_secs(30));
+    add_req.cwd = Some(spec.workdir.clone());
+    add_req
+        .env
         .insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
 
-    let run_result = env.run(req).await;
+    let add_result = env.run(add_req).await;
+    let result = match add_result {
+        Ok(result) if !result.timed_out && result.exit_code == 0 => {
+            let mut apply_req = RunRequest::new(format!(
+                "git -C {wt_name} apply --check --no-3way -- ../{patch_name}"
+            ))
+            .with_timeout(Duration::from_secs(30));
+            apply_req.cwd = Some(spec.workdir.clone());
+            env.run(apply_req).await
+        }
+        Ok(result) => Ok(result),
+        Err(e) => Err(e),
+    };
+
+    let mut cleanup_req = RunRequest::new(format!("git worktree remove --force {wt_name}"))
+        .with_timeout(Duration::from_secs(30));
+    cleanup_req.cwd = Some(spec.workdir.clone());
+    let _ = env.run(cleanup_req).await;
+
     // Always remove the temp patch file, even when env.run fails.
     let _ = std::fs::remove_file(&tmp_patch);
     let result =
-        run_result.map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
+        result.map_err(|e| PatchValidationFailure::ApplyFailed(format!("env exec: {e}")))?;
 
     if result.timed_out || result.exit_code != 0 {
         let reason = result.stderr.trim();
@@ -347,12 +360,6 @@ pub(crate) async fn check_patch_validity(
         }));
     }
     Ok(())
-}
-
-fn shell_quote_path(path: &str) -> String {
-    // The patch-validation command is POSIX sh in all environments (local
-    // Linux and Docker).  Always use single-quote escaping.
-    format!("'{}'", path.replace('\'', "'\\''"))
 }
 
 /// Snapshot the working tree at `spec.workdir` as a unified diff against

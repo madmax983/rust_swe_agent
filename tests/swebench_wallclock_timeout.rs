@@ -1,3 +1,4 @@
+#![cfg(not(windows))]
 #![allow(clippy::unwrap_used)]
 
 use std::fmt::Write as _;

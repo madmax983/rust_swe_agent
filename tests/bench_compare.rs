@@ -450,6 +450,7 @@ fn compare_inspect_diff_sugar_renders_one_instance_diff() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn compare_emit_diff_script_executes_generated_script_for_all_regressions() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
@@ -537,6 +538,10 @@ fn compare_emit_diff_script_executes_generated_script_for_all_regressions() {
         "{script_text}"
     );
     assert!(!script_text.contains("stable.traj.json"), "{script_text}");
+
+    if cfg!(windows) {
+        return;
+    }
 
     let out = Command::new("sh").arg(&script_path).output().unwrap();
     assert!(
