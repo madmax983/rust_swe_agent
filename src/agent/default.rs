@@ -10,17 +10,21 @@
 //!   7. bump steps, Continue
 
 use async_trait::async_trait;
+use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
-use crate::config::Config;
-use crate::env::{Environment, RunRequest};
+use crate::config::{Config, ToolHookCfg};
+use crate::env::{Environment, RunRequest, RunResult};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
+
+const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone)]
 struct TruncateResult {
@@ -340,27 +344,50 @@ impl Agent for DefaultAgent {
             }
         }
 
-        // 5. env.run.
+        // 5. PreToolUse hooks, then env.run if not blocked.
         let Action::Bash(cmd) = action else {
             unreachable!("Submit and None handled above");
         };
-        self.stream.emit(StreamEvent::BashStart {
-            step: self.steps,
-            command: cmd.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
-        let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
-            self.config.root.environment.timeout_secs,
-        ));
-        let result = self.env.run(run_req).await?;
-        self.stream.emit(StreamEvent::BashResult {
-            step: self.steps,
-            exit_code: result.exit_code,
-            stdout: result.stdout.clone(),
-            stderr: result.stderr.clone(),
-            timed_out: result.timed_out,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
+        let pre_hook_results = self
+            .run_tool_hooks(
+                ToolHookPhase::PreToolUse,
+                &self.config.root.agent.hooks.pre_tool_use,
+                &cmd,
+                None,
+            )
+            .await?;
+        let tool_use_blocked = pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
+
+        let (result, post_hook_results) = if tool_use_blocked {
+            (blocked_run_result(&pre_hook_results), Vec::new())
+        } else {
+            self.stream.emit(StreamEvent::BashStart {
+                step: self.steps,
+                command: cmd.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+            let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
+                self.config.root.environment.timeout_secs,
+            ));
+            let result = self.env.run(run_req).await?;
+            self.stream.emit(StreamEvent::BashResult {
+                step: self.steps,
+                exit_code: result.exit_code,
+                stdout: result.stdout.clone(),
+                stderr: result.stderr.clone(),
+                timed_out: result.timed_out,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+            let post_hook_results = self
+                .run_tool_hooks(
+                    ToolHookPhase::PostToolUse,
+                    &self.config.root.agent.hooks.post_tool_use,
+                    &cmd,
+                    Some(&result),
+                )
+                .await?;
+            (result, post_hook_results)
+        };
 
         let trunc_stdout = truncate_observation_text(
             &result.stdout,
@@ -383,6 +410,16 @@ impl Agent for DefaultAgent {
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
+        let pre_hook_results_for_observation = truncate_hook_results_for_observation(
+            &pre_hook_results,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
+        let post_hook_results_for_observation = truncate_hook_results_for_observation(
+            &post_hook_results,
+            self.config.root.agent.observation_max_bytes,
+            self.config.root.agent.observation_head_ratio,
+        );
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
             &self.config.root.agent.observation_template,
@@ -392,6 +429,11 @@ impl Agent for DefaultAgent {
                 "stdout": trunc_stdout.text,
                 "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
+                "command": cmd,
+                "step": self.steps,
+                "tool_use_blocked": tool_use_blocked,
+                "pre_tool_use_hooks": pre_hook_results_for_observation,
+                "post_tool_use_hooks": post_hook_results_for_observation,
             }),
         )?;
 
@@ -407,6 +449,18 @@ impl Agent for DefaultAgent {
         obs_extra.other.insert(
             "run_result".into(),
             serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        );
+        obs_extra.other.insert(
+            "pre_tool_use_hooks".into(),
+            serde_json::to_value(&pre_hook_results)?,
+        );
+        obs_extra.other.insert(
+            "post_tool_use_hooks".into(),
+            serde_json::to_value(&post_hook_results)?,
+        );
+        obs_extra.other.insert(
+            "tool_use_blocked".into(),
+            serde_json::Value::Bool(tool_use_blocked),
         );
         obs_extra.other.insert(
             "observation_truncated".into(),
@@ -489,6 +543,279 @@ impl DefaultAgent {
             None,
         );
     }
+
+    async fn run_tool_hooks(
+        &self,
+        phase: ToolHookPhase,
+        hooks: &[ToolHookCfg],
+        command: &str,
+        result: Option<&RunResult>,
+    ) -> Result<Vec<ToolHookResult>, Error> {
+        let mut reports = Vec::new();
+        for hook in hooks {
+            reports.push(self.run_tool_hook(phase, hook, command, result).await?);
+        }
+        Ok(reports)
+    }
+
+    async fn run_tool_hook(
+        &self,
+        phase: ToolHookPhase,
+        hook: &ToolHookCfg,
+        command: &str,
+        result: Option<&RunResult>,
+    ) -> Result<ToolHookResult, Error> {
+        let context = self.tool_hook_context(phase, hook, command, result);
+        let rendered_command = self.renderer.render_str(&hook.command, &context)?;
+        let timeout_secs = hook
+            .timeout_secs
+            .unwrap_or(self.config.root.agent.tool_hook_timeout_secs);
+        let mut req = RunRequest::new(rendered_command.clone())
+            .with_timeout(Duration::from_secs(timeout_secs));
+        req.env = tool_hook_env(&context)?;
+        let hook_result = match self.env.run(req).await {
+            Ok(result) => result,
+            Err(err) => {
+                if matches!(phase, ToolHookPhase::PreToolUse) {
+                    return Err(err.into());
+                }
+                let message = format!("hook environment error: {err}");
+                return Ok(ToolHookResult {
+                    phase,
+                    name: hook.name.clone(),
+                    command: rendered_command,
+                    stdout: String::new(),
+                    stderr: message.clone(),
+                    output: message,
+                    exit_code: -1,
+                    timed_out: false,
+                });
+            }
+        };
+
+        Ok(ToolHookResult {
+            phase,
+            name: hook.name.clone(),
+            command: rendered_command,
+            stdout: hook_result.stdout.clone(),
+            stderr: hook_result.stderr.clone(),
+            output: hook_result.combined_output(),
+            exit_code: hook_result.exit_code,
+            timed_out: hook_result.timed_out,
+        })
+    }
+
+    fn tool_hook_context(
+        &self,
+        phase: ToolHookPhase,
+        hook: &ToolHookCfg,
+        command: &str,
+        result: Option<&RunResult>,
+    ) -> serde_json::Value {
+        let task = self.trajectory.info.task.as_deref().unwrap_or_default();
+        let model = self
+            .trajectory
+            .info
+            .model_name
+            .as_deref()
+            .unwrap_or_default();
+        let returncode = result.map_or(serde_json::Value::Null, |r| {
+            serde_json::Value::Number(r.exit_code.into())
+        });
+        let stdout = result.map_or("", |r| r.stdout.as_str());
+        let stderr = result.map_or("", |r| r.stderr.as_str());
+        let output = result.map_or_else(String::new, RunResult::combined_output);
+        let timed_out = result.is_some_and(|r| r.timed_out);
+        serde_json::json!({
+            "hook": {
+                "phase": phase.as_str(),
+                "name": hook.name,
+            },
+            "tool": {
+                "name": "bash",
+            },
+            "task": task,
+            "model": model,
+            "step": self.steps,
+            "command": command,
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "output": output,
+            "timed_out": timed_out,
+            "total_cost_usd": self.total_cost_usd,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolHookResult {
+    phase: ToolHookPhase,
+    name: String,
+    command: String,
+    stdout: String,
+    stderr: String,
+    output: String,
+    exit_code: i32,
+    timed_out: bool,
+}
+
+impl ToolHookResult {
+    const fn blocks_tool_use(&self) -> bool {
+        matches!(self.phase, ToolHookPhase::PreToolUse) && (self.exit_code != 0 || self.timed_out)
+    }
+
+    fn truncated_for_observation(&self, max_bytes: usize, head_ratio: f64) -> Self {
+        Self {
+            phase: self.phase,
+            name: self.name.clone(),
+            command: self.command.clone(),
+            stdout: truncate_observation_text(&self.stdout, max_bytes, head_ratio).text,
+            stderr: truncate_observation_text(&self.stderr, max_bytes, head_ratio).text,
+            output: truncate_observation_text(&self.output, max_bytes, head_ratio).text,
+            exit_code: self.exit_code,
+            timed_out: self.timed_out,
+        }
+    }
+}
+
+fn truncate_hook_results_for_observation(
+    results: &[ToolHookResult],
+    max_bytes: usize,
+    head_ratio: f64,
+) -> Vec<ToolHookResult> {
+    results
+        .iter()
+        .map(|result| result.truncated_for_observation(max_bytes, head_ratio))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolHookPhase {
+    PreToolUse,
+    PostToolUse,
+}
+
+impl ToolHookPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreToolUse => "pre_tool_use",
+            Self::PostToolUse => "post_tool_use",
+        }
+    }
+}
+
+fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
+    let mut stderr = "tool use blocked by PreToolUse hook".to_owned();
+    if let Some(hook) = pre_hook_results
+        .iter()
+        .find(|result| result.blocks_tool_use())
+    {
+        stderr.push_str(": ");
+        stderr.push_str(&hook.name);
+    }
+    RunResult {
+        stdout: String::new(),
+        stderr,
+        exit_code: 126,
+        timed_out: false,
+    }
+}
+
+fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
+    let mut env = BTreeMap::new();
+    let env_context = capped_env_context(context);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_HOOK_NAME",
+        &env_context["hook"]["name"],
+    );
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_HOOK_PHASE",
+        &env_context["hook"]["phase"],
+    );
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TOOL_NAME",
+        &env_context["tool"]["name"],
+    );
+    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
+    insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_EXIT_CODE",
+        &env_context["returncode"],
+    );
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STDOUT", &env_context["stdout"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STDERR", &env_context["stderr"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_OUTPUT", &env_context["output"]);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TIMED_OUT",
+        &env_context["timed_out"],
+    );
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TOTAL_COST_USD",
+        &env_context["total_cost_usd"],
+    );
+    env.insert(
+        "RUST_SWE_AGENT_CONTEXT_JSON".into(),
+        serde_json::to_string(&env_context)?,
+    );
+    Ok(env)
+}
+
+fn insert_json_str(env: &mut BTreeMap<String, String>, key: &str, value: &serde_json::Value) {
+    env.insert(key.into(), truncate_for_hook_env(&json_str(value)));
+}
+
+fn insert_json_str_untruncated(
+    env: &mut BTreeMap<String, String>,
+    key: &str,
+    value: &serde_json::Value,
+) {
+    env.insert(key.into(), json_str(value));
+}
+
+fn json_str(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn capped_env_context(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(truncate_for_hook_env(s)),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(capped_env_context).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), capped_env_context(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn truncate_for_hook_env(value: &str) -> String {
+    if value.len() <= MAX_TOOL_HOOK_ENV_VALUE_BYTES {
+        return value.to_owned();
+    }
+
+    let marker = format!("\n[truncated: original_bytes={}]", value.len());
+    let keep_bytes = MAX_TOOL_HOOK_ENV_VALUE_BYTES.saturating_sub(marker.len());
+    let keep_bytes = floor_char_boundary(value, keep_bytes);
+    format!("{}{}", &value[..keep_bytes], marker)
 }
 
 #[cfg(test)]
@@ -498,11 +825,30 @@ mod tests {
     use crate::env::LocalEnvironment;
     use crate::model::DeterministicModel;
 
+    #[derive(Clone)]
+    struct StaticEnvironment {
+        result: RunResult,
+    }
+
+    #[async_trait::async_trait]
+    impl Environment for StaticEnvironment {
+        async fn run(&self, _req: RunRequest) -> Result<RunResult, crate::error::EnvError> {
+            Ok(self.result.clone())
+        }
+    }
+
     fn make_agent(responses: Vec<String>) -> DefaultAgent {
+        make_agent_with_env(responses, Box::new(LocalEnvironment::new()))
+    }
+
+    fn make_agent_with_run_result(responses: Vec<String>, result: RunResult) -> DefaultAgent {
+        make_agent_with_env(responses, Box::new(StaticEnvironment { result }))
+    }
+
+    fn make_agent_with_env(responses: Vec<String>, env: Box<dyn Environment>) -> DefaultAgent {
         let mut cfg = Config::defaults().unwrap();
         cfg.root.agent.step_limit = 5;
         let model = Arc::new(DeterministicModel::new(responses));
-        let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
         DefaultAgentBuilder {
             config: cfg,
             model,
@@ -671,10 +1017,20 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_stdout_is_truncated_for_model_but_preserved_on_disk() {
-        let mut a = make_agent(vec![
-            "```bash\npython - <<'PY'\nprint('x'*100000)\nPY\n```".into(),
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
-        ]);
+        let stdout = format!("{}\n", "x".repeat(100_000));
+        let stdout_len = stdout.len();
+        let mut a = make_agent_with_run_result(
+            vec![
+                "```bash\nemit-large-stdout\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ],
+            RunResult {
+                stdout,
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            },
+        );
         a.config.root.agent.observation_max_bytes = 1024;
         let _ = a.run().await.unwrap();
         let obs = a
@@ -692,16 +1048,23 @@ mod tests {
         let stdout = run_result.extra.other["run_result"]["stdout"]
             .as_str()
             .unwrap();
-        assert_eq!(stdout.len(), 100_001);
+        assert_eq!(stdout.len(), stdout_len);
     }
 
     #[tokio::test]
     async fn combined_output_field_is_capped_when_stdout_and_stderr_are_large() {
-        let mut a = make_agent(vec![
-            "```bash\npython - <<'PY'\nimport sys\nprint('o'*6000)\nprint('e'*6000, file=sys.stderr)\nPY\n```"
-                .into(),
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
-        ]);
+        let mut a = make_agent_with_run_result(
+            vec![
+                "```bash\nemit-large-stdout-stderr\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ],
+            RunResult {
+                stdout: format!("{}\n", "o".repeat(6_000)),
+                stderr: format!("{}\n", "e".repeat(6_000)),
+                exit_code: 0,
+                timed_out: false,
+            },
+        );
         a.config.root.agent.observation_max_bytes = 512;
         a.config.root.agent.observation_template = "{{ output }}".into();
         let _ = a.run().await.unwrap();
@@ -716,11 +1079,18 @@ mod tests {
 
     #[tokio::test]
     async fn observation_truncated_true_when_only_combined_output_is_elided() {
-        let mut a = make_agent(vec![
-            "```bash\npython - <<'PY'\nimport sys\nprint('o'*300)\nprint('e'*300, file=sys.stderr)\nPY\n```"
-                .into(),
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
-        ]);
+        let mut a = make_agent_with_run_result(
+            vec![
+                "```bash\nemit-moderate-stdout-stderr\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ],
+            RunResult {
+                stdout: format!("{}\n", "o".repeat(300)),
+                stderr: format!("{}\n", "e".repeat(300)),
+                exit_code: 0,
+                timed_out: false,
+            },
+        );
         a.config.root.agent.observation_max_bytes = 512;
         a.config.root.agent.observation_template = "{{ output }}".into();
         let _ = a.run().await.unwrap();

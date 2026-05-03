@@ -35,6 +35,10 @@ pub struct AgentCfg {
     pub observation_max_bytes: usize,
     #[serde(default = "default_observation_head_ratio")]
     pub observation_head_ratio: f64,
+    #[serde(default = "default_tool_hook_timeout_secs")]
+    pub tool_hook_timeout_secs: u64,
+    #[serde(default)]
+    pub hooks: ToolHooksCfg,
 }
 
 fn default_step_limit() -> u32 {
@@ -55,6 +59,26 @@ fn default_observation_max_bytes() -> usize {
 
 fn default_observation_head_ratio() -> f64 {
     0.5
+}
+
+fn default_tool_hook_timeout_secs() -> u64 {
+    10
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolHooksCfg {
+    #[serde(default)]
+    pub pre_tool_use: Vec<ToolHookCfg>,
+    #[serde(default)]
+    pub post_tool_use: Vec<ToolHookCfg>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolHookCfg {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
