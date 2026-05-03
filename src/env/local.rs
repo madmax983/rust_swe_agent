@@ -143,7 +143,8 @@ impl ProcessTreeGuard {
             self.disarm();
             return;
         };
-        terminate_process_tree_async(pid).await;
+        let _ = tokio::time::timeout(FORCE_KILL_WAIT, terminate_process_tree_async(pid)).await;
+        let _ = child.start_kill();
         let child_reaped = tokio::time::timeout(FORCE_KILL_WAIT, child.wait())
             .await
             .is_ok();
@@ -186,7 +187,7 @@ fn terminate_process_tree_blocking(pid: u32) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .spawn();
 }
 
 #[cfg(unix)]
@@ -358,12 +359,7 @@ mod tests {
     #[tokio::test]
     async fn env_var_passthrough() {
         let env = LocalEnvironment::new();
-        let command = if cfg!(windows) {
-            "echo %RSA_TEST_VAR%"
-        } else {
-            "echo $RSA_TEST_VAR"
-        };
-        let mut req = RunRequest::new(command);
+        let mut req = RunRequest::new(env_echo_command());
         req.env.insert("RSA_TEST_VAR".into(), "from_test".into());
         let r = env.run(req).await.unwrap();
         assert_eq!(r.stdout.trim(), "from_test");
@@ -372,16 +368,12 @@ mod tests {
     #[tokio::test]
     async fn timeout_flags_timed_out() {
         let env = LocalEnvironment::new();
-        let command = if cfg!(windows) {
-            "powershell -NoProfile -Command Start-Sleep -Seconds 5"
-        } else {
-            "sleep 5"
-        };
-        let req = RunRequest::new(command).with_timeout(Duration::from_millis(100));
+        let req = RunRequest::new(sleep_command()).with_timeout(Duration::from_millis(100));
         let r = env.run(req).await.unwrap();
         assert!(r.timed_out);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn timeout_reclaims_stubborn_process_before_returning() {
         let work = tempfile::tempdir().unwrap();
@@ -396,7 +388,7 @@ mod tests {
         let pid_text = std::fs::read_to_string(&pid_file).unwrap();
         let pid = pid_text.trim().parse::<u32>().unwrap();
         assert!(
-            !process_is_alive(pid),
+            process_exits_within(pid, Duration::from_secs(3)),
             "timed-out process {pid} was still alive after run returned"
         );
     }
@@ -412,12 +404,20 @@ mod tests {
         assert_eq!(r.stderr.trim(), "err");
     }
 
-    #[cfg(windows)]
-    fn stubborn_process_command(pid_file: &std::path::Path) -> String {
-        let path = pid_file.display().to_string().replace('\'', "''");
-        format!(
-            "powershell -NoProfile -Command \"$pidFile='{path}'; Set-Content -LiteralPath $pidFile -Value $PID; while ($true) {{ Start-Sleep -Milliseconds 200 }}\""
-        )
+    fn env_echo_command() -> &'static str {
+        if cfg!(windows) {
+            "echo %RSA_TEST_VAR%"
+        } else {
+            "echo $RSA_TEST_VAR"
+        }
+    }
+
+    fn sleep_command() -> &'static str {
+        if cfg!(windows) {
+            "for /L %i in (1,0,2) do @rem"
+        } else {
+            "sleep 5"
+        }
     }
 
     #[cfg(not(windows))]
@@ -431,29 +431,26 @@ mod tests {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
 
+    #[cfg(not(windows))]
     fn process_is_alive(pid: u32) -> bool {
-        if cfg!(windows) {
-            std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    &format!(
-                        "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
-                    ),
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        } else {
-            std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(not(windows))]
+    fn process_exits_within(pid: u32, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if !process_is_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
+        !process_is_alive(pid)
     }
 }

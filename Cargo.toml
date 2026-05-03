@@ -74,6 +74,7 @@ docker = []
 chaos = []
 live-anthropic = []
 markdown-export = []
+webhook = []
 csv-export = []
 
 [lints.clippy]
