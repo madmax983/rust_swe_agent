@@ -423,7 +423,7 @@ pub struct InspectCmd {
     #[arg(long, default_value_t = false)]
     pub show_noise: bool,
 
-    /// Output format: `text` (default), `json`, or `unified` in diff mode.
+    /// Output format: `text` (default), `json`, `html` (requires html-export feature), or `unified` in diff mode.
     #[arg(long, default_value = "text")]
     pub format: String,
 

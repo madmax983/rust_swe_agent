@@ -289,7 +289,7 @@ fn print_forecast_report(
             Ok(())
         }
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "unknown --format `{other}` (expected `text` or `json`)"
+            "unknown --format `{other}` (expected `text`, `json`, or `html`)"
         )))),
     }
 }
@@ -436,7 +436,7 @@ fn parse_compare_format(raw: &str) -> Result<crate::run::compare::CompareFormat,
         "text" => Ok(crate::run::compare::CompareFormat::Text),
         "json" => Ok(crate::run::compare::CompareFormat::Json),
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "unknown --format `{other}` (expected `text` or `json`)"
+            "unknown --format `{other}` (expected `text`, `json`, or `html`)"
         )))),
     }
 }
@@ -633,9 +633,11 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     let format = match i.format.as_str() {
         "text" => crate::run::inspect::InspectFormat::Text,
         "json" => crate::run::inspect::InspectFormat::Json,
+        #[cfg(feature = "html-export")]
+        "html" => crate::run::inspect::InspectFormat::Html,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
+                "unknown --format `{other}` (expected `text`, `json`, or `html`)"
             ))));
         }
     };
@@ -645,8 +647,8 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         ))
     })?;
     let out = crate::run::inspect::run(&crate::run::inspect::InspectArgs {
-        sweep,
-        instance: i.instance,
+        sweep: sweep.clone(),
+        instance: i.instance.clone(),
         filter: i.filter,
         full: i.full,
     })?;
@@ -656,6 +658,19 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
         crate::run::inspect::InspectFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        #[cfg(feature = "html-export")]
+        crate::run::inspect::InspectFormat::Html => {
+            let instance_id = i.instance.ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Invalid(
+                    "inspect: --instance is required for html format".into(),
+                ))
+            })?;
+            let traj_path = crate::run::inspect::resolve_trajectory_path(&sweep, &instance_id)
+                .ok_or_else(|| Error::Trajectory(format!("no trajectory found for {instance_id}")))?;
+            let text = std::fs::read_to_string(&traj_path)?;
+            let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)?;
+            println!("{}", <crate::trajectory::export::HtmlExporter as crate::trajectory::export::TrajectoryExporter>::export(&traj));
         }
     }
     Ok(())
@@ -678,7 +693,7 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
         "json" => TailFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
+                "unknown --format `{other}` (expected `text`, `json`, or `html`)"
             ))));
         }
     };
