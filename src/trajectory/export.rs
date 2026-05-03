@@ -42,7 +42,7 @@ pub struct MarkdownExporter;
 
 /// Transforms a [`Trajectory`] into a flat CSV file, with `role` and `content` columns.
 ///
-/// Note: This exporter properly handles and escapes embedded quotes, commas, and newlines in message content.
+/// Note: This exporter properly handles and escapes embedded quotes and newlines in message content.
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 

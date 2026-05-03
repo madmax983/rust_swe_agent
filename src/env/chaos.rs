@@ -38,7 +38,8 @@ impl ChaosEnvironment {
     /// use rust_swe_agent::env::{Environment, LocalEnvironment, RunRequest};
     /// use rust_swe_agent::env::chaos::ChaosEnvironment;
     ///
-    /// # tokio_test::block_on(async {
+    /// # #[tokio::main]
+    /// # async fn main() {
     /// let local = Box::new(LocalEnvironment::new());
     /// let chaos = ChaosEnvironment::new(local, 2); // Fail every 2nd command
     ///
@@ -53,7 +54,7 @@ impl ChaosEnvironment {
     /// let res2 = chaos.run(req).await.unwrap();
     /// assert_eq!(res2.exit_code, -1);
     /// assert_eq!(res2.timed_out, true);
-    /// # })
+    /// # }
     /// ```
     pub fn new(inner: Box<dyn Environment>, fail_every: usize) -> Self {
         Self {
