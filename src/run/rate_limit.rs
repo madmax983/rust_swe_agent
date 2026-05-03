@@ -254,7 +254,9 @@ impl RateLimitGovernor {
             }
 
             if inner.consecutive_no_ra_429s >= 3 && inner.suppressed_slots == 0 {
-                let halve = (self.parallelism / 2).max(1);
+                // Suppress half the slots, but always leave at least one active
+                // so the JoinSet never drains to empty with pending work remaining.
+                let halve = (self.parallelism / 2).min(self.parallelism.saturating_sub(1));
                 inner.suppressed_slots = halve;
                 // Hold period: 60 s. First restoration after hold + 30 s.
                 inner.next_slot_restoration =
@@ -297,11 +299,10 @@ impl RateLimitGovernor {
         false
     }
 
-    /// Returns `true` when AIMD is currently suppressing at least one dispatch
-    /// slot. The consumer loop should skip one spawn per suppressed slot.
-    pub async fn is_aimd_suppressed(&self) -> bool {
-        let inner = self.inner.lock().await;
-        inner.suppressed_slots > 0
+    /// Returns the number of dispatch slots currently suppressed by AIMD.
+    /// The consumer loop should only spawn when `in_flight < parallelism - suppressed`.
+    pub async fn suppressed_slots_count(&self) -> u32 {
+        self.inner.lock().await.suppressed_slots
     }
 
     /// Update the peak-concurrent counter. Call with the current in-flight

@@ -1189,10 +1189,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 );
             }
         }
-        let aimd_suppressed = match &governor_arc {
-            Some(g) => g.is_aimd_suppressed().await,
-            None => false,
+        let aimd_suppressed_count = match &governor_arc {
+            Some(g) => g.suppressed_slots_count().await,
+            None => 0,
         };
+        let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
         if halted {
             while let Some(inst) = pending.pop_front() {
                 results.push(RunSlotResult::new(
@@ -1201,7 +1202,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 ));
                 budget_halted += 1;
             }
-        } else if !aimd_suppressed {
+        } else if in_flight < effective_parallelism {
             if let Some(inst) = pending.pop_front() {
                 spawn_one(inst, &mut set, governor_arc.clone());
                 in_flight += 1;
@@ -1281,22 +1282,16 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         )),
         cost_limit_usd: args.cost_limit_usd,
         instances: instance_results,
-        rate_limit_events: governor_arc
-            .as_ref()
-            .map(futures_util_block_on_events),
+        rate_limit_events: match governor_arc.as_ref() {
+            Some(g) => Some(g.events().await),
+            None => None,
+        },
     };
     std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
 
     Ok(sweep)
 }
 
-// Collect governor telemetry synchronously after the async sweep loop.
-// The governor Arc is still exclusively ours at this point so we can block.
-fn futures_util_block_on_events(
-    g: &std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>,
-) -> crate::run::rate_limit::RateLimitEvents {
-    tokio::runtime::Handle::current().block_on(g.events())
-}
 
 #[allow(clippy::too_many_lines)]
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
@@ -4117,7 +4112,7 @@ instance = "inst"
         g.report_429(None).await;
         g.report_429(None).await;
         // Only 2 consecutive 429s without Retry-After — AIMD should NOT trigger
-        assert!(!g.is_aimd_suppressed().await);
+        assert!(!g.suppressed_slots_count().await > 0);
     }
 
     #[tokio::test]
@@ -4128,7 +4123,7 @@ instance = "inst"
         g.report_429(None).await;
         g.report_429(None).await;
         assert!(
-            g.is_aimd_suppressed().await,
+            g.suppressed_slots_count().await > 0,
             "AIMD should suppress after 3 consecutive 429s without Retry-After"
         );
     }
@@ -4144,7 +4139,7 @@ instance = "inst"
         g.report_429(None).await;
         g.report_429(None).await;
         // Only 2 consecutive no-retry-after 429s after the reset — no AIMD
-        assert!(!g.is_aimd_suppressed().await);
+        assert!(!g.suppressed_slots_count().await > 0);
     }
 
     #[tokio::test]
