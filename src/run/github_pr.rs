@@ -11,6 +11,7 @@ use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use crate::error::Error;
@@ -140,7 +141,7 @@ pub fn build_pr_plan(
     }
     let base_branch = validate_branch_component(&options.target_branch, "target branch")?;
     let prefix = normalize_branch_prefix(&options.branch_prefix)?;
-    let task_slug = slug_for_branch(task_id);
+    let task_slug = task_branch_component(task_id);
     let head_branch = format!("{prefix}/{task_slug}");
     let summary = summarize_patch(patch_text);
     let title = format!("rust-swe-agent: {task_id}");
@@ -705,9 +706,24 @@ fn validate_branch_component(raw: &str, label: &str) -> Result<String, Error> {
     Ok(trimmed.to_owned())
 }
 
+fn task_branch_component(raw: &str) -> String {
+    let slug = slug_for_branch(raw);
+    let digest = short_task_id_hash(raw);
+    format!("{slug}-{digest}")
+}
+
 fn slug_for_branch(raw: &str) -> String {
     let slug = slug_path(raw);
     if slug.is_empty() { "task".into() } else { slug }
+}
+
+fn short_task_id_hash(raw: &str) -> String {
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut out = String::with_capacity(32);
+    for byte in &digest[..16] {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn slug_path(raw: &str) -> String {

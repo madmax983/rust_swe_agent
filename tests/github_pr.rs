@@ -12,6 +12,8 @@ index e69de29..8ab686e 100644\n\
 +pub fn meaning() -> u32 {\n\
 +    42\n\
 +}\n";
+const EXPECTED_HEAD_BRANCH: &str =
+    "rust-swe-agent/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec";
 
 fn options() -> GithubPrOptions {
     GithubPrOptions {
@@ -36,7 +38,7 @@ fn pr_plan_is_deterministic_and_mentions_trajectory() {
 
     assert_eq!(first, second);
     assert_eq!(first.base_branch, "trunk");
-    assert_eq!(first.head_branch, "rust-swe-agent/sympy-sympy-12345");
+    assert_eq!(first.head_branch, EXPECTED_HEAD_BRANCH);
     assert!(first.title.contains("sympy__sympy-12345"));
     assert!(
         first
@@ -50,6 +52,23 @@ fn pr_plan_is_deterministic_and_mentions_trajectory() {
 }
 
 #[test]
+fn pr_head_branch_preserves_task_id_uniqueness_when_slugs_collide() {
+    let mut first_options = options();
+    first_options.task_id = "repo_x-123".into();
+    let mut second_options = options();
+    second_options.task_id = "repo-x-123".into();
+
+    let first = build_pr_plan(&first_options, SIMPLE_PATCH).unwrap();
+    let second = build_pr_plan(&second_options, SIMPLE_PATCH).unwrap();
+    let first_again = build_pr_plan(&first_options, SIMPLE_PATCH).unwrap();
+
+    assert!(first.head_branch.starts_with("rust-swe-agent/repo-x-123"));
+    assert!(second.head_branch.starts_with("rust-swe-agent/repo-x-123"));
+    assert_ne!(first.head_branch, second.head_branch);
+    assert_eq!(first.head_branch, first_again.head_branch);
+}
+
+#[test]
 fn dry_run_renders_pr_fields_without_token_material() {
     let plan = build_pr_plan(&options(), SIMPLE_PATCH).unwrap();
     let rendered = render_dry_run(&plan);
@@ -57,7 +76,7 @@ fn dry_run_renders_pr_fields_without_token_material() {
     for expected in [
         "target_repo: madmax983/rust_swe_agent",
         "base: trunk",
-        "head: rust-swe-agent/sympy-sympy-12345",
+        "head: rust-swe-agent/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec",
         "title:",
         "body:",
         "patch_summary:",
