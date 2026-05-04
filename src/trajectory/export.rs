@@ -49,6 +49,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -106,6 +109,57 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut html = String::new();
+        html.push_str("<!DOCTYPE html>\n<html>\n<head>\n");
+        html.push_str("<title>Trajectory Export</title>\n");
+        html.push_str("<style>\n");
+        html.push_str("  body { font-family: sans-serif; margin: 2rem; }\n");
+        html.push_str("  .message { padding: 1rem; margin-bottom: 1rem; border-radius: 4px; }\n");
+        html.push_str("  .system { background: #e2e8f0; }\n");
+        html.push_str("  .user { background: #dbeafe; }\n");
+        html.push_str("  .assistant { background: #dcfce7; }\n");
+        html.push_str("  .tool { background: #fef08a; }\n");
+        html.push_str("</style>\n</head>\n<body>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let safe_task = task.replace('<', "&lt;").replace('>', "&gt;");
+            let _ = writeln!(html, "<h1>Task: {safe_task}</h1>");
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let safe_outcome = outcome.replace('<', "&lt;").replace('>', "&gt;");
+            let _ = writeln!(html, "<p><strong>Outcome: {safe_outcome}</strong></p>");
+        }
+
+        html.push_str("<div class=\"messages\">\n");
+        for msg in &trajectory.messages {
+            let safe_content = msg
+                .content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('\n', "<br>\n");
+            let role_class = match msg.role.as_str() {
+                "system" => "system",
+                "user" => "user",
+                "assistant" => "assistant",
+                "tool" => "tool",
+                _ => "unknown",
+            };
+            let role = &msg.role;
+            let _ = writeln!(html, "  <div class=\"message {role_class}\">");
+            let _ = writeln!(html, "    <strong>{role}:</strong>");
+            let _ = writeln!(html, "    <div>{safe_content}</div>");
+            html.push_str("  </div>\n");
+        }
+        html.push_str("</div>\n</body>\n</html>");
+
+        html
     }
 }
 
@@ -231,5 +285,28 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt <script>"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("Add a feature"));
+        assert!(html.contains("Outcome: submitted"));
+        assert!(html.contains("System prompt &lt;script&gt;"));
+        assert!(html.contains("class=\"message user\""));
+        assert!(html.contains("Hello agent"));
+        assert!(html.contains("class=\"message assistant\""));
+        assert!(html.contains("Hello user"));
     }
 }
