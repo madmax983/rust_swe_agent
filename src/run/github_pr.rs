@@ -375,6 +375,7 @@ async fn push_patch_branch(
         deadline,
     )
     .await?;
+    fetch_existing_head_branch(work.path(), &plan.head_branch, token, deadline).await?;
     run_git(
         work.path(),
         &["checkout", "-B", &plan.head_branch, "FETCH_HEAD"],
@@ -415,6 +416,42 @@ async fn push_patch_branch(
     )
     .await?;
     Ok(())
+}
+
+async fn fetch_existing_head_branch(
+    cwd: &Path,
+    head_branch: &str,
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), Error> {
+    let remote_ref = format!("refs/heads/{head_branch}");
+    let tracking_ref = format!("refs/remotes/origin/{head_branch}");
+    let refspec = format!("{remote_ref}:{tracking_ref}");
+    let args = ["fetch", "--depth=1", "origin", refspec.as_str()];
+    let output = run_git_capture(cwd, &args, token, deadline).await?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if is_missing_remote_ref(&stderr) || is_missing_remote_ref(&stdout) {
+        return Ok(());
+    }
+
+    let stderr = sanitize_secret(&stderr, token);
+    let stdout = sanitize_secret(&stdout, token);
+    Err(Error::Github(format!(
+        "git {} failed: {}\n{}",
+        sanitized_args(&args, token),
+        stderr.trim(),
+        stdout.trim()
+    )))
+}
+
+fn is_missing_remote_ref(output: &str) -> bool {
+    let output = output.to_ascii_lowercase();
+    output.contains("couldn't find remote ref") || output.contains("could not find remote ref")
 }
 
 async fn run_git(
@@ -794,6 +831,17 @@ mod tests {
         assert!(second.path().exists());
     }
 
+    #[test]
+    fn missing_remote_ref_detection_accepts_git_wording() {
+        assert!(is_missing_remote_ref(
+            "fatal: couldn't find remote ref refs/heads/rust-swe-agent/task"
+        ));
+        assert!(is_missing_remote_ref(
+            "fatal: could not find remote ref refs/heads/rust-swe-agent/task"
+        ));
+        assert!(!is_missing_remote_ref("fatal: authentication failed"));
+    }
+
     #[tokio::test]
     async fn process_capture_timeout_terminates_child() {
         let work = create_temp_workdir().unwrap();
@@ -823,5 +871,168 @@ mod tests {
         assert!(err.to_string().contains("timed out"), "{err}");
         tokio::time::sleep(Duration::from_millis(900)).await;
         assert!(!marker.exists(), "timed-out child still wrote side effect");
+    }
+
+    #[tokio::test]
+    async fn fetches_existing_head_branch_before_force_with_lease_push() {
+        let root = create_temp_workdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let seed = root.path().join("seed");
+        let work = root.path().join("work");
+        let token = "secret";
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let head_branch = "rust-swe-agent/existing-task";
+        let head_refspec = format!("HEAD:refs/heads/{head_branch}");
+
+        let remote_arg = seed_remote_with_existing_head(
+            root.path(),
+            &seed,
+            &remote,
+            head_branch,
+            token,
+            deadline,
+        )
+        .await;
+        prepare_publish_worktree(&work, &remote_arg, head_branch, token, deadline).await;
+
+        let stale_push = run_git_capture(
+            &work,
+            &["push", "--force-with-lease", "origin", &head_refspec],
+            token,
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !stale_push.status.success(),
+            "push unexpectedly succeeded without origin/{head_branch}"
+        );
+
+        fetch_existing_head_branch(&work, head_branch, token, deadline)
+            .await
+            .unwrap();
+        git(
+            &work,
+            &["push", "--force-with-lease", "origin", &head_refspec],
+            token,
+            deadline,
+        )
+        .await;
+    }
+
+    async fn seed_remote_with_existing_head(
+        root: &Path,
+        seed: &Path,
+        remote: &Path,
+        head_branch: &str,
+        token: &str,
+        deadline: tokio::time::Instant,
+    ) -> String {
+        std::fs::create_dir_all(seed).unwrap();
+        let remote_arg = git_path(remote);
+        let head_refspec = format!("HEAD:refs/heads/{head_branch}");
+
+        git(root, &["init", "--bare", &remote_arg], token, deadline).await;
+        git(seed, &["init", "-q"], token, deadline).await;
+        configure_git_author(seed, token, deadline).await;
+        std::fs::write(seed.join("file.txt"), "base\n").unwrap();
+        git(seed, &["add", "file.txt"], token, deadline).await;
+        git(seed, &["commit", "-q", "-m", "base"], token, deadline).await;
+        git(seed, &["branch", "-M", "main"], token, deadline).await;
+        git(
+            seed,
+            &["remote", "add", "origin", &remote_arg],
+            token,
+            deadline,
+        )
+        .await;
+        git(
+            seed,
+            &["push", "origin", "HEAD:refs/heads/main"],
+            token,
+            deadline,
+        )
+        .await;
+
+        git(
+            seed,
+            &["checkout", "-q", "-B", head_branch],
+            token,
+            deadline,
+        )
+        .await;
+        std::fs::write(seed.join("file.txt"), "existing head\n").unwrap();
+        git(seed, &["add", "file.txt"], token, deadline).await;
+        git(
+            seed,
+            &["commit", "-q", "-m", "existing head"],
+            token,
+            deadline,
+        )
+        .await;
+        git(seed, &["push", "origin", &head_refspec], token, deadline).await;
+        remote_arg
+    }
+
+    async fn prepare_publish_worktree(
+        work: &Path,
+        remote_arg: &str,
+        head_branch: &str,
+        token: &str,
+        deadline: tokio::time::Instant,
+    ) {
+        std::fs::create_dir_all(work).unwrap();
+        git(work, &["init", "-q"], token, deadline).await;
+        configure_git_author(work, token, deadline).await;
+        git(
+            work,
+            &["remote", "add", "origin", remote_arg],
+            token,
+            deadline,
+        )
+        .await;
+        git(
+            work,
+            &["fetch", "--depth=1", "origin", "main"],
+            token,
+            deadline,
+        )
+        .await;
+        git(
+            work,
+            &["checkout", "-q", "-B", head_branch, "FETCH_HEAD"],
+            token,
+            deadline,
+        )
+        .await;
+        std::fs::write(work.join("file.txt"), "new publish\n").unwrap();
+        git(work, &["add", "file.txt"], token, deadline).await;
+        git(
+            work,
+            &["commit", "-q", "-m", "new publish"],
+            token,
+            deadline,
+        )
+        .await;
+    }
+
+    async fn configure_git_author(cwd: &Path, token: &str, deadline: tokio::time::Instant) {
+        git(
+            cwd,
+            &["config", "user.email", "test@example.invalid"],
+            token,
+            deadline,
+        )
+        .await;
+        git(cwd, &["config", "user.name", "test"], token, deadline).await;
+        git(cwd, &["config", "commit.gpgsign", "false"], token, deadline).await;
+    }
+
+    async fn git(cwd: &Path, args: &[&str], token: &str, deadline: tokio::time::Instant) {
+        run_git(cwd, args, token, deadline).await.unwrap();
+    }
+
+    fn git_path(path: &Path) -> String {
+        path.display().to_string().replace('\\', "/")
     }
 }
