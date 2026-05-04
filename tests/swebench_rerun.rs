@@ -116,6 +116,30 @@ fn write_valid_run(output: &Path, instance_id: &str, run_index: u32, marker: &st
     std::fs::write(patch_path_for_run(output, instance_id, run_index), b"").unwrap();
 }
 
+fn write_valid_tested_run(output: &Path, instance_id: &str, run_index: u32, marker: &str) {
+    let mut info = TrajectoryInfo {
+        outcome: Some(outcome::SUBMITTED.into()),
+        exit_reason: Some("submitted".into()),
+        steps: Some(0),
+        tests_run_before_submit: true,
+        last_tests_passed: Some(true),
+        ..Default::default()
+    };
+    info.other.insert(
+        "test_marker".into(),
+        serde_json::Value::String(marker.into()),
+    );
+    let traj = Trajectory {
+        trajectory_format: FORMAT_VERSION.into(),
+        info,
+        messages: vec![],
+    };
+    let traj_path = trajectory_path_for_run(output, instance_id, run_index);
+    std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();
+    std::fs::write(&traj_path, serde_json::to_string_pretty(&traj).unwrap()).unwrap();
+    std::fs::write(patch_path_for_run(output, instance_id, run_index), b"").unwrap();
+}
+
 #[tokio::test]
 async fn rerun_writes_nested_run_files_and_pass_at_k_summary() {
     let work = tempfile::tempdir().unwrap();
@@ -244,4 +268,31 @@ async fn resume_skips_only_completed_run_slots() {
     );
     assert!(trajectory_path_for_run(&output, "task-a", 2).exists());
     assert!(trajectory_path_for_run(&output, "task-a", 3).exists());
+}
+
+#[tokio::test]
+async fn resumed_tested_run_does_not_inflate_fresh_submitted_with_tests_count() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    write_dataset(&dataset, &["task-a"]);
+
+    write_valid_tested_run(&output, "task-a", 1, "preserved-tested-run-1");
+
+    let mut args = base_args(dataset, output.clone(), config_with_workdir(&repo));
+    args.resume = true;
+    args.reruns = 2;
+    let results = run(args).await.unwrap();
+
+    assert_eq!(results.submitted, 1, "only run-2 should launch fresh");
+    assert_eq!(results.skipped, 1, "run-1 should resume-skip");
+    assert_eq!(
+        results.submitted_with_tests, 0,
+        "resumed test telemetry should not count against fresh submitted denominator"
+    );
+    let table = results.summary_table();
+    assert!(table.contains("Submitted w/tests:  0/1"), "{table}");
 }

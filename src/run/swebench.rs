@@ -592,10 +592,7 @@ struct TestBehaviorResolutionCounts {
 
 fn test_behavior_resolution_counts(instances: &[InstanceResult]) -> TestBehaviorResolutionCounts {
     let mut counts = TestBehaviorResolutionCounts::default();
-    for row in instances
-        .iter()
-        .filter(|row| row.outcome.as_deref() == Some(outcome::SUBMITTED))
-    {
+    for row in instances.iter().filter(|row| has_submitted_sample(row)) {
         if row.tests_run_before_submit {
             counts.with_tests += 1;
             if resolved_count(row) > 0 {
@@ -609,6 +606,12 @@ fn test_behavior_resolution_counts(instances: &[InstanceResult]) -> TestBehavior
         }
     }
     counts
+}
+
+fn has_submitted_sample(row: &InstanceResult) -> bool {
+    // Aggregate rerun rows keep run-1 outcome for pass@1 compatibility, so
+    // later submitted/resolved samples are represented by `resolved_count`.
+    row.outcome.as_deref() == Some(outcome::SUBMITTED) || resolved_count(row) > 0
 }
 
 fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
@@ -1321,7 +1324,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let sweep = SweepResults {
         total,
         submitted,
-        submitted_with_tests: accounting.submitted_with_tests,
+        submitted_with_tests: submitted_with_tests_for_fresh_submissions(&results),
         skipped,
         errored,
         failures_by_category,
@@ -1982,7 +1985,6 @@ impl RunSlotResult {
 #[derive(Debug, Default, Clone, Copy)]
 struct SweepAccounting {
     with_patch: usize,
-    submitted_with_tests: usize,
     tokens: TokenBreakdown,
     total_retries: u64,
     retried_instances: usize,
@@ -1992,9 +1994,6 @@ impl SweepAccounting {
     fn add_result(&mut self, result: &InstanceResult) {
         if result.non_empty_patch && result.outcome.as_deref() == Some(outcome::SUBMITTED) {
             self.with_patch += 1;
-        }
-        if result.tests_run_before_submit && result.outcome.as_deref() == Some(outcome::SUBMITTED) {
-            self.submitted_with_tests += 1;
         }
         self.total_retries = self
             .total_retries
@@ -2024,6 +2023,17 @@ impl SweepAccounting {
                 .saturating_add(completion_tokens);
         }
     }
+}
+
+fn submitted_with_tests_for_fresh_submissions(results: &[RunSlotResult]) -> usize {
+    results
+        .iter()
+        .filter(|r| {
+            r.result.exit_reason != "skipped_resume"
+                && r.result.outcome.as_deref() == Some(outcome::SUBMITTED)
+                && r.result.tests_run_before_submit
+        })
+        .count()
 }
 
 fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
@@ -3252,6 +3262,28 @@ mod tests {
             t.contains("Resolved by tests:  tests_run=true 1/1, tests_run=false 1/1"),
             "{t}"
         );
+    }
+
+    #[test]
+    fn test_behavior_resolution_counts_include_later_rerun_submission() {
+        let first_error = test_instance_result("rerun-task", false, false);
+        let later_submitted_with_tests = test_instance_result("rerun-task", true, true);
+        let instances = aggregate_run_results(
+            &[
+                RunSlotResult::new(1, first_error),
+                RunSlotResult::new(2, later_submitted_with_tests),
+            ],
+            2,
+        );
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].resolved_count, 1);
+        assert!(instances[0].tests_run_before_submit);
+
+        let counts = test_behavior_resolution_counts(&instances);
+        assert_eq!(counts.with_tests, 1);
+        assert_eq!(counts.resolved_with_tests, 1);
+        assert_eq!(counts.without_tests, 0);
+        assert_eq!(counts.resolved_without_tests, 0);
     }
 
     #[test]
