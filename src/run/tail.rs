@@ -5,6 +5,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use comfy_table::Table;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
 use serde::Serialize;
 
 use crate::error::Error;
@@ -637,9 +640,19 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         out.push_str("Failures:    none\n");
     } else {
         out.push_str("Failures:\n");
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Category", "Count"]);
+
         for (category, count) in &snapshot.failure_counts {
-            let _ = writeln!(out, "  - {}: {count}", failure_label(*category));
+            table.add_row(vec![
+                failure_label(*category).to_string(),
+                count.to_string(),
+            ]);
         }
+        let _ = writeln!(out, "{table}");
     }
     if let Some(reason) = &snapshot.abort_reason {
         let _ = writeln!(out, "Abort:       {reason}");
