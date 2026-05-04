@@ -166,6 +166,11 @@ pub struct InstanceResult {
     pub duration_secs: Option<f64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Failure from the GitHub PR publication side effect. This is separate
+    /// from `error` so a submitted patch stays submitted even if publishing
+    /// the PR fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_pr_error: Option<String>,
     /// `true` once the runner persisted a `.patch` artifact for this
     /// instance — even an empty diff. Submitted instances missing a
     /// patch indicate a capture failure (which downgrades `outcome` to
@@ -1089,7 +1094,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         }
                     }
                     if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                        let r = resume_snapshot_for_run(
+                        let mut r = resume_snapshot_for_run(
                             &args.output_dir,
                             &inst.instance_id,
                             run_index,
@@ -1097,6 +1102,22 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &patch_path,
                             &prior_results,
                         );
+                        let traj_path = existing_trajectory_path_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                        );
+                        r = publish_github_pr_for_result(
+                            r,
+                            GithubPrPublication {
+                                config: args.github_pr.as_ref(),
+                                instance_id: &inst.instance_id,
+                                run_index,
+                                trajectory_path: &traj_path,
+                                patch_path: &patch_path,
+                            },
+                        )
+                        .await;
                         bump_cost(
                             r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
@@ -1238,6 +1259,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         completion_tokens: None,
                         duration_secs: None,
                         error: Some(e.to_string()),
+                        github_pr_error: None,
                         patch_present: false,
                         non_empty_patch: false,
                         attempts: 1,
@@ -1962,6 +1984,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         completion_tokens: None,
         duration_secs: None,
         error: None,
+        github_pr_error: None,
         patch_present: false,
         non_empty_patch: false,
         attempts: 1,
@@ -2049,12 +2072,7 @@ fn submitted_with_tests_for_fresh_submissions(results: &[RunSlotResult]) -> usiz
 fn github_pr_failure_count_for_run_slots(results: &[RunSlotResult]) -> usize {
     results
         .iter()
-        .filter(|r| {
-            r.result
-                .error
-                .as_deref()
-                .is_some_and(|err| err.contains("github pr"))
-        })
+        .filter(|r| r.result.github_pr_error.is_some())
         .count()
 }
 
@@ -2102,6 +2120,7 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
         );
         aggregate.duration_secs = sum_f64(rows.iter().filter_map(|r| r.result.duration_secs));
         aggregate.error.clone_from(&first.error);
+        aggregate.github_pr_error = rows.iter().find_map(|r| r.result.github_pr_error.clone());
         aggregate.patch_present = rows.iter().any(|r| r.result.patch_present);
         aggregate.non_empty_patch = rows.iter().any(|r| r.result.non_empty_patch);
         aggregate.attempts = rows
@@ -2287,6 +2306,7 @@ fn skipped_result_from_info(
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
+        github_pr_error: None,
         patch_present,
         non_empty_patch,
         attempts: 1,
@@ -2309,6 +2329,7 @@ fn skipped_result_from_prior_result(
     let mut out = r.clone();
     out.exit_reason = "skipped_resume".into();
     out.error = None;
+    out.github_pr_error = None;
     out.patch_present = traj_based.patch_present;
     out.non_empty_patch = traj_based.non_empty_patch;
     out.tests_run_before_submit = traj_based.tests_run_before_submit;
@@ -2686,6 +2707,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             completion_tokens: Some(total_completion_tokens),
             duration_secs: info.as_ref().and_then(|i| i.duration_secs),
             error: run_err.map(|e| e.to_string()),
+            github_pr_error: None,
             patch_present,
             non_empty_patch,
             attempts,
@@ -2766,10 +2788,7 @@ async fn publish_github_pr_for_result(
             }
         }
         Err(err) => {
-            current.exit_reason = "error".into();
-            current.outcome = Some(outcome::ERROR.into());
-            current.failure_category = Some(FailureCategory::AgentInternal);
-            current.error = Some(err.to_string());
+            current.github_pr_error = Some(err.to_string());
         }
     }
     current
@@ -3128,6 +3147,7 @@ mod tests {
             completion_tokens: Some(0),
             duration_secs: Some(0.0),
             error: None,
+            github_pr_error: None,
             patch_present: submitted,
             non_empty_patch: submitted,
             attempts: 1,
@@ -3163,20 +3183,54 @@ mod tests {
         assert_eq!(actual.error, result.error);
     }
 
+    #[tokio::test]
+    async fn github_pr_publication_failure_preserves_submission_outcome() {
+        let result = test_instance_result("inst", true, true);
+        let config = crate::run::github_pr::GithubPrSweepConfig {
+            target_repo: "not-a-valid-owner-repo".into(),
+            target_branch: "trunk".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: crate::run::github_pr::PublishMode::DryRun,
+            timeout_secs: 1,
+            max_retries: 0,
+            backoff_base_ms: 1,
+            branch_prefix: "rust-swe-agent".into(),
+        };
+
+        let actual = publish_github_pr_for_result(
+            result.clone(),
+            GithubPrPublication {
+                config: Some(&config),
+                instance_id: "inst",
+                run_index: 1,
+                trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
+                patch_path: std::path::Path::new("inst/run-1.patch"),
+            },
+        )
+        .await;
+
+        assert_eq!(actual.outcome, result.outcome);
+        assert_eq!(actual.failure_category, result.failure_category);
+        assert_eq!(actual.error, None);
+        assert!(actual.github_pr_error.is_some());
+        assert_eq!(
+            github_pr_failure_count_for_run_slots(&[RunSlotResult::new(1, actual)]),
+            1
+        );
+    }
+
     #[test]
     fn github_pr_failure_count_includes_later_rerun_slots() {
         let first = RunSlotResult::new(1, test_instance_result("rerun-task", true, true));
         let mut later = test_instance_result("rerun-task", true, true);
-        later.exit_reason = "error".into();
-        later.outcome = Some(outcome::ERROR.into());
-        later.failure_category = Some(FailureCategory::AgentInternal);
-        later.error = Some("github pr: timed out after 1s opening PR".into());
+        later.github_pr_error = Some("tempdir creation failed".into());
 
         let results = vec![first, RunSlotResult::new(2, later)];
         let aggregate = aggregate_run_results(&results, 2);
 
         assert_eq!(aggregate.len(), 1);
         assert_eq!(aggregate[0].error, None);
+        assert!(aggregate[0].github_pr_error.is_some());
         assert_eq!(github_pr_failure_count_for_run_slots(&results), 1);
     }
 
@@ -3256,6 +3310,7 @@ mod tests {
             completion_tokens: Some(100_000),
             duration_secs: None,
             error: None,
+            github_pr_error: None,
             patch_present: false,
             non_empty_patch: false,
             attempts: 1,

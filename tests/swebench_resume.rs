@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::Command;
 
 use rust_swe_agent::Config;
+use rust_swe_agent::run::github_pr::{GithubPrSweepConfig, PublishMode};
 use rust_swe_agent::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
@@ -497,4 +498,78 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         pred.get("model_patch").and_then(serde_json::Value::as_str),
         Some("diff --git a/x b/x\n")
     );
+}
+
+#[tokio::test]
+async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["already-done"]);
+
+    let traj_path = output.join("already-done.traj.json");
+    write_valid_trajectory(&traj_path, "resume-pr");
+    std::fs::write(output.join("already-done.patch"), "diff --git a/x b/x\n").unwrap();
+
+    let cfg = config_with_workdir(&repo);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        github_pr: Some(GithubPrSweepConfig {
+            target_repo: "not-a-valid-owner-repo".into(),
+            target_branch: "trunk".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: PublishMode::DryRun,
+            timeout_secs: 1,
+            max_retries: 0,
+            backoff_base_ms: 1,
+            branch_prefix: "rust-swe-agent".into(),
+        }),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.skipped, 1);
+    assert_eq!(results.github_pr_failures, 1);
+    assert_eq!(results.instances.len(), 1);
+    let row = &results.instances[0];
+    assert_eq!(row.outcome.as_deref(), Some(outcome::SUBMITTED));
+    assert!(row.github_pr_error.is_some());
+
+    let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert_eq!(preds.lines().count(), 1, "{preds}");
 }

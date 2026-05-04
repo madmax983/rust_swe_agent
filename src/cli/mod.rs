@@ -385,6 +385,8 @@ fn mini_github_pr_options(
     let target_repo = required_github_arg(m.github_pr.target_repo.as_deref(), "--target-repo")?;
     let target_branch =
         required_github_arg(m.github_pr.target_branch.as_deref(), "--target-branch")?;
+    crate::run::github_pr::validate_branch_prefix(&m.github_pr.github_pr_branch_prefix)
+        .map_err(Error::Config)?;
     let patch_path = m.output.join(format!("{trajectory_name}.patch"));
     let trajectory_path = m.output.join(format!("{trajectory_name}.traj.json"));
     Ok(Some(crate::run::github_pr::GithubPrOptions {
@@ -434,6 +436,8 @@ fn validate_swebench_github_pr_args(github: &args::SwebenchGithubPrArgs) -> Resu
     }
     let _ = required_github_arg(github.target_repo.as_deref(), "--target-repo")?;
     let _ = required_github_arg(github.target_branch.as_deref(), "--target-branch")?;
+    crate::run::github_pr::validate_branch_prefix(&github.github_pr_branch_prefix)
+        .map_err(Error::Config)?;
     Ok(())
 }
 
@@ -862,7 +866,8 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::validate_observation_head_ratio;
+    use super::{args, validate_observation_head_ratio, validate_swebench_github_pr_args};
+    use crate::error::Error;
 
     #[test]
     fn observation_head_ratio_accepts_closed_unit_interval() {
@@ -877,5 +882,25 @@ mod tests {
         assert!(validate_observation_head_ratio(1.01).is_err());
         assert!(validate_observation_head_ratio(f64::NAN).is_err());
         assert!(validate_observation_head_ratio(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn swebench_github_pr_validation_rejects_empty_slug_branch_prefix() {
+        let err = validate_swebench_github_pr_args(&args::SwebenchGithubPrArgs {
+            open_prs: true,
+            target_repo: Some("madmax983/rust_swe_agent".into()),
+            target_branch: Some("trunk".into()),
+            github_token_env: "GITHUB_TOKEN".into(),
+            github_pr_dry_run: false,
+            github_pr_timeout_secs: 30,
+            github_pr_max_retries: 2,
+            github_pr_backoff_base_ms: 250,
+            github_pr_branch_prefix: "---___".into(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("branch prefix"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
     }
 }

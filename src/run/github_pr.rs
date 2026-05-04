@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
+use crate::error::ConfigError;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -140,7 +141,7 @@ pub fn build_pr_plan(
         ));
     }
     let base_branch = validate_branch_component(&options.target_branch, "target branch")?;
-    let prefix = normalize_branch_prefix(&options.branch_prefix)?;
+    let prefix = normalize_branch_prefix(&options.branch_prefix).map_err(Error::Github)?;
     let task_slug = task_branch_component(task_id);
     let head_branch = format!("{prefix}/{task_slug}");
     let summary = summarize_patch(patch_text);
@@ -690,12 +691,24 @@ fn parse_repo(raw: &str) -> Result<RepoParts, Error> {
     })
 }
 
-fn normalize_branch_prefix(raw: &str) -> Result<String, Error> {
+pub fn validate_branch_prefix(raw: &str) -> Result<(), ConfigError> {
+    normalize_branch_prefix(raw)
+        .map(|_| ())
+        .map_err(ConfigError::Invalid)
+}
+
+fn normalize_branch_prefix(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().trim_matches('/');
     if trimmed.is_empty() {
-        return Err(Error::Github("branch prefix must not be empty".into()));
+        return Err("branch prefix must not be empty".into());
     }
-    Ok(slug_path(trimmed))
+    let slug = slug_path(trimmed);
+    if slug.is_empty() {
+        return Err(format!(
+            "branch prefix `{raw}` must slug to at least one ASCII alphanumeric character"
+        ));
+    }
+    Ok(slug)
 }
 
 fn validate_branch_component(raw: &str, label: &str) -> Result<String, Error> {

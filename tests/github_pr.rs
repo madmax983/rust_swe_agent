@@ -69,6 +69,17 @@ fn pr_head_branch_preserves_task_id_uniqueness_when_slugs_collide() {
 }
 
 #[test]
+fn pr_plan_rejects_branch_prefix_that_slugs_to_empty() {
+    let mut options = options();
+    options.branch_prefix = "---___".into();
+
+    let err = build_pr_plan(&options, SIMPLE_PATCH).unwrap_err();
+
+    assert!(err.to_string().contains("branch prefix"), "{err}");
+    assert!(err.to_string().contains("slug"), "{err}");
+}
+
+#[test]
 fn dry_run_renders_pr_fields_without_token_material() {
     let plan = build_pr_plan(&options(), SIMPLE_PATCH).unwrap();
     let rendered = render_dry_run(&plan);
