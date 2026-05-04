@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -345,7 +345,7 @@ fn read_github_token(token_env: &str) -> Result<String, Error> {
 }
 
 fn push_patch_branch(plan: &PullRequestPlan, patch_text: &str, token: &str) -> Result<(), Error> {
-    let work = TempWorkdir::new()?;
+    let work = create_temp_workdir()?;
     let repo_url = authed_repo_url(&plan.target_repo, token);
     run_git(work.path(), &["init", "-q"], token)?;
     run_git(
@@ -463,32 +463,11 @@ fn percent_encode(raw: &str) -> String {
     out
 }
 
-struct TempWorkdir {
-    path: PathBuf,
-}
-
-impl TempWorkdir {
-    fn new() -> Result<Self, Error> {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let path = std::env::temp_dir().join(format!(
-            "rust-swe-agent-github-pr-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempWorkdir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
+fn create_temp_workdir() -> Result<tempfile::TempDir, Error> {
+    tempfile::Builder::new()
+        .prefix("rust-swe-agent-github-pr-")
+        .tempdir()
+        .map_err(Error::from)
 }
 
 struct GithubApiClient {
@@ -728,5 +707,15 @@ mod tests {
             ),
             "https://x-access-token:<redacted>@github.com/o/r.git"
         );
+    }
+
+    #[test]
+    fn temp_workdirs_are_unique_and_created_by_tempfile() {
+        let first = create_temp_workdir().unwrap();
+        let second = create_temp_workdir().unwrap();
+
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().exists());
+        assert!(second.path().exists());
     }
 }

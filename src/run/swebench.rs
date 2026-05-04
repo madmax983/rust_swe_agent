@@ -2679,27 +2679,17 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
         };
-        let mut current = current;
-        if current.outcome.as_deref() == Some(outcome::SUBMITTED) && current.patch_present {
-            if let Some(config) = &github_pr {
-                let pr_options = config.options_for_run(&id, run_index, &traj_path, &patch_path);
-                match crate::run::github_pr::publish(pr_options).await {
-                    Ok(result) => {
-                        if let Some(output) = result.dry_run_output {
-                            print!("{output}");
-                        } else if let Some(url) = result.url {
-                            println!("github_pr_url[{id}#run-{run_index}]: {url}");
-                        }
-                    }
-                    Err(err) => {
-                        current.exit_reason = "error".into();
-                        current.outcome = Some(outcome::ERROR.into());
-                        current.failure_category = Some(FailureCategory::AgentInternal);
-                        current.error = Some(err.to_string());
-                    }
-                }
-            }
-        }
+        let current = publish_github_pr_for_result(
+            current,
+            GithubPrPublication {
+                config: github_pr.as_ref(),
+                instance_id: &id,
+                run_index,
+                trajectory_path: &traj_path,
+                patch_path: &patch_path,
+            },
+        )
+        .await;
 
         let retryable = current
             .failure_category
@@ -2718,6 +2708,52 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
     }
 
     terminal.unwrap_or_else(|| budget_halt_result(&id))
+}
+
+struct GithubPrPublication<'a> {
+    config: Option<&'a crate::run::github_pr::GithubPrSweepConfig>,
+    instance_id: &'a str,
+    run_index: u32,
+    trajectory_path: &'a Path,
+    patch_path: &'a Path,
+}
+
+async fn publish_github_pr_for_result(
+    mut current: InstanceResult,
+    publication: GithubPrPublication<'_>,
+) -> InstanceResult {
+    if current.outcome.as_deref() != Some(outcome::SUBMITTED) || !current.patch_present {
+        return current;
+    }
+    let Some(config) = publication.config else {
+        return current;
+    };
+
+    let pr_options = config.options_for_run(
+        publication.instance_id,
+        publication.run_index,
+        publication.trajectory_path,
+        publication.patch_path,
+    );
+    match crate::run::github_pr::publish(pr_options).await {
+        Ok(result) => {
+            if let Some(output) = result.dry_run_output {
+                print!("{output}");
+            } else if let Some(url) = result.url {
+                println!(
+                    "github_pr_url[{}#run-{}]: {url}",
+                    publication.instance_id, publication.run_index
+                );
+            }
+        }
+        Err(err) => {
+            current.exit_reason = "error".into();
+            current.outcome = Some(outcome::ERROR.into());
+            current.failure_category = Some(FailureCategory::AgentInternal);
+            current.error = Some(err.to_string());
+        }
+    }
+    current
 }
 
 fn classify_error(err: &Error) -> FailureCategory {
@@ -3083,6 +3119,29 @@ mod tests {
             tests_run_before_submit: tests_run,
             last_tests_passed: tests_run.then_some(true),
         }
+    }
+
+    #[tokio::test]
+    async fn github_pr_publication_is_noop_when_disabled() {
+        let result = test_instance_result("inst", true, false);
+
+        let actual = publish_github_pr_for_result(
+            result.clone(),
+            GithubPrPublication {
+                config: None,
+                instance_id: "inst",
+                run_index: 1,
+                trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
+                patch_path: std::path::Path::new("inst/run-1.patch"),
+            },
+        )
+        .await;
+
+        assert_eq!(actual.instance_id, result.instance_id);
+        assert_eq!(actual.exit_reason, result.exit_reason);
+        assert_eq!(actual.outcome, result.outcome);
+        assert_eq!(actual.failure_category, result.failure_category);
+        assert_eq!(actual.error, result.error);
     }
 
     #[test]
