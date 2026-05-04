@@ -726,6 +726,8 @@ pub struct SwebenchArgs {
     /// Optional aggregate input-token-rate ceiling across all workers (tokens/min).
     /// When `None`, no TPM cap is enforced (opt-in, no behavior change).
     pub max_input_tpm: Option<u64>,
+    /// Optional GitHub PR publisher for submitted patch artifacts.
+    pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1147,6 +1149,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 task_timeout_secs: args.task_timeout_secs,
                 skip_patch_validation: args.skip_patch_validation,
                 governor,
+                github_pr: args.github_pr.clone(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -2503,6 +2506,7 @@ struct RunOneParams {
     task_timeout_secs: Option<u64>,
     skip_patch_validation: bool,
     governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
+    github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2516,6 +2520,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         task_timeout_secs,
         skip_patch_validation,
         governor,
+        github_pr,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -2674,6 +2679,28 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
         };
+        let mut current = current;
+        if current.outcome.as_deref() == Some(outcome::SUBMITTED) && current.patch_present {
+            if let Some(config) = &github_pr {
+                let pr_options = config.options_for_run(&id, run_index, &traj_path, &patch_path);
+                match crate::run::github_pr::publish(pr_options).await {
+                    Ok(result) => {
+                        if let Some(output) = result.dry_run_output {
+                            print!("{output}");
+                        } else if let Some(url) = result.url {
+                            println!("github_pr_url[{id}#run-{run_index}]: {url}");
+                        }
+                    }
+                    Err(err) => {
+                        current.exit_reason = "error".into();
+                        current.outcome = Some(outcome::ERROR.into());
+                        current.failure_category = Some(FailureCategory::AgentInternal);
+                        current.error = Some(err.to_string());
+                    }
+                }
+            }
+        }
+
         let retryable = current
             .failure_category
             .is_some_and(|cat| retry_policy.should_retry(cat))
@@ -3417,6 +3444,7 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3470,6 +3498,7 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3533,6 +3562,7 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -3620,6 +3650,7 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))
@@ -4214,6 +4245,7 @@ instance = "inst"
             skip_patch_validation: false,
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
+            github_pr: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));

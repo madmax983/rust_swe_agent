@@ -20,6 +20,9 @@ pub enum Error {
     #[error("trajectory io: {0}")]
     Trajectory(String),
 
+    #[error("github pr: {0}")]
+    Github(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

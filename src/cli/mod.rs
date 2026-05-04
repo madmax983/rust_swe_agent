@@ -120,6 +120,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         .trajectory_name
         .clone()
         .unwrap_or_else(|| crate::run::mini::slugify(&m.task));
+    let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
+    let patch_capture = github_pr
+        .as_ref()
+        .map(|options| crate::run::mini::PatchCaptureSpec {
+            base_commit: Some(options.target_branch.clone()),
+            workdir: std::path::PathBuf::from(cfg.root.environment.workdir.clone()),
+            patch_path: options.patch_path.clone(),
+            skip_patch_validation: m.skip_patch_validation,
+        });
 
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
@@ -140,9 +149,18 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         stream_addr,
-        patch_capture: None,
+        patch_capture,
     };
-    crate::run::mini::run(args).await
+    crate::run::mini::run(args).await?;
+    if let Some(options) = github_pr {
+        let traj_path = options.trajectory_ref.clone();
+        if trajectory_submitted(std::path::Path::new(&traj_path))? {
+            publish_github_pr(options).await?;
+        } else {
+            tracing::info!(trajectory = %traj_path, "github PR skipped because run did not submit");
+        }
+    }
+    Ok(())
 }
 
 async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
@@ -176,6 +194,7 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+    validate_swebench_github_pr_args(&sweep_cmd.github_pr)?;
     if sweep_cmd.forecast_first {
         match run_forecast_from_cmd(sweep_cmd.clone()).await? {
             crate::run::forecast::ForecastOutcome::Report(report) => {
@@ -225,6 +244,12 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep complete"
     );
     print!("{}", results.summary_table());
+    let github_pr_failures = github_pr_failure_count(&results);
+    if github_pr_failures > 0 {
+        return Err(Error::Github(format!(
+            "{github_pr_failures} GitHub PR publication(s) failed; see results.json for instance errors"
+        )));
+    }
     Ok(())
 }
 
@@ -257,6 +282,8 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
 async fn run_forecast_from_cmd(
     mut s: args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    s.github_pr.open_prs = false;
+    s.github_pr.github_pr_dry_run = false;
     let calibration_n = s.calibration_n;
     let seed = s.seed.unwrap_or(42);
     let target_n = s.target_n;
@@ -347,6 +374,110 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
     }
 }
 
+fn mini_github_pr_options(
+    m: &args::MiniCmd,
+    _cfg: &Config,
+    trajectory_name: &str,
+) -> Result<Option<crate::run::github_pr::GithubPrOptions>, Error> {
+    if !m.github_pr.open_pr && !m.github_pr.github_pr_dry_run {
+        return Ok(None);
+    }
+    let target_repo = required_github_arg(m.github_pr.target_repo.as_deref(), "--target-repo")?;
+    let target_branch =
+        required_github_arg(m.github_pr.target_branch.as_deref(), "--target-branch")?;
+    let patch_path = m.output.join(format!("{trajectory_name}.patch"));
+    let trajectory_path = m.output.join(format!("{trajectory_name}.traj.json"));
+    Ok(Some(crate::run::github_pr::GithubPrOptions {
+        target_repo,
+        target_branch,
+        task_id: trajectory_name.to_owned(),
+        trajectory_ref: trajectory_path.display().to_string(),
+        patch_path,
+        branch_prefix: m.github_pr.github_pr_branch_prefix.clone(),
+        token_env: m.github_pr.github_token_env.clone(),
+        mode: if m.github_pr.github_pr_dry_run {
+            crate::run::github_pr::PublishMode::DryRun
+        } else {
+            crate::run::github_pr::PublishMode::Open
+        },
+        timeout_secs: m.github_pr.github_pr_timeout_secs,
+        max_retries: m.github_pr.github_pr_max_retries,
+        backoff_base_ms: m.github_pr.github_pr_backoff_base_ms,
+    }))
+}
+
+fn swebench_github_pr_config(
+    github: &args::SwebenchGithubPrArgs,
+) -> Option<crate::run::github_pr::GithubPrSweepConfig> {
+    if !github.open_prs && !github.github_pr_dry_run {
+        return None;
+    }
+    Some(crate::run::github_pr::GithubPrSweepConfig {
+        target_repo: github.target_repo.clone().unwrap_or_default(),
+        target_branch: github.target_branch.clone().unwrap_or_default(),
+        token_env: github.github_token_env.clone(),
+        mode: if github.github_pr_dry_run {
+            crate::run::github_pr::PublishMode::DryRun
+        } else {
+            crate::run::github_pr::PublishMode::Open
+        },
+        timeout_secs: github.github_pr_timeout_secs,
+        max_retries: github.github_pr_max_retries,
+        backoff_base_ms: github.github_pr_backoff_base_ms,
+        branch_prefix: github.github_pr_branch_prefix.clone(),
+    })
+}
+
+fn validate_swebench_github_pr_args(github: &args::SwebenchGithubPrArgs) -> Result<(), Error> {
+    if !github.open_prs && !github.github_pr_dry_run {
+        return Ok(());
+    }
+    let _ = required_github_arg(github.target_repo.as_deref(), "--target-repo")?;
+    let _ = required_github_arg(github.target_branch.as_deref(), "--target-branch")?;
+    Ok(())
+}
+
+fn required_github_arg(value: Option<&str>, name: &str) -> Result<String, Error> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "{name} is required with --open-pr/--github-pr-dry-run"
+            )))
+        })
+}
+
+fn trajectory_submitted(path: &std::path::Path) -> Result<bool, Error> {
+    let text = std::fs::read_to_string(path)?;
+    let trajectory: crate::trajectory::Trajectory = serde_json::from_str(&text)?;
+    Ok(trajectory.info.outcome.as_deref() == Some(crate::trajectory::outcome::SUBMITTED))
+}
+
+async fn publish_github_pr(options: crate::run::github_pr::GithubPrOptions) -> Result<(), Error> {
+    let result = crate::run::github_pr::publish(options).await?;
+    if let Some(output) = result.dry_run_output {
+        print!("{output}");
+    } else if let Some(url) = result.url {
+        println!("github_pr_url: {url}");
+    }
+    Ok(())
+}
+
+fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usize {
+    results
+        .instances
+        .iter()
+        .filter(|result| {
+            result
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("github pr"))
+        })
+        .count()
+}
+
 fn swebench_args_from_cmd(
     s: args::SwebenchCmd,
     cfg: Config,
@@ -354,6 +485,7 @@ fn swebench_args_from_cmd(
 ) -> crate::run::swebench::SwebenchArgs {
     let cfg_max_rpm = cfg.root.sweep.max_rpm;
     let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
+    let github_pr = swebench_github_pr_config(&s.github_pr);
     crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
@@ -395,6 +527,7 @@ fn swebench_args_from_cmd(
         skip_patch_validation: s.skip_patch_validation,
         max_rpm: s.max_rpm.or(cfg_max_rpm),
         max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
+        github_pr,
     }
 }
 

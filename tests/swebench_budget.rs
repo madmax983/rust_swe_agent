@@ -156,6 +156,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -325,6 +326,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -403,6 +405,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -468,6 +471,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -595,6 +599,7 @@ async fn resume_skipped_costs_count_against_budget() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -742,6 +747,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -877,6 +883,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -1017,6 +1024,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();

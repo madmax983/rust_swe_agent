@@ -21,6 +21,84 @@ pub enum OnOffArg {
     Off,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct MiniGithubPrArgs {
+    /// Open a GitHub pull request from the final patch after a submitted run.
+    #[arg(long = "open-pr", default_value_t = false)]
+    pub open_pr: bool,
+
+    /// GitHub repository to target, in `owner/name` form.
+    #[arg(long)]
+    pub target_repo: Option<String>,
+
+    /// Base branch for the pull request and patch capture.
+    #[arg(long)]
+    pub target_branch: Option<String>,
+
+    /// Environment variable containing a GitHub App installation token or PAT.
+    #[arg(long, default_value = "GITHUB_TOKEN")]
+    pub github_token_env: String,
+
+    /// Print PR title/body/base/head/patch summary without GitHub API calls.
+    #[arg(long, default_value_t = false)]
+    pub github_pr_dry_run: bool,
+
+    /// Max seconds spent opening a PR after the run submits.
+    #[arg(long, default_value_t = 30)]
+    pub github_pr_timeout_secs: u64,
+
+    /// Max retries for rate-limited or transient GitHub API responses.
+    #[arg(long, default_value_t = 2)]
+    pub github_pr_max_retries: u32,
+
+    /// Base backoff delay in milliseconds for GitHub API retries.
+    #[arg(long, default_value_t = 250)]
+    pub github_pr_backoff_base_ms: u64,
+
+    /// Deterministic head branch prefix for agent PRs.
+    #[arg(long, default_value = "rust-swe-agent")]
+    pub github_pr_branch_prefix: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SwebenchGithubPrArgs {
+    /// Open GitHub pull requests from submitted sweep patch artifacts.
+    #[arg(long = "open-prs", default_value_t = false)]
+    pub open_prs: bool,
+
+    /// GitHub repository to target, in `owner/name` form.
+    #[arg(long)]
+    pub target_repo: Option<String>,
+
+    /// Base branch for pull requests.
+    #[arg(long)]
+    pub target_branch: Option<String>,
+
+    /// Environment variable containing a GitHub App installation token or PAT.
+    #[arg(long, default_value = "GITHUB_TOKEN")]
+    pub github_token_env: String,
+
+    /// Print PR title/body/base/head/patch summary without GitHub API calls.
+    #[arg(long, default_value_t = false)]
+    pub github_pr_dry_run: bool,
+
+    /// Max seconds each sweep worker may spend opening a PR.
+    #[arg(long, default_value_t = 30)]
+    pub github_pr_timeout_secs: u64,
+
+    /// Max retries for rate-limited or transient GitHub API responses.
+    #[arg(long, default_value_t = 2)]
+    pub github_pr_max_retries: u32,
+
+    /// Base backoff delay in milliseconds for GitHub API retries.
+    #[arg(long, default_value_t = 250)]
+    pub github_pr_backoff_base_ms: u64,
+
+    /// Deterministic head branch prefix for agent PRs.
+    #[arg(long, default_value = "rust-swe-agent")]
+    pub github_pr_branch_prefix: String,
+}
+
 #[derive(Debug, Args)]
 pub struct MiniCmd {
     /// The task prompt.
@@ -78,6 +156,9 @@ pub struct MiniCmd {
     /// Escape hatch for non-git environments; not for normal use.
     #[arg(long, default_value_t = false)]
     pub skip_patch_validation: bool,
+
+    #[command(flatten)]
+    pub github_pr: MiniGithubPrArgs,
 }
 
 #[derive(Debug, Args)]
@@ -364,6 +445,9 @@ pub struct SwebenchCmd {
     /// When unset, no TPM ceiling is enforced (opt-in, no behavior change).
     #[arg(long)]
     pub max_input_tpm: Option<u64>,
+
+    #[command(flatten)]
+    pub github_pr: SwebenchGithubPrArgs,
 }
 
 #[derive(Debug, Args)]
