@@ -5,9 +5,9 @@ trajectory `info.test_invocations`. Detection uses the assistant's issued bash
 command, not the observation text, because observations can mention test
 commands in logs, scripts, or error output without proving that the agent chose
 to run them. Detection is anchored to shell command starts and shell segments
-after separators such as `&&`, `||`, `;`, and newlines. This intentionally
-detects commands like `cd repo && pytest -q` while ignoring quoted mentions such
-as `echo "run pytest"`.
+after separators such as `&&`, `||`, `|`, `;`, and newlines. This intentionally
+detects commands like `cd repo && pytest -q` and `echo "data" | pytest -q` while
+ignoring quoted mentions such as `echo "run pytest"`.
 
 Each invocation records:
 
@@ -61,9 +61,10 @@ test_command_patterns_replace = true
 test_command_patterns = ["project-(check|test)"]
 ```
 
-Configured regexes extend the built-in list by default. They are still evaluated
-only at a command segment start, so a regex that matches inside quoted text or
-in the middle of another command does not count.
+Configured regexes extend the built-in list by default. They are validated when
+configuration is loaded and compiled once during agent initialization. They are
+still evaluated only at a command segment start, so a regex that matches inside
+quoted text or in the middle of another command does not count.
 
 ## Behavioral Metrics
 

@@ -170,6 +170,61 @@ test_command_patterns = ["project-(check|test)"]
 }
 
 #[tokio::test]
+async fn pipeline_segment_after_single_pipe_counts_test_command() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho \"data\" | pytest -q\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(FixedExitEnvironment { exit_code: 0 });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    let invocations = &agent.trajectory.info.test_invocations;
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].command, "echo \"data\" | pytest -q");
+    assert_eq!(invocations[0].matched_pattern, "pytest");
+}
+
+#[test]
+fn invalid_custom_test_command_regex_rejects_agent_build() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.test_command_patterns = vec!["(".to_owned()];
+
+    let Err(err) = DefaultAgentBuilder {
+        config: cfg,
+        model: Arc::new(DeterministicModel::new(Vec::new())),
+        env: Box::new(LocalEnvironment::new()),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build() else {
+        panic!("invalid regex should reject agent build");
+    };
+
+    assert!(matches!(err, Error::Config(_)));
+    assert!(
+        err.to_string().contains("agent.test_command_patterns"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn submit_without_test_commands_records_no_pre_submit_tests() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;

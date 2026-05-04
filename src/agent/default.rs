@@ -23,8 +23,8 @@ use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{
-    FailureCategory, TestInvocation, TokenUsage, Trajectory, detect_test_command,
-    effective_test_command_patterns, exit_reason, outcome,
+    FailureCategory, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
+    detect_test_command, effective_test_command_patterns, exit_reason, outcome,
 };
 
 const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
@@ -128,6 +128,7 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    test_command_patterns: Vec<TestCommandPattern>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -174,6 +175,15 @@ impl DefaultAgentBuilder {
         }
 
         let stream: Arc<dyn StreamSink> = self.stream.unwrap_or_else(|| Arc::new(NullSink));
+        let test_command_patterns = effective_test_command_patterns(
+            &self.config.root.agent.test_command_patterns,
+            self.config.root.agent.test_command_patterns_replace,
+        )
+        .map_err(|err| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid agent.test_command_patterns regex: {err}"
+            )))
+        })?;
         stream.emit(StreamEvent::RunStarted {
             task: self.task.clone(),
             model: self.model.name().to_owned(),
@@ -195,6 +205,7 @@ impl DefaultAgentBuilder {
             cache_creation_tokens: 0,
             completion_tokens: 0,
             stream,
+            test_command_patterns,
         })
     }
 }
@@ -551,11 +562,7 @@ impl DefaultAgent {
     }
 
     fn record_test_invocation_if_matched(&mut self, command: &str, exit_code: i32) {
-        let patterns = effective_test_command_patterns(
-            &self.config.root.agent.test_command_patterns,
-            self.config.root.agent.test_command_patterns_replace,
-        );
-        if let Some(matched_pattern) = detect_test_command(command, &patterns) {
+        if let Some(matched_pattern) = detect_test_command(command, &self.test_command_patterns) {
             self.trajectory.info.test_invocations.push(TestInvocation {
                 step_index: self.steps,
                 command: command.to_owned(),

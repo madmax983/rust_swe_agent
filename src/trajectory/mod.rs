@@ -75,7 +75,7 @@ pub struct TestCommandPattern {
 #[derive(Debug, Clone)]
 enum TestCommandMatcher {
     Literal,
-    Regex(Option<Regex>),
+    Regex(Regex),
 }
 
 impl TestCommandPattern {
@@ -86,11 +86,11 @@ impl TestCommandPattern {
         }
     }
 
-    fn regex(source: &str) -> Self {
-        Self {
+    fn regex(source: &str) -> Result<Self, regex::Error> {
+        Ok(Self {
             source: source.to_owned(),
-            matcher: TestCommandMatcher::Regex(Regex::new(source).ok()),
-        }
+            matcher: TestCommandMatcher::Regex(Regex::new(source)?),
+        })
     }
 
     fn matches(&self, segment: &str) -> bool {
@@ -98,10 +98,9 @@ impl TestCommandPattern {
             TestCommandMatcher::Literal => {
                 command_segment_starts_with_pattern(segment, &self.source)
             }
-            TestCommandMatcher::Regex(Some(regex)) => {
+            TestCommandMatcher::Regex(regex) => {
                 regex_matches_command_segment_start(regex, segment, &self.source)
             }
-            TestCommandMatcher::Regex(None) => false,
         }
     }
 }
@@ -114,11 +113,10 @@ pub struct TestInvocation {
     pub matched_pattern: String,
 }
 
-#[must_use]
 pub fn effective_test_command_patterns(
     extra_patterns: &[String],
     replace_defaults: bool,
-) -> Vec<TestCommandPattern> {
+) -> Result<Vec<TestCommandPattern>, regex::Error> {
     let mut patterns = if replace_defaults {
         Vec::new()
     } else {
@@ -127,13 +125,10 @@ pub fn effective_test_command_patterns(
             .map(|pattern| TestCommandPattern::literal(pattern))
             .collect()
     };
-    patterns.extend(
-        extra_patterns
-            .iter()
-            .map(String::as_str)
-            .map(TestCommandPattern::regex),
-    );
-    patterns
+    for pattern in extra_patterns {
+        patterns.push(TestCommandPattern::regex(pattern)?);
+    }
+    Ok(patterns)
 }
 
 #[must_use]
@@ -183,6 +178,16 @@ pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Op
             }
             let (_, next) = chars.next().unwrap_or((idx, ch));
             segment_start = idx + ch.len_utf8() + next.len_utf8();
+            continue;
+        }
+
+        if ch == '|' {
+            if let Some(pattern) =
+                detect_test_command_segment(&command[segment_start..idx], patterns)
+            {
+                return Some(pattern);
+            }
+            segment_start = idx + ch.len_utf8();
         }
     }
 

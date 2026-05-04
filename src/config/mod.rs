@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::error::ConfigError;
@@ -30,9 +31,7 @@ impl Config {
     /// Load the embedded default config only.
     pub fn defaults() -> Result<Self, ConfigError> {
         let v = toml_to_json(DEFAULT_TOML)?;
-        let root: RootCfg =
-            serde_json::from_value(v.clone()).map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        Ok(Self { root, raw: v })
+        Self::from_merged_value(v)
     }
 
     /// Load a user TOML, resolving `extends:` chains. Defaults are the base.
@@ -40,9 +39,7 @@ impl Config {
         let defaults = toml_to_json(DEFAULT_TOML)?;
         let user = load_with_extends(path, 0)?;
         let merged = recursive_merge(defaults, user);
-        let root: RootCfg = serde_json::from_value(merged.clone())
-            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        Ok(Self { root, raw: merged })
+        Self::from_merged_value(merged)
     }
 
     /// Construct from a TOML string, starting from defaults. Used in tests.
@@ -50,10 +47,26 @@ impl Config {
         let defaults = toml_to_json(DEFAULT_TOML)?;
         let user = toml_to_json(s)?;
         let merged = recursive_merge(defaults, user);
+        Self::from_merged_value(merged)
+    }
+
+    fn from_merged_value(merged: Value) -> Result<Self, ConfigError> {
         let root: RootCfg = serde_json::from_value(merged.clone())
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        validate_test_command_patterns(&root)?;
         Ok(Self { root, raw: merged })
     }
+}
+
+fn validate_test_command_patterns(root: &RootCfg) -> Result<(), ConfigError> {
+    for pattern in &root.agent.test_command_patterns {
+        Regex::new(pattern).map_err(|err| {
+            ConfigError::Invalid(format!(
+                "invalid agent.test_command_patterns regex {pattern:?}: {err}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn load_with_extends(path: &Path, depth: usize) -> Result<Value, ConfigError> {
@@ -155,6 +168,16 @@ name = "claude-sonnet-4-6"
     fn invalid_toml_returns_toml_error() {
         let err = Config::from_toml_str("[[[ not valid toml").unwrap_err();
         assert!(matches!(err, ConfigError::Toml(_)));
+    }
+
+    #[test]
+    fn invalid_test_command_pattern_returns_config_error() {
+        let err = Config::from_toml_str("[agent]\ntest_command_patterns = [\"(\"]").unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(
+            err.to_string().contains("agent.test_command_patterns"),
+            "{err}"
+        );
     }
 
     #[test]
