@@ -649,6 +649,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
     let prior = SweepResults {
         total: 1,
         submitted: 1,
+        submitted_with_tests: 0,
         skipped: 0,
         errored: 0,
         failures_by_category: std::collections::BTreeMap::new(),
@@ -688,6 +689,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }],
         rate_limit_events: None,
     };
@@ -789,6 +792,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
     let prior = SweepResults {
         total: 1,
         submitted: 0,
+        submitted_with_tests: 0,
         skipped: 0,
         errored: 1,
         failures_by_category: std::collections::BTreeMap::new(),
@@ -828,6 +832,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }],
         rate_limit_events: None,
     };
@@ -900,6 +906,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
     let stale_summary = SweepResults {
         total: 1,
         submitted: 1,
+        submitted_with_tests: 0,
         skipped: 0,
         errored: 0,
         failures_by_category: std::collections::BTreeMap::new(),
@@ -939,6 +946,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }],
         rate_limit_events: None,
     };

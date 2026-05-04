@@ -26,5 +26,6 @@ pub use model::{
 };
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
-    FORMAT_VERSION, FailureCategory, MessageRecord, TokenUsage, Trajectory, TrajectoryInfo,
+    FORMAT_VERSION, FailureCategory, MessageRecord, TestInvocation, TokenUsage, Trajectory,
+    TrajectoryInfo,
 };

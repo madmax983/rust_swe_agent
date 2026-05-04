@@ -112,6 +112,9 @@ pub struct CompareReport {
     pub baseline_resolved_rate: f64,
     pub candidate_resolved_rate: f64,
     pub resolved_delta_rate: f64,
+    pub baseline_tests_before_submit_rate: f64,
+    pub candidate_tests_before_submit_rate: f64,
+    pub tests_before_submit_delta_rate: f64,
     pub resolved_delta_ci95: ConfidenceInterval,
     pub within_noise: bool,
     pub verdict: CompareVerdict,
@@ -273,6 +276,13 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         report.baseline_resolved_rate * 100.0,
         report.candidate_resolved_rate * 100.0,
         report.resolved_delta_rate * 100.0
+    );
+    let _ = writeln!(
+        s,
+        "Tests before submit: {:.2}% -> {:.2}% ({:+.2}pp)",
+        report.baseline_tests_before_submit_rate * 100.0,
+        report.candidate_tests_before_submit_rate * 100.0,
+        report.tests_before_submit_delta_rate * 100.0
     );
     let _ = writeln!(
         s,
@@ -802,6 +812,8 @@ fn instance_result_from_trajectory(
         runs: 1,
         resolved_count: u32::from(resolved),
         pass_at_1: resolved,
+        tests_run_before_submit: info.tests_run_before_submit,
+        last_tests_passed: info.last_tests_passed,
     }))
 }
 
@@ -869,6 +881,13 @@ fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, Ins
             .iter()
             .find(|(run_index, _)| *run_index == 1)
             .is_some_and(|(_, result)| result.resolved_count > 0);
+        aggregate.tests_run_before_submit = rows
+            .iter()
+            .any(|(_, result)| result.tests_run_before_submit);
+        aggregate.last_tests_passed = rows
+            .iter()
+            .rev()
+            .find_map(|(_, result)| result.last_tests_passed);
         aggregate.cost_usd = optional_sum(rows.iter().filter_map(|(_, result)| result.cost_usd));
         aggregate.prompt_tokens = Some(
             rows.iter()
@@ -1099,6 +1118,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     let failure_category_candidate = histogram(candidate);
     let failure_category_delta =
         category_delta(&failure_category_baseline, &failure_category_candidate);
+    let baseline_tests_before_submit_rate = tests_before_submit_rate(baseline);
+    let candidate_tests_before_submit_rate = tests_before_submit_rate(candidate);
 
     CompareReport {
         baseline_dir: baseline_dir.to_path_buf(),
@@ -1114,6 +1135,10 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_resolved_rate: resolution.baseline_resolved_rate,
         candidate_resolved_rate: resolution.candidate_resolved_rate,
         resolved_delta_rate: resolution.resolved_delta_rate,
+        baseline_tests_before_submit_rate,
+        candidate_tests_before_submit_rate,
+        tests_before_submit_delta_rate: candidate_tests_before_submit_rate
+            - baseline_tests_before_submit_rate,
         resolved_delta_ci95: resolution.resolved_delta_ci95,
         within_noise: resolution.within_noise,
         verdict: resolution.verdict,
@@ -1165,6 +1190,23 @@ fn aggregate_token_breakdown<S: std::hash::BuildHasher>(
                 .saturating_add(tokens.completion_tokens);
             total
         })
+}
+
+fn tests_before_submit_rate<S: std::hash::BuildHasher>(
+    rows: &HashMap<String, InstanceResult, S>,
+) -> f64 {
+    let mut submitted = 0usize;
+    let mut with_tests = 0usize;
+    for row in rows
+        .values()
+        .filter(|row| row.outcome.as_deref() == Some(outcome::SUBMITTED))
+    {
+        submitted += 1;
+        if row.tests_run_before_submit {
+            with_tests += 1;
+        }
+    }
+    pct(with_tests, submitted)
 }
 
 struct TransitionSummary {
@@ -1925,6 +1967,8 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }
     }
 
@@ -1949,6 +1993,8 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }
     }
 
@@ -1975,6 +2021,8 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }
     }
 
@@ -1994,6 +2042,10 @@ mod tests {
         let sweep = SweepResults {
             total: instances.len(),
             submitted: instances.len(),
+            submitted_with_tests: instances
+                .iter()
+                .filter(|row| row.tests_run_before_submit)
+                .count(),
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -2122,6 +2174,7 @@ mod tests {
         let baseline_sweep = SweepResults {
             total: 2,
             submitted: 1,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 1,
             failures_by_category: BTreeMap::new(),
@@ -2213,6 +2266,8 @@ mod tests {
             runs: 1,
             resolved_count: 1,
             pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -2234,6 +2289,8 @@ mod tests {
             runs: 1,
             resolved_count: 1,
             pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -2452,6 +2509,7 @@ mod tests {
         let baseline_sweep = SweepResults {
             total: 1,
             submitted: 1,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -2498,6 +2556,7 @@ mod tests {
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
                 eval_log_path: None,
             }],
+            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
         };
@@ -2513,6 +2572,7 @@ mod tests {
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
                 eval_log_path: None,
             }],
+            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
         };
@@ -2563,6 +2623,7 @@ mod tests {
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
                 eval_log_path: None,
             }],
+            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
         };
@@ -2667,6 +2728,7 @@ mod tests {
         let sweep = SweepResults {
             total: 1,
             submitted: 0,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -2756,6 +2818,7 @@ mod tests {
         let sweep = SweepResults {
             total: 1,
             submitted: 1,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -2811,6 +2874,7 @@ mod tests {
         let sweep = SweepResults {
             total: 1,
             submitted: 0,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -2902,6 +2966,7 @@ mod tests {
         let sweep = SweepResults {
             total: 1,
             submitted: 0,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -3063,6 +3128,7 @@ mod tests {
         let sweep = SweepResults {
             total: 0,
             submitted: 0,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),

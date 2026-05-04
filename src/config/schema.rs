@@ -38,6 +38,10 @@ pub struct AgentCfg {
     #[serde(default = "default_tool_hook_timeout_secs")]
     pub tool_hook_timeout_secs: u64,
     #[serde(default)]
+    pub test_command_patterns: Vec<String>,
+    #[serde(default)]
+    pub test_command_patterns_replace: bool,
+    #[serde(default)]
     pub hooks: ToolHooksCfg,
 }
 

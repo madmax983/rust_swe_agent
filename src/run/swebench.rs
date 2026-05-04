@@ -128,6 +128,7 @@ pub struct SweBenchInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InstanceResult {
     pub instance_id: String,
     pub exit_reason: String,
@@ -195,12 +196,21 @@ pub struct InstanceResult {
     /// single-shot pass/fail value when `runs == 1`.
     #[serde(default)]
     pub pass_at_1: bool,
+    /// Whether the agent issued at least one recognized test command before
+    /// submitting.
+    #[serde(default)]
+    pub tests_run_before_submit: bool,
+    /// Pass/fail value of the most recent recognized pre-submit test command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tests_passed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepResults {
     pub total: usize,
     pub submitted: usize,
+    #[serde(default)]
+    pub submitted_with_tests: usize,
     pub skipped: usize,
     pub errored: usize,
     #[serde(default)]
@@ -417,6 +427,7 @@ impl SweepResults {
     /// Render the post-sweep summary table. A flat plain-text block so it
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn summary_table(&self) -> String {
         let submit_rate_pct = self.submit_rate_pct();
         let tokens = self.token_breakdown();
@@ -428,7 +439,12 @@ impl SweepResults {
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
         write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
-        let _ = writeln!(s, "Submitted:          {}", self.submitted);
+        write_submission_lines(
+            &mut s,
+            self.submitted,
+            self.submitted_with_tests,
+            &self.instances,
+        );
         let _ = writeln!(
             s,
             "With patch:         {} — non-empty diff against base_commit",
@@ -541,6 +557,61 @@ impl SweepResults {
         let first = iter.next()?;
         iter.all(|runs| runs == first).then_some(first)
     }
+}
+
+fn write_submission_lines(
+    s: &mut String,
+    submitted: usize,
+    submitted_with_tests: usize,
+    instances: &[InstanceResult],
+) {
+    let _ = writeln!(s, "Submitted:          {submitted}");
+    let _ = writeln!(s, "Submitted w/tests:  {submitted_with_tests}/{submitted}");
+    write_test_resolution_line(s, instances);
+}
+
+fn write_test_resolution_line(s: &mut String, instances: &[InstanceResult]) {
+    let counts = test_behavior_resolution_counts(instances);
+    let _ = writeln!(
+        s,
+        "Resolved by tests:  tests_run=true {}/{}, tests_run=false {}/{}",
+        counts.resolved_with_tests,
+        counts.with_tests,
+        counts.resolved_without_tests,
+        counts.without_tests
+    );
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TestBehaviorResolutionCounts {
+    with_tests: usize,
+    resolved_with_tests: usize,
+    without_tests: usize,
+    resolved_without_tests: usize,
+}
+
+fn test_behavior_resolution_counts(instances: &[InstanceResult]) -> TestBehaviorResolutionCounts {
+    let mut counts = TestBehaviorResolutionCounts::default();
+    for row in instances.iter().filter(|row| has_submitted_sample(row)) {
+        if row.tests_run_before_submit {
+            counts.with_tests += 1;
+            if resolved_count(row) > 0 {
+                counts.resolved_with_tests += 1;
+            }
+        } else {
+            counts.without_tests += 1;
+            if resolved_count(row) > 0 {
+                counts.resolved_without_tests += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn has_submitted_sample(row: &InstanceResult) -> bool {
+    // Aggregate rerun rows keep run-1 outcome for pass@1 compatibility, so
+    // later submitted/resolved samples are represented by `resolved_count`.
+    row.outcome.as_deref() == Some(outcome::SUBMITTED) || resolved_count(row) > 0
 }
 
 fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
@@ -844,6 +915,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         return Ok(SweepResults {
             total: 0,
             submitted: 0,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -908,6 +980,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let initial = SweepResults {
         total,
         submitted: 0,
+        submitted_with_tests: 0,
         skipped: 0,
         errored: 0,
         failures_by_category: BTreeMap::new(),
@@ -1163,6 +1236,8 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         runs: 1,
                         resolved_count: 0,
                         pass_at_1: false,
+                        tests_run_before_submit: false,
+                        last_tests_passed: None,
                     },
                 ));
             }
@@ -1249,6 +1324,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     let sweep = SweepResults {
         total,
         submitted,
+        submitted_with_tests: submitted_with_tests_for_fresh_submissions(&results),
         skipped,
         errored,
         failures_by_category,
@@ -1883,6 +1959,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         runs: 1,
         resolved_count: 0,
         pass_at_1: false,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
     }
 }
 
@@ -1945,6 +2023,17 @@ impl SweepAccounting {
                 .saturating_add(completion_tokens);
         }
     }
+}
+
+fn submitted_with_tests_for_fresh_submissions(results: &[RunSlotResult]) -> usize {
+    results
+        .iter()
+        .filter(|r| {
+            r.result.exit_reason != "skipped_resume"
+                && r.result.outcome.as_deref() == Some(outcome::SUBMITTED)
+                && r.result.tests_run_before_submit
+        })
+        .count()
 }
 
 fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
@@ -2012,6 +2101,8 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
             .iter()
             .find(|r| r.run_index == 1)
             .is_some_and(|r| is_resolved_instance_result(&r.result));
+        aggregate.tests_run_before_submit = rows.iter().any(|r| r.result.tests_run_before_submit);
+        aggregate.last_tests_passed = rows.iter().rev().find_map(|r| r.result.last_tests_passed);
         out.push(aggregate);
     }
     out
@@ -2184,6 +2275,8 @@ fn skipped_result_from_info(
         ),
         pass_at_1: info.outcome.as_deref() == Some(outcome::SUBMITTED)
             && info.failure_category.is_none(),
+        tests_run_before_submit: info.tests_run_before_submit,
+        last_tests_passed: info.last_tests_passed,
     }
 }
 
@@ -2196,6 +2289,8 @@ fn skipped_result_from_prior_result(
     out.error = None;
     out.patch_present = traj_based.patch_present;
     out.non_empty_patch = traj_based.non_empty_patch;
+    out.tests_run_before_submit = traj_based.tests_run_before_submit;
+    out.last_tests_passed = traj_based.last_tests_passed;
     out.runs = 1;
     out.resolved_count = u32::from(is_resolved_instance_result(&out));
     out.pass_at_1 = is_resolved_instance_result(&out);
@@ -2576,6 +2671,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 outcome_str == outcome::SUBMITTED && failure_category.is_none(),
             ),
             pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
+            tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
+            last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
         };
         let retryable = current
             .failure_category
@@ -2924,6 +3021,43 @@ mod tests {
     use super::*;
     use futures::FutureExt;
 
+    fn test_instance_result(id: &str, submitted: bool, tests_run: bool) -> InstanceResult {
+        InstanceResult {
+            instance_id: id.into(),
+            exit_reason: if submitted { "submitted" } else { "error" }.into(),
+            outcome: Some(
+                if submitted {
+                    outcome::SUBMITTED
+                } else {
+                    outcome::ERROR
+                }
+                .into(),
+            ),
+            failure_category: if submitted {
+                None
+            } else {
+                Some(FailureCategory::Unknown)
+            },
+            steps: Some(1),
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(0),
+            duration_secs: Some(0.0),
+            error: None,
+            patch_present: submitted,
+            non_empty_patch: submitted,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: u32::from(submitted),
+            pass_at_1: submitted,
+            tests_run_before_submit: tests_run,
+            last_tests_passed: tests_run.then_some(true),
+        }
+    }
+
     #[test]
     fn cost_estimate_uses_sonnet_pricing() {
         // 1M cold input + 1M completion = $3 + $15 = $18.
@@ -3007,6 +3141,8 @@ mod tests {
             runs: 1,
             resolved_count: 1,
             pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -3023,6 +3159,7 @@ mod tests {
         let s = SweepResults {
             total: 10,
             submitted: 4,
+            submitted_with_tests: 0,
             skipped: 3,
             errored: 1,
             failures_by_category: BTreeMap::new(),
@@ -3087,10 +3224,74 @@ mod tests {
     }
 
     #[test]
+    fn summary_table_includes_test_behavior_telemetry() {
+        let mut with_tests = test_instance_result("with-tests", true, true);
+        with_tests.last_tests_passed = Some(true);
+        let skipped_tests = test_instance_result("without-tests", true, false);
+        let error_without_submit = test_instance_result("errored", false, false);
+        let s = SweepResults {
+            total: 3,
+            submitted: 2,
+            submitted_with_tests: 1,
+            skipped: 0,
+            errored: 1,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 2,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![with_tests, skipped_tests, error_without_submit],
+            rate_limit_events: None,
+        };
+
+        let t = s.summary_table();
+        assert!(t.contains("Submitted w/tests:  1/2"), "{t}");
+        assert!(
+            t.contains("Resolved by tests:  tests_run=true 1/1, tests_run=false 1/1"),
+            "{t}"
+        );
+    }
+
+    #[test]
+    fn test_behavior_resolution_counts_include_later_rerun_submission() {
+        let first_error = test_instance_result("rerun-task", false, false);
+        let later_submitted_with_tests = test_instance_result("rerun-task", true, true);
+        let instances = aggregate_run_results(
+            &[
+                RunSlotResult::new(1, first_error),
+                RunSlotResult::new(2, later_submitted_with_tests),
+            ],
+            2,
+        );
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].resolved_count, 1);
+        assert!(instances[0].tests_run_before_submit);
+
+        let counts = test_behavior_resolution_counts(&instances);
+        assert_eq!(counts.with_tests, 1);
+        assert_eq!(counts.resolved_with_tests, 1);
+        assert_eq!(counts.without_tests, 0);
+        assert_eq!(counts.resolved_without_tests, 0);
+    }
+
+    #[test]
     fn summary_table_includes_budget_halt_line_when_triggered() {
         let s = SweepResults {
             total: 5,
             submitted: 3,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -3947,6 +4148,7 @@ instance = "inst"
         let s = SweepResults {
             total: 1,
             submitted: 1,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -4250,6 +4452,7 @@ instance = "inst"
         let s = SweepResults {
             total: 2,
             submitted: 2,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),
@@ -4310,6 +4513,7 @@ instance = "inst"
         let s = SweepResults {
             total: 1,
             submitted: 1,
+            submitted_with_tests: 0,
             skipped: 0,
             errored: 0,
             failures_by_category: BTreeMap::new(),

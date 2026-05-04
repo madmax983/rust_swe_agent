@@ -5,6 +5,7 @@
 //! `serde_json` output, so we match Python's layout exactly: `format`,
 //! `info`, `messages`.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -44,6 +45,199 @@ pub enum FailureCategory {
     /// Agent submitted but the captured diff was empty (zero bytes).
     PatchEmpty,
     Unknown,
+}
+
+pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
+    "pytest",
+    "python -m pytest",
+    "python -m unittest",
+    "tox",
+    "nox",
+    "make test",
+    "make check",
+    "cargo test",
+    "go test",
+    "npm test",
+    "npm run test",
+    "yarn test",
+    "mvn test",
+    "mvn -Dtest=",
+    "gradle test",
+    "./gradlew test",
+];
+
+#[derive(Debug, Clone)]
+pub struct TestCommandPattern {
+    source: String,
+    matcher: TestCommandMatcher,
+}
+
+#[derive(Debug, Clone)]
+enum TestCommandMatcher {
+    Literal,
+    Regex(Regex),
+}
+
+impl TestCommandPattern {
+    fn literal(source: &str) -> Self {
+        Self {
+            source: source.to_owned(),
+            matcher: TestCommandMatcher::Literal,
+        }
+    }
+
+    fn regex(source: &str) -> Result<Self, regex::Error> {
+        Ok(Self {
+            source: source.to_owned(),
+            matcher: TestCommandMatcher::Regex(Regex::new(source)?),
+        })
+    }
+
+    fn matches(&self, segment: &str) -> bool {
+        match &self.matcher {
+            TestCommandMatcher::Literal => {
+                command_segment_starts_with_pattern(segment, &self.source)
+            }
+            TestCommandMatcher::Regex(regex) => {
+                regex_matches_command_segment_start(regex, segment, &self.source)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestInvocation {
+    pub step_index: u32,
+    pub command: String,
+    pub exit_code: i32,
+    pub matched_pattern: String,
+}
+
+pub fn effective_test_command_patterns(
+    extra_patterns: &[String],
+    replace_defaults: bool,
+) -> Result<Vec<TestCommandPattern>, regex::Error> {
+    let mut patterns = if replace_defaults {
+        Vec::new()
+    } else {
+        DEFAULT_TEST_COMMAND_PATTERNS
+            .iter()
+            .map(|pattern| TestCommandPattern::literal(pattern))
+            .collect()
+    };
+    for pattern in extra_patterns {
+        patterns.push(TestCommandPattern::regex(pattern)?);
+    }
+    Ok(patterns)
+}
+
+#[must_use]
+pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Option<String> {
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    let mut escaped = false;
+    let mut segment_start = 0usize;
+    let mut chars = command.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && !single_quoted {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !double_quoted {
+            single_quoted = !single_quoted;
+            continue;
+        }
+        if ch == '"' && !single_quoted {
+            double_quoted = !double_quoted;
+            continue;
+        }
+        if single_quoted || double_quoted {
+            continue;
+        }
+
+        if ch == ';' || ch == '\n' {
+            if let Some(pattern) =
+                detect_test_command_segment(&command[segment_start..idx], patterns)
+            {
+                return Some(pattern);
+            }
+            segment_start = idx + ch.len_utf8();
+            continue;
+        }
+
+        if (ch == '&' || ch == '|') && chars.peek().is_some_and(|(_, next)| *next == ch) {
+            if let Some(pattern) =
+                detect_test_command_segment(&command[segment_start..idx], patterns)
+            {
+                return Some(pattern);
+            }
+            let (_, next) = chars.next().unwrap_or((idx, ch));
+            segment_start = idx + ch.len_utf8() + next.len_utf8();
+            continue;
+        }
+
+        if ch == '|' {
+            if let Some(pattern) =
+                detect_test_command_segment(&command[segment_start..idx], patterns)
+            {
+                return Some(pattern);
+            }
+            segment_start = idx + ch.len_utf8();
+        }
+    }
+
+    detect_test_command_segment(&command[segment_start..], patterns)
+}
+
+fn detect_test_command_segment(segment: &str, patterns: &[TestCommandPattern]) -> Option<String> {
+    let segment = trim_command_prefix(segment);
+    if segment.starts_with('"') || segment.starts_with('\'') {
+        return None;
+    }
+    patterns
+        .iter()
+        .find(|pattern| pattern.matches(segment))
+        .map(|pattern| pattern.source.clone())
+}
+
+fn trim_command_prefix(mut segment: &str) -> &str {
+    segment = segment.trim_start();
+    while let Some(rest) = segment.strip_prefix('(') {
+        segment = rest.trim_start();
+    }
+    segment
+}
+
+fn command_segment_starts_with_pattern(segment: &str, pattern: &str) -> bool {
+    let Some(rest) = segment.strip_prefix(pattern) else {
+        return false;
+    };
+    if rest.is_empty() || pattern.ends_with('=') {
+        return true;
+    }
+    rest.chars().next().is_some_and(is_command_boundary)
+}
+
+fn regex_matches_command_segment_start(regex: &Regex, segment: &str, pattern: &str) -> bool {
+    let Some(matched) = regex.find(segment) else {
+        return false;
+    };
+    if matched.start() != 0 {
+        return false;
+    }
+    let rest = &segment[matched.end()..];
+    rest.is_empty()
+        || pattern.ends_with('=')
+        || rest.chars().next().is_some_and(is_command_boundary)
+}
+
+fn is_command_boundary(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, ')' | ';' | '&' | '|' | '<' | '>')
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +291,12 @@ pub struct TrajectoryInfo {
     pub duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
+    #[serde(default)]
+    pub test_invocations: Vec<TestInvocation>,
+    #[serde(default)]
+    pub tests_run_before_submit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tests_passed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

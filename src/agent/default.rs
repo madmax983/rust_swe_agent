@@ -22,7 +22,10 @@ use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
-use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
+use crate::trajectory::{
+    FailureCategory, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
+    detect_test_command, effective_test_command_patterns, exit_reason, outcome,
+};
 
 const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
 
@@ -125,6 +128,7 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    test_command_patterns: Vec<TestCommandPattern>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -171,6 +175,15 @@ impl DefaultAgentBuilder {
         }
 
         let stream: Arc<dyn StreamSink> = self.stream.unwrap_or_else(|| Arc::new(NullSink));
+        let test_command_patterns = effective_test_command_patterns(
+            &self.config.root.agent.test_command_patterns,
+            self.config.root.agent.test_command_patterns_replace,
+        )
+        .map_err(|err| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid agent.test_command_patterns regex: {err}"
+            )))
+        })?;
         stream.emit(StreamEvent::RunStarted {
             task: self.task.clone(),
             model: self.model.name().to_owned(),
@@ -192,6 +205,7 @@ impl DefaultAgentBuilder {
             cache_creation_tokens: 0,
             completion_tokens: 0,
             stream,
+            test_command_patterns,
         })
     }
 }
@@ -389,6 +403,10 @@ impl Agent for DefaultAgent {
             (result, post_hook_results)
         };
 
+        if !tool_use_blocked {
+            self.record_test_invocation_if_matched(&cmd, result.exit_code);
+        }
+
         let trunc_stdout = truncate_observation_text(
             &result.stdout,
             self.config.root.agent.observation_max_bytes,
@@ -524,6 +542,7 @@ impl DefaultAgent {
             completion_tokens: self.completion_tokens,
         });
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
+        self.refresh_test_metadata();
     }
 
     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
@@ -542,6 +561,38 @@ impl DefaultAgent {
             Some(FailureCategory::WallclockTimeout),
             None,
         );
+    }
+
+    fn record_test_invocation_if_matched(&mut self, command: &str, exit_code: i32) {
+        if let Some(matched_pattern) = detect_test_command(command, &self.test_command_patterns) {
+            self.trajectory.info.test_invocations.push(TestInvocation {
+                step_index: self.steps,
+                command: command.to_owned(),
+                exit_code,
+                matched_pattern,
+            });
+        }
+    }
+
+    fn refresh_test_metadata(&mut self) {
+        let submit_step = self
+            .trajectory
+            .messages
+            .iter()
+            .any(message_is_submit_action)
+            .then_some(self.trajectory.info.steps)
+            .flatten();
+        let last_pre_submit = submit_step.and_then(|step| {
+            self.trajectory
+                .info
+                .test_invocations
+                .iter()
+                .rev()
+                .find(|invocation| invocation.step_index < step)
+        });
+        self.trajectory.info.tests_run_before_submit = last_pre_submit.is_some();
+        self.trajectory.info.last_tests_passed =
+            last_pre_submit.map(|invocation| invocation.exit_code == 0);
     }
 
     async fn run_tool_hooks(
@@ -721,6 +772,14 @@ fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
         exit_code: 126,
         timed_out: false,
     }
+}
+
+fn message_is_submit_action(message: &crate::trajectory::MessageRecord) -> bool {
+    message
+        .extra
+        .actions
+        .as_ref()
+        .is_some_and(|actions| actions.iter().any(|action| action == "__SUBMIT__"))
 }
 
 fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {

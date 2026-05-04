@@ -1663,6 +1663,7 @@ dependencies = [
  "minijinja",
  "pretty_assertions",
  "proptest",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
