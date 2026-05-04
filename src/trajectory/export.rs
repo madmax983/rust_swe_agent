@@ -96,7 +96,8 @@ impl TrajectoryExporter for MermaidExporter {
                 _ => "U",
             };
 
-            let safe_content = msg.content
+            let safe_content = msg
+                .content
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")
