@@ -368,17 +368,11 @@ async fn push_patch_branch(
         deadline,
     )
     .await?;
-    run_git(
-        work.path(),
-        &["fetch", "--depth=1", "origin", &plan.base_branch],
-        token,
-        deadline,
-    )
-    .await?;
+    let base_ref = fetch_base_branch(work.path(), &plan.base_branch, token, deadline).await?;
     fetch_existing_head_branch(work.path(), &plan.head_branch, token, deadline).await?;
     run_git(
         work.path(),
-        &["checkout", "-B", &plan.head_branch, "FETCH_HEAD"],
+        &["checkout", "-B", &plan.head_branch, &base_ref],
         token,
         deadline,
     )
@@ -416,6 +410,31 @@ async fn push_patch_branch(
     )
     .await?;
     Ok(())
+}
+
+async fn fetch_base_branch(
+    cwd: &Path,
+    base_branch: &str,
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<String, Error> {
+    let remote_ref = format!("refs/heads/{base_branch}");
+    let tracking_ref = format!("refs/remotes/origin/{base_branch}");
+    let refspec = format!("{remote_ref}:{tracking_ref}");
+    let args = ["fetch", "--depth=1", "origin", refspec.as_str()];
+    let output = run_git_capture(cwd, &args, token, deadline).await?;
+    if output.status.success() {
+        return Ok(tracking_ref);
+    }
+
+    let stderr = sanitize_secret(&String::from_utf8_lossy(&output.stderr), token);
+    let stdout = sanitize_secret(&String::from_utf8_lossy(&output.stdout), token);
+    Err(Error::Github(format!(
+        "git {} failed: {}\n{}",
+        sanitized_args(&args, token),
+        stderr.trim(),
+        stdout.trim()
+    )))
 }
 
 async fn fetch_existing_head_branch(
@@ -918,6 +937,53 @@ mod tests {
             deadline,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn head_branch_fetch_does_not_change_patch_base_checkout() {
+        let root = create_temp_workdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let seed = root.path().join("seed");
+        let work = root.path().join("work");
+        let token = "secret";
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let head_branch = "rust-swe-agent/existing-task";
+
+        let remote_arg = seed_remote_with_existing_head(
+            root.path(),
+            &seed,
+            &remote,
+            head_branch,
+            token,
+            deadline,
+        )
+        .await;
+        std::fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "-q"], token, deadline).await;
+        git(
+            &work,
+            &["remote", "add", "origin", &remote_arg],
+            token,
+            deadline,
+        )
+        .await;
+
+        let base_ref = fetch_base_branch(&work, "main", token, deadline)
+            .await
+            .unwrap();
+        fetch_existing_head_branch(&work, head_branch, token, deadline)
+            .await
+            .unwrap();
+        git(
+            &work,
+            &["checkout", "-q", "-B", head_branch, &base_ref],
+            token,
+            deadline,
+        )
+        .await;
+
+        let checked_out = std::fs::read_to_string(work.join("file.txt")).unwrap();
+        assert_eq!(checked_out.replace("\r\n", "\n"), "base\n");
     }
 
     async fn seed_remote_with_existing_head(
