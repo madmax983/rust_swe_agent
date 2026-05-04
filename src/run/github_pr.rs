@@ -7,10 +7,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::process::Command;
 
 use crate::error::Error;
 
@@ -211,23 +212,7 @@ pub async fn publish(options: GithubPrOptions) -> Result<PublishResult, Error> {
     let timeout = Duration::from_secs(options.timeout_secs.max(1));
     let deadline = tokio::time::Instant::now() + timeout;
     let token = read_github_token(&options.token_env)?;
-    let push_plan = plan.clone();
-    let push_patch = patch_text.clone();
-    let push_token = token.clone();
-    tokio::time::timeout_at(
-        deadline,
-        tokio::task::spawn_blocking(move || {
-            push_patch_branch(&push_plan, &push_patch, &push_token)
-        }),
-    )
-    .await
-    .map_err(|_| {
-        Error::Github(format!(
-            "timed out after {}s pushing PR branch",
-            timeout.as_secs()
-        ))
-    })?
-    .map_err(|e| Error::Github(format!("PR branch push task failed: {e}")))??;
+    push_patch_branch(&plan, &patch_text, &token, deadline).await?;
 
     let api = GithubApiClient::new(token, options.max_retries, options.backoff_base_ms)?;
     let url = tokio::time::timeout_at(deadline, api.ensure_pull_request(&plan))
@@ -344,32 +329,57 @@ fn read_github_token(token_env: &str) -> Result<String, Error> {
     Ok(token)
 }
 
-fn push_patch_branch(plan: &PullRequestPlan, patch_text: &str, token: &str) -> Result<(), Error> {
+async fn push_patch_branch(
+    plan: &PullRequestPlan,
+    patch_text: &str,
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), Error> {
     let work = create_temp_workdir()?;
     let repo_url = authed_repo_url(&plan.target_repo, token);
-    run_git(work.path(), &["init", "-q"], token)?;
+    run_git(work.path(), &["init", "-q"], token, deadline).await?;
     run_git(
         work.path(),
         &["config", "user.email", "rust-swe-agent@example.invalid"],
         token,
-    )?;
+        deadline,
+    )
+    .await?;
     run_git(
         work.path(),
         &["config", "user.name", "rust-swe-agent"],
         token,
-    )?;
-    run_git(work.path(), &["config", "commit.gpgsign", "false"], token)?;
-    run_git(work.path(), &["remote", "add", "origin", &repo_url], token)?;
+        deadline,
+    )
+    .await?;
+    run_git(
+        work.path(),
+        &["config", "commit.gpgsign", "false"],
+        token,
+        deadline,
+    )
+    .await?;
+    run_git(
+        work.path(),
+        &["remote", "add", "origin", &repo_url],
+        token,
+        deadline,
+    )
+    .await?;
     run_git(
         work.path(),
         &["fetch", "--depth=1", "origin", &plan.base_branch],
         token,
-    )?;
+        deadline,
+    )
+    .await?;
     run_git(
         work.path(),
         &["checkout", "-B", &plan.head_branch, "FETCH_HEAD"],
         token,
-    )?;
+        deadline,
+    )
+    .await?;
 
     let patch_path = work.path().join("agent.patch");
     std::fs::write(&patch_path, patch_text)?;
@@ -383,26 +393,35 @@ fn push_patch_branch(plan: &PullRequestPlan, patch_text: &str, token: &str) -> R
                 .ok_or_else(|| Error::Github("patch path is not valid UTF-8".into()))?,
         ],
         token,
-    )?;
-    let status = run_git_capture(work.path(), &["status", "--porcelain"], token)?;
+        deadline,
+    )
+    .await?;
+    let status = run_git_capture(work.path(), &["status", "--porcelain"], token, deadline).await?;
     if String::from_utf8_lossy(&status.stdout).trim().is_empty() {
         return Err(Error::Github(
             "patch applied but produced no commit changes".into(),
         ));
     }
-    run_git(work.path(), &["add", "-A"], token)?;
-    run_git(work.path(), &["commit", "-m", &plan.title], token)?;
+    run_git(work.path(), &["add", "-A"], token, deadline).await?;
+    run_git(work.path(), &["commit", "-m", &plan.title], token, deadline).await?;
     let refspec = format!("HEAD:refs/heads/{}", plan.head_branch);
     run_git(
         work.path(),
         &["push", "--force-with-lease", "origin", &refspec],
         token,
-    )?;
+        deadline,
+    )
+    .await?;
     Ok(())
 }
 
-fn run_git(cwd: &Path, args: &[&str], token: &str) -> Result<(), Error> {
-    let output = run_git_capture(cwd, args, token)?;
+async fn run_git(
+    cwd: &Path,
+    args: &[&str],
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), Error> {
+    let output = run_git_capture(cwd, args, token, deadline).await?;
     if output.status.success() {
         return Ok(());
     }
@@ -416,17 +435,44 @@ fn run_git(cwd: &Path, args: &[&str], token: &str) -> Result<(), Error> {
     )))
 }
 
-fn run_git_capture(cwd: &Path, args: &[&str], token: &str) -> Result<Output, Error> {
-    Command::new("git")
+async fn run_git_capture(
+    cwd: &Path,
+    args: &[&str],
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<Output, Error> {
+    run_process_capture("git", cwd, args, token, deadline).await
+}
+
+async fn run_process_capture(
+    program: &str,
+    cwd: &Path,
+    args: &[&str],
+    token: &str,
+    deadline: tokio::time::Instant,
+) -> Result<Output, Error> {
+    let command = command_name(program, args, token);
+    let mut child = Command::new(program);
+    child
         .args(args)
         .current_dir(cwd)
-        .output()
-        .map_err(|e| {
-            Error::Github(format!(
-                "failed to run git {}: {e}",
-                sanitized_args(args, token)
-            ))
-        })
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+
+    tokio::time::timeout_at(deadline, child.output())
+        .await
+        .map_err(|_| Error::Github(format!("{command} timed out")))?
+        .map_err(|e| Error::Github(format!("failed to run {command}: {e}")))
+}
+
+fn command_name(program: &str, args: &[&str], token: &str) -> String {
+    let mut command = String::from(program);
+    let args = sanitized_args(args, token);
+    if !args.is_empty() {
+        command.push(' ');
+        command.push_str(&args);
+    }
+    command
 }
 
 fn sanitized_args(args: &[&str], token: &str) -> String {
@@ -717,5 +763,36 @@ mod tests {
         assert_ne!(first.path(), second.path());
         assert!(first.path().exists());
         assert!(second.path().exists());
+    }
+
+    #[tokio::test]
+    async fn process_capture_timeout_terminates_child() {
+        let work = create_temp_workdir().unwrap();
+        let marker = work.path().join("timeout-marker.txt");
+        let marker_arg = marker.display().to_string();
+        #[cfg(windows)]
+        let (program, args): (&str, Vec<&str>) = (
+            "powershell",
+            vec![
+                "-NoProfile",
+                "-Command",
+                "Start-Sleep -Milliseconds 700; Set-Content -LiteralPath $args[0] -Value done",
+                &marker_arg,
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args): (&str, Vec<&str>) = (
+            "sh",
+            vec!["-c", "sleep 0.7; printf done > \"$1\"", "sh", &marker_arg],
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+        let err = run_process_capture(program, work.path(), &args, "secret", deadline)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("timed out"), "{err}");
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(!marker.exists(), "timed-out child still wrote side effect");
     }
 }

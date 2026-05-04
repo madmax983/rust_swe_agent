@@ -466,16 +466,7 @@ async fn publish_github_pr(options: crate::run::github_pr::GithubPrOptions) -> R
 }
 
 fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usize {
-    results
-        .instances
-        .iter()
-        .filter(|result| {
-            result
-                .error
-                .as_deref()
-                .is_some_and(|err| err.contains("github pr"))
-        })
-        .count()
+    results.github_pr_failures
 }
 
 fn swebench_args_from_cmd(

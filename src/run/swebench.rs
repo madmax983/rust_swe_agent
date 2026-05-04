@@ -232,6 +232,10 @@ pub struct SweepResults {
     /// rejected the patch at capture time.
     #[serde(default)]
     pub patch_apply_invalid: usize,
+    /// GitHub PR publication failures across every run slot, including reruns
+    /// that are collapsed out of aggregate instance rows.
+    #[serde(default)]
+    pub github_pr_failures: usize,
     #[serde(default, rename = "total_input_tokens", alias = "total_prompt_tokens")]
     pub total_prompt_tokens: u64,
     #[serde(default)]
@@ -925,6 +929,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             with_patch: 0,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -990,6 +995,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -1335,6 +1341,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         with_patch: accounting.with_patch,
         patch_empty,
         patch_apply_invalid,
+        github_pr_failures: github_pr_failure_count_for_run_slots(&results),
         total_prompt_tokens: token_breakdown.input_tokens,
         total_cache_read_tokens: token_breakdown.cache_read_tokens,
         total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
@@ -2035,6 +2042,18 @@ fn submitted_with_tests_for_fresh_submissions(results: &[RunSlotResult]) -> usiz
             r.result.exit_reason != "skipped_resume"
                 && r.result.outcome.as_deref() == Some(outcome::SUBMITTED)
                 && r.result.tests_run_before_submit
+        })
+        .count()
+}
+
+fn github_pr_failure_count_for_run_slots(results: &[RunSlotResult]) -> usize {
+    results
+        .iter()
+        .filter(|r| {
+            r.result
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("github pr"))
         })
         .count()
 }
@@ -3145,6 +3164,23 @@ mod tests {
     }
 
     #[test]
+    fn github_pr_failure_count_includes_later_rerun_slots() {
+        let first = RunSlotResult::new(1, test_instance_result("rerun-task", true, true));
+        let mut later = test_instance_result("rerun-task", true, true);
+        later.exit_reason = "error".into();
+        later.outcome = Some(outcome::ERROR.into());
+        later.failure_category = Some(FailureCategory::AgentInternal);
+        later.error = Some("github pr: timed out after 1s opening PR".into());
+
+        let results = vec![first, RunSlotResult::new(2, later)];
+        let aggregate = aggregate_run_results(&results, 2);
+
+        assert_eq!(aggregate.len(), 1);
+        assert_eq!(aggregate[0].error, None);
+        assert_eq!(github_pr_failure_count_for_run_slots(&results), 1);
+    }
+
+    #[test]
     fn cost_estimate_uses_sonnet_pricing() {
         // 1M cold input + 1M completion = $3 + $15 = $18.
         let c = estimate_cost_usd(1_000_000, 0, 0, 1_000_000, "claude-3-5-sonnet");
@@ -3253,6 +3289,7 @@ mod tests {
             with_patch: 3,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 250_000,
             total_cache_read_tokens: 2_000_000,
             total_cache_creation_tokens: 250_000,
@@ -3326,6 +3363,7 @@ mod tests {
             with_patch: 2,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -3385,6 +3423,7 @@ mod tests {
             with_patch: 0,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -4259,6 +4298,7 @@ instance = "inst"
             instances: vec![],
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             rate_limit_events: None,
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -4551,6 +4591,7 @@ instance = "inst"
             with_patch: 2,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -4612,6 +4653,7 @@ instance = "inst"
             with_patch: 1,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,

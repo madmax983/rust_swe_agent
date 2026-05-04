@@ -140,6 +140,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 600,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
