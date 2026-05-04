@@ -489,32 +489,19 @@ fn instance_cost_usd(r: &InstanceResult, model_name: Option<&str>) -> f64 {
 }
 
 fn quantiles(values: &[f64]) -> QuantileSummary {
-    QuantileSummary {
-        p10: quantile(values, 0.10),
-        median: quantile(values, 0.50),
-        p90: quantile(values, 0.90),
-    }
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn quantile(values: &[f64], q: f64) -> f64 {
     if values.is_empty() {
-        return 0.0;
+        return QuantileSummary {
+            p10: 0.0,
+            median: 0.0,
+            p90: 0.0,
+        };
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
-    if sorted.len() == 1 {
-        return sorted[0];
-    }
-    let span = as_f64_usize(sorted.len() - 1);
-    let pos = q.clamp(0.0, 1.0) * span;
-    let lo = pos.floor() as usize;
-    let hi = pos.ceil() as usize;
-    if lo == hi {
-        sorted[lo]
-    } else {
-        let weight = pos - as_f64_usize(lo);
-        sorted[lo].mul_add(1.0 - weight, sorted[hi] * weight)
+    QuantileSummary {
+        p10: quantile_sorted(&sorted, 0.10),
+        median: quantile_sorted(&sorted, 0.50),
+        p90: quantile_sorted(&sorted, 0.90),
     }
 }
 
@@ -712,21 +699,17 @@ mod tests {
 
     #[test]
     fn test_quantile_empty_slice() {
-        assert_eq!(quantile(&[], 0.5), 0.0);
         assert_eq!(quantile_sorted(&[], 0.5), 0.0);
     }
 
     #[test]
     fn test_quantile_single_element() {
-        assert_eq!(quantile(&[42.0], 0.5), 42.0);
         assert_eq!(quantile_sorted(&[42.0], 0.5), 42.0);
     }
 
     #[test]
     fn test_quantile_clamp_bounds() {
         let values = [10.0, 20.0, 30.0];
-        assert_eq!(quantile(&values, -1.0), 10.0);
-        assert_eq!(quantile(&values, 2.0), 30.0);
         assert_eq!(quantile_sorted(&values, -1.0), 10.0);
         assert_eq!(quantile_sorted(&values, 2.0), 30.0);
     }
