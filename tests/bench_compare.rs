@@ -53,6 +53,8 @@ fn submitted(id: &str) -> InstanceResult {
         runs: 1,
         resolved_count: 1,
         pass_at_1: true,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
     }
 }
 
@@ -77,6 +79,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         runs: 1,
         resolved_count: 0,
         pass_at_1: false,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
     }
 }
 
@@ -89,6 +93,13 @@ fn rerun_result(id: &str, runs: u32, resolved_count: u32) -> InstanceResult {
     r.runs = runs;
     r.resolved_count = resolved_count;
     r.pass_at_1 = resolved_count > 0;
+    r
+}
+
+fn submitted_with_tests(id: &str, tests_run: bool) -> InstanceResult {
+    let mut r = submitted(id);
+    r.tests_run_before_submit = tests_run;
+    r.last_tests_passed = tests_run.then_some(true);
     r
 }
 
@@ -120,6 +131,12 @@ fn write_results_with_filter_spec_and_model(
         submitted: instances
             .iter()
             .filter(|r| r.outcome.as_deref() == Some(outcome::SUBMITTED))
+            .count(),
+        submitted_with_tests: instances
+            .iter()
+            .filter(|r| {
+                r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.tests_run_before_submit
+            })
             .count(),
         skipped: 0,
         errored: instances
@@ -649,6 +666,35 @@ fn cli_json_output_is_machine_readable() {
     assert_eq!(v["regressions"][0]["kind"], "pass_fail");
     assert_eq!(v["resolved_delta"], -1);
     assert_eq!(v["transitions"]["pass_fail"], 1);
+}
+
+#[test]
+fn compare_reports_tests_before_submit_rate_drop_with_flat_resolved_rate() {
+    let baseline: std::collections::HashMap<String, InstanceResult> = (0..5)
+        .map(|i| submitted_with_tests(&format!("task-{i}"), i < 4))
+        .map(|row| (row.instance_id.clone(), row))
+        .collect();
+    let candidate: std::collections::HashMap<String, InstanceResult> = (0..5)
+        .map(|i| submitted_with_tests(&format!("task-{i}"), i < 3))
+        .map(|row| (row.instance_id.clone(), row))
+        .collect();
+
+    let report = rust_swe_agent::run::compare::diff(
+        Path::new("/baseline"),
+        Path::new("/candidate"),
+        &baseline,
+        &candidate,
+    );
+
+    assert!((report.baseline_tests_before_submit_rate - 0.8).abs() < f64::EPSILON);
+    assert!((report.candidate_tests_before_submit_rate - 0.6).abs() < f64::EPSILON);
+    assert!((report.tests_before_submit_delta_rate + 0.2).abs() < f64::EPSILON);
+    assert_eq!(report.resolved_delta, 0);
+    let text = report.human_table();
+    assert!(
+        text.contains("Tests before submit: 80.00% -> 60.00% (-20.00pp)"),
+        "{text}"
+    );
 }
 
 #[test]

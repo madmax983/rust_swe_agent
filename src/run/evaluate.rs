@@ -116,10 +116,19 @@ const fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
+    #[serde(default)]
+    pub behavioral: BehavioralMetrics,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakdown: Vec<BreakdownBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cost_attribution: Vec<CostAttributionBucket>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+pub struct BehavioralMetrics {
+    pub tests_run_before_submit_rate: f64,
+    pub resolved_rate_when_tests_run: f64,
+    pub resolved_rate_when_tests_skipped: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -219,6 +228,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
     let mut eval = run_output.eval;
+    eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown);
     if args.cost_attribution {
         let run_slots = load_run_slots(&args.sweep_dir, &results)?;
@@ -324,6 +334,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
+        behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
     }
@@ -670,8 +681,52 @@ fn merge_with_results(
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
+        behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+    }
+}
+
+fn build_behavioral_metrics(
+    evals: &[InstanceEvaluation],
+    results: &HashMap<String, InstanceResult>,
+) -> BehavioralMetrics {
+    let resolved_by_id: HashMap<&str, bool> = evals
+        .iter()
+        .map(|row| (row.instance_id.as_str(), row.resolved))
+        .collect();
+    let mut submitted = 0usize;
+    let mut tests_run = 0usize;
+    let mut resolved_with_tests = 0usize;
+    let mut tests_skipped = 0usize;
+    let mut resolved_tests_skipped = 0usize;
+
+    for row in results
+        .values()
+        .filter(|row| row.outcome.as_deref() == Some(outcome::SUBMITTED))
+    {
+        submitted += 1;
+        let resolved = resolved_by_id
+            .get(row.instance_id.as_str())
+            .copied()
+            .unwrap_or(false);
+        if row.tests_run_before_submit {
+            tests_run += 1;
+            if resolved {
+                resolved_with_tests += 1;
+            }
+        } else {
+            tests_skipped += 1;
+            if resolved {
+                resolved_tests_skipped += 1;
+            }
+        }
+    }
+
+    BehavioralMetrics {
+        tests_run_before_submit_rate: pct(tests_run, submitted),
+        resolved_rate_when_tests_run: pct(resolved_with_tests, tests_run),
+        resolved_rate_when_tests_skipped: pct(resolved_tests_skipped, tests_skipped),
     }
 }
 
@@ -733,6 +788,7 @@ fn merge_rerun_reports_with_results(
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
+        behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
     }
@@ -1096,6 +1152,8 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }
     }
 
@@ -1120,6 +1178,8 @@ mod tests {
             runs: 0,
             resolved_count: 0,
             pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
         }
     }
 
@@ -1141,6 +1201,13 @@ mod tests {
         }
     }
 
+    fn submitted_with_tests(id: &str, tests_run: bool) -> InstanceResult {
+        let mut r = submitted(id);
+        r.tests_run_before_submit = tests_run;
+        r.last_tests_passed = tests_run.then_some(true);
+        r
+    }
+
     #[test]
     fn none_backend_marks_non_submitted_as_skipped_no_patch() {
         let map = HashMap::from([
@@ -1159,6 +1226,39 @@ mod tests {
             eval.instances[1].eval_exit_reason,
             EvalExitReason::SkippedNoPatch
         ));
+    }
+
+    #[test]
+    fn behavioral_metrics_split_resolved_rate_by_test_behavior() {
+        let eval = EvaluationResults {
+            instances: vec![
+                eval_row("tested-pass", true),
+                eval_row("tested-fail", false),
+                eval_row("skipped-fail", false),
+            ],
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+            behavioral: BehavioralMetrics::default(),
+        };
+        let results = HashMap::from([
+            (
+                "tested-pass".to_string(),
+                submitted_with_tests("tested-pass", true),
+            ),
+            (
+                "tested-fail".to_string(),
+                submitted_with_tests("tested-fail", true),
+            ),
+            (
+                "skipped-fail".to_string(),
+                submitted_with_tests("skipped-fail", false),
+            ),
+        ]);
+
+        let behavioral = build_behavioral_metrics(&eval.instances, &results);
+        assert_f64_eq(behavioral.tests_run_before_submit_rate, 2.0 / 3.0);
+        assert_f64_eq(behavioral.resolved_rate_when_tests_run, 0.5);
+        assert_f64_eq(behavioral.resolved_rate_when_tests_skipped, 0.0);
     }
 
     #[test]
@@ -1374,6 +1474,7 @@ mod tests {
         let results = HashMap::from([("cached".to_string(), cached)]);
         let eval = EvaluationResults {
             instances: vec![eval_row("cached", true)],
+            behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
         };

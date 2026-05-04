@@ -75,6 +75,12 @@ pub struct InspectReport {
     pub completion_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
+    pub test_invocations_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_test_exit_code: Option<i32>,
+    pub tests_run_before_submit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tests_passed: Option<bool>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
@@ -202,12 +208,46 @@ fn build_instance_report(
                 cache_creation_tokens: None,
                 completion_tokens: None,
                 resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
+                test_invocations_count: 0,
+                last_test_exit_code: None,
+                tests_run_before_submit: false,
+                last_tests_passed: None,
                 warnings,
                 steps: vec![],
             });
         }
     };
 
+    let steps = build_inspect_steps(&traj, full);
+
+    let token_usage = traj.info.token_usage.as_ref();
+    Ok(InspectReport {
+        sweep_dir: sweep.to_path_buf(),
+        instance_id: Some(instance_id.to_owned()),
+        model: traj.info.model_name,
+        outcome: traj.info.outcome,
+        failure_category: traj.info.failure_category,
+        total_cost_usd: traj.info.total_cost_usd,
+        prompt_tokens: token_usage.map(TokenUsage::total_prompt_tokens),
+        input_tokens: token_usage.map(|t| t.prompt_tokens),
+        cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
+        cache_creation_tokens: token_usage.map(|t| t.cache_creation_tokens),
+        completion_tokens: token_usage.map(|t| t.completion_tokens),
+        resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
+        test_invocations_count: traj.info.test_invocations.len(),
+        last_test_exit_code: traj
+            .info
+            .test_invocations
+            .last()
+            .map(|invocation| invocation.exit_code),
+        tests_run_before_submit: traj.info.tests_run_before_submit,
+        last_tests_passed: traj.info.last_tests_passed,
+        warnings,
+        steps,
+    })
+}
+
+fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
     let mut steps = Vec::new();
     for (msg_idx, msg) in traj.messages.iter().enumerate() {
         let current_index = steps.len();
@@ -227,57 +267,42 @@ fn build_instance_report(
             continue;
         }
 
-        if role == "user" {
-            if let Some(run_result) = msg
-                .extra
-                .other
-                .get("run_result")
-                .and_then(|v| serde_json::from_value::<RunResult>(v.clone()).ok())
-            {
-                let bash = infer_bash_from_previous_assistant(&traj, msg_idx);
-                let (stdout, stdout_note, stdout_truncated) =
-                    maybe_truncate(&run_result.stdout, full, current_index);
-                let (stderr, stderr_note, stderr_truncated) =
-                    maybe_truncate(&run_result.stderr, full, current_index);
-                let mut note_parts = Vec::new();
-                if let Some(n) = stdout_note {
-                    note_parts.push(format!("stdout: {n}"));
-                }
-                if let Some(n) = stderr_note {
-                    note_parts.push(format!("stderr: {n}"));
-                }
-                steps.push(InspectStep {
-                    index: current_index,
-                    role: "bash".into(),
-                    message: None,
-                    bash,
-                    exit_code: Some(run_result.exit_code),
-                    stdout: Some(stdout),
-                    stderr: Some(stderr),
-                    truncated: stdout_truncated || stderr_truncated,
-                    truncation_note: (!note_parts.is_empty()).then(|| note_parts.join("; ")),
-                });
-            }
+        if role != "user" {
+            continue;
         }
+        let Some(run_result) = msg
+            .extra
+            .other
+            .get("run_result")
+            .and_then(|v| serde_json::from_value::<RunResult>(v.clone()).ok())
+        else {
+            continue;
+        };
+        let bash = infer_bash_from_previous_assistant(traj, msg_idx);
+        let (stdout, stdout_note, stdout_truncated) =
+            maybe_truncate(&run_result.stdout, full, current_index);
+        let (stderr, stderr_note, stderr_truncated) =
+            maybe_truncate(&run_result.stderr, full, current_index);
+        let mut note_parts = Vec::new();
+        if let Some(n) = stdout_note {
+            note_parts.push(format!("stdout: {n}"));
+        }
+        if let Some(n) = stderr_note {
+            note_parts.push(format!("stderr: {n}"));
+        }
+        steps.push(InspectStep {
+            index: current_index,
+            role: "bash".into(),
+            message: None,
+            bash,
+            exit_code: Some(run_result.exit_code),
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            truncated: stdout_truncated || stderr_truncated,
+            truncation_note: (!note_parts.is_empty()).then(|| note_parts.join("; ")),
+        });
     }
-
-    let token_usage = traj.info.token_usage.as_ref();
-    Ok(InspectReport {
-        sweep_dir: sweep.to_path_buf(),
-        instance_id: Some(instance_id.to_owned()),
-        model: traj.info.model_name,
-        outcome: traj.info.outcome,
-        failure_category: traj.info.failure_category,
-        total_cost_usd: traj.info.total_cost_usd,
-        prompt_tokens: token_usage.map(TokenUsage::total_prompt_tokens),
-        input_tokens: token_usage.map(|t| t.prompt_tokens),
-        cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
-        cache_creation_tokens: token_usage.map(|t| t.cache_creation_tokens),
-        completion_tokens: token_usage.map(|t| t.completion_tokens),
-        resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
-        warnings,
-        steps,
-    })
+    steps
 }
 
 pub fn render_text(output: &InspectOutput) -> String {
@@ -387,6 +412,20 @@ fn render_instance_text(report: &InspectReport) -> String {
     if let Some(r) = report.resolved {
         let _ = writeln!(s, "resolved:         {r}");
     }
+    let submitted_without_tests = report.outcome.as_deref()
+        == Some(crate::trajectory::outcome::SUBMITTED)
+        && !report.tests_run_before_submit;
+    let _ = writeln!(
+        s,
+        "tests:            count={} last_exit_code={} last_passed={} submitted_without_tests={submitted_without_tests}",
+        report.test_invocations_count,
+        report
+            .last_test_exit_code
+            .map_or_else(|| "?".into(), |code| code.to_string()),
+        report
+            .last_tests_passed
+            .map_or_else(|| "?".into(), |passed| passed.to_string()),
+    );
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");
     }

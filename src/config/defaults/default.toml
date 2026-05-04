@@ -55,6 +55,13 @@ observation_head_ratio = 0.5
 # Default timeout for tool hooks unless a hook overrides `timeout_secs`.
 tool_hook_timeout_secs = 10
 #
+# Extra action-text command regex patterns recognized as test invocations.
+# Values extend the closed default list documented in
+# docs/spec-test-telemetry.md. Set `test_command_patterns_replace = true`
+# only when you want to disable the built-in SWE-bench ecosystem list.
+# test_command_patterns = ["project-(check|test)"]
+# test_command_patterns_replace = false
+#
 # Optional tool hooks. PreToolUse hooks run before each bash command; a
 # nonzero exit code or timeout blocks the command and reports the hook result
 # to the model. PostToolUse hooks run after successful command execution and

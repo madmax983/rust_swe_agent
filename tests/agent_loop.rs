@@ -66,6 +66,137 @@ async fn two_turn_echo_submit_produces_well_formed_trajectory() {
     assert_eq!(model.call_count(), 2);
 }
 
+#[tokio::test]
+async fn records_pytest_invocation_before_submit_from_action_text() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\npytest -q\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(FixedExitEnvironment { exit_code: 0 });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    assert!(agent.trajectory.info.tests_run_before_submit);
+    assert_eq!(agent.trajectory.info.last_tests_passed, Some(true));
+    assert_eq!(agent.trajectory.info.test_invocations.len(), 1);
+    let invocation = &agent.trajectory.info.test_invocations[0];
+    assert_eq!(invocation.step_index, 0);
+    assert_eq!(invocation.command, "pytest -q");
+    assert_eq!(invocation.exit_code, 0);
+    assert_eq!(invocation.matched_pattern, "pytest");
+}
+
+#[tokio::test]
+async fn echoing_pytest_does_not_register_as_test_invocation() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho \"I should run pytest\"\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(FixedExitEnvironment { exit_code: 0 });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    assert!(!agent.trajectory.info.tests_run_before_submit);
+    assert_eq!(agent.trajectory.info.last_tests_passed, None);
+    assert!(agent.trajectory.info.test_invocations.is_empty());
+}
+
+#[tokio::test]
+async fn cd_prefix_and_custom_pattern_match_test_commands() {
+    let cfg = Config::from_toml_str(
+        r#"
+[agent]
+step_limit = 5
+test_command_patterns = ["project-(check|test)"]
+"#,
+    )
+    .unwrap();
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\ncd repo && pytest tests/\n```".into(),
+        "```bash\nproject-test --suite smoke\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(FixedExitEnvironment { exit_code: 0 });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    let invocations = &agent.trajectory.info.test_invocations;
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(invocations[0].command, "cd repo && pytest tests/");
+    assert_eq!(invocations[0].matched_pattern, "pytest");
+    assert_eq!(invocations[1].command, "project-test --suite smoke");
+    assert_eq!(invocations[1].matched_pattern, "project-(check|test)");
+}
+
+#[tokio::test]
+async fn submit_without_test_commands_records_no_pre_submit_tests() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(FixedExitEnvironment { exit_code: 0 });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    assert!(!agent.trajectory.info.tests_run_before_submit);
+    assert_eq!(agent.trajectory.info.last_tests_passed, None);
+    assert!(agent.trajectory.info.test_invocations.is_empty());
+}
+
 #[test]
 fn cache_retag_is_minimal_and_idempotent() {
     let _ = Role::System;
@@ -510,7 +641,23 @@ struct CommandPolicyHookEnv {
     calls: std::sync::Mutex<u32>,
 }
 
+struct FixedExitEnvironment {
+    exit_code: i32,
+}
+
 struct PreHookSpawnFailureEnv;
+
+#[async_trait]
+impl Environment for FixedExitEnvironment {
+    async fn run(&self, _req: RunRequest) -> Result<RunResult, EnvError> {
+        Ok(RunResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: self.exit_code,
+            timed_out: false,
+        })
+    }
+}
 
 #[async_trait]
 impl Environment for PreHookSpawnFailureEnv {

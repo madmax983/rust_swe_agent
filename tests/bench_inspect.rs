@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
+use rust_swe_agent::trajectory::{
+    FailureCategory, TestInvocation, TokenUsage, Trajectory, outcome,
+};
 
 fn binary_path() -> std::path::PathBuf {
     std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
@@ -1044,6 +1046,48 @@ fn instance_mode_renders_header_and_steps() {
     assert!(stdout.contains("[step 0] assistant"), "{stdout}");
     assert!(stdout.contains("[step 1] bash"), "{stdout}");
     assert!(stdout.contains("resolved:         false"), "{stdout}");
+}
+
+#[test]
+fn instance_mode_renders_test_telemetry_header_line() {
+    let sweep = tempfile::tempdir().unwrap();
+    let mut t = Trajectory::new();
+    t.info.model_name = Some("deterministic-test".into());
+    t.info.outcome = Some(outcome::SUBMITTED.into());
+    t.info.tests_run_before_submit = true;
+    t.info.last_tests_passed = Some(true);
+    t.info.test_invocations = vec![TestInvocation {
+        step_index: 0,
+        command: "pytest -q".into(),
+        exit_code: 0,
+        matched_pattern: "pytest".into(),
+    }];
+    record_assistant_tool_step(&mut t, "```bash\npytest -q\n```", "pytest -q", "ok\n");
+    std::fs::write(
+        sweep.path().join("abc.traj.json"),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "tests:            count=1 last_exit_code=0 last_passed=true submitted_without_tests=false"
+        ),
+        "{stdout}"
+    );
 }
 
 #[test]

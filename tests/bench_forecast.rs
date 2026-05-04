@@ -114,6 +114,8 @@ fn instance(
         runs: 0,
         resolved_count: 0,
         pass_at_1: false,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
     }
 }
 
@@ -130,6 +132,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
     SweepResults {
         total: instances.len(),
         submitted: 2,
+        submitted_with_tests: 0,
         skipped: 0,
         errored: 1,
         failures_by_category: Default::default(),
@@ -297,6 +300,8 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         runs: 1,
         resolved_count: 1,
         pass_at_1: true,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
     }];
     results.total = 1;
     results.submitted = 1;
