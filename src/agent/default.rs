@@ -403,7 +403,9 @@ impl Agent for DefaultAgent {
             (result, post_hook_results)
         };
 
-        self.record_test_invocation_if_matched(&cmd, result.exit_code);
+        if !tool_use_blocked {
+            self.record_test_invocation_if_matched(&cmd, result.exit_code);
+        }
 
         let trunc_stdout = truncate_observation_text(
             &result.stdout,

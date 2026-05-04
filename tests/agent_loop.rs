@@ -359,6 +359,40 @@ async fn pre_tool_use_hook_can_block_the_bash_command() {
 }
 
 #[tokio::test]
+async fn blocked_pre_tool_use_test_command_does_not_count_as_test_invocation() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "guard".into(),
+        command: failing_hook_command(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\npytest -q\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    assert!(agent.trajectory.info.test_invocations.is_empty());
+    assert!(!agent.trajectory.info.tests_run_before_submit);
+    assert_eq!(agent.trajectory.info.last_tests_passed, None);
+}
+
+#[tokio::test]
 async fn post_tool_use_hook_output_is_added_to_next_observation() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
