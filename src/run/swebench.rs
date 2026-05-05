@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::model::litellm::is_anthropic_model;
 use crate::model::{Model, ModelUsage};
-use crate::trajectory::{FailureCategory, Trajectory, exit_reason, outcome};
+use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
 /// sweep-level USD budget was exhausted. Distinct from `error` and
@@ -2293,6 +2293,120 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
     }
 }
 
+struct CancelledWaitContext<'a> {
+    output_dir: &'a Path,
+    instance_id: &'a str,
+    run_index: u32,
+    task: &'a str,
+    model_name: &'a str,
+    attempts: u32,
+    retry_reasons: &'a [FailureCategory],
+    current: Option<InstanceResult>,
+}
+
+fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
+    persist_cancelled_wait_trajectory(
+        ctx.output_dir,
+        ctx.instance_id,
+        ctx.run_index,
+        ctx.task,
+        ctx.model_name,
+    );
+    let mut result = ctx.current.unwrap_or_else(|| InstanceResult {
+        instance_id: ctx.instance_id.to_owned(),
+        exit_reason: exit_reason::CANCELLED.into(),
+        outcome: Some(outcome::ERROR.into()),
+        failure_category: None,
+        steps: Some(0),
+        cost_usd: Some(0.0),
+        prompt_tokens: Some(0),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
+        completion_tokens: Some(0),
+        duration_secs: Some(0.0),
+        error: None,
+        github_pr_error: None,
+        patch_present: false,
+        non_empty_patch: false,
+        attempts: ctx.attempts.max(1),
+        retry_reasons: ctx.retry_reasons.to_vec(),
+        runs: 1,
+        resolved_count: 0,
+        pass_at_1: false,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
+    });
+    ctx.instance_id.clone_into(&mut result.instance_id);
+    result.exit_reason = exit_reason::CANCELLED.into();
+    result.outcome = Some(outcome::ERROR.into());
+    result.failure_category = None;
+    result.steps.get_or_insert(0);
+    result.cost_usd.get_or_insert(0.0);
+    result.prompt_tokens.get_or_insert(0);
+    result.cache_read_tokens.get_or_insert(0);
+    result.cache_creation_tokens.get_or_insert(0);
+    result.completion_tokens.get_or_insert(0);
+    result.duration_secs.get_or_insert(0.0);
+    result.error = None;
+    result.attempts = ctx.attempts.max(1);
+    result.retry_reasons = ctx.retry_reasons.to_vec();
+    result.resolved_count = 0;
+    result.pass_at_1 = false;
+    result
+}
+
+fn persist_cancelled_wait_trajectory(
+    output_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+    task: &str,
+    model_name: &str,
+) {
+    let traj_path = trajectory_path_for_run(output_dir, instance_id, run_index);
+    let mut trajectory = std::fs::read_to_string(&traj_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Trajectory>(&text).ok())
+        .unwrap_or_default();
+    let now = chrono::Utc::now().to_rfc3339();
+    trajectory.info.task.get_or_insert_with(|| task.to_owned());
+    trajectory
+        .info
+        .model_name
+        .get_or_insert_with(|| model_name.to_owned());
+    trajectory
+        .info
+        .started_at
+        .get_or_insert_with(|| now.clone());
+    trajectory.info.ended_at = Some(now);
+    trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
+    trajectory.info.outcome = Some(outcome::ERROR.into());
+    trajectory.info.total_cost_usd.get_or_insert(0.0);
+    trajectory
+        .info
+        .token_usage
+        .get_or_insert_with(TokenUsage::default);
+    trajectory.info.duration_secs.get_or_insert(0.0);
+    trajectory.info.steps.get_or_insert(0);
+
+    if let Some(parent) = traj_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                path = %traj_path.display(),
+                error = %err,
+                "failed to create cancelled trajectory directory"
+            );
+            return;
+        }
+    }
+    if let Err(err) = trajectory.save_pretty(&traj_path) {
+        tracing::warn!(
+            path = %traj_path.display(),
+            error = %err,
+            "failed to persist cancelled trajectory"
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SweepRun {
     inst: SweBenchInstance,
@@ -2904,7 +3018,18 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         // next attempt. Does NOT count against task_timeout_secs because
         // the timeout is applied inside mini::run, not here.
         if let Some(g) = &governor {
-            g.acquire(0).await;
+            if !g.acquire_until_cancelled(0, cancellation.clone()).await {
+                return cancelled_wait_result(CancelledWaitContext {
+                    output_dir: &output_dir,
+                    instance_id: &id,
+                    run_index,
+                    task: &task,
+                    model_name: &model_name,
+                    attempts,
+                    retry_reasons: &retry_reasons,
+                    current: None,
+                });
+            }
         }
 
         let det_for_attempt = deterministic_responses
@@ -3056,11 +3181,43 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             retry_reasons.push(cat);
             tracing::warn!(instance=%id, attempt=attempts, failure_category=%failure_category_label(cat), "retrying transient failure");
         }
-        tokio::time::sleep(retry_policy.backoff_for(&id, attempts)).await;
+        if !sleep_or_cancelled(
+            retry_policy.backoff_for(&id, attempts),
+            cancellation.clone(),
+        )
+        .await
+        {
+            return cancelled_wait_result(CancelledWaitContext {
+                output_dir: &output_dir,
+                instance_id: &id,
+                run_index,
+                task: &task,
+                model_name: &model_name,
+                attempts,
+                retry_reasons: &retry_reasons,
+                current: Some(current),
+            });
+        }
         terminal = Some(current);
     }
 
     terminal.unwrap_or_else(|| budget_halt_result(&id))
+}
+
+async fn sleep_or_cancelled(
+    duration: Duration,
+    mut cancellation: crate::run::mini::MiniCancellation,
+) -> bool {
+    if cancellation.is_cancelled() {
+        return false;
+    }
+    if duration.is_zero() {
+        return true;
+    }
+    tokio::select! {
+        () = tokio::time::sleep(duration) => !cancellation.is_cancelled(),
+        () = cancellation.cancelled() => false,
+    }
 }
 
 struct GithubPrPublication<'a> {

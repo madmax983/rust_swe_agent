@@ -58,6 +58,13 @@ fn submit_only_responses() -> Vec<String> {
     vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfresh-run\n```".into()]
 }
 
+fn rate_limited_then_submit_responses() -> Vec<String> {
+    vec![
+        "__rate_limited__:0".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nretry-success\n```".into(),
+    ]
+}
+
 fn staged_sleep_responses(first_marker: &Path, second_started: &Path) -> Vec<String> {
     let first = first_marker.display().to_string();
     let second = second_started.display().to_string();
@@ -334,4 +341,109 @@ async fn forced_cancel_preserves_partial_command_output_in_trajectory() {
         "{}",
         serde_json::to_string_pretty(&traj).unwrap()
     );
+}
+
+#[tokio::test]
+async fn forced_cancel_interrupts_pre_run_rate_limit_wait() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    write_dataset(&dataset, &["rate-limit-winner", "rate-limit-waiter"]);
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        signal_tx.send(SweepSignal::Interrupt).unwrap();
+    });
+
+    let mut args = base_args(
+        dataset,
+        output.clone(),
+        &repo,
+        submit_only_responses(),
+        Some(signal_rx),
+    );
+    args.parallel = 2;
+    args.max_rpm = Some(1);
+    args.cancel_deadline_secs = 0;
+
+    let started = Instant::now();
+    let results = match tokio::time::timeout(Duration::from_secs(8), run(args)).await {
+        Ok(result) => result.unwrap(),
+        Err(err) => {
+            panic!("forced cancellation should interrupt the rate-limit governor wait: {err}")
+        }
+    };
+
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(results.sweep_status, "cancelled");
+    assert_eq!(results.cancel_exit_code, Some(130));
+    let Some(cancelled) = results
+        .instances
+        .iter()
+        .find(|row| row.exit_reason == "cancelled")
+    else {
+        panic!("one worker should be cancelled while waiting for the governor");
+    };
+    let traj: Trajectory = serde_json::from_str(
+        &std::fs::read_to_string(trajectory_path_for_run(&output, &cancelled.instance_id, 1))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(traj.info.exit_reason.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+async fn forced_cancel_interrupts_retry_backoff_wait() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    write_dataset(&dataset, &["retry-backoff-waiter"]);
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        signal_tx.send(SweepSignal::Interrupt).unwrap();
+    });
+
+    let mut args = base_args(
+        dataset,
+        output.clone(),
+        &repo,
+        rate_limited_then_submit_responses(),
+        Some(signal_rx),
+    );
+    args.max_retries = 1;
+    args.retry_on = Some("model_api".into());
+    args.retry_backoff_base_ms = 30_000;
+    args.retry_backoff_cap_s = 30;
+    args.cancel_deadline_secs = 0;
+
+    let started = Instant::now();
+    let results = match tokio::time::timeout(Duration::from_secs(8), run(args)).await {
+        Ok(result) => result.unwrap(),
+        Err(err) => panic!("forced cancellation should interrupt retry backoff: {err}"),
+    };
+
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(results.sweep_status, "cancelled");
+    assert_eq!(results.cancel_exit_code, Some(130));
+    let row = results
+        .instances
+        .iter()
+        .find(|row| row.instance_id == "retry-backoff-waiter")
+        .unwrap();
+    assert_eq!(row.exit_reason, "cancelled");
+    let traj: Trajectory = serde_json::from_str(
+        &std::fs::read_to_string(trajectory_path_for_run(&output, "retry-backoff-waiter", 1))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(traj.info.exit_reason.as_deref(), Some("cancelled"));
 }
