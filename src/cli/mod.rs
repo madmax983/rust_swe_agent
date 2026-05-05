@@ -120,6 +120,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         .trajectory_name
         .clone()
         .unwrap_or_else(|| crate::run::mini::slugify(&m.task));
+    let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
+    let patch_capture = github_pr
+        .as_ref()
+        .map(|options| crate::run::mini::PatchCaptureSpec {
+            base_commit: Some(options.target_branch.clone()),
+            workdir: std::path::PathBuf::from(cfg.root.environment.workdir.clone()),
+            patch_path: options.patch_path.clone(),
+            skip_patch_validation: m.skip_patch_validation,
+        });
 
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
@@ -140,9 +149,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
         stream_addr,
-        patch_capture: None,
+        patch_capture,
     };
-    crate::run::mini::run(args).await
+    crate::run::mini::run(args).await?;
+    maybe_publish_mini_github_pr(github_pr).await?;
+    Ok(())
 }
 
 async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
@@ -176,6 +187,7 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+    validate_swebench_github_pr_args(&sweep_cmd.github_pr)?;
     if sweep_cmd.forecast_first {
         match run_forecast_from_cmd(sweep_cmd.clone()).await? {
             crate::run::forecast::ForecastOutcome::Report(report) => {
@@ -225,6 +237,12 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep complete"
     );
     print!("{}", results.summary_table());
+    let github_pr_failures = github_pr_failure_count(&results);
+    if github_pr_failures > 0 {
+        return Err(Error::Github(format!(
+            "{github_pr_failures} GitHub PR publication(s) failed; see results.json for instance errors"
+        )));
+    }
     Ok(())
 }
 
@@ -257,6 +275,8 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
 async fn run_forecast_from_cmd(
     mut s: args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    s.github_pr.open_prs = false;
+    s.github_pr.github_pr_dry_run = false;
     let calibration_n = s.calibration_n;
     let seed = s.seed.unwrap_or(42);
     let target_n = s.target_n;
@@ -347,6 +367,119 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
     }
 }
 
+fn mini_github_pr_options(
+    m: &args::MiniCmd,
+    _cfg: &Config,
+    trajectory_name: &str,
+) -> Result<Option<crate::run::github_pr::GithubPrOptions>, Error> {
+    if !m.github_pr.open_pr && !m.github_pr.github_pr_dry_run {
+        return Ok(None);
+    }
+    let target_repo = required_github_arg(m.github_pr.target_repo.as_deref(), "--target-repo")?;
+    let target_branch =
+        required_github_arg(m.github_pr.target_branch.as_deref(), "--target-branch")?;
+    crate::run::github_pr::validate_branch_prefix(&m.github_pr.github_pr_branch_prefix)
+        .map_err(Error::Config)?;
+    let patch_path = m.output.join(format!("{trajectory_name}.patch"));
+    let trajectory_path = m.output.join(format!("{trajectory_name}.traj.json"));
+    Ok(Some(crate::run::github_pr::GithubPrOptions {
+        target_repo,
+        target_branch,
+        task_id: trajectory_name.to_owned(),
+        trajectory_ref: trajectory_path.display().to_string(),
+        patch_path,
+        branch_prefix: m.github_pr.github_pr_branch_prefix.clone(),
+        token_env: m.github_pr.github_token_env.clone(),
+        mode: if m.github_pr.github_pr_dry_run {
+            crate::run::github_pr::PublishMode::DryRun
+        } else {
+            crate::run::github_pr::PublishMode::Open
+        },
+        timeout_secs: m.github_pr.github_pr_timeout_secs,
+        max_retries: m.github_pr.github_pr_max_retries,
+        backoff_base_ms: m.github_pr.github_pr_backoff_base_ms,
+    }))
+}
+
+fn swebench_github_pr_config(
+    github: &args::SwebenchGithubPrArgs,
+) -> Option<crate::run::github_pr::GithubPrSweepConfig> {
+    if !github.open_prs && !github.github_pr_dry_run {
+        return None;
+    }
+    Some(crate::run::github_pr::GithubPrSweepConfig {
+        target_repo: github.target_repo.clone().unwrap_or_default(),
+        target_branch: github.target_branch.clone().unwrap_or_default(),
+        token_env: github.github_token_env.clone(),
+        mode: if github.github_pr_dry_run {
+            crate::run::github_pr::PublishMode::DryRun
+        } else {
+            crate::run::github_pr::PublishMode::Open
+        },
+        timeout_secs: github.github_pr_timeout_secs,
+        max_retries: github.github_pr_max_retries,
+        backoff_base_ms: github.github_pr_backoff_base_ms,
+        branch_prefix: github.github_pr_branch_prefix.clone(),
+    })
+}
+
+fn validate_swebench_github_pr_args(github: &args::SwebenchGithubPrArgs) -> Result<(), Error> {
+    if !github.open_prs && !github.github_pr_dry_run {
+        return Ok(());
+    }
+    let _ = required_github_arg(github.target_repo.as_deref(), "--target-repo")?;
+    let _ = required_github_arg(github.target_branch.as_deref(), "--target-branch")?;
+    crate::run::github_pr::validate_branch_prefix(&github.github_pr_branch_prefix)
+        .map_err(Error::Config)?;
+    Ok(())
+}
+
+fn required_github_arg(value: Option<&str>, name: &str) -> Result<String, Error> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "{name} is required with --open-pr/--github-pr-dry-run"
+            )))
+        })
+}
+
+fn trajectory_submitted(path: &std::path::Path) -> Result<bool, Error> {
+    let text = std::fs::read_to_string(path)?;
+    let trajectory: crate::trajectory::Trajectory = serde_json::from_str(&text)?;
+    Ok(trajectory.info.outcome.as_deref() == Some(crate::trajectory::outcome::SUBMITTED))
+}
+
+async fn publish_github_pr(options: crate::run::github_pr::GithubPrOptions) -> Result<(), Error> {
+    let result = crate::run::github_pr::publish(options).await?;
+    if let Some(output) = result.dry_run_output {
+        print!("{output}");
+    } else if let Some(url) = result.url {
+        println!("github_pr_url: {url}");
+    }
+    Ok(())
+}
+
+async fn maybe_publish_mini_github_pr(
+    github_pr: Option<crate::run::github_pr::GithubPrOptions>,
+) -> Result<(), Error> {
+    if let Some(options) = github_pr {
+        let traj_path = options.trajectory_ref.clone();
+        if trajectory_submitted(std::path::Path::new(&traj_path))? {
+            publish_github_pr(options).await?;
+        } else {
+            tracing::info!(trajectory = %traj_path, "github PR skipped because run did not submit");
+        }
+    }
+    Ok(())
+}
+
+fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usize {
+    results.github_pr_failures
+}
+
 fn swebench_args_from_cmd(
     s: args::SwebenchCmd,
     cfg: Config,
@@ -354,6 +487,7 @@ fn swebench_args_from_cmd(
 ) -> crate::run::swebench::SwebenchArgs {
     let cfg_max_rpm = cfg.root.sweep.max_rpm;
     let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
+    let github_pr = swebench_github_pr_config(&s.github_pr);
     crate::run::swebench::SwebenchArgs {
         dataset_path: s.dataset_path,
         output_dir: s.output,
@@ -395,6 +529,7 @@ fn swebench_args_from_cmd(
         skip_patch_validation: s.skip_patch_validation,
         max_rpm: s.max_rpm.or(cfg_max_rpm),
         max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
+        github_pr,
     }
 }
 
@@ -738,7 +873,15 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::validate_observation_head_ratio;
+    use super::{
+        args, maybe_publish_mini_github_pr, mini_github_pr_options, required_github_arg,
+        swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
+        validate_swebench_github_pr_args,
+    };
+    use crate::error::Error;
+    use crate::run::github_pr::PublishMode;
+    use crate::trajectory::{Trajectory, outcome};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn observation_head_ratio_accepts_closed_unit_interval() {
@@ -753,5 +896,196 @@ mod tests {
         assert!(validate_observation_head_ratio(1.01).is_err());
         assert!(validate_observation_head_ratio(f64::NAN).is_err());
         assert!(validate_observation_head_ratio(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn swebench_github_pr_validation_rejects_empty_slug_branch_prefix() {
+        let err = validate_swebench_github_pr_args(&args::SwebenchGithubPrArgs {
+            open_prs: true,
+            target_repo: Some("madmax983/rust_swe_agent".into()),
+            target_branch: Some("trunk".into()),
+            github_token_env: "GITHUB_TOKEN".into(),
+            github_pr_dry_run: false,
+            github_pr_timeout_secs: 30,
+            github_pr_max_retries: 2,
+            github_pr_backoff_base_ms: 250,
+            github_pr_branch_prefix: "---___".into(),
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("branch prefix"), "{err}");
+        assert!(err.to_string().contains("slug"), "{err}");
+    }
+
+    #[test]
+    fn mini_github_pr_options_builds_expected_patch_capture_inputs() {
+        let cfg = crate::config::Config::defaults().unwrap();
+        assert!(
+            mini_github_pr_options(&mini_cmd(false, false), &cfg, "task")
+                .unwrap()
+                .is_none()
+        );
+
+        let options = mini_github_pr_options(&mini_cmd(false, true), &cfg, "task")
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.target_repo, "madmax983/rust_swe_agent");
+        assert_eq!(options.target_branch, "trunk");
+        assert_eq!(options.task_id, "task");
+        assert_eq!(options.patch_path, PathBuf::from("runs").join("task.patch"));
+        assert_eq!(options.mode, PublishMode::DryRun);
+
+        let open_options = mini_github_pr_options(&mini_cmd(true, false), &cfg, "task")
+            .unwrap()
+            .unwrap();
+        assert_eq!(open_options.mode, PublishMode::Open);
+    }
+
+    #[test]
+    fn github_pr_arg_helpers_validate_required_inputs_and_modes() {
+        assert_eq!(
+            required_github_arg(Some(" owner/repo "), "--target-repo").unwrap(),
+            "owner/repo"
+        );
+        assert!(required_github_arg(None, "--target-repo").is_err());
+        assert!(required_github_arg(Some("   "), "--target-repo").is_err());
+
+        assert!(swebench_github_pr_config(&swebench_github(false, false)).is_none());
+        let dry_run = swebench_github_pr_config(&swebench_github(false, true)).unwrap();
+        assert_eq!(dry_run.mode, PublishMode::DryRun);
+        let open = swebench_github_pr_config(&swebench_github(true, false)).unwrap();
+        assert_eq!(open.mode, PublishMode::Open);
+
+        let mut missing_repo = swebench_github(true, false);
+        missing_repo.target_repo = None;
+        assert!(validate_swebench_github_pr_args(&missing_repo).is_err());
+        let mut missing_branch = swebench_github(true, false);
+        missing_branch.target_branch = None;
+        assert!(validate_swebench_github_pr_args(&missing_branch).is_err());
+    }
+
+    #[tokio::test]
+    async fn mini_github_pr_publish_helper_respects_submission_state() {
+        let work = tempfile::tempdir().unwrap();
+        let submitted = work.path().join("submitted.traj.json");
+        write_trajectory(&submitted, Some(outcome::SUBMITTED));
+        let patch = work.path().join("submitted.patch");
+        std::fs::write(&patch, sample_patch()).unwrap();
+
+        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
+            target_repo: "madmax983/rust_swe_agent".into(),
+            target_branch: "trunk".into(),
+            task_id: "submitted".into(),
+            trajectory_ref: submitted.display().to_string(),
+            patch_path: patch,
+            branch_prefix: "rust-swe-agent".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: PublishMode::DryRun,
+            timeout_secs: 30,
+            max_retries: 2,
+            backoff_base_ms: 250,
+        }))
+        .await
+        .unwrap();
+
+        let errored = work.path().join("errored.traj.json");
+        write_trajectory(&errored, Some(outcome::ERROR));
+        maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
+            trajectory_ref: errored.display().to_string(),
+            patch_path: work.path().join("missing.patch"),
+            mode: PublishMode::DryRun,
+            ..github_options_for_cli_test()
+        }))
+        .await
+        .unwrap();
+        maybe_publish_mini_github_pr(None).await.unwrap();
+    }
+
+    #[test]
+    fn trajectory_submission_detection_reads_outcome() {
+        let work = tempfile::tempdir().unwrap();
+        let submitted = work.path().join("submitted.traj.json");
+        let errored = work.path().join("errored.traj.json");
+        write_trajectory(&submitted, Some(outcome::SUBMITTED));
+        write_trajectory(&errored, Some(outcome::ERROR));
+
+        assert!(trajectory_submitted(&submitted).unwrap());
+        assert!(!trajectory_submitted(&errored).unwrap());
+    }
+
+    fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
+        args::MiniCmd {
+            task: "Fix it".into(),
+            extra_context: None,
+            model: "deterministic".into(),
+            step_limit: 1,
+            observation_max_bytes: None,
+            observation_head_ratio: None,
+            task_timeout_secs: None,
+            config: None,
+            env: None,
+            docker_image: None,
+            output: PathBuf::from("runs"),
+            trajectory_name: None,
+            stream: None,
+            skip_patch_validation: false,
+            github_pr: args::MiniGithubPrArgs {
+                open_pr,
+                target_repo: Some("madmax983/rust_swe_agent".into()),
+                target_branch: Some("trunk".into()),
+                github_token_env: "GITHUB_TOKEN".into(),
+                github_pr_dry_run: dry_run,
+                github_pr_timeout_secs: 30,
+                github_pr_max_retries: 2,
+                github_pr_backoff_base_ms: 250,
+                github_pr_branch_prefix: "rust-swe-agent".into(),
+            },
+        }
+    }
+
+    fn swebench_github(open_prs: bool, dry_run: bool) -> args::SwebenchGithubPrArgs {
+        args::SwebenchGithubPrArgs {
+            open_prs,
+            target_repo: Some("madmax983/rust_swe_agent".into()),
+            target_branch: Some("trunk".into()),
+            github_token_env: "GITHUB_TOKEN".into(),
+            github_pr_dry_run: dry_run,
+            github_pr_timeout_secs: 30,
+            github_pr_max_retries: 2,
+            github_pr_backoff_base_ms: 250,
+            github_pr_branch_prefix: "rust-swe-agent".into(),
+        }
+    }
+
+    fn github_options_for_cli_test() -> crate::run::github_pr::GithubPrOptions {
+        crate::run::github_pr::GithubPrOptions {
+            target_repo: "madmax983/rust_swe_agent".into(),
+            target_branch: "trunk".into(),
+            task_id: "task".into(),
+            trajectory_ref: "traj.json".into(),
+            patch_path: PathBuf::from("patch.diff"),
+            branch_prefix: "rust-swe-agent".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: PublishMode::DryRun,
+            timeout_secs: 30,
+            max_retries: 2,
+            backoff_base_ms: 250,
+        }
+    }
+
+    fn write_trajectory(path: &Path, outcome: Option<&str>) {
+        let mut trajectory = Trajectory::new();
+        trajectory.info.outcome = outcome.map(str::to_owned);
+        trajectory.save_pretty(path).unwrap();
+    }
+
+    fn sample_patch() -> &'static str {
+        "diff --git a/file.txt b/file.txt\n\
+         --- a/file.txt\n\
+         +++ b/file.txt\n\
+         @@ -1 +1 @@\n\
+         -base\n\
+         +patched\n"
     }
 }

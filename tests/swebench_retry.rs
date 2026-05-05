@@ -114,6 +114,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -165,6 +166,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -223,6 +225,7 @@ async fn max_retries_zero_disables_retry() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -285,6 +288,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -325,6 +329,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -383,6 +388,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -445,6 +451,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -483,6 +490,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();

@@ -91,6 +91,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     }
 }
 

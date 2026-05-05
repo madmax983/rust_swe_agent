@@ -166,6 +166,11 @@ pub struct InstanceResult {
     pub duration_secs: Option<f64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Failure from the GitHub PR publication side effect. This is separate
+    /// from `error` so a submitted patch stays submitted even if publishing
+    /// the PR fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_pr_error: Option<String>,
     /// `true` once the runner persisted a `.patch` artifact for this
     /// instance — even an empty diff. Submitted instances missing a
     /// patch indicate a capture failure (which downgrades `outcome` to
@@ -232,6 +237,10 @@ pub struct SweepResults {
     /// rejected the patch at capture time.
     #[serde(default)]
     pub patch_apply_invalid: usize,
+    /// GitHub PR publication failures across every run slot, including reruns
+    /// that are collapsed out of aggregate instance rows.
+    #[serde(default)]
+    pub github_pr_failures: usize,
     #[serde(default, rename = "total_input_tokens", alias = "total_prompt_tokens")]
     pub total_prompt_tokens: u64,
     #[serde(default)]
@@ -726,6 +735,8 @@ pub struct SwebenchArgs {
     /// Optional aggregate input-token-rate ceiling across all workers (tokens/min).
     /// When `None`, no TPM cap is enforced (opt-in, no behavior change).
     pub max_input_tpm: Option<u64>,
+    /// Optional GitHub PR publisher for submitted patch artifacts.
+    pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -923,6 +934,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             with_patch: 0,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -988,6 +1000,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -1081,7 +1094,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         }
                     }
                     if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                        let r = resume_snapshot_for_run(
+                        let mut r = resume_snapshot_for_run(
                             &args.output_dir,
                             &inst.instance_id,
                             run_index,
@@ -1089,6 +1102,22 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &patch_path,
                             &prior_results,
                         );
+                        let traj_path = existing_trajectory_path_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                        );
+                        r = publish_github_pr_for_result(
+                            r,
+                            GithubPrPublication {
+                                config: args.github_pr.as_ref(),
+                                instance_id: &inst.instance_id,
+                                run_index,
+                                trajectory_path: &traj_path,
+                                patch_path: &patch_path,
+                            },
+                        )
+                        .await;
                         bump_cost(
                             r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
@@ -1147,6 +1176,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 task_timeout_secs: args.task_timeout_secs,
                 skip_patch_validation: args.skip_patch_validation,
                 governor,
+                github_pr: args.github_pr.clone(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -1229,6 +1259,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                         completion_tokens: None,
                         duration_secs: None,
                         error: Some(e.to_string()),
+                        github_pr_error: None,
                         patch_present: false,
                         non_empty_patch: false,
                         attempts: 1,
@@ -1332,6 +1363,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         with_patch: accounting.with_patch,
         patch_empty,
         patch_apply_invalid,
+        github_pr_failures: github_pr_failure_count_for_run_slots(&results),
         total_prompt_tokens: token_breakdown.input_tokens,
         total_cache_read_tokens: token_breakdown.cache_read_tokens,
         total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
@@ -1952,6 +1984,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         completion_tokens: None,
         duration_secs: None,
         error: None,
+        github_pr_error: None,
         patch_present: false,
         non_empty_patch: false,
         attempts: 1,
@@ -2036,6 +2069,13 @@ fn submitted_with_tests_for_fresh_submissions(results: &[RunSlotResult]) -> usiz
         .count()
 }
 
+fn github_pr_failure_count_for_run_slots(results: &[RunSlotResult]) -> usize {
+    results
+        .iter()
+        .filter(|r| r.result.github_pr_error.is_some())
+        .count()
+}
+
 fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<InstanceResult> {
     let mut grouped: BTreeMap<&str, Vec<&RunSlotResult>> = BTreeMap::new();
     for r in results {
@@ -2080,6 +2120,7 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
         );
         aggregate.duration_secs = sum_f64(rows.iter().filter_map(|r| r.result.duration_secs));
         aggregate.error.clone_from(&first.error);
+        aggregate.github_pr_error = rows.iter().find_map(|r| r.result.github_pr_error.clone());
         aggregate.patch_present = rows.iter().any(|r| r.result.patch_present);
         aggregate.non_empty_patch = rows.iter().any(|r| r.result.non_empty_patch);
         aggregate.attempts = rows
@@ -2265,6 +2306,7 @@ fn skipped_result_from_info(
         completion_tokens,
         duration_secs: info.duration_secs,
         error: None,
+        github_pr_error: None,
         patch_present,
         non_empty_patch,
         attempts: 1,
@@ -2287,6 +2329,7 @@ fn skipped_result_from_prior_result(
     let mut out = r.clone();
     out.exit_reason = "skipped_resume".into();
     out.error = None;
+    out.github_pr_error = None;
     out.patch_present = traj_based.patch_present;
     out.non_empty_patch = traj_based.non_empty_patch;
     out.tests_run_before_submit = traj_based.tests_run_before_submit;
@@ -2503,6 +2546,7 @@ struct RunOneParams {
     task_timeout_secs: Option<u64>,
     skip_patch_validation: bool,
     governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
+    github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2516,6 +2560,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         task_timeout_secs,
         skip_patch_validation,
         governor,
+        github_pr,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -2662,6 +2707,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             completion_tokens: Some(total_completion_tokens),
             duration_secs: info.as_ref().and_then(|i| i.duration_secs),
             error: run_err.map(|e| e.to_string()),
+            github_pr_error: None,
             patch_present,
             non_empty_patch,
             attempts,
@@ -2674,6 +2720,18 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
         };
+        let current = publish_github_pr_for_result(
+            current,
+            GithubPrPublication {
+                config: github_pr.as_ref(),
+                instance_id: &id,
+                run_index,
+                trajectory_path: &traj_path,
+                patch_path: &patch_path,
+            },
+        )
+        .await;
+
         let retryable = current
             .failure_category
             .is_some_and(|cat| retry_policy.should_retry(cat))
@@ -2691,6 +2749,49 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
     }
 
     terminal.unwrap_or_else(|| budget_halt_result(&id))
+}
+
+struct GithubPrPublication<'a> {
+    config: Option<&'a crate::run::github_pr::GithubPrSweepConfig>,
+    instance_id: &'a str,
+    run_index: u32,
+    trajectory_path: &'a Path,
+    patch_path: &'a Path,
+}
+
+async fn publish_github_pr_for_result(
+    mut current: InstanceResult,
+    publication: GithubPrPublication<'_>,
+) -> InstanceResult {
+    if current.outcome.as_deref() != Some(outcome::SUBMITTED) || !current.patch_present {
+        return current;
+    }
+    let Some(config) = publication.config else {
+        return current;
+    };
+
+    let pr_options = config.options_for_run(
+        publication.instance_id,
+        publication.run_index,
+        publication.trajectory_path,
+        publication.patch_path,
+    );
+    match crate::run::github_pr::publish(pr_options).await {
+        Ok(result) => {
+            if let Some(output) = result.dry_run_output {
+                print!("{output}");
+            } else if let Some(url) = result.url {
+                println!(
+                    "github_pr_url[{}#run-{}]: {url}",
+                    publication.instance_id, publication.run_index
+                );
+            }
+        }
+        Err(err) => {
+            current.github_pr_error = Some(err.to_string());
+        }
+    }
+    current
 }
 
 fn classify_error(err: &Error) -> FailureCategory {
@@ -3046,6 +3147,7 @@ mod tests {
             completion_tokens: Some(0),
             duration_secs: Some(0.0),
             error: None,
+            github_pr_error: None,
             patch_present: submitted,
             non_empty_patch: submitted,
             attempts: 1,
@@ -3056,6 +3158,80 @@ mod tests {
             tests_run_before_submit: tests_run,
             last_tests_passed: tests_run.then_some(true),
         }
+    }
+
+    #[tokio::test]
+    async fn github_pr_publication_is_noop_when_disabled() {
+        let result = test_instance_result("inst", true, false);
+
+        let actual = publish_github_pr_for_result(
+            result.clone(),
+            GithubPrPublication {
+                config: None,
+                instance_id: "inst",
+                run_index: 1,
+                trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
+                patch_path: std::path::Path::new("inst/run-1.patch"),
+            },
+        )
+        .await;
+
+        assert_eq!(actual.instance_id, result.instance_id);
+        assert_eq!(actual.exit_reason, result.exit_reason);
+        assert_eq!(actual.outcome, result.outcome);
+        assert_eq!(actual.failure_category, result.failure_category);
+        assert_eq!(actual.error, result.error);
+    }
+
+    #[tokio::test]
+    async fn github_pr_publication_failure_preserves_submission_outcome() {
+        let result = test_instance_result("inst", true, true);
+        let config = crate::run::github_pr::GithubPrSweepConfig {
+            target_repo: "not-a-valid-owner-repo".into(),
+            target_branch: "trunk".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: crate::run::github_pr::PublishMode::DryRun,
+            timeout_secs: 1,
+            max_retries: 0,
+            backoff_base_ms: 1,
+            branch_prefix: "rust-swe-agent".into(),
+        };
+
+        let actual = publish_github_pr_for_result(
+            result.clone(),
+            GithubPrPublication {
+                config: Some(&config),
+                instance_id: "inst",
+                run_index: 1,
+                trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
+                patch_path: std::path::Path::new("inst/run-1.patch"),
+            },
+        )
+        .await;
+
+        assert_eq!(actual.outcome, result.outcome);
+        assert_eq!(actual.failure_category, result.failure_category);
+        assert_eq!(actual.error, None);
+        assert!(actual.github_pr_error.is_some());
+        assert_eq!(
+            github_pr_failure_count_for_run_slots(&[RunSlotResult::new(1, actual)]),
+            1
+        );
+    }
+
+    #[test]
+    fn github_pr_failure_count_includes_later_rerun_slots() {
+        let first = RunSlotResult::new(1, test_instance_result("rerun-task", true, true));
+        let mut later = test_instance_result("rerun-task", true, true);
+        later.github_pr_error = Some("tempdir creation failed".into());
+
+        let results = vec![first, RunSlotResult::new(2, later)];
+        let aggregate = aggregate_run_results(&results, 2);
+
+        assert_eq!(aggregate.len(), 1);
+        assert_eq!(aggregate[0].error, None);
+        assert!(aggregate[0].github_pr_error.is_some());
+        assert_eq!(github_pr_failure_count_for_run_slots(&results), 1);
     }
 
     #[test]
@@ -3134,6 +3310,7 @@ mod tests {
             completion_tokens: Some(100_000),
             duration_secs: None,
             error: None,
+            github_pr_error: None,
             patch_present: false,
             non_empty_patch: false,
             attempts: 1,
@@ -3167,6 +3344,7 @@ mod tests {
             with_patch: 3,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 250_000,
             total_cache_read_tokens: 2_000_000,
             total_cache_creation_tokens: 250_000,
@@ -3240,6 +3418,7 @@ mod tests {
             with_patch: 2,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -3299,6 +3478,7 @@ mod tests {
             with_patch: 0,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -3417,6 +3597,7 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3470,6 +3651,7 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let manifest = build_manifest(
             &args,
@@ -3533,6 +3715,7 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         let filter = FilterSpec::default();
         let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
@@ -3620,6 +3803,7 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            github_pr: None,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
         let panicked = std::panic::AssertUnwindSafe(run(args))
@@ -4169,6 +4353,7 @@ instance = "inst"
             instances: vec![],
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             rate_limit_events: None,
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -4214,6 +4399,7 @@ instance = "inst"
             skip_patch_validation: false,
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
+            github_pr: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));
@@ -4460,6 +4646,7 @@ instance = "inst"
             with_patch: 2,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
@@ -4521,6 +4708,7 @@ instance = "inst"
             with_patch: 1,
             patch_empty: 0,
             patch_apply_invalid: 0,
+            github_pr_failures: 0,
             total_prompt_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,

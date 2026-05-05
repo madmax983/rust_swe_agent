@@ -156,6 +156,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -325,6 +326,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -403,6 +405,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -468,6 +471,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -595,6 +599,7 @@ async fn resume_skipped_costs_count_against_budget() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -657,6 +662,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -682,6 +688,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             completion_tokens: Some(8_000),
             duration_secs: Some(1.0),
             error: None,
+            github_pr_error: None,
             patch_present: true,
             non_empty_patch: false,
             attempts: 2,
@@ -742,6 +749,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -800,6 +808,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -825,6 +834,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             completion_tokens: Some(10_000),
             duration_secs: Some(1.0),
             error: None,
+            github_pr_error: None,
             patch_present: false,
             non_empty_patch: false,
             attempts: 3,
@@ -877,6 +887,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
@@ -914,6 +925,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         with_patch: 0,
         patch_empty: 0,
         patch_apply_invalid: 0,
+        github_pr_failures: 0,
         total_prompt_tokens: 0,
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
@@ -939,6 +951,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             completion_tokens: Some(10_000),
             duration_secs: Some(1.0),
             error: None,
+            github_pr_error: None,
             patch_present: true,
             non_empty_patch: false,
             attempts: 3,
@@ -1017,6 +1030,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        github_pr: None,
     })
     .await
     .unwrap();
