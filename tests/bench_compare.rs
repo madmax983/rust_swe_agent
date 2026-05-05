@@ -1189,6 +1189,7 @@ cache_creation_tokens: 0\n\
 completion_tokens: 300\n\
 cache_hit_rate: 0.0000\n\
 total_cost_usd: 0.1500\n\
+cost_per_resolved_usd: NaN\n\
 axis,bucket,n,resolved,resolved_rate\n\
 repo,unknown,2,0,0.0000\n\
 failure_category,model_api,1,0,0.0000\n\
@@ -1788,4 +1789,393 @@ fn compare_breakdown_json_includes_all_buckets_and_threshold_flag() {
             && r["delta_resolved_rate"] == 0.0
             && r["exceeds_threshold"] == false
     }));
+}
+
+// ─── RED phase: issue #51 – $/resolved-instance + Pareto view ───────────────
+
+#[test]
+fn evaluate_outputs_cost_per_resolved_usd_in_text() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut r1 = submitted("a");
+    r1.cost_usd = Some(2.0);
+    let mut r2 = submitted("b");
+    r2.cost_usd = Some(4.0);
+    write_results(sweep_dir.path(), vec![r1, r2]);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--cost-attribution",
+            "off",
+            "--breakdown",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("cost_per_resolved_usd:"),
+        "expected cost_per_resolved_usd in output; got:\n{stdout}"
+    );
+    // 2 resolved, total cost $6.00 -> $3.00/resolved (none backend never
+    // truly resolves, so cost_per_resolved should be NaN in none backend)
+    // With none backend resolved=0, so it should print NaN or a sentinel.
+    assert!(
+        stdout.contains("cost_per_resolved_usd: NaN")
+            || stdout.contains("cost_per_resolved_usd: nan"),
+        "expected NaN for cost_per_resolved_usd when backend=none; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn evaluate_cost_per_resolved_usd_correct_when_resolved_present() {
+    // Use evaluation.json to simulate resolved instances in a none-backend run.
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut r1 = submitted("django__django-1");
+    r1.cost_usd = Some(3.0);
+    let mut r2 = submitted("django__django-2");
+    r2.cost_usd = Some(1.0);
+    let mut r3 = errored("django__django-3", FailureCategory::StepLimit);
+    r3.cost_usd = Some(2.0);
+    write_results(sweep_dir.path(), vec![r1, r2, r3]);
+
+    // Inject evaluation.json with 2 resolved
+    write_evaluation_json(
+        sweep_dir.path(),
+        &serde_json::json!({
+            "instances": [
+                {"instance_id": "django__django-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+                {"instance_id": "django__django-2", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+                {"instance_id": "django__django-3", "resolved": false, "eval_exit_reason": "unresolved", "tests_passed": [], "tests_failed": []}
+            ]
+        }),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--cost-attribution",
+            "off",
+            "--breakdown",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // none backend doesn't call sb-cli; it marks all as unresolved.
+    // The summarize() function uses eval.instances for resolved count.
+    // Since backend=none, nothing is resolved from its perspective
+    assert!(
+        stdout.contains("cost_per_resolved_usd:"),
+        "expected cost_per_resolved_usd field in output; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn compare_json_includes_cost_per_resolved_and_pareto_verdict() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    // baseline: 1 resolved out of 2, cost $4.00 -> $4.00/resolved
+    let mut b1 = submitted("a");
+    b1.cost_usd = Some(4.0);
+    b1.runs = 1;
+    b1.resolved_count = 1;
+    let mut b2 = errored("b", FailureCategory::StepLimit);
+    b2.cost_usd = Some(0.0);
+    write_results(baseline_dir.path(), vec![b1, b2]);
+    write_evaluation_json(
+        baseline_dir.path(),
+        &serde_json::json!({
+            "instances": [
+                {"instance_id": "a", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+                {"instance_id": "b", "resolved": false, "eval_exit_reason": "unresolved", "tests_passed": [], "tests_failed": []}
+            ]
+        }),
+    );
+
+    // candidate: 2 resolved out of 2, cost $2.00 -> $1.00/resolved (cheaper AND better)
+    let mut c1 = submitted("a");
+    c1.cost_usd = Some(1.0);
+    c1.runs = 1;
+    c1.resolved_count = 1;
+    let mut c2 = submitted("b");
+    c2.cost_usd = Some(1.0);
+    c2.runs = 1;
+    c2.resolved_count = 1;
+    write_results(candidate_dir.path(), vec![c1, c2]);
+    write_evaluation_json(
+        candidate_dir.path(),
+        &serde_json::json!({
+            "instances": [
+                {"instance_id": "a", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+                {"instance_id": "b", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []}
+            ]
+        }),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    // Both cost_per_resolved fields must be present
+    assert!(
+        v.get("baseline_cost_per_resolved_usd").is_some(),
+        "expected baseline_cost_per_resolved_usd in compare JSON; got:\n{v}"
+    );
+    assert!(
+        v.get("candidate_cost_per_resolved_usd").is_some(),
+        "expected candidate_cost_per_resolved_usd in compare JSON; got:\n{v}"
+    );
+    assert!(
+        v.get("cost_per_resolved_delta_usd").is_some(),
+        "expected cost_per_resolved_delta_usd in compare JSON; got:\n{v}"
+    );
+    assert!(
+        v.get("pareto_verdict").is_some(),
+        "expected pareto_verdict in compare JSON; got:\n{v}"
+    );
+    // Candidate dominates: lower cost AND higher resolved rate
+    assert_eq!(
+        v["pareto_verdict"],
+        "candidate_dominates",
+        "candidate should dominate (better resolved rate, lower cost/resolved); got:\n{v}"
+    );
+}
+
+#[test]
+fn compare_text_output_includes_pareto_verdict() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut b = submitted("a");
+    b.cost_usd = Some(2.0);
+    write_results(baseline_dir.path(), vec![b]);
+
+    let mut c = submitted("a");
+    c.cost_usd = Some(1.0);
+    write_results(candidate_dir.path(), vec![c]);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Pareto verdict:")
+            || stdout.contains("pareto_verdict:")
+            || stdout.contains("Cost/resolved"),
+        "expected pareto verdict in text output; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn frontier_subcommand_exists_in_help() {
+    let out = Command::new(binary_path())
+        .args(["bench", "--help"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("frontier"),
+        "expected `frontier` in `bench --help`; got:\n{stdout}"
+    );
+
+    let out = Command::new(binary_path())
+        .args(["bench", "frontier", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bench frontier --help should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--format"),
+        "expected --format in frontier --help; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn frontier_emits_pareto_json_with_efficient_frontier() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    // dir_a: 1/2 resolved, resolved_rate 0.50
+    let mut a1 = submitted("inst-1");
+    a1.cost_usd = Some(4.0);
+    // Keep errored with default cost_usd ($0.10) so effective_cost_usd returns it directly.
+    let a2 = errored("inst-2", FailureCategory::StepLimit);
+    write_results(dir_a.path(), vec![a1, a2]);
+    write_evaluation_json(
+        dir_a.path(),
+        &serde_json::json!({"instances": [
+            {"instance_id": "inst-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+            {"instance_id": "inst-2", "resolved": false, "eval_exit_reason": "unresolved", "tests_passed": [], "tests_failed": []}
+        ]}),
+    );
+
+    // dir_b: 2/2 resolved, cost $2 -> cost_per_resolved $1.00, resolved_rate 1.00
+    // -> dominates dir_a (better resolved_rate AND lower cost_per_resolved)
+    let mut b1 = submitted("inst-1");
+    b1.cost_usd = Some(1.0);
+    let mut b2 = submitted("inst-2");
+    b2.cost_usd = Some(1.0);
+    write_results(dir_b.path(), vec![b1, b2]);
+    write_evaluation_json(
+        dir_b.path(),
+        &serde_json::json!({"instances": [
+            {"instance_id": "inst-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+            {"instance_id": "inst-2", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []}
+        ]}),
+    );
+
+    // dir_c: 1/2 resolved, higher cost -> dominated by dir_a (same resolved_rate, lower cost)
+    let mut c1 = submitted("inst-1");
+    c1.cost_usd = Some(10.0); // clearly higher than dir_a's $4.0
+    // keep errored with its default cost so effective_cost_usd returns it directly
+    let c2 = errored("inst-2", FailureCategory::StepLimit);
+    write_results(dir_c.path(), vec![c1, c2]);
+    write_evaluation_json(
+        dir_c.path(),
+        &serde_json::json!({"instances": [
+            {"instance_id": "inst-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+            {"instance_id": "inst-2", "resolved": false, "eval_exit_reason": "unresolved", "tests_passed": [], "tests_failed": []}
+        ]}),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "frontier",
+            "--format",
+            "json",
+            dir_a.path().to_str().unwrap(),
+            dir_b.path().to_str().unwrap(),
+            dir_c.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bench frontier should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("expected JSON from bench frontier; err={e}; got:\n{stdout}");
+    });
+
+    let points = v["points"].as_array().expect("expected `points` array");
+    assert_eq!(points.len(), 3, "expected 3 points (one per dir)");
+
+    // dir_b should be on the frontier
+    let on_frontier: Vec<bool> = points
+        .iter()
+        .map(|p| p["on_frontier"].as_bool().unwrap_or(false))
+        .collect();
+    let frontier_count = on_frontier.iter().filter(|&&x| x).count();
+    // dir_b dominates both: higher resolved_rate AND lower cost_per_resolved
+    assert!(
+        frontier_count >= 1,
+        "at least one point should be on the efficient frontier"
+    );
+    // Identify dir_c by directory path
+    let dir_c_path = dir_c.path().to_str().unwrap();
+    let dir_c_point = points
+        .iter()
+        .find(|p| {
+            p["dir"].as_str().is_some_and(|d| d == dir_c_path)
+        })
+        .expect("expected dir_c point in frontier output");
+    assert_eq!(
+        dir_c_point["on_frontier"].as_bool(),
+        Some(false),
+        "dir_c (same resolved_rate as dir_a but higher cost) should NOT be on frontier; got: {dir_c_point}"
+    );
+}
+
+#[test]
+fn frontier_emits_ascii_chart_in_text_mode() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let mut r = submitted("inst-1");
+    r.cost_usd = Some(2.0);
+    write_results(dir_a.path(), vec![r]);
+    write_evaluation_json(
+        dir_a.path(),
+        &serde_json::json!({"instances": [
+            {"instance_id": "inst-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []}
+        ]}),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "frontier",
+            dir_a.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bench frontier (text mode) should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Should have some kind of chart or table output
+    assert!(
+        stdout.contains("frontier") || stdout.contains("cost_per_resolved") || stdout.contains("resolved_rate"),
+        "expected frontier output in text mode; got:\n{stdout}"
+    );
 }

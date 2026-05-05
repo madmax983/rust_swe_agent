@@ -160,6 +160,14 @@ pub struct CompareReport {
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
     pub regressions: Vec<TaskTransition>,
+    /// `$/resolved-instance` for the baseline. `f64::NAN` when baseline_resolved == 0.
+    pub baseline_cost_per_resolved_usd: f64,
+    /// `$/resolved-instance` for the candidate. `f64::NAN` when candidate_resolved == 0.
+    pub candidate_cost_per_resolved_usd: f64,
+    /// Candidate minus baseline cost_per_resolved_usd. `f64::NAN` when either is NaN.
+    pub cost_per_resolved_delta_usd: f64,
+    /// Pareto-dominance verdict on the (resolved_rate, cost_per_resolved_usd) plane.
+    pub pareto_verdict: ParetoVerdict,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -174,6 +182,20 @@ pub enum CompareVerdict {
     Improvement,
     Regression,
     WithinNoise,
+}
+
+/// Whether one config dominates the other on the efficient frontier
+/// (resolved_rate, cost_per_resolved_usd).
+///
+/// `A` dominates `B` when `A` has a higher (or equal) resolved_rate AND a
+/// lower (or equal) cost_per_resolved_usd, with at least one strict
+/// inequality. Otherwise the configs are non-dominated (a trade-off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParetoVerdict {
+    BaselineDominates,
+    CandidateDominates,
+    NonDominated,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,6 +326,17 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
         "Total cost USD:     ${:.4} -> ${:.4} ({:+.4})",
         report.baseline_total_cost_usd, report.candidate_total_cost_usd, report.cost_delta_usd
     );
+    write_cost_per_resolved_line(
+        s,
+        report.baseline_cost_per_resolved_usd,
+        report.candidate_cost_per_resolved_usd,
+        report.cost_per_resolved_delta_usd,
+    );
+    let _ = writeln!(
+        s,
+        "Pareto verdict:     {}",
+        pareto_verdict_label(report.pareto_verdict)
+    );
     write_u64_delta_line(
         s,
         "Input tokens:       ",
@@ -335,6 +368,41 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
         report.candidate_cache_hit_rate * 100.0,
         (report.candidate_cache_hit_rate - report.baseline_cache_hit_rate) * 100.0
     );
+}
+
+fn write_cost_per_resolved_line(
+    s: &mut String,
+    baseline: f64,
+    candidate: f64,
+    delta: f64,
+) {
+    let fmt_cpr = |v: f64| {
+        if v.is_nan() {
+            "NaN".to_owned()
+        } else {
+            format!("${v:.4}")
+        }
+    };
+    let delta_str = if delta.is_nan() {
+        "NaN".to_owned()
+    } else {
+        format!("{delta:+.4}")
+    };
+    let _ = writeln!(
+        s,
+        "Cost/resolved USD:  {} -> {} ({})",
+        fmt_cpr(baseline),
+        fmt_cpr(candidate),
+        delta_str
+    );
+}
+
+fn pareto_verdict_label(verdict: ParetoVerdict) -> &'static str {
+    match verdict {
+        ParetoVerdict::BaselineDominates => "A dominates B",
+        ParetoVerdict::CandidateDominates => "B dominates A",
+        ParetoVerdict::NonDominated => "non-dominated (tradeoff)",
+    }
 }
 
 fn write_u64_delta_line(s: &mut String, label: &str, baseline: u64, candidate: u64) {
@@ -1122,6 +1190,23 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     let baseline_tests_before_submit_rate = tests_before_submit_rate(baseline);
     let candidate_tests_before_submit_rate = tests_before_submit_rate(candidate);
 
+    let baseline_cost_per_resolved_usd =
+        cost_per_resolved(baseline_total_cost, resolution.baseline_resolved);
+    let candidate_cost_per_resolved_usd =
+        cost_per_resolved(candidate_total_cost, resolution.candidate_resolved);
+    let cost_per_resolved_delta_usd =
+        if baseline_cost_per_resolved_usd.is_nan() || candidate_cost_per_resolved_usd.is_nan() {
+            f64::NAN
+        } else {
+            candidate_cost_per_resolved_usd - baseline_cost_per_resolved_usd
+        };
+    let pareto_verdict = compute_pareto_verdict(
+        resolution.baseline_resolved_rate,
+        baseline_cost_per_resolved_usd,
+        resolution.candidate_resolved_rate,
+        candidate_cost_per_resolved_usd,
+    );
+
     CompareReport {
         baseline_dir: baseline_dir.to_path_buf(),
         candidate_dir: candidate_dir.to_path_buf(),
@@ -1170,6 +1255,70 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_rate_limit_events: None,
         candidate_rate_limit_events: None,
         regressions: transition_summary.regressions,
+        baseline_cost_per_resolved_usd,
+        candidate_cost_per_resolved_usd,
+        cost_per_resolved_delta_usd,
+        pareto_verdict,
+    }
+}
+
+fn cost_per_resolved(total_cost: f64, resolved: usize) -> f64 {
+    if resolved == 0 {
+        f64::NAN
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            total_cost / resolved as f64
+        }
+    }
+}
+
+fn compute_pareto_verdict(
+    baseline_resolved_rate: f64,
+    baseline_cost_per_resolved: f64,
+    candidate_resolved_rate: f64,
+    candidate_cost_per_resolved: f64,
+) -> ParetoVerdict {
+    let b_rate = baseline_resolved_rate;
+    let c_rate = candidate_resolved_rate;
+    let b_cost = baseline_cost_per_resolved;
+    let c_cost = candidate_cost_per_resolved;
+
+    // NaN handling: if either cost is NaN, fall back to resolved-rate-only comparison
+    let (b_cost_finite, c_cost_finite) = match (b_cost.is_nan(), c_cost.is_nan()) {
+        (false, false) => (b_cost, c_cost),
+        (true, false) => return ParetoVerdict::CandidateDominates,
+        (false, true) => return ParetoVerdict::BaselineDominates,
+        (true, true) => {
+            if (c_rate - b_rate).abs() < f64::EPSILON {
+                return ParetoVerdict::NonDominated;
+            } else if c_rate > b_rate {
+                return ParetoVerdict::CandidateDominates;
+            } else {
+                return ParetoVerdict::BaselineDominates;
+            }
+        }
+    };
+
+    let candidate_better_rate = c_rate > b_rate + f64::EPSILON;
+    let candidate_better_cost = c_cost_finite < b_cost_finite - f64::EPSILON;
+    let candidate_equal_rate = (c_rate - b_rate).abs() <= f64::EPSILON;
+    let candidate_equal_cost = (c_cost_finite - b_cost_finite).abs() <= f64::EPSILON;
+
+    let candidate_dominates = (candidate_better_rate || candidate_equal_rate)
+        && (candidate_better_cost || candidate_equal_cost)
+        && (candidate_better_rate || candidate_better_cost);
+    let baseline_dominates = !candidate_dominates
+        && (b_rate > c_rate + f64::EPSILON || candidate_equal_rate)
+        && (b_cost_finite < c_cost_finite - f64::EPSILON || candidate_equal_cost)
+        && (b_rate > c_rate + f64::EPSILON || b_cost_finite < c_cost_finite - f64::EPSILON);
+
+    if candidate_dominates {
+        ParetoVerdict::CandidateDominates
+    } else if baseline_dominates {
+        ParetoVerdict::BaselineDominates
+    } else {
+        ParetoVerdict::NonDominated
     }
 }
 
@@ -1496,7 +1645,7 @@ fn wilson_ci(successes: u64, total: u64) -> ConfidenceInterval {
     }
 }
 
-fn load_evaluation_results(dir: &Path) -> Result<Option<EvaluationResults>, Error> {
+pub fn load_evaluation_results(dir: &Path) -> Result<Option<EvaluationResults>, Error> {
     let path = crate::run::evaluate::evaluation_path(dir);
     if !path.exists() {
         return Ok(None);

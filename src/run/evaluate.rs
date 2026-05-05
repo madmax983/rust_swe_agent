@@ -144,6 +144,12 @@ pub struct EvaluationSummary {
     pub total_completion_tokens: u64,
     pub total_cost_usd: f64,
     pub cache_hit_rate: f64,
+    /// Total cost divided by resolved count. `f64::NAN` when `resolved == 0`.
+    pub cost_per_resolved_usd: f64,
+    /// 95% bootstrap CI lower bound. `f64::NAN` when `resolved == 0`.
+    pub cost_per_resolved_ci95_lower: f64,
+    /// 95% bootstrap CI upper bound. `f64::NAN` when `resolved == 0`.
+    pub cost_per_resolved_ci95_upper: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -274,6 +280,9 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
             total_completion_tokens: 0,
             total_cost_usd: 0.0,
             cache_hit_rate: 0.0,
+            cost_per_resolved_usd: f64::NAN,
+            cost_per_resolved_ci95_lower: f64::NAN,
+            cost_per_resolved_ci95_upper: f64::NAN,
         };
     }
     let tokens = results
@@ -311,6 +320,30 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
         })
         .count();
     let pass_at_k = eval.instances.iter().filter(|row| row.resolved).count();
+
+    let cost_per_resolved_usd = if resolved == 0 {
+        f64::NAN
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            total_cost_usd / resolved as f64
+        }
+    };
+
+    let per_instance_samples: Vec<(f64, bool)> = eval
+        .instances
+        .iter()
+        .map(|row| {
+            let cost = results
+                .get(&row.instance_id)
+                .and_then(|r| r.effective_cost_usd(model_name))
+                .unwrap_or(0.0);
+            (cost, row.resolved)
+        })
+        .collect();
+    let (cost_per_resolved_ci95_lower, cost_per_resolved_ci95_upper) =
+        bootstrap_cost_per_resolved_ci95(&per_instance_samples);
+
     EvaluationSummary {
         instances,
         resolved,
@@ -323,7 +356,61 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
         total_completion_tokens: tokens.completion_tokens,
         total_cost_usd,
         cache_hit_rate: tokens.cache_hit_rate(),
+        cost_per_resolved_usd,
+        cost_per_resolved_ci95_lower,
+        cost_per_resolved_ci95_upper,
     }
+}
+
+fn lcg_next(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *state
+}
+
+/// 95% percentile bootstrap CI for `cost_per_resolved_usd`.
+///
+/// Returns `(f64::NAN, f64::NAN)` when no resolved instances exist in any
+/// resample (i.e., the true resolved count is 0).
+fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
+    const N_BOOTSTRAP: usize = 1000;
+    const SEED: u64 = 12_345_678_901_234;
+    let n = samples.len();
+    if n == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let resolved_count = samples.iter().filter(|(_, r)| *r).count();
+    if resolved_count == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let mut rng = SEED;
+    let mut estimates: Vec<f64> = Vec::with_capacity(N_BOOTSTRAP);
+    for _ in 0..N_BOOTSTRAP {
+        let mut total_cost = 0.0_f64;
+        let mut resolved = 0usize;
+        for _ in 0..n {
+            let idx = (lcg_next(&mut rng) as usize) % n;
+            let (cost, is_resolved) = samples[idx];
+            total_cost += cost;
+            if is_resolved {
+                resolved += 1;
+            }
+        }
+        if resolved > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            estimates.push(total_cost / resolved as f64);
+        }
+    }
+    if estimates.is_empty() {
+        return (f64::NAN, f64::NAN);
+    }
+    estimates.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let lower_idx = ((estimates.len() as f64) * 0.025) as usize;
+    let upper_idx = ((estimates.len() as f64) * 0.975) as usize;
+    let lower = estimates[lower_idx];
+    let upper = estimates[upper_idx.min(estimates.len() - 1)];
+    (lower, upper)
 }
 
 fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResults {
@@ -1115,6 +1202,18 @@ pub fn render_summary_table(summary: &EvaluationSummary) -> String {
     );
     let _ = writeln!(out, "cache_hit_rate: {:.4}", summary.cache_hit_rate);
     let _ = writeln!(out, "total_cost_usd: {:.4}", summary.total_cost_usd);
+    let _ = writeln!(
+        out,
+        "cost_per_resolved_usd: {:.4}",
+        summary.cost_per_resolved_usd
+    );
+    if !summary.cost_per_resolved_ci95_lower.is_nan() {
+        let _ = writeln!(
+            out,
+            "cost_per_resolved_ci95: [{:.4}, {:.4}]",
+            summary.cost_per_resolved_ci95_lower, summary.cost_per_resolved_ci95_upper
+        );
+    }
     out
 }
 
@@ -1512,6 +1611,140 @@ mod tests {
         assert!(
             rendered.contains("total_cost_usd: 0.4200"),
             "got:\n{rendered}"
+        );
+    }
+
+    // --- RED phase: cost_per_resolved_usd tests ---
+
+    #[test]
+    fn cost_per_resolved_usd_is_nan_when_resolved_count_is_zero() {
+        let results: HashMap<String, InstanceResult> = HashMap::from([
+            ("a".to_string(), {
+                let mut r = errored("a");
+                r.cost_usd = Some(5.0);
+                r
+            }),
+        ]);
+        let eval = EvaluationResults {
+            instances: vec![eval_row("a", false)],
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        assert!(
+            summary.cost_per_resolved_usd.is_nan(),
+            "expected NaN when resolved=0, got {}",
+            summary.cost_per_resolved_usd
+        );
+    }
+
+    #[test]
+    fn cost_per_resolved_usd_divides_total_cost_by_resolved_count() {
+        let mut r1 = submitted("r1");
+        r1.cost_usd = Some(3.0);
+        let mut r2 = submitted("r2");
+        r2.cost_usd = Some(1.0);
+        let mut r3 = errored("r3");
+        r3.cost_usd = Some(2.0);
+        let results = HashMap::from([
+            ("r1".to_string(), r1),
+            ("r2".to_string(), r2),
+            ("r3".to_string(), r3),
+        ]);
+        let eval = EvaluationResults {
+            instances: vec![
+                eval_row("r1", true),
+                eval_row("r2", true),
+                eval_row("r3", false),
+            ],
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        assert_eq!(summary.resolved, 2);
+        assert_f64_eq(summary.total_cost_usd, 6.0);
+        // cost_per_resolved_usd = 6.0 / 2 = 3.0
+        assert_f64_eq(summary.cost_per_resolved_usd, 3.0);
+    }
+
+    #[test]
+    fn cost_per_resolved_ci95_is_nan_when_nothing_resolved() {
+        let results: HashMap<String, InstanceResult> = HashMap::from([
+            ("a".to_string(), {
+                let mut r = errored("a");
+                r.cost_usd = Some(5.0);
+                r
+            }),
+        ]);
+        let eval = EvaluationResults {
+            instances: vec![eval_row("a", false)],
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        assert!(
+            summary.cost_per_resolved_ci95_lower.is_nan(),
+            "expected NaN CI lower when resolved=0"
+        );
+        assert!(
+            summary.cost_per_resolved_ci95_upper.is_nan(),
+            "expected NaN CI upper when resolved=0"
+        );
+    }
+
+    #[test]
+    fn cost_per_resolved_ci95_brackets_true_value() {
+        // 10 resolved at $1.00 each, 0 unresolved -> cost_per_resolved = 1.0
+        let results: HashMap<String, InstanceResult> = (0..10)
+            .map(|i| {
+                let mut r = submitted(&format!("r{i}"));
+                r.cost_usd = Some(1.0);
+                (format!("r{i}"), r)
+            })
+            .collect();
+        let eval = EvaluationResults {
+            instances: (0..10).map(|i| eval_row(&format!("r{i}"), true)).collect(),
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
+        assert!(
+            summary.cost_per_resolved_ci95_lower <= 1.0,
+            "CI lower={} should be <= true value 1.0",
+            summary.cost_per_resolved_ci95_lower
+        );
+        assert!(
+            summary.cost_per_resolved_ci95_upper >= 1.0,
+            "CI upper={} should be >= true value 1.0",
+            summary.cost_per_resolved_ci95_upper
+        );
+    }
+
+    #[test]
+    fn render_summary_table_includes_cost_per_resolved_usd() {
+        let mut r = submitted("a");
+        r.cost_usd = Some(4.0);
+        let results = HashMap::from([("a".to_string(), r)]);
+        let eval = EvaluationResults {
+            instances: vec![eval_row("a", true)],
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+        };
+        let summary = summarize(&eval, &results);
+        let rendered = render_summary_table(&summary);
+        assert!(
+            rendered.contains("cost_per_resolved_usd:"),
+            "render_summary_table should include cost_per_resolved_usd; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("4.0000"),
+            "cost_per_resolved_usd should be 4.0000 (1 resolved at $4); got:\n{rendered}"
         );
     }
 }
