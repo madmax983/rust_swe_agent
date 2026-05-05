@@ -126,6 +126,20 @@ pub struct MiniCmd {
     #[arg(long)]
     pub task_timeout_secs: Option<u64>,
 
+    /// Per-task USD ceiling enforced inside the agent loop. When cumulative
+    /// task spend meets this value, the loop terminates with
+    /// `failure_category: budget_exhausted` and any patch is preserved.
+    /// Default: unset (no per-task cap). Opt-in; does not affect the sweep
+    /// cost cap (`--sweep-cost-limit-usd`).
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Hide the budget status block from the agent's observations. When set,
+    /// the agent cannot see its remaining per-task budget even if
+    /// `--per-task-budget-usd` is active. Useful for A/B experiments.
+    #[arg(long, default_value_t = false)]
+    pub hide_budget_from_agent: bool,
+
     /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -302,6 +316,20 @@ pub struct SwebenchCmd {
     /// Orthogonal to `--step-limit`; whichever fires first wins.
     #[arg(long)]
     pub task_timeout_secs: Option<u64>,
+
+    /// Per-task USD ceiling enforced inside the agent loop. When cumulative
+    /// task spend meets this value, the loop terminates with
+    /// `failure_category: budget_exhausted` and any patch is preserved.
+    /// Default: unset (no per-task cap). Opt-in; does not affect the sweep
+    /// cost cap (`--sweep-cost-limit-usd`).
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Hide the budget status block from the agent's observations. When set,
+    /// the agent cannot see its remaining per-task budget even if
+    /// `--per-task-budget-usd` is active. Useful for A/B experiments.
+    #[arg(long, default_value_t = false)]
+    pub hide_budget_from_agent: bool,
 
     #[arg(long)]
     pub config: Option<PathBuf>,

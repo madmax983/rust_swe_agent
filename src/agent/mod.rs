@@ -43,6 +43,8 @@ pub enum ExitReason {
     StepLimit { limit: u32 },
     /// The agent exceeded its configured maximum spend.
     CostLimit { limit_usd: f64, spent_usd: f64 },
+    /// The agent's per-task USD budget was exhausted mid-loop.
+    BudgetExhausted { limit_usd: f64, spent_usd: f64 },
     /// A human explicitly cancelled the run.
     UserInterrupt,
     /// The LLM backend refused to complete the prompt (e.g. safety filters).
@@ -68,6 +70,7 @@ impl ExitReason {
             Self::Submitted { .. } => "submitted",
             Self::StepLimit { .. } => "step_limit",
             Self::CostLimit { .. } => "cost_limit",
+            Self::BudgetExhausted { .. } => "budget_exhausted",
             Self::UserInterrupt => "user_interrupt",
             Self::ModelRefusal { .. } => "model_refusal",
         }

@@ -27,6 +27,23 @@ pub struct AgentCfg {
     pub step_limit: u32,
     #[serde(default)]
     pub cost_limit_usd: Option<f64>,
+    /// Per-task USD ceiling enforced inside the agent loop. When the
+    /// accumulated task spend meets or exceeds this value, the loop
+    /// terminates with `failure_category: budget_exhausted` and any
+    /// patch accumulated so far is preserved. Default: `None` (opt-in).
+    #[serde(default)]
+    pub per_task_budget_usd: Option<f64>,
+    /// When `true`, the budget block is not appended to observations.
+    /// Useful for A/B experiments: agent-sees-budget vs. agent-does-not.
+    /// Only meaningful when `per_task_budget_usd` is set.
+    #[serde(default)]
+    pub hide_budget_from_agent: bool,
+    /// Handlebars template for the budget status block appended to each
+    /// observation when `per_task_budget_usd` is set and
+    /// `hide_budget_from_agent` is false. Available variables:
+    /// `budget_used`, `budget_limit`, `budget_remaining_pct`, `turn`, `max_turns`.
+    #[serde(default = "default_budget_block_template")]
+    pub budget_block_template: String,
     #[serde(default = "default_format_error_template")]
     pub format_error_template: String,
     #[serde(default = "default_observation_template")]
@@ -47,6 +64,10 @@ pub struct AgentCfg {
 
 fn default_step_limit() -> u32 {
     50
+}
+
+fn default_budget_block_template() -> String {
+    "\nBudget: ${{ budget_used }} of ${{ budget_limit }} used ({{ budget_remaining_pct }}% remaining), turn {{ turn }} of {{ max_turns }}".into()
 }
 
 fn default_format_error_template() -> String {

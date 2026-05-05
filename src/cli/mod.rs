@@ -115,6 +115,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(img) = m.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if let Some(v) = m.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if m.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
 
     let trajectory_name = m
         .trajectory_name
@@ -353,6 +359,12 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     }
     if let Some(img) = s.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = s.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if s.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
     }
     Ok(cfg)
 }
@@ -1023,6 +1035,8 @@ mod tests {
             observation_max_bytes: None,
             observation_head_ratio: None,
             task_timeout_secs: None,
+            per_task_budget_usd: None,
+            hide_budget_from_agent: false,
             config: None,
             env: None,
             docker_image: None,

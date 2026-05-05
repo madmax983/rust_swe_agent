@@ -541,6 +541,8 @@ impl SweepResults {
         if unclassified_legacy > 0 {
             let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
         }
+        let model_name = self.manifest.as_ref().map(|m| m.model.name.as_str());
+        write_spend_stats_by_resolution(&mut s, &self.instances, model_name);
         write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
         s
     }
@@ -621,6 +623,42 @@ fn has_submitted_sample(row: &InstanceResult) -> bool {
     // Aggregate rerun rows keep run-1 outcome for pass@1 compatibility, so
     // later submitted/resolved samples are represented by `resolved_count`.
     row.outcome.as_deref() == Some(outcome::SUBMITTED) || resolved_count(row) > 0
+}
+
+fn write_spend_stats_by_resolution(
+    s: &mut String,
+    instances: &[InstanceResult],
+    model: Option<&str>,
+) {
+    let mut resolved: Vec<f64> = instances
+        .iter()
+        .filter(|r| r.resolved_count > 0)
+        .filter_map(|r| r.effective_cost_usd(model))
+        .collect();
+    let mut unresolved: Vec<f64> = instances
+        .iter()
+        .filter(|r| r.resolved_count == 0)
+        .filter_map(|r| r.effective_cost_usd(model))
+        .collect();
+    write_spend_stat_line(s, "Spend/resolved  ", &mut resolved);
+    write_spend_stat_line(s, "Spend/unresolved", &mut unresolved);
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn write_spend_stat_line(s: &mut String, label: &str, costs: &mut [f64]) {
+    if costs.is_empty() {
+        let _ = writeln!(s, "{label}:  n=0");
+        return;
+    }
+    costs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mean = costs.iter().sum::<f64>() / costs.len() as f64;
+    let n = costs.len();
+    let median = if n % 2 == 0 {
+        f64::midpoint(costs[n / 2 - 1], costs[n / 2])
+    } else {
+        costs[n / 2]
+    };
+    let _ = writeln!(s, "{label}:  mean=${mean:.4} median=${median:.4} n={n}");
 }
 
 fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
@@ -2505,6 +2543,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "model_parse" => Ok(FailureCategory::ModelParse),
         "step_limit" => Ok(FailureCategory::StepLimit),
         "cost_limit" => Ok(FailureCategory::CostLimit),
+        "budget_exhausted" => Ok(FailureCategory::BudgetExhausted),
         "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
         "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
@@ -2687,6 +2726,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 .or_else(|| match exit_reason.as_str() {
                     "step_limit" => Some(FailureCategory::StepLimit),
                     "cost_limit" => Some(FailureCategory::CostLimit),
+                    "budget_exhausted" => Some(FailureCategory::BudgetExhausted),
                     exit_reason::WALLCLOCK_TIMEOUT => Some(FailureCategory::WallclockTimeout),
                     _ => run_err
                         .as_ref()
@@ -2813,6 +2853,7 @@ fn is_failed_instance(r: &InstanceResult) -> bool {
             Some(
                 FailureCategory::StepLimit
                     | FailureCategory::CostLimit
+                    | FailureCategory::BudgetExhausted
                     | FailureCategory::WallclockTimeout
             )
         )
@@ -2825,6 +2866,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::BudgetExhausted => "budget_exhausted",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
@@ -3463,6 +3505,157 @@ mod tests {
         assert_eq!(counts.resolved_with_tests, 1);
         assert_eq!(counts.without_tests, 0);
         assert_eq!(counts.resolved_without_tests, 0);
+    }
+
+    #[test]
+    fn summary_table_includes_per_task_budget_kills_when_present() {
+        use crate::trajectory::FailureCategory;
+        let mut failures = BTreeMap::new();
+        failures.insert(FailureCategory::BudgetExhausted, 3usize);
+        let s = SweepResults {
+            total: 5,
+            submitted: 2,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 3,
+            failures_by_category: failures,
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![],
+            rate_limit_events: None,
+        };
+        let t = s.summary_table();
+        assert!(
+            t.contains("budget_exhausted") || t.contains("Budget-exhausted"),
+            "summary should mention budget_exhausted failures; got:\n{t}"
+        );
+    }
+
+    #[test]
+    fn summary_table_spend_stats_by_resolution_shows_mean_and_median() {
+        let mut resolved_cheap = test_instance_result("resolved-a", true, false);
+        resolved_cheap.cost_usd = Some(0.10);
+        let mut resolved_expensive = test_instance_result("resolved-b", true, false);
+        resolved_expensive.cost_usd = Some(0.30);
+        let mut unresolved_1 = test_instance_result("unresolved-a", false, false);
+        unresolved_1.cost_usd = Some(0.20);
+        let mut unresolved_2 = test_instance_result("unresolved-b", false, false);
+        unresolved_2.cost_usd = Some(0.40);
+
+        let s = SweepResults {
+            total: 4,
+            submitted: 2,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 2,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 2,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 1.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.5,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![
+                resolved_cheap,
+                resolved_expensive,
+                unresolved_1,
+                unresolved_2,
+            ],
+            rate_limit_events: None,
+        };
+
+        let t = s.summary_table();
+        // Resolved: $0.10 and $0.30 → mean=$0.20 median=$0.20
+        assert!(
+            t.contains("Spend/resolved"),
+            "missing Spend/resolved line: {t}"
+        );
+        assert!(t.contains("mean=$0.2000"), "wrong resolved mean: {t}");
+        // median of [$0.10, $0.30] with even n=2 is ($0.10 + $0.30)/2 = $0.20
+        assert!(t.contains("median=$0.2000"), "wrong resolved median: {t}");
+        assert!(t.contains("n=2"), "wrong resolved n: {t}");
+        // Unresolved: $0.20 and $0.40 → mean=$0.30 median=$0.30
+        assert!(
+            t.contains("Spend/unresolved"),
+            "missing Spend/unresolved line: {t}"
+        );
+        assert!(t.contains("mean=$0.3000"), "wrong unresolved mean: {t}");
+        assert!(t.contains("median=$0.3000"), "wrong unresolved median: {t}");
+    }
+
+    #[test]
+    fn summary_table_spend_stats_shows_n0_when_no_cost_data() {
+        // Instances with no cost data (all None) should produce n=0 lines.
+        let mut no_cost = test_instance_result("no-cost", false, false);
+        no_cost.cost_usd = None;
+        no_cost.prompt_tokens = None;
+        no_cost.cache_read_tokens = None;
+        no_cost.cache_creation_tokens = None;
+        no_cost.completion_tokens = None;
+
+        let s = SweepResults {
+            total: 1,
+            submitted: 0,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 1,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![no_cost],
+            rate_limit_events: None,
+        };
+
+        let t = s.summary_table();
+        assert!(
+            t.contains("Spend/resolved  :  n=0"),
+            "missing n=0 for resolved: {t}"
+        );
+        assert!(
+            t.contains("Spend/unresolved:  n=0") || t.contains("n=1"),
+            "unexpected unresolved output: {t}"
+        );
     }
 
     #[test]

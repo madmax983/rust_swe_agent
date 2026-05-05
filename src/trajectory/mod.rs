@@ -27,6 +27,7 @@ pub mod outcome {
     pub const SUBMITTED: &str = "submitted";
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
     pub const ERROR: &str = "error";
+    pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
 }
 
 pub mod exit_reason {
@@ -42,6 +43,9 @@ pub enum FailureCategory {
     ModelParse,
     StepLimit,
     CostLimit,
+    /// Per-task USD ceiling was reached mid-loop. The harness terminated the
+    /// agent; any patch accumulated before the cap fired is preserved.
+    BudgetExhausted,
     WallclockTimeout,
     AgentInternal,
     /// Patch was captured but `git apply --check` rejected it at capture time.
@@ -561,6 +565,14 @@ mod tests {
             assert_eq!(usage.total_prompt_tokens(), expected_total);
             assert_eq!(usage.has_cached_prompt_tokens(), expected_cached);
         }
+    }
+
+    #[test]
+    fn budget_exhausted_failure_category_serializes_as_snake_case() {
+        let json = serde_json::to_string(&FailureCategory::BudgetExhausted).unwrap();
+        assert_eq!(json, "\"budget_exhausted\"");
+        let back: FailureCategory = serde_json::from_str("\"budget_exhausted\"").unwrap();
+        assert_eq!(back, FailureCategory::BudgetExhausted);
     }
 
     #[test]

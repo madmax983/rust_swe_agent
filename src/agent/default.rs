@@ -268,6 +268,25 @@ impl Agent for DefaultAgent {
                 }));
             }
         }
+        if let Some(limit) = self.config.root.agent.per_task_budget_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("budget_exhausted".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+                self.emit_run_ended(
+                    "budget_exhausted",
+                    Some(FailureCategory::BudgetExhausted),
+                    None,
+                );
+                return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                }));
+            }
+        }
 
         // 2. Retag cache hints (one line; backend handles capping).
         retag_cache_hints(&mut self.history);
@@ -455,6 +474,9 @@ impl Agent for DefaultAgent {
             }),
         )?;
 
+        // 6b. Optionally append the budget block.
+        let obs_text = self.append_budget_block(obs_text)?;
+
         // Record assistant turn in history & trajectory.
         self.history.push(Message::assistant(resp.content.clone()));
         self.trajectory.record_message(&asst);
@@ -561,6 +583,32 @@ impl DefaultAgent {
             Some(FailureCategory::WallclockTimeout),
             None,
         );
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn append_budget_block(&self, obs: String) -> Result<String, Error> {
+        let Some(limit) = self.config.root.agent.per_task_budget_usd else {
+            return Ok(obs);
+        };
+        if self.config.root.agent.hide_budget_from_agent {
+            return Ok(obs);
+        }
+        let remaining_pct = if limit > 0.0 {
+            ((limit - self.total_cost_usd) / limit * 100.0).max(0.0)
+        } else {
+            0.0
+        };
+        let block = self.renderer.render_str(
+            &self.config.root.agent.budget_block_template,
+            &serde_json::json!({
+                "budget_used": format!("{:.4}", self.total_cost_usd),
+                "budget_limit": format!("{:.4}", limit),
+                "budget_remaining_pct": format!("{:.0}", remaining_pct),
+                "turn": self.steps + 1,
+                "max_turns": self.config.root.agent.step_limit,
+            }),
+        )?;
+        Ok(format!("{obs}{block}"))
     }
 
     fn record_test_invocation_if_matched(&mut self, command: &str, exit_code: i32) {
@@ -882,7 +930,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::env::LocalEnvironment;
-    use crate::model::DeterministicModel;
+    use crate::model::{DeterministicModel, ModelUsage};
+    use crate::trajectory::FailureCategory;
 
     #[derive(Clone)]
     struct StaticEnvironment {
@@ -1172,6 +1221,167 @@ mod tests {
         assert_eq!(
             rec.extra.other["observation_truncated"],
             serde_json::json!(true)
+        );
+    }
+
+    // ── Per-task budget: RED-phase tests ──────────────────────────────────
+
+    fn make_agent_with_budget(
+        responses: Vec<String>,
+        usage: ModelUsage,
+        per_task_budget_usd: Option<f64>,
+        hide: bool,
+    ) -> DefaultAgent {
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        cfg.root.agent.per_task_budget_usd = per_task_budget_usd;
+        cfg.root.agent.hide_budget_from_agent = hide;
+        let model = Arc::new(DeterministicModel::with_usage(responses, usage));
+        DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn per_task_budget_terminates_with_budget_exhausted() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        let mut agent = make_agent_with_budget(
+            vec![
+                "```bash\necho hello\n```".into(),
+                "```bash\necho world\n```".into(),
+            ],
+            usage,
+            Some(0.05),
+            false,
+        );
+        let exit = agent.run().await.unwrap();
+        assert!(
+            matches!(exit, crate::agent::ExitReason::BudgetExhausted { .. }),
+            "expected BudgetExhausted, got {exit:?}"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted),
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_block_appears_in_observation_when_enabled() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.01),
+        };
+        let mut agent = make_agent_with_budget(
+            vec![
+                "```bash\necho hello\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ],
+            usage,
+            Some(1.00),
+            false,
+        );
+        let _ = agent.run().await.unwrap();
+        let has_budget_block = agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("Budget:"));
+        assert!(
+            has_budget_block,
+            "expected budget block in observation; history: {:?}",
+            agent
+                .history
+                .iter()
+                .map(|m| (m.role, &m.content))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_block_hidden_from_agent_when_flag_set() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.01),
+        };
+        let mut agent = make_agent_with_budget(
+            vec![
+                "```bash\necho hello\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ],
+            usage,
+            Some(1.00),
+            true,
+        );
+        let _ = agent.run().await.unwrap();
+        let has_budget_block = agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("Budget:"));
+        assert!(
+            !has_budget_block,
+            "budget block should be hidden from agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_block_absent_when_no_per_task_budget() {
+        let mut agent = make_agent(vec![
+            "```bash\necho hello\n```".into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+        ]);
+        let _ = agent.run().await.unwrap();
+        let has_budget_block = agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("Budget:"));
+        assert!(
+            !has_budget_block,
+            "budget block should not appear when no per-task budget is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_exhausted_records_cost_and_failure_category() {
+        let usage = ModelUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: Some(0.10),
+        };
+        let mut agent = make_agent_with_budget(
+            vec!["```bash\necho hello\n```".into()],
+            usage,
+            Some(0.05),
+            false,
+        );
+        let _ = agent.run().await.unwrap();
+        assert!(
+            agent.trajectory.info.total_cost_usd.is_some(),
+            "total_cost_usd should be set on budget exhaustion"
+        );
+        assert_eq!(
+            agent.trajectory.info.failure_category,
+            Some(FailureCategory::BudgetExhausted)
         );
     }
 }

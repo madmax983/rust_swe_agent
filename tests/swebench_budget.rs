@@ -1038,3 +1038,188 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
     assert_eq!(results.budget_halted, 0);
     assert_eq!(results.submitted, 1, "results: {results:?}");
 }
+
+// ── Per-task budget integration tests (Issue #50) ─────────────────────────
+
+fn config_with_workdir_and_per_task_budget(dir: &Path, budget_usd: f64) -> Config {
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!(
+        "[environment]\nworkdir = \"{workdir}\"\n\
+         [agent]\nper_task_budget_usd = {budget_usd}\n"
+    );
+    Config::from_toml_str(&toml).unwrap()
+}
+
+#[tokio::test]
+async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["task-a", "task-b"]);
+
+    // Each task costs $0.10 per model call; per-task budget is $0.05
+    // so the second step should see $0.10 >= $0.05 and terminate.
+    let per_call_cost = 0.10f64;
+    let per_task_budget = 0.05f64;
+
+    let usage = ModelUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: Some(per_call_cost),
+    };
+
+    let cfg = config_with_workdir_and_per_task_budget(&repo, per_task_budget);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "```bash\necho step1\n```".to_owned(),
+            "```bash\necho step2\n```".to_owned(),
+            "```bash\necho step3\n```".to_owned(),
+            "```bash\necho step4\n```".to_owned(),
+        ]),
+        deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.total, 2);
+    // Both tasks should be terminated by per-task budget (not submitted)
+    assert_eq!(
+        results.submitted, 0,
+        "no task should have submitted: {results:?}"
+    );
+    // Budget-exhausted is a resource-limit termination, not counted in errored
+    // (consistent with step_limit_reached). Tasks are visible in failures_by_category.
+    assert_eq!(
+        results.errored, 0,
+        "budget_exhausted should not appear in errored: {results:?}"
+    );
+
+    // At least one trajectory should have failure_category=budget_exhausted
+    let budget_exhausted_count = results
+        .instances
+        .iter()
+        .filter(|r| r.failure_category == Some(FailureCategory::BudgetExhausted))
+        .count();
+    assert!(
+        budget_exhausted_count >= 1,
+        "expected at least one budget_exhausted task, got: {results:?}"
+    );
+
+    // Summary table should surface per-task budget kills
+    let table = results.summary_table();
+    assert!(
+        table.contains("budget_exhausted") || table.contains("Budget-exhausted"),
+        "summary table should mention budget_exhausted; got:\n{table}"
+    );
+}
+
+#[tokio::test]
+async fn per_task_budget_absent_means_no_enforcement() {
+    // Sanity check: when per_task_budget_usd is not set, tasks run normally
+    // even if each call would exceed a hypothetical limit.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["task-a"]);
+
+    let usage = ModelUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: Some(999.0), // enormous per-call cost, but no cap
+    };
+
+    let cfg = config_with_workdir(&repo); // no per_task_budget_usd
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".to_owned(),
+        ]),
+        deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        results.submitted, 1,
+        "task should submit without a per-task cap: {results:?}"
+    );
+}
