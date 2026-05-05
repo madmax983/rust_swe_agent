@@ -49,6 +49,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -157,6 +160,49 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut html = String::new();
+        html.push_str(
+            "<!DOCTYPE html>\n<html>\n<head>\n<title>Trajectory Export</title>\n</head>\n<body>\n",
+        );
+        html.push_str("<h1>Trajectory Export</h1>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let _ = writeln!(html, "<p><strong>Task:</strong> {task}</p>");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let _ = writeln!(html, "<p><strong>Outcome:</strong> {outcome}</p>");
+        }
+
+        html.push_str("<h2>Messages</h2>\n");
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let safe_content = msg
+                .content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('\n', "<br>");
+
+            let _ = writeln!(html, "<h3>{role_title}</h3>\n<p>{safe_content}</p>");
+        }
+
+        html.push_str("</body>\n</html>");
+        html
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +277,35 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt; echo 1 >&2"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<title>Trajectory Export</title>"));
+        assert!(html.contains("<h1>Trajectory Export</h1>"));
+        assert!(html.contains("<strong>Task:</strong> Add a feature"));
+        assert!(html.contains("<strong>Outcome:</strong> submitted"));
+        assert!(html.contains("<h2>Messages</h2>"));
+
+        assert!(html.contains("<h3>System</h3>"));
+        assert!(html.contains("<p>System prompt; echo 1 &gt;&amp;2</p>"));
+
+        assert!(html.contains("<h3>User</h3>"));
+        assert!(html.contains("<p>Hello agent<br>Multi-line</p>"));
+
+        assert!(html.contains("<h3>Assistant</h3>"));
+        assert!(html.contains("<p>Hello \"user\"</p>"));
     }
 }
