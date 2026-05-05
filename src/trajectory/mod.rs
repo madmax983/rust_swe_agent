@@ -19,7 +19,8 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 #[cfg(any(
     feature = "markdown-export",
     feature = "csv-export",
-    feature = "mermaid-export"
+    feature = "mermaid-export",
+    feature = "html-export"
 ))]
 pub mod export;
 
