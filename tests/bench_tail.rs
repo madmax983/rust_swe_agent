@@ -208,6 +208,58 @@ fn snapshot_marks_budget_halt_as_abort() {
 }
 
 #[test]
+fn snapshot_renders_cancelling_deadline_state() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 3,
+            "submitted": 1,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 0,
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+            "estimated_cost_usd": 0.0,
+            "sweep_status": "cancelling",
+            "cancelled_at": "2026-04-30T01:59:30Z",
+            "cancel_deadline_at": "2026-04-30T02:00:00Z",
+            "completed": 1,
+            "in_flight_at_cancel": 1,
+            "not_started": 1,
+            "instances": [
+                {"instance_id": "a", "exit_reason": "submitted", "outcome": "submitted", "cost_usd": 0.0}
+            ],
+            "manifest": {
+                "runtime": {
+                    "started_at_utc": "2026-04-30T01:50:00Z",
+                    "finished_at_utc": null,
+                    "host_os": "linux",
+                    "resume_mode": false
+                },
+                "cli": {"argv": ["rust-swe-agent", "bench", "swebench", "--parallel", "2"]}
+            }
+        }),
+    );
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 1, 59, 45).unwrap()),
+    )
+    .unwrap();
+
+    assert_eq!(snap.status, "cancelling");
+    assert_eq!(snap.cancelling_seconds_left, Some(15));
+    assert!(!snap.is_complete);
+    let text = rust_swe_agent::run::tail::render_text(&snap);
+    assert!(
+        text.contains("Status:      cancelling (0m:15s left)"),
+        "{text}"
+    );
+}
+
+#[test]
 fn snapshot_uses_total_cost_usd_metadata_when_no_records_exist() {
     let dir = tempfile::tempdir().unwrap();
     write_results(

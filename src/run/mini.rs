@@ -18,6 +18,8 @@ use crate::model::{DeterministicModel, Model, ModelUsage};
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 use crate::trajectory::FailureCategory;
 
+pub use crate::env::CancellationToken as MiniCancellation;
+
 const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 
 /// How a runner should snapshot the agent's working tree as a unified diff
@@ -66,6 +68,9 @@ pub struct MiniArgs {
     /// in-flight environment command is dropped and the trajectory is
     /// finalized as `wallclock_timeout`.
     pub task_timeout_secs: Option<u64>,
+    /// Optional external cancellation used by the sweep runner when a
+    /// graceful Ctrl-C deadline escalates.
+    pub cancellation: Option<MiniCancellation>,
     /// Optional SSE stream endpoint to bind. When `Some`, the runner
     /// starts a server before the agent runs and shuts it down after.
     pub stream_addr: Option<SocketAddr>,
@@ -112,6 +117,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         stream: sink,
     }
     .build()?;
+    agent.cancellation = args.cancellation.clone();
 
     let traj_path = args
         .output_dir
@@ -236,9 +242,16 @@ async fn run_agent_with_optional_timeout(
     agent: &mut DefaultAgent,
     task_timeout_secs: Option<u64>,
 ) -> Result<crate::agent::ExitReason, Error> {
-    let Some(secs) = task_timeout_secs else {
-        return agent.run().await;
-    };
+    match task_timeout_secs {
+        None => agent.run().await,
+        Some(secs) => run_agent_with_timeout(agent, secs).await,
+    }
+}
+
+async fn run_agent_with_timeout(
+    agent: &mut DefaultAgent,
+    secs: u64,
+) -> Result<crate::agent::ExitReason, Error> {
     let timeout = Duration::from_secs(secs);
     if let Ok(result) = tokio::time::timeout(timeout, agent.run()).await {
         return result;
@@ -918,6 +931,7 @@ index 8a1218a..24c5735 100644\n\
             ]),
             deterministic_usage_per_call: None,
             task_timeout_secs: Some(30),
+            cancellation: None,
             stream_addr: None,
             patch_capture: Some(PatchCaptureSpec {
                 base_commit: Some(base_sha),

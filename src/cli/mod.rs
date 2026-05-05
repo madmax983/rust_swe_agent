@@ -157,6 +157,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
+        cancellation: None,
         stream_addr,
         patch_capture,
     };
@@ -246,6 +247,13 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep complete"
     );
     print!("{}", results.summary_table());
+    if results.sweep_status == crate::run::swebench::SWEEP_STATUS_CANCELLED {
+        std::process::exit(
+            results
+                .cancel_exit_code
+                .unwrap_or(crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL),
+        );
+    }
     let github_pr_failures = github_pr_failure_count(&results);
     if github_pr_failures > 0 {
         return Err(Error::Github(format!(
@@ -544,6 +552,8 @@ fn swebench_args_from_cmd(
         skip_patch_validation: s.skip_patch_validation,
         max_rpm: s.max_rpm.or(cfg_max_rpm),
         max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
+        cancel_deadline_secs: s.cancel_deadline,
+        cancellation_signals: Some(crate::run::swebench::os_cancellation_signals()),
         github_pr,
     }
 }

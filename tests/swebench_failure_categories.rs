@@ -133,6 +133,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await

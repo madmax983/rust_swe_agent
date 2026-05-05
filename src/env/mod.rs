@@ -6,8 +6,10 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::sync::watch;
 
 use crate::error::EnvError;
 
@@ -23,6 +25,40 @@ pub use chaos::ChaosEnvironment;
 pub use docker::DockerEnvironment;
 pub use local::LocalEnvironment;
 
+#[derive(Clone)]
+pub struct CancellationToken {
+    rx: watch::Receiver<bool>,
+}
+
+impl CancellationToken {
+    pub fn new(rx: watch::Receiver<bool>) -> Self {
+        Self { rx }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    pub async fn cancelled(&mut self) {
+        if self.is_cancelled() {
+            return;
+        }
+        while self.rx.changed().await.is_ok() {
+            if self.is_cancelled() {
+                return;
+            }
+        }
+    }
+}
+
+impl fmt::Debug for CancellationToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CancellationToken")
+            .field("is_cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
     pub command: String,
@@ -32,6 +68,8 @@ pub struct RunRequest {
     pub env: BTreeMap<String, String>,
     #[serde(with = "humantime_serde_compat")]
     pub timeout: Duration,
+    #[serde(skip)]
+    pub cancellation: Option<CancellationToken>,
 }
 
 impl RunRequest {
@@ -41,12 +79,19 @@ impl RunRequest {
             cwd: None,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(60),
+            cancellation: None,
         }
     }
 
     #[must_use]
     pub fn with_timeout(mut self, t: Duration) -> Self {
         self.timeout = t;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
         self
     }
 }

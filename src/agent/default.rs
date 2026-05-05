@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::{Config, ToolHookCfg};
-use crate::env::{Environment, RunRequest, RunResult};
+use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
@@ -128,6 +128,7 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    pub cancellation: Option<CancellationToken>,
     test_command_patterns: Vec<TestCommandPattern>,
 }
 
@@ -205,6 +206,7 @@ impl DefaultAgentBuilder {
             cache_creation_tokens: 0,
             completion_tokens: 0,
             stream,
+            cancellation: None,
             test_command_patterns,
         })
     }
@@ -241,6 +243,15 @@ impl Agent for DefaultAgent {
     // for no real reuse benefit.
     #[allow(clippy::too_many_lines)]
     async fn step(&mut self) -> Result<StepOutcome, Error> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            self.finalize_cancelled();
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
+
         // 1. Limit checks.
         if self.steps >= self.config.root.agent.step_limit {
             self.trajectory.info.exit_reason = Some("step_limit".into());
@@ -402,6 +413,11 @@ impl Agent for DefaultAgent {
             let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
                 self.config.root.environment.timeout_secs,
             ));
+            let run_req = if let Some(cancellation) = self.cancellation.clone() {
+                run_req.with_cancellation(cancellation)
+            } else {
+                run_req
+            };
             let result = self.env.run(run_req).await?;
             self.stream.emit(StreamEvent::BashResult {
                 step: self.steps,
@@ -530,6 +546,14 @@ impl Agent for DefaultAgent {
         });
 
         self.steps += 1;
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            self.finalize_cancelled();
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
         Ok(StepOutcome::Continue)
     }
 }
@@ -583,6 +607,15 @@ impl DefaultAgent {
             Some(FailureCategory::WallclockTimeout),
             None,
         );
+    }
+
+    pub fn finalize_cancelled(&mut self) {
+        self.trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
+        self.trajectory.info.steps = Some(self.steps);
+        self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+        self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+        self.finalize_run_metadata(outcome::ERROR);
+        self.emit_run_ended(exit_reason::CANCELLED, None, None);
     }
 
     #[allow(clippy::cast_precision_loss)]

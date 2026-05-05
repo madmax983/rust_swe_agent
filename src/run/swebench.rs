@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(test)]
@@ -21,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
 use crate::error::Error;
@@ -32,6 +34,12 @@ use crate::trajectory::{FailureCategory, Trajectory, exit_reason, outcome};
 /// sweep-level USD budget was exhausted. Distinct from `error` and
 /// `submitted` so summary tooling can attribute the halt correctly.
 pub const EXIT_REASON_BUDGET_HALT: &str = "budget_halt";
+pub const SWEEP_STATUS_RUNNING: &str = "running";
+pub const SWEEP_STATUS_COMPLETED: &str = "completed";
+pub const SWEEP_STATUS_CANCELLING: &str = "cancelling";
+pub const SWEEP_STATUS_CANCELLED: &str = "cancelled";
+pub const CANCEL_EXIT_CODE_GRACEFUL: i32 = 130;
+pub const CANCEL_EXIT_CODE_ESCALATED: i32 = 137;
 
 /// Standard `claude-3-5-sonnet` USD pricing per 1M tokens. Used for the
 /// summary's cost estimate; per-instance trajectories carry only token
@@ -127,6 +135,16 @@ pub struct SweBenchInstance {
     pub other: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepSignal {
+    Interrupt,
+    Terminate,
+}
+
+fn default_sweep_status() -> String {
+    SWEEP_STATUS_COMPLETED.to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstanceResult {
@@ -213,6 +231,23 @@ pub struct InstanceResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepResults {
     pub total: usize,
+    #[serde(default = "default_sweep_status")]
+    pub sweep_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_deadline_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_exit_code: Option<i32>,
+    /// Terminal run slots completed before the first cancellation signal.
+    #[serde(default)]
+    pub completed: usize,
+    /// Run slots that were in flight when the first cancellation signal arrived.
+    #[serde(default)]
+    pub in_flight_at_cancel: usize,
+    /// Run slots that had not started when the first cancellation signal arrived.
+    #[serde(default)]
+    pub not_started: usize,
     pub submitted: usize,
     #[serde(default)]
     pub submitted_with_tests: usize,
@@ -447,6 +482,16 @@ impl SweepResults {
         let mut s = String::new();
         s.push_str("\n=== SWE-bench sweep summary ===\n");
         let _ = writeln!(s, "Total tasks:        {}", self.total);
+        if self.sweep_status != SWEEP_STATUS_COMPLETED {
+            let _ = writeln!(s, "Sweep status:       {}", self.sweep_status);
+            if self.sweep_status == SWEEP_STATUS_CANCELLED {
+                let _ = writeln!(
+                    s,
+                    "Cancelled:          completed {}, in-flight {}, not-started {}",
+                    self.completed, self.in_flight_at_cancel, self.not_started
+                );
+            }
+        }
         write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
         write_submission_lines(
             &mut s,
@@ -773,6 +818,14 @@ pub struct SwebenchArgs {
     /// Optional aggregate input-token-rate ceiling across all workers (tokens/min).
     /// When `None`, no TPM cap is enforced (opt-in, no behavior change).
     pub max_input_tpm: Option<u64>,
+    /// Seconds to let in-flight tasks finish after the first cancellation
+    /// signal before forcing them to persist `exit_reason = "cancelled"`.
+    pub cancel_deadline_secs: u64,
+    /// Optional cancellation signal stream. CLI callers pass
+    /// [`os_cancellation_signals`]; library tests can inject synthetic
+    /// signals; `None` disables cancellation signal listening.
+    #[doc(hidden)]
+    pub cancellation_signals: Option<mpsc::UnboundedReceiver<SweepSignal>>,
     /// Optional GitHub PR publisher for submitted patch artifacts.
     pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
@@ -945,7 +998,7 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // join → aggregate → emit). Splitting it would obscure the linear flow
 // without yielding reusable pieces.
 #[allow(clippy::too_many_lines)]
-pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
+pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     if args.reruns == 0 {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "bench swebench: --rerun must be at least 1".into(),
@@ -963,6 +1016,13 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
         return Ok(SweepResults {
             total: 0,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,
@@ -1029,6 +1089,13 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
     );
     let initial = SweepResults {
         total,
+        sweep_status: SWEEP_STATUS_RUNNING.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: 0,
         submitted_with_tests: 0,
         skipped: 0,
@@ -1054,7 +1121,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         instances: Vec::new(),
         rate_limit_events: None,
     };
-    std::fs::write(&summary_path, serde_json::to_string_pretty(&initial)?)?;
+    write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
     assert!(
         !PANIC_AFTER_INITIAL_MANIFEST_WRITE.load(Ordering::Relaxed),
@@ -1091,6 +1158,11 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         .map(std::sync::Arc::new);
 
     let mut in_flight: usize = 0;
+    let (force_cancel_tx, force_cancel_rx) = watch::channel(false);
+    let mut signal_rx = args.cancellation_signals.take();
+    let mut signal_rx_closed = signal_rx.is_none();
+    let mut cancellation: Option<CancellationSnapshot> = None;
+    let mut force_cancel_sent = false;
 
     for inst in instances {
         // Resume short-circuit: a valid on-disk trajectory + (when the run
@@ -1105,6 +1177,20 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                     let patch_path =
                         existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
                     let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+                    let cancelled_resume =
+                        info.exit_reason.as_deref() == Some(exit_reason::CANCELLED);
+                    if cancelled_resume {
+                        tracing::info!(
+                            instance = %inst.instance_id,
+                            run_index,
+                            "resume: cancelled trajectory found — re-running"
+                        );
+                        pending.push_back(SweepRun {
+                            inst: inst.clone(),
+                            run_index,
+                        });
+                        continue;
+                    }
                     let retryable_resume = args.retry_on_resume
                         && info
                             .failure_category
@@ -1214,6 +1300,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
                 task_timeout_secs: args.task_timeout_secs,
                 skip_patch_validation: args.skip_patch_validation,
                 governor,
+                cancellation: crate::run::mini::MiniCancellation::new(force_cancel_rx.clone()),
                 github_pr: args.github_pr.clone(),
             };
             set.spawn(async move {
@@ -1250,105 +1337,192 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
     }
 
-    while let Some(j) = set.join_next().await {
-        in_flight = in_flight.saturating_sub(1);
-        match j {
-            Ok(r) => {
-                match r.result.outcome.as_deref() {
-                    Some(outcome::SUBMITTED) => submitted += 1,
-                    Some(outcome::ERROR) => errored += 1,
-                    _ => {}
+    while in_flight > 0 {
+        enum SweepEvent {
+            Joined(Box<Option<Result<RunSlotResult, tokio::task::JoinError>>>),
+            Signal(Option<SweepSignal>),
+            DeadlineElapsed,
+        }
+        let deadline = cancellation
+            .as_ref()
+            .filter(|_| !force_cancel_sent)
+            .map(|cancel| cancel.deadline);
+        let event = tokio::select! {
+            joined = set.join_next() => SweepEvent::Joined(Box::new(joined)),
+            signal = async {
+                if let Some(rx) = signal_rx.as_mut() {
+                    rx.recv().await
+                } else {
+                    std::future::pending::<Option<SweepSignal>>().await
                 }
-                accounting.add_result(&r.result);
-                // Sweep-level budget bookkeeping. Tasks that completed
-                // (whether submitted or errored) consumed real API budget
-                // and count toward the cap.
-                let cost = r
-                    .result
-                    .effective_cost_usd(Some(&model_name))
-                    .unwrap_or(0.0);
-                let was_halted = halted;
-                bump_cost(cost, &mut cumulative_cost, &mut halted);
-                if halted && !was_halted {
-                    if let Some(l) = limit {
-                        tracing::warn!(
-                            cumulative_usd = cumulative_cost,
-                            limit_usd = l,
-                            "sweep cost limit reached — halting new task launches"
-                        );
+            }, if !signal_rx_closed => SweepEvent::Signal(signal),
+            () = async {
+                if let Some(deadline) = deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if deadline.is_some() => SweepEvent::DeadlineElapsed,
+        };
+
+        match event {
+            SweepEvent::Joined(joined) => {
+                let Some(j) = *joined else {
+                    break;
+                };
+                in_flight = in_flight.saturating_sub(1);
+                match j {
+                    Ok(r) => {
+                        match r.result.outcome.as_deref() {
+                            Some(outcome::SUBMITTED) => submitted += 1,
+                            Some(outcome::ERROR) => errored += 1,
+                            _ => {}
+                        }
+                        accounting.add_result(&r.result);
+                        // Sweep-level budget bookkeeping. Tasks that completed
+                        // (whether submitted or errored) consumed real API budget
+                        // and count toward the cap.
+                        let cost = r
+                            .result
+                            .effective_cost_usd(Some(&model_name))
+                            .unwrap_or(0.0);
+                        let was_halted = halted;
+                        bump_cost(cost, &mut cumulative_cost, &mut halted);
+                        if halted && !was_halted {
+                            if let Some(l) = limit {
+                                tracing::warn!(
+                                    cumulative_usd = cumulative_cost,
+                                    limit_usd = l,
+                                    "sweep cost limit reached — halting new task launches"
+                                );
+                            }
+                        }
+                        results.push(r);
+                    }
+                    Err(e) => {
+                        errored += 1;
+                        results.push(RunSlotResult::new(
+                            1,
+                            InstanceResult {
+                                instance_id: "<join_error>".into(),
+                                exit_reason: "error".into(),
+                                outcome: Some(outcome::ERROR.into()),
+                                failure_category: Some(FailureCategory::AgentInternal),
+                                steps: None,
+                                cost_usd: None,
+                                prompt_tokens: None,
+                                cache_read_tokens: None,
+                                cache_creation_tokens: None,
+                                completion_tokens: None,
+                                duration_secs: None,
+                                error: Some(e.to_string()),
+                                github_pr_error: None,
+                                patch_present: false,
+                                non_empty_patch: false,
+                                attempts: 1,
+                                retry_reasons: Vec::new(),
+                                runs: 1,
+                                resolved_count: 0,
+                                pass_at_1: false,
+                                tests_run_before_submit: false,
+                                last_tests_passed: None,
+                            },
+                        ));
                     }
                 }
-                results.push(r);
             }
-            Err(e) => {
-                errored += 1;
-                results.push(RunSlotResult::new(
-                    1,
-                    InstanceResult {
-                        instance_id: "<join_error>".into(),
-                        exit_reason: "error".into(),
-                        outcome: Some(outcome::ERROR.into()),
-                        failure_category: Some(FailureCategory::AgentInternal),
-                        steps: None,
-                        cost_usd: None,
-                        prompt_tokens: None,
-                        cache_read_tokens: None,
-                        cache_creation_tokens: None,
-                        completion_tokens: None,
-                        duration_secs: None,
-                        error: Some(e.to_string()),
-                        github_pr_error: None,
-                        patch_present: false,
-                        non_empty_patch: false,
-                        attempts: 1,
-                        retry_reasons: Vec::new(),
-                        runs: 1,
-                        resolved_count: 0,
-                        pass_at_1: false,
-                        tests_run_before_submit: false,
-                        last_tests_passed: None,
-                    },
-                ));
+            SweepEvent::Signal(Some(signal)) => {
+                if cancellation.is_none() {
+                    let cancel_deadline = Duration::from_secs(args.cancel_deadline_secs);
+                    let cancelled_at = chrono::Utc::now();
+                    let deadline_at = cancelled_at
+                        + chrono::Duration::from_std(cancel_deadline).unwrap_or_default();
+                    let snapshot = CancellationSnapshot {
+                        cancelled_at: cancelled_at.to_rfc3339(),
+                        deadline_at: deadline_at.to_rfc3339(),
+                        deadline: tokio::time::Instant::now() + cancel_deadline,
+                        completed: results.len(),
+                        in_flight_at_cancel: in_flight,
+                        not_started: pending.len(),
+                        exit_code: CANCEL_EXIT_CODE_GRACEFUL,
+                    };
+                    tracing::warn!(
+                        in_flight = snapshot.in_flight_at_cancel,
+                        not_started = snapshot.not_started,
+                        "cancellation requested — stopping new task launches"
+                    );
+                    let mut partial = initial.clone();
+                    partial.sweep_status = SWEEP_STATUS_CANCELLING.into();
+                    partial.cancelled_at = Some(snapshot.cancelled_at.clone());
+                    partial.cancel_deadline_at = Some(snapshot.deadline_at.clone());
+                    partial.cancel_exit_code = Some(snapshot.exit_code);
+                    partial.completed = snapshot.completed;
+                    partial.in_flight_at_cancel = snapshot.in_flight_at_cancel;
+                    partial.not_started = snapshot.not_started;
+                    partial.submitted = submitted;
+                    partial.skipped = skipped;
+                    partial.errored = errored;
+                    partial.budget_halted = budget_halted;
+                    partial.instances = aggregate_run_results(&results, args.reruns);
+                    write_sweep_results_atomic(&summary_path, &partial)?;
+                    cancellation = Some(snapshot);
+                    if args.cancel_deadline_secs == 0 {
+                        force_cancel_sent = true;
+                        let _ = force_cancel_tx.send(true);
+                    }
+                } else if signal == SweepSignal::Interrupt && !force_cancel_sent {
+                    if let Some(cancel) = cancellation.as_mut() {
+                        cancel.exit_code = CANCEL_EXIT_CODE_ESCALATED;
+                    }
+                    force_cancel_sent = true;
+                    let _ = force_cancel_tx.send(true);
+                    tracing::warn!("second interrupt received — forcing in-flight cancellation");
+                }
+            }
+            SweepEvent::Signal(None) => {
+                signal_rx_closed = true;
+            }
+            SweepEvent::DeadlineElapsed => {
+                if !force_cancel_sent {
+                    force_cancel_sent = true;
+                    let _ = force_cancel_tx.send(true);
+                    tracing::warn!("cancel deadline elapsed — forcing in-flight cancellation");
+                }
             }
         }
 
-        // Decide what to do with the next pending task. If the budget is
-        // exhausted, drain the queue into `budget_halt` results without
-        // spawning. Otherwise, dispatch one — keeping the in-flight
-        // count at `parallelism` until the queue drains.
-        //
-        // AIMD: tick the governor before deciding; it may restore a slot
-        // and log a structured event. When AIMD is active and no slot has
-        // been restored yet, skip this spawn cycle (let in-flight count
-        // naturally drop until restoration resumes).
-        if let Some(g) = &governor_arc {
-            if g.tick_aimd().await {
-                tracing::info!(
-                    structured_event = "aimd_restore",
-                    "rate-limit: AIMD restored 1 worker slot"
-                );
+        // Decide what to do with the next pending task. Once cancellation
+        // starts, pending work remains unstarted for resume.
+        if cancellation.is_none() {
+            if let Some(g) = &governor_arc {
+                if g.tick_aimd().await {
+                    tracing::info!(
+                        structured_event = "aimd_restore",
+                        "rate-limit: AIMD restored 1 worker slot"
+                    );
+                }
             }
-        }
-        let aimd_suppressed_count = match &governor_arc {
-            Some(g) => g.suppressed_slots_count().await,
-            None => 0,
-        };
-        let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
-        if halted {
-            while let Some(inst) = pending.pop_front() {
-                results.push(RunSlotResult::new(
-                    inst.run_index,
-                    budget_halt_result(&inst.inst.instance_id),
-                ));
-                budget_halted += 1;
-            }
-        } else if in_flight < effective_parallelism {
-            if let Some(inst) = pending.pop_front() {
-                spawn_one(inst, &mut set, governor_arc.clone());
-                in_flight += 1;
-                if let Some(g) = &governor_arc {
-                    g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
-                        .await;
+            let aimd_suppressed_count = match &governor_arc {
+                Some(g) => g.suppressed_slots_count().await,
+                None => 0,
+            };
+            let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
+            if halted {
+                while let Some(inst) = pending.pop_front() {
+                    results.push(RunSlotResult::new(
+                        inst.run_index,
+                        budget_halt_result(&inst.inst.instance_id),
+                    ));
+                    budget_halted += 1;
+                }
+            } else if in_flight < effective_parallelism {
+                if let Some(inst) = pending.pop_front() {
+                    spawn_one(inst, &mut set, governor_arc.clone());
+                    in_flight += 1;
+                    if let Some(g) = &governor_arc {
+                        g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                            .await;
+                    }
                 }
             }
         }
@@ -1390,8 +1564,15 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
         .copied()
         .unwrap_or(0);
 
-    let sweep = SweepResults {
+    let mut sweep = SweepResults {
         total,
+        sweep_status: SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted,
         submitted_with_tests: submitted_with_tests_for_fresh_submissions(&results),
         skipped,
@@ -1427,9 +1608,74 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             None => None,
         },
     };
-    std::fs::write(&summary_path, serde_json::to_string_pretty(&sweep)?)?;
+    if let Some(cancel) = cancellation.as_ref() {
+        sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
+        sweep.cancelled_at = Some(cancel.cancelled_at.clone());
+        sweep.cancel_deadline_at = Some(cancel.deadline_at.clone());
+        sweep.cancel_exit_code = Some(cancel.exit_code);
+        sweep.completed = cancel.completed;
+        sweep.in_flight_at_cancel = cancel.in_flight_at_cancel;
+        sweep.not_started = cancel.not_started;
+    }
+    write_sweep_results_atomic(&summary_path, &sweep)?;
 
     Ok(sweep)
+}
+
+fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(), Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(temp.as_file_mut(), results)?;
+    writeln!(temp.as_file_mut())?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    Ok(())
+}
+
+pub fn os_cancellation_signals() -> mpsc::UnboundedReceiver<SweepSignal> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(forward_os_cancellation_signals(tx));
+    rx
+}
+
+#[cfg(unix)]
+async fn forward_os_cancellation_signals(tx: mpsc::UnboundedSender<SweepSignal>) {
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to install SIGTERM handler");
+            return;
+        }
+    };
+    loop {
+        let signal = tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    tracing::warn!(error = %err, "failed waiting for Ctrl-C");
+                    return;
+                }
+                SweepSignal::Interrupt
+            }
+            _ = sigterm.recv() => SweepSignal::Terminate,
+        };
+        if tx.send(signal).is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn forward_os_cancellation_signals(tx: mpsc::UnboundedSender<SweepSignal>) {
+    loop {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!(error = %err, "failed waiting for Ctrl-C");
+            return;
+        }
+        if tx.send(SweepSignal::Interrupt).is_err() {
+            return;
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2042,6 +2288,17 @@ struct SweepRun {
 }
 
 #[derive(Debug, Clone)]
+struct CancellationSnapshot {
+    cancelled_at: String,
+    deadline_at: String,
+    deadline: tokio::time::Instant,
+    completed: usize,
+    in_flight_at_cancel: usize,
+    not_started: usize,
+    exit_code: i32,
+}
+
+#[derive(Debug, Clone)]
 struct RunSlotResult {
     run_index: u32,
     result: InstanceResult,
@@ -2585,6 +2842,7 @@ struct RunOneParams {
     task_timeout_secs: Option<u64>,
     skip_patch_validation: bool,
     governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
+    cancellation: crate::run::mini::MiniCancellation,
     github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
 }
 
@@ -2599,6 +2857,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         task_timeout_secs,
         skip_patch_validation,
         governor,
+        cancellation,
         github_pr,
     } = params;
     let id = inst.instance_id.clone();
@@ -2650,6 +2909,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             deterministic_responses: det_for_attempt,
             deterministic_usage_per_call: deterministic_usage_per_call.clone(),
             task_timeout_secs,
+            cancellation: Some(cancellation.clone()),
             stream_addr: None,
             patch_capture: Some(crate::run::mini::PatchCaptureSpec {
                 base_commit: base_commit.clone(),
@@ -3377,6 +3637,13 @@ mod tests {
     fn summary_table_includes_required_fields() {
         let s = SweepResults {
             total: 10,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 4,
             submitted_with_tests: 0,
             skipped: 3,
@@ -3451,6 +3718,13 @@ mod tests {
         let error_without_submit = test_instance_result("errored", false, false);
         let s = SweepResults {
             total: 3,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 2,
             submitted_with_tests: 1,
             skipped: 0,
@@ -3514,6 +3788,13 @@ mod tests {
         failures.insert(FailureCategory::BudgetExhausted, 3usize);
         let s = SweepResults {
             total: 5,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 2,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3559,6 +3840,13 @@ mod tests {
 
         let s = SweepResults {
             total: 4,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 2,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3621,6 +3909,13 @@ mod tests {
 
         let s = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3662,6 +3957,13 @@ mod tests {
     fn summary_table_includes_budget_halt_line_when_triggered() {
         let s = SweepResults {
             total: 5,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 3,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3790,6 +4092,8 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            cancellation_signals: None,
             github_pr: None,
         };
         let manifest = build_manifest(
@@ -3844,6 +4148,8 @@ mod tests {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            cancellation_signals: None,
             github_pr: None,
         };
         let manifest = build_manifest(
@@ -3908,6 +4214,8 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            cancellation_signals: None,
             github_pr: None,
         };
         let filter = FilterSpec::default();
@@ -3996,6 +4304,8 @@ instance = "inst"
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            cancellation_signals: None,
             github_pr: None,
         };
         PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
@@ -4524,6 +4834,13 @@ instance = "inst"
         // rate_limit_events: None should be omitted from JSON (skip_serializing_if)
         let s = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 1,
             submitted_with_tests: 0,
             skipped: 0,
@@ -4592,6 +4909,8 @@ instance = "inst"
             skip_patch_validation: false,
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
+            cancel_deadline_secs: 30,
+            cancellation_signals: None,
             github_pr: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
@@ -4830,6 +5149,13 @@ instance = "inst"
         use crate::run::rate_limit::RateLimitEvents;
         let s = SweepResults {
             total: 2,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 2,
             submitted_with_tests: 0,
             skipped: 0,
@@ -4892,6 +5218,13 @@ instance = "inst"
     fn summary_table_no_rate_limit_section_when_events_absent() {
         let s = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 1,
             submitted_with_tests: 0,
             skipped: 0,

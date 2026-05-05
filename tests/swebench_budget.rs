@@ -156,6 +156,8 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -326,6 +328,8 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -405,6 +409,8 @@ async fn sweep_without_limit_runs_all_tasks() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -471,6 +477,8 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -599,6 +607,8 @@ async fn resume_skipped_costs_count_against_budget() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -653,6 +663,13 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
     // Prior results.json preserves cumulative retry usage/costs.
     let prior = SweepResults {
         total: 1,
+        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: 1,
         submitted_with_tests: 0,
         skipped: 0,
@@ -749,6 +766,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -799,6 +818,13 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
 
     let prior = SweepResults {
         total: 1,
+        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: 0,
         submitted_with_tests: 0,
         skipped: 0,
@@ -887,6 +913,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -916,6 +944,13 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
     // Write stale summary first (older mtime) with inflated usage.
     let stale_summary = SweepResults {
         total: 1,
+        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: 1,
         submitted_with_tests: 0,
         skipped: 0,
@@ -1030,6 +1065,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -1118,6 +1155,8 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
@@ -1213,6 +1252,8 @@ async fn per_task_budget_absent_means_no_enforcement() {
         skip_patch_validation: true,
         max_rpm: None,
         max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        cancellation_signals: None,
         github_pr: None,
     })
     .await
