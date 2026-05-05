@@ -157,6 +157,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -329,6 +330,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -410,6 +412,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -478,6 +481,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -608,6 +612,7 @@ async fn resume_skipped_costs_count_against_budget() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -767,6 +772,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -914,6 +920,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -1066,6 +1073,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -1156,6 +1164,7 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -1253,6 +1262,7 @@ async fn per_task_budget_absent_means_no_enforcement() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })

@@ -152,6 +152,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -254,6 +255,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -325,6 +327,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -396,6 +399,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -494,6 +498,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })
@@ -560,6 +565,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: Some(GithubPrSweepConfig {
             target_repo: "not-a-valid-owner-repo".into(),

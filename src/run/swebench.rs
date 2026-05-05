@@ -821,9 +821,11 @@ pub struct SwebenchArgs {
     /// Seconds to let in-flight tasks finish after the first cancellation
     /// signal before forcing them to persist `exit_reason = "cancelled"`.
     pub cancel_deadline_secs: u64,
-    /// Optional cancellation signal stream. CLI callers pass
-    /// [`os_cancellation_signals`]; library tests can inject synthetic
-    /// signals; `None` disables cancellation signal listening.
+    /// Install process OS signal handlers after preflight/dry-run handling,
+    /// immediately before the worker loop starts listening for cancellation.
+    pub install_os_signal_handlers: bool,
+    /// Optional injected cancellation signal stream. Tests use this for
+    /// deterministic cancellation; `None` disables injected signals.
     #[doc(hidden)]
     pub cancellation_signals: Option<mpsc::UnboundedReceiver<SweepSignal>>,
     /// Optional GitHub PR publisher for submitted patch artifacts.
@@ -1159,8 +1161,6 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     let mut in_flight: usize = 0;
     let (force_cancel_tx, force_cancel_rx) = watch::channel(false);
-    let mut signal_rx = args.cancellation_signals.take();
-    let mut signal_rx_closed = signal_rx.is_none();
     let mut cancellation: Option<CancellationSnapshot> = None;
     let mut force_cancel_sent = false;
 
@@ -1336,6 +1336,16 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             }
         }
     }
+
+    let mut signal_rx = if in_flight > 0 {
+        args.cancellation_signals.take().or_else(|| {
+            args.install_os_signal_handlers
+                .then(os_cancellation_signals)
+        })
+    } else {
+        None
+    };
+    let mut signal_rx_closed = signal_rx.is_none();
 
     while in_flight > 0 {
         enum SweepEvent {
@@ -4095,6 +4105,7 @@ mod tests {
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
         };
@@ -4151,6 +4162,7 @@ mod tests {
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
         };
@@ -4217,6 +4229,7 @@ instance = "inst"
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
         };
@@ -4307,6 +4320,7 @@ instance = "inst"
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
         };
@@ -4912,6 +4926,7 @@ instance = "inst"
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
             cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
         };

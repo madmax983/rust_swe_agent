@@ -73,6 +73,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
     })

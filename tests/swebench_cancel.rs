@@ -143,6 +143,7 @@ fn base_args(
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 1,
+        install_os_signal_handlers: false,
         cancellation_signals: signal_rx,
         github_pr: None,
     }

@@ -566,7 +566,8 @@ fn swebench_args_from_cmd(
         max_rpm: s.max_rpm.or(cfg_max_rpm),
         max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
         cancel_deadline_secs: s.cancel_deadline,
-        cancellation_signals: Some(crate::run::swebench::os_cancellation_signals()),
+        install_os_signal_handlers: true,
+        cancellation_signals: None,
         github_pr,
     }
 }
@@ -927,14 +928,15 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        required_github_arg, swebench_github_pr_config, trajectory_submitted,
-        validate_observation_head_ratio, validate_swebench_github_pr_args,
+        Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
+        required_github_arg, swebench_args_from_cmd, swebench_github_pr_config,
+        trajectory_submitted, validate_observation_head_ratio, validate_swebench_github_pr_args,
     };
     use crate::error::Error;
     use crate::run::github_pr::PublishMode;
     use crate::run::swebench::{CANCEL_EXIT_CODE_ESCALATED, SweepResults};
     use crate::trajectory::{Trajectory, outcome};
+    use clap::Parser as _;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1081,6 +1083,32 @@ mod tests {
 
         results.cancel_exit_code = Some(CANCEL_EXIT_CODE_ESCALATED);
         assert_eq!(cancellation_exit_code(&results), Some(137));
+    }
+
+    #[test]
+    fn swebench_cli_defers_os_signal_handler_installation_to_run_loop() {
+        let cli = Cli::parse_from([
+            "rust-swe-agent",
+            "bench",
+            "swebench",
+            "--dataset-path",
+            "dataset.jsonl",
+            "--output",
+            "runs",
+        ]);
+        let crate::cli::Command::Bench {
+            cmd: args::BenchCmd::Swebench(cmd),
+        } = cli.command
+        else {
+            panic!("expected bench swebench command");
+        };
+
+        let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep");
+        assert!(args.install_os_signal_handlers);
+        assert!(
+            args.cancellation_signals.is_none(),
+            "CLI construction must not install process-level Ctrl-C handlers before preflight"
+        );
     }
 
     fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
