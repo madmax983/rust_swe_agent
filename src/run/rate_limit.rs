@@ -405,26 +405,50 @@ pub(crate) fn civil_to_unix(
 ) -> Option<u64> {
     // Shift so March is month 1, to simplify leap-day arithmetic.
     let (y, mp) = if month <= 2 {
-        (year - 1, month + 9)
+        (year.checked_sub(1)?, month.checked_add(9)?)
     } else {
-        (year, month - 3)
+        (year, month.checked_sub(3)?)
     };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400); // year-of-era [0, 399]
-    let doy = (153 * mp + 2) / 5 + day - 1; // day-of-year [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day-of-era [0, 146096]
-    let days: i64 = era * 146_097 + doe - 719_468; // days since 1970-01-01
+    let era = y.checked_div_euclid(400)?;
+    let yoe = y.checked_rem_euclid(400)?; // year-of-era [0, 399]
+    let doy = 153_i64
+        .checked_mul(mp)?
+        .checked_add(2)?
+        .checked_div(5)?
+        .checked_add(day)?
+        .checked_sub(1)?; // day-of-year [0, 365]
+    let doe = yoe
+        .checked_mul(365)?
+        .checked_add(yoe.checked_div(4)?)?
+        .checked_sub(yoe.checked_div(100)?)?
+        .checked_add(doy)?; // day-of-era [0, 146096]
+    let days: i64 = era
+        .checked_mul(146_097)?
+        .checked_add(doe)?
+        .checked_sub(719_468)?; // days since 1970-01-01
     if days < 0 {
         return None;
     }
     #[allow(clippy::cast_sign_loss)]
-    let total = days as u64 * 86_400 + h * 3_600 + m * 60 + s;
+    let total = (days as u64)
+        .checked_mul(86_400)?
+        .checked_add(h.checked_mul(3_600)?)?
+        .checked_add(m.checked_mul(60)?)?
+        .checked_add(s)?;
     Some(total)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_civil_to_unix_no_panic(year in any::<i64>(), month in any::<i64>(), day in any::<i64>(), h in any::<u64>(), m in any::<u64>(), s in any::<u64>()) {
+            let _ = civil_to_unix(year, month, day, h, m, s);
+        }
+    }
 
     #[test]
     fn test_parse_retry_after_multibyte_lowercase() {
