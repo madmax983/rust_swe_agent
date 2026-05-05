@@ -19,7 +19,7 @@ use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::{Config, ToolHookCfg};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::Error;
-use crate::model::{CacheHint, Message, MessageExtra, Model, QueryOpts, Role};
+use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{
@@ -235,6 +235,24 @@ pub fn retag_cache_hints(history: &mut [Message]) {
     }
 }
 
+async fn query_model_until_cancelled(
+    model: &dyn Model,
+    history: &[Message],
+    opts: &QueryOpts,
+    cancellation: Option<CancellationToken>,
+) -> Result<Option<ModelResponse>, crate::error::ModelError> {
+    let Some(mut cancellation) = cancellation else {
+        return model.query(history, opts).await.map(Some);
+    };
+    if cancellation.is_cancelled() {
+        return Ok(None);
+    }
+    tokio::select! {
+        result = model.query(history, opts) => result.map(Some),
+        () = cancellation.cancelled() => Ok(None),
+    }
+}
+
 #[async_trait]
 impl Agent for DefaultAgent {
     // The step body walks through 7 sequential phases (limit checks →
@@ -304,7 +322,17 @@ impl Agent for DefaultAgent {
             max_tokens: Some(self.config.root.model.max_tokens),
             extra: serde_json::Map::new(),
         };
-        let resp = self.model.query(&self.history, &opts).await?;
+        let Some(resp) = query_model_until_cancelled(
+            self.model.as_ref(),
+            &self.history,
+            &opts,
+            self.cancellation.clone(),
+        )
+        .await?
+        else {
+            self.finalize_cancelled();
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        };
         self.total_cost_usd += resp.usage.cost_usd.unwrap_or(0.0);
         self.prompt_tokens = self.prompt_tokens.saturating_add(resp.usage.input_tokens);
         self.cache_read_tokens = self
@@ -972,6 +1000,7 @@ mod tests {
     use crate::env::LocalEnvironment;
     use crate::model::{DeterministicModel, ModelResponse, ModelUsage, QueryOpts};
     use crate::trajectory::FailureCategory;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::watch;
 
     #[derive(Clone)]
@@ -1012,6 +1041,39 @@ mod tests {
                     cost_usd: Some(0.02),
                 },
                 raw: serde_json::json!({"cancelled_during_query": true}),
+            })
+        }
+    }
+
+    struct SlowModel {
+        query_started_tx: watch::Sender<bool>,
+        query_returned: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for SlowModel {
+        fn name(&self) -> &'static str {
+            "slow-model"
+        }
+
+        async fn query(
+            &self,
+            _messages: &[Message],
+            _opts: &QueryOpts,
+        ) -> Result<ModelResponse, crate::error::ModelError> {
+            let _ = self.query_started_tx.send(true);
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            self.query_returned.store(true, Ordering::SeqCst);
+            Ok(ModelResponse {
+                content: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nlate submit\n```".into(),
+                usage: ModelUsage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cost_usd: Some(0.02),
+                },
+                raw: serde_json::json!({"slow_model": true}),
             })
         }
     }
@@ -1120,6 +1182,65 @@ mod tests {
         );
         assert_eq!(agent.trajectory.info.final_output, None);
         assert_eq!(agent.trajectory.info.token_usage.unwrap().prompt_tokens, 11);
+    }
+
+    #[tokio::test]
+    async fn forced_cancellation_interrupts_in_flight_model_query() {
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (query_started_tx, mut query_started_rx) = watch::channel(false);
+        let query_returned = Arc::new(AtomicBool::new(false));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: Arc::new(SlowModel {
+                query_started_tx,
+                query_returned: Arc::clone(&query_returned),
+            }),
+            env: Box::new(StaticEnvironment {
+                result: RunResult {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                },
+            }),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap();
+        agent.cancellation = Some(CancellationToken::new(cancel_rx));
+
+        tokio::spawn(async move {
+            while query_started_rx.changed().await.is_ok() {
+                if *query_started_rx.borrow() {
+                    let _ = cancel_tx.send(true);
+                    return;
+                }
+            }
+        });
+
+        let exit = match tokio::time::timeout(Duration::from_secs(1), agent.run()).await {
+            Ok(result) => result.unwrap(),
+            Err(err) => panic!("forced cancellation should interrupt model.query: {err}"),
+        };
+
+        assert!(matches!(exit, ExitReason::UserInterrupt));
+        assert!(!query_returned.load(Ordering::SeqCst));
+        assert_eq!(
+            agent.trajectory.info.exit_reason.as_deref(),
+            Some(exit_reason::CANCELLED)
+        );
+        assert_eq!(
+            agent.trajectory.info.outcome.as_deref(),
+            Some(outcome::ERROR)
+        );
+        assert_eq!(agent.trajectory.info.final_output, None);
+        assert_eq!(agent.trajectory.info.steps, Some(0));
+        assert_eq!(agent.trajectory.info.token_usage.unwrap().prompt_tokens, 0);
     }
 
     #[tokio::test]
