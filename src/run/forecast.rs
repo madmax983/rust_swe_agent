@@ -497,7 +497,7 @@ fn quantiles(values: &[f64]) -> QuantileSummary {
         };
     }
     let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
+    sorted.sort_unstable_by(f64::total_cmp);
     QuantileSummary {
         p10: quantile_sorted(&sorted, 0.10),
         median: quantile_sorted(&sorted, 0.50),
