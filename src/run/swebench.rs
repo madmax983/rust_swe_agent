@@ -645,7 +645,7 @@ fn write_spend_stats_by_resolution(
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn write_spend_stat_line(s: &mut String, label: &str, costs: &mut Vec<f64>) {
+fn write_spend_stat_line(s: &mut String, label: &str, costs: &mut [f64]) {
     if costs.is_empty() {
         let _ = writeln!(s, "{label}:  n=0");
         return;
@@ -654,7 +654,7 @@ fn write_spend_stat_line(s: &mut String, label: &str, costs: &mut Vec<f64>) {
     let mean = costs.iter().sum::<f64>() / costs.len() as f64;
     let n = costs.len();
     let median = if n % 2 == 0 {
-        (costs[n / 2 - 1] + costs[n / 2]) / 2.0
+        f64::midpoint(costs[n / 2 - 1], costs[n / 2])
     } else {
         costs[n / 2]
     };
@@ -1256,7 +1256,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             Ok(r) => {
                 match r.result.outcome.as_deref() {
                     Some(outcome::SUBMITTED) => submitted += 1,
-                    Some(outcome::ERROR) | Some(outcome::BUDGET_EXHAUSTED) => errored += 1,
+                    Some(outcome::ERROR | outcome::BUDGET_EXHAUSTED) => errored += 1,
                     _ => {}
                 }
                 accounting.add_result(&r.result);
