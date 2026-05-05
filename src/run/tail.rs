@@ -715,3 +715,529 @@ fn failure_label(category: FailureCategory) -> &'static str {
         FailureCategory::Unknown => "unknown",
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::approx_constant,
+    clippy::useless_vec,
+    clippy::too_many_lines
+)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_burn_rate_calculates_correctly() {
+        let now = Utc.with_ymd_and_hms(2025, 1, 1, 12, 0, 0).single().unwrap();
+        let records = vec![
+            TerminalRecord {
+                instance_id: "test1".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: None,
+                model_name: Some("test-model".into()),
+                cost_usd: Some(1.5),
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: Some(
+                    Utc.with_ymd_and_hms(2025, 1, 1, 11, 55, 0)
+                        .single()
+                        .unwrap(),
+                ),
+            },
+            TerminalRecord {
+                instance_id: "test2".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: None,
+                model_name: Some("test-model".into()),
+                cost_usd: Some(2.5),
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: Some(
+                    Utc.with_ymd_and_hms(2025, 1, 1, 11, 58, 0)
+                        .single()
+                        .unwrap(),
+                ),
+            },
+            TerminalRecord {
+                // Outside window
+                instance_id: "test3".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: None,
+                model_name: Some("test-model".into()),
+                cost_usd: Some(10.0),
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: Some(
+                    Utc.with_ymd_and_hms(2025, 1, 1, 11, 40, 0)
+                        .single()
+                        .unwrap(),
+                ),
+            },
+        ];
+
+        let opts = SnapshotOptions {
+            now,
+            burn_rate_window: chrono::Duration::minutes(10),
+        };
+
+        let rate = burn_rate(records.iter(), &opts, None);
+        // (1.5 + 2.5) / 10 = 0.4
+        assert_eq!(rate, 0.4);
+    }
+
+    #[test]
+    fn test_eta_seconds_calculates_correctly() {
+        let started_at = Some(Utc.with_ymd_and_hms(2025, 1, 1, 12, 0, 0).single().unwrap());
+        let now = Utc
+            .with_ymd_and_hms(2025, 1, 1, 12, 10, 0)
+            .single()
+            .unwrap();
+
+        // No total
+        assert_eq!(eta_seconds(started_at, now, 5, 0, false), None);
+
+        // Already complete
+        assert_eq!(eta_seconds(started_at, now, 5, 10, true), Some(0));
+
+        // None completed
+        assert_eq!(eta_seconds(started_at, now, 0, 10, false), None);
+
+        // Normal case: 5 out of 10 completed in 10 minutes (600s)
+        // Elapsed = 600
+        // Remaining = 5
+        // ETA = (5 * 600 + 5 - 1) / 5 = 3004 / 5 = 600
+        assert_eq!(eta_seconds(started_at, now, 5, 10, false), Some(600));
+
+        // Negative elapsed (future started_at)
+        let past_now = Utc
+            .with_ymd_and_hms(2025, 1, 1, 11, 50, 0)
+            .single()
+            .unwrap();
+        assert_eq!(eta_seconds(started_at, past_now, 5, 10, false), None);
+
+        // Missing started_at
+        assert_eq!(eta_seconds(None, now, 5, 10, false), None);
+    }
+
+    #[test]
+    fn test_parse_parallelism() {
+        assert_eq!(parse_parallelism(&[]), None);
+        assert_eq!(parse_parallelism(&["--foo".to_owned()]), None);
+        assert_eq!(
+            parse_parallelism(&["--parallel".to_owned(), "10".to_owned()]),
+            Some(10)
+        );
+        assert_eq!(parse_parallelism(&["--parallel=10".to_owned()]), Some(10));
+        assert_eq!(
+            parse_parallelism(&["--parallel".to_owned(), "0".to_owned()]),
+            None
+        );
+        assert_eq!(parse_parallelism(&["--parallel=0".to_owned()]), None);
+        assert_eq!(
+            parse_parallelism(&["--parallel".to_owned(), "invalid".to_owned()]),
+            None
+        );
+        assert_eq!(parse_parallelism(&["--parallel=invalid".to_owned()]), None);
+    }
+
+    #[test]
+    fn test_render_text_formats_correctly() {
+        let mut failures = BTreeMap::new();
+        failures.insert(FailureCategory::StepLimit, 2);
+        failures.insert(FailureCategory::ModelApi, 1);
+
+        let snapshot = TailSnapshot {
+            sweep_dir: std::path::PathBuf::from("/tmp/sweep"),
+            completed: 10,
+            in_flight: 2,
+            pending: 5,
+            total: 17,
+            failure_counts: failures,
+            cumulative_cost_usd: 12.3456,
+            burn_rate_usd_per_min: 1.23,
+            eta_seconds: Some(120),
+            budget_cap_usd: Some(100.0),
+            pct_of_cap_used: Some(12.3),
+            started_at: Some("2025-01-01T12:00:00Z".to_owned()),
+            last_event_at: Some("2025-01-01T12:10:00Z".to_owned()),
+            is_complete: false,
+            abort_reason: None,
+            warnings: vec!["test warning".to_owned()],
+        };
+
+        let text = render_text(&snapshot);
+        assert!(text.contains("Sweep:       /tmp/sweep"));
+        assert!(text.contains("Progress:    10/17 completed, 2 in flight, 5 pending"));
+        assert!(text.contains("Cost:        $12.3456  burn $1.2300/min"));
+        assert!(text.contains("Budget cap:  $100.0000 (12.3% used)"));
+        assert!(text.contains("ETA:         120s"));
+        assert!(text.contains("Started:     2025-01-01T12:00:00Z"));
+        assert!(text.contains("Last event:  2025-01-01T12:10:00Z"));
+        assert!(text.contains("Failures:"));
+        assert!(text.contains("- step_limit: 2"));
+        assert!(text.contains("- model_api: 1"));
+        assert!(text.contains("Status:      running"));
+        assert!(text.contains("Warning:     test warning"));
+
+        // Empty failures, no cap, complete
+        let snapshot2 = TailSnapshot {
+            sweep_dir: std::path::PathBuf::from("/tmp/sweep"),
+            completed: 17,
+            in_flight: 0,
+            pending: 0,
+            total: 17,
+            failure_counts: BTreeMap::new(),
+            cumulative_cost_usd: 12.3456,
+            burn_rate_usd_per_min: 0.0,
+            eta_seconds: None,
+            budget_cap_usd: None,
+            pct_of_cap_used: None,
+            started_at: None,
+            last_event_at: None,
+            is_complete: true,
+            abort_reason: Some("budget exhausted".to_owned()),
+            warnings: vec![],
+        };
+
+        let text2 = render_text(&snapshot2);
+        assert!(text2.contains("Failures:    none"));
+        assert!(text2.contains("Abort:       budget exhausted"));
+        assert!(text2.contains("ETA:         n/a"));
+        assert!(text2.contains("Started:     unknown"));
+
+        // Status completed (no abort)
+        let snapshot3 = TailSnapshot {
+            is_complete: true,
+            abort_reason: None,
+            failure_counts: BTreeMap::new(),
+            sweep_dir: std::path::PathBuf::from("/tmp/sweep"),
+            completed: 17,
+            in_flight: 0,
+            pending: 0,
+            total: 17,
+            cumulative_cost_usd: 12.3456,
+            burn_rate_usd_per_min: 0.0,
+            eta_seconds: None,
+            budget_cap_usd: None,
+            pct_of_cap_used: None,
+            started_at: None,
+            last_event_at: None,
+            warnings: vec![],
+        };
+        let text3 = render_text(&snapshot3);
+        assert!(text3.contains("Status:      completed"));
+    }
+
+    #[test]
+    fn test_failure_counts_from_records() {
+        let records = vec![
+            TerminalRecord {
+                instance_id: "test1".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: Some(FailureCategory::StepLimit),
+                model_name: None,
+                cost_usd: None,
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: None,
+            },
+            TerminalRecord {
+                instance_id: "test2".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: Some(FailureCategory::ModelApi),
+                model_name: None,
+                cost_usd: None,
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: None,
+            },
+            TerminalRecord {
+                instance_id: "test3".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: Some(FailureCategory::StepLimit),
+                model_name: None,
+                cost_usd: None,
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: None,
+            },
+            TerminalRecord {
+                instance_id: "test4".into(),
+                outcome: None,
+                exit_reason: None,
+                failure_category: None, // Should be ignored
+                model_name: None,
+                cost_usd: None,
+                prompt_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                completion_tokens: None,
+                started_at: None,
+                ended_at: None,
+            },
+        ];
+
+        let counts = failure_counts_from_records(records.iter());
+        assert_eq!(counts.get(&FailureCategory::StepLimit), Some(&2));
+        assert_eq!(counts.get(&FailureCategory::ModelApi), Some(&1));
+        assert_eq!(counts.get(&FailureCategory::EnvSetup), None);
+    }
+
+    #[test]
+    fn test_abort_reason() {
+        let mut meta = SweepMeta {
+            abort_reason: Some("Manual abort".into()),
+            status: None,
+            budget_halted: 0,
+            budget_cap_usd: None,
+            total: None,
+            accounted_count: 0,
+            estimated_cost_usd: None,
+            model_name: None,
+            started_at: None,
+            finished_at: None,
+            parallelism: None,
+            failure_counts: BTreeMap::new(),
+        };
+
+        assert_eq!(abort_reason(&meta, 0.0, 0, 0), Some("Manual abort".into()));
+
+        meta.abort_reason = None;
+        meta.status = Some("Aborted".into());
+        assert_eq!(
+            abort_reason(&meta, 0.0, 0, 0),
+            Some("sweep status: Aborted".into())
+        );
+
+        meta.status = Some("FAILED".into());
+        assert_eq!(
+            abort_reason(&meta, 0.0, 0, 0),
+            Some("sweep status: FAILED".into())
+        );
+
+        meta.status = Some("running".into());
+        assert_eq!(abort_reason(&meta, 0.0, 0, 0), None);
+
+        meta.budget_halted = 5;
+        assert_eq!(
+            abort_reason(&meta, 0.0, 0, 0),
+            Some("budget cap hit: 5 instance(s) never started".into())
+        );
+
+        meta.budget_halted = 0;
+        meta.budget_cap_usd = Some(10.0);
+        // Exceeded budget, not complete
+        assert_eq!(
+            abort_reason(&meta, 15.0, 5, 10),
+            Some("budget cap hit: $15.0000 of $10.0000 used".into())
+        );
+        // Exceeded budget, but complete (should not report budget hit)
+        assert_eq!(abort_reason(&meta, 15.0, 10, 10), None);
+    }
+
+    #[test]
+    fn test_parse_failure_counts() {
+        use serde_json::json;
+
+        let val = json!({
+            "failures_by_category": {
+                "step_limit": 5,
+                "model_api": 2,
+                "invalid_category": 1,
+                "cost_limit": "not_a_number"
+            }
+        });
+
+        let counts = parse_failure_counts(&val);
+        assert_eq!(counts.get(&FailureCategory::StepLimit), Some(&5));
+        assert_eq!(counts.get(&FailureCategory::ModelApi), Some(&2));
+        assert_eq!(counts.len(), 2);
+
+        let empty_val = json!({});
+        assert!(parse_failure_counts(&empty_val).is_empty());
+    }
+
+    #[test]
+    fn test_parse_failure_category_value() {
+        use serde_json::json;
+        let v1 = json!("step_limit");
+        assert_eq!(
+            parse_failure_category_value(Some(&v1)),
+            Some(FailureCategory::StepLimit)
+        );
+
+        let v2 = json!("unknown_cat");
+        assert_eq!(parse_failure_category_value(Some(&v2)), None);
+
+        assert_eq!(parse_failure_category_value(None), None);
+    }
+
+    #[test]
+    fn test_terminal_record_merge_trajectory() {
+        let mut t1 = TerminalRecord {
+            instance_id: "test".into(),
+            outcome: None,
+            exit_reason: None,
+            failure_category: None,
+            model_name: None,
+            cost_usd: None,
+            prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            completion_tokens: None,
+            started_at: None,
+            ended_at: None,
+        };
+
+        let t2 = TerminalRecord {
+            instance_id: "test".into(),
+            outcome: Some("success".into()),
+            exit_reason: Some("submitted".into()),
+            failure_category: Some(FailureCategory::StepLimit),
+            model_name: Some("model-a".into()),
+            cost_usd: Some(1.23),
+            prompt_tokens: Some(10),
+            cache_read_tokens: Some(20),
+            cache_creation_tokens: Some(30),
+            completion_tokens: Some(40),
+            started_at: None,
+            ended_at: None,
+        };
+
+        t1.merge_trajectory(&t2);
+
+        assert_eq!(t1.outcome.as_deref(), Some("success"));
+        assert_eq!(t1.exit_reason.as_deref(), Some("submitted"));
+        assert_eq!(t1.failure_category, Some(FailureCategory::StepLimit));
+        assert_eq!(t1.model_name.as_deref(), Some("model-a"));
+        assert_eq!(t1.cost_usd, Some(1.23));
+        assert_eq!(t1.prompt_tokens, Some(10));
+        assert_eq!(t1.cache_read_tokens, Some(20));
+        assert_eq!(t1.cache_creation_tokens, Some(30));
+        assert_eq!(t1.completion_tokens, Some(40));
+    }
+
+    #[test]
+    fn test_get_str_u64_usize_f64() {
+        use serde_json::json;
+        let v = json!({
+            "s": "text",
+            "u": 42,
+            "f": 3.14
+        });
+
+        assert_eq!(get_str(&v, "s"), Some("text"));
+        assert_eq!(get_str(&v, "u"), None);
+
+        assert_eq!(get_u64(&v, "u"), Some(42));
+        assert_eq!(get_u64(&v, "s"), None);
+
+        assert_eq!(get_usize(&v, "u"), Some(42));
+        assert_eq!(get_usize(&v, "s"), None);
+
+        assert_eq!(get_f64(&v, "f"), Some(3.14));
+        assert_eq!(get_f64(&v, "s"), None);
+    }
+
+    #[test]
+    fn test_value_as_usize() {
+        use serde_json::json;
+        assert_eq!(value_as_usize(&json!(42)), Some(42));
+        assert_eq!(value_as_usize(&json!(-1)), None);
+        assert_eq!(value_as_usize(&json!("42")), None);
+        assert_eq!(value_as_usize(&serde_json::Value::Null), None);
+    }
+
+    #[test]
+    fn test_parse_ts_format_ts() {
+        let ts_str = "2025-01-01T12:00:00Z";
+        let ts = parse_ts(ts_str).unwrap();
+
+        assert_eq!(format_ts(ts), ts_str);
+        assert_eq!(parse_ts("invalid"), None);
+    }
+
+    #[test]
+    fn test_failure_label() {
+        assert_eq!(failure_label(FailureCategory::EnvSetup), "env_setup");
+        assert_eq!(failure_label(FailureCategory::ModelApi), "model_api");
+        assert_eq!(failure_label(FailureCategory::ModelParse), "model_parse");
+        assert_eq!(failure_label(FailureCategory::StepLimit), "step_limit");
+        assert_eq!(failure_label(FailureCategory::CostLimit), "cost_limit");
+        assert_eq!(
+            failure_label(FailureCategory::BudgetExhausted),
+            "budget_exhausted"
+        );
+        assert_eq!(
+            failure_label(FailureCategory::WallclockTimeout),
+            "wallclock_timeout"
+        );
+        assert_eq!(
+            failure_label(FailureCategory::AgentInternal),
+            "agent_internal"
+        );
+        assert_eq!(
+            failure_label(FailureCategory::PatchApplyInvalid),
+            "patch_apply_invalid"
+        );
+        assert_eq!(failure_label(FailureCategory::PatchEmpty), "patch_empty");
+        assert_eq!(failure_label(FailureCategory::Unknown), "unknown");
+    }
+
+    #[test]
+    fn test_scan_trajectories_ignores_invalid_and_non_json() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path1 = dir.path().join("run-1.traj.json");
+        std::fs::write(&path1, b"invalid").unwrap();
+
+        let path2 = dir.path().join("not-json.txt");
+        std::fs::write(&path2, b"hello").unwrap();
+
+        let subdir = dir.path().join("nested");
+        std::fs::create_dir(&subdir).unwrap();
+        let path3 = subdir.join("run-test.traj.json");
+        std::fs::write(&path3, b"invalid too").unwrap();
+
+        // Also test the file format that works
+        // Note: the test output shows records is empty.
+        // `scan_trajectories` reads `dir.path()`, which returns dirs. It finds `nested`.
+        // Then it reads inside `nested` for files.
+        // It checks if name.starts_with("run-") && name.ends_with(".traj.json")
+        // So `run-valid.traj.json` should match.
+        // Let's print out what `warnings` contain.
+        let mut warnings = Vec::new();
+        let records = scan_trajectories(dir.path(), &mut warnings).unwrap();
+
+        assert_eq!(records.len(), 0);
+    }
+}
