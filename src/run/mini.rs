@@ -22,6 +22,31 @@ pub use crate::env::CancellationToken as MiniCancellation;
 
 const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 
+#[cfg(test)]
+struct CancelBeforePatchCaptureHook {
+    trajectory_name: String,
+    sender: tokio::sync::watch::Sender<bool>,
+}
+
+#[cfg(test)]
+static CANCEL_BEFORE_PATCH_CAPTURE: std::sync::Mutex<Option<CancelBeforePatchCaptureHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn cancel_before_patch_capture_if_requested(trajectory_name: &str) {
+    let mut hook = CANCEL_BEFORE_PATCH_CAPTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if hook
+        .as_ref()
+        .is_some_and(|hook| hook.trajectory_name == trajectory_name)
+    {
+        if let Some(hook) = hook.take() {
+            let _ = hook.sender.send(true);
+        }
+    }
+}
+
 /// How a runner should snapshot the agent's working tree as a unified diff
 /// after submission. Optional on `MiniArgs` because patch capture only
 /// makes sense for benchmark sweeps; the standalone `bench mini` CLI run
@@ -126,9 +151,14 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
     // record of what happened — then propagate.
-    let run_result = run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await;
+    let mut run_result = run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await;
     if let Err(e) = &run_result {
         finalize_error_trajectory(&mut agent, e);
+    }
+    #[cfg(test)]
+    cancel_before_patch_capture_if_requested(&args.trajectory_name);
+    if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+        run_result = Ok(crate::agent::ExitReason::UserInterrupt);
     }
 
     // Patch capture happens before the trajectory is saved so any
@@ -138,55 +168,83 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if let (Ok(crate::agent::ExitReason::Submitted { .. }), Some(spec)) =
         (run_result.as_ref(), args.patch_capture.as_ref())
     {
-        match capture_patch(agent.env.as_ref(), spec).await {
+        match capture_patch(agent.env.as_ref(), spec, args.cancellation.clone()).await {
             Ok(diff) => {
+                if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+                    agent.trajectory.save_pretty(&traj_path)?;
+                    tracing::info!(?traj_path, patch_written, "trajectory written");
+                    if let Some(server) = server {
+                        server.shutdown().await;
+                    }
+                    return Ok(());
+                }
                 // Always write the patch file — operators need to inspect
                 // failed patches too.
                 std::fs::write(&spec.patch_path, &diff)?;
                 patch_written = true;
 
-                match check_patch_validity(agent.env.as_ref(), spec, &diff).await {
+                match check_patch_validity(
+                    agent.env.as_ref(),
+                    spec,
+                    &diff,
+                    args.cancellation.clone(),
+                )
+                .await
+                {
                     Ok(()) => {}
                     Err(PatchValidationFailure::Empty) => {
-                        tracing::warn!(
-                            instance = %args.trajectory_name,
-                            "agent submitted but produced an empty diff; downgrading to error"
-                        );
-                        agent.trajectory.info.exit_reason = Some("error".into());
-                        agent.trajectory.info.failure_category = Some(FailureCategory::PatchEmpty);
-                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+                            run_result = Ok(crate::agent::ExitReason::UserInterrupt);
+                        } else {
+                            tracing::warn!(
+                                instance = %args.trajectory_name,
+                                "agent submitted but produced an empty diff; downgrading to error"
+                            );
+                            agent.trajectory.info.exit_reason = Some("error".into());
+                            agent.trajectory.info.failure_category =
+                                Some(FailureCategory::PatchEmpty);
+                            agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        }
                     }
                     Err(PatchValidationFailure::ApplyFailed(reason)) => {
-                        tracing::warn!(
-                            instance = %args.trajectory_name,
-                            error = %reason,
-                            "patch apply check failed; downgrading outcome to error"
-                        );
-                        agent.trajectory.info.exit_reason = Some("error".into());
-                        agent.trajectory.info.failure_category =
-                            Some(FailureCategory::PatchApplyInvalid);
-                        agent.trajectory.info.other.insert(
-                            "patch_apply_error".into(),
-                            serde_json::Value::String(reason),
-                        );
-                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+                            run_result = Ok(crate::agent::ExitReason::UserInterrupt);
+                        } else {
+                            tracing::warn!(
+                                instance = %args.trajectory_name,
+                                error = %reason,
+                                "patch apply check failed; downgrading outcome to error"
+                            );
+                            agent.trajectory.info.exit_reason = Some("error".into());
+                            agent.trajectory.info.failure_category =
+                                Some(FailureCategory::PatchApplyInvalid);
+                            agent.trajectory.info.other.insert(
+                                "patch_apply_error".into(),
+                                serde_json::Value::String(reason),
+                            );
+                            agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        }
                     }
                 }
             }
             Err(reason) => {
-                tracing::warn!(
-                    instance = %args.trajectory_name,
-                    error = %reason,
-                    "patch capture failed; downgrading outcome to error"
-                );
-                agent.trajectory.info.exit_reason = Some("error".into());
-                agent.trajectory.info.failure_category = Some(FailureCategory::EnvSetup);
-                agent
-                    .trajectory
-                    .info
-                    .other
-                    .insert("patch_error".into(), serde_json::Value::String(reason));
-                agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+                    run_result = Ok(crate::agent::ExitReason::UserInterrupt);
+                } else {
+                    tracing::warn!(
+                        instance = %args.trajectory_name,
+                        error = %reason,
+                        "patch capture failed; downgrading outcome to error"
+                    );
+                    agent.trajectory.info.exit_reason = Some("error".into());
+                    agent.trajectory.info.failure_category = Some(FailureCategory::EnvSetup);
+                    agent
+                        .trajectory
+                        .info
+                        .other
+                        .insert("patch_error".into(), serde_json::Value::String(reason));
+                    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                }
             }
         }
     }
@@ -216,6 +274,26 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         server.shutdown().await;
     }
     Ok(())
+}
+
+fn finalize_cancelled_if_requested(
+    agent: &mut DefaultAgent,
+    cancellation: Option<&MiniCancellation>,
+) -> bool {
+    if cancellation.is_some_and(MiniCancellation::is_cancelled) {
+        agent.finalize_cancelled();
+        true
+    } else {
+        false
+    }
+}
+
+fn attach_cancellation(req: RunRequest, cancellation: Option<MiniCancellation>) -> RunRequest {
+    if let Some(cancellation) = cancellation {
+        req.with_cancellation(cancellation)
+    } else {
+        req
+    }
 }
 
 fn finalize_error_trajectory(agent: &mut DefaultAgent, err: &Error) {
@@ -297,6 +375,7 @@ pub(crate) async fn check_patch_validity(
     env: &dyn Environment,
     spec: &PatchCaptureSpec,
     diff: &str,
+    cancellation: Option<MiniCancellation>,
 ) -> Result<(), PatchValidationFailure> {
     if spec.skip_patch_validation {
         return Ok(());
@@ -333,8 +412,11 @@ pub(crate) async fn check_patch_validity(
     // Use separate commands instead of a shell compound expression. That keeps
     // local Windows `cmd.exe`, POSIX shells, and Docker bash from disagreeing
     // about quoting, redirects, and `$?` syntax.
-    let mut add_req = RunRequest::new(format!("git worktree add -q --detach {wt_name} {base_arg}"))
-        .with_timeout(Duration::from_secs(30));
+    let mut add_req = attach_cancellation(
+        RunRequest::new(format!("git worktree add -q --detach {wt_name} {base_arg}"))
+            .with_timeout(Duration::from_secs(30)),
+        cancellation.clone(),
+    );
     add_req.cwd = Some(spec.workdir.clone());
     add_req
         .env
@@ -343,10 +425,13 @@ pub(crate) async fn check_patch_validity(
     let add_result = env.run(add_req).await;
     let result = match add_result {
         Ok(result) if !result.timed_out && result.exit_code == 0 => {
-            let mut apply_req = RunRequest::new(format!(
-                "git -C {wt_name} apply --check --no-3way -- ../{patch_name}"
-            ))
-            .with_timeout(Duration::from_secs(30));
+            let mut apply_req = attach_cancellation(
+                RunRequest::new(format!(
+                    "git -C {wt_name} apply --check --no-3way -- ../{patch_name}"
+                ))
+                .with_timeout(Duration::from_secs(30)),
+                cancellation.clone(),
+            );
             apply_req.cwd = Some(spec.workdir.clone());
             env.run(apply_req).await
         }
@@ -354,8 +439,11 @@ pub(crate) async fn check_patch_validity(
         Err(e) => Err(e),
     };
 
-    let mut cleanup_req = RunRequest::new(format!("git worktree remove --force {wt_name}"))
-        .with_timeout(Duration::from_secs(30));
+    let mut cleanup_req = attach_cancellation(
+        RunRequest::new(format!("git worktree remove --force {wt_name}"))
+            .with_timeout(Duration::from_secs(30)),
+        cancellation,
+    );
     cleanup_req.cwd = Some(spec.workdir.clone());
     let _ = env.run(cleanup_req).await;
 
@@ -381,13 +469,20 @@ pub(crate) async fn check_patch_validity(
 ///
 /// We use `--no-color`, `--binary`, and `--unified=3` to match the format
 /// the SWE-bench evaluator (`sb-cli`) consumes and `git apply` accepts.
-async fn capture_patch(env: &dyn Environment, spec: &PatchCaptureSpec) -> Result<String, String> {
+async fn capture_patch(
+    env: &dyn Environment,
+    spec: &PatchCaptureSpec,
+    cancellation: Option<MiniCancellation>,
+) -> Result<String, String> {
     // Keep paths in `cwd` and the base revision in the environment so valid
     // revspec punctuation does not become shell syntax.
     let base = validate_git_rev(spec.base_commit.as_deref().unwrap_or("HEAD"))?;
     let base_arg = patch_base_shell_arg(base);
     let cmd = format!("git diff --no-color --binary --unified=3 --end-of-options {base_arg} -- .");
-    let mut req = RunRequest::new(cmd).with_timeout(Duration::from_secs(60));
+    let mut req = attach_cancellation(
+        RunRequest::new(cmd).with_timeout(Duration::from_secs(60)),
+        cancellation,
+    );
     req.cwd = Some(spec.workdir.clone());
     req.env.insert(PATCH_BASE_ENV.into(), base.to_owned());
     let result = env
@@ -517,8 +612,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use async_trait::async_trait;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::Mutex;
+    use tokio::sync::watch;
 
     #[test]
     fn slugify_basic() {
@@ -570,11 +668,107 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
         assert!(diff.contains("+after"), "{diff}");
+    }
+
+    #[derive(Default)]
+    struct RecordingEnvironment {
+        requests: Mutex<Vec<RecordedRequest>>,
+    }
+
+    struct RecordedRequest {
+        command: String,
+        has_cancellation: bool,
+    }
+
+    impl RecordingEnvironment {
+        fn requests(&self) -> Vec<(String, bool)> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|request| (request.command.clone(), request.has_cancellation))
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl Environment for RecordingEnvironment {
+        async fn run(
+            &self,
+            req: RunRequest,
+        ) -> Result<crate::env::RunResult, crate::error::EnvError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(RecordedRequest {
+                    command: req.command,
+                    has_cancellation: req.cancellation.is_some(),
+                });
+            Ok(crate::env::RunResult {
+                stdout: "diff --git a/hello.txt b/hello.txt\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_patch_threads_cancellation_to_git_diff() {
+        let env = RecordingEnvironment::default();
+        let work = tempfile::tempdir().unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD".into()),
+            workdir: work.path().to_path_buf(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: true,
+        };
+
+        let _ = capture_patch(&env, &spec, Some(MiniCancellation::new(rx)))
+            .await
+            .unwrap();
+
+        let requests = env.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].0.starts_with("git diff "));
+        assert!(requests[0].1, "git diff request should carry cancellation");
+    }
+
+    #[tokio::test]
+    async fn check_patch_validity_threads_cancellation_to_git_commands() {
+        let env = RecordingEnvironment::default();
+        let work = tempfile::tempdir().unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let spec = PatchCaptureSpec {
+            base_commit: Some("HEAD".into()),
+            workdir: work.path().to_path_buf(),
+            patch_path: work.path().join("out.patch"),
+            skip_patch_validation: false,
+        };
+
+        check_patch_validity(
+            &env,
+            &spec,
+            "diff --git a/hello.txt b/hello.txt\n",
+            Some(MiniCancellation::new(rx)),
+        )
+        .await
+        .unwrap();
+
+        let requests = env.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|(_, has_cancellation)| *has_cancellation),
+            "every patch validation git command should carry cancellation"
+        );
     }
 
     #[tokio::test]
@@ -596,7 +790,7 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
@@ -622,7 +816,7 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
@@ -648,7 +842,7 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
@@ -673,7 +867,7 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
         assert!(diff.contains("-before"), "{diff}");
@@ -697,7 +891,7 @@ mod tests {
             skip_patch_validation: false,
         };
 
-        let result = capture_patch(&LocalEnvironment::new(), &spec).await;
+        let result = capture_patch(&LocalEnvironment::new(), &spec, None).await;
         assert!(result.is_err(), "{result:?}");
         assert!(!repo.join("injected.txt").exists());
     }
@@ -770,7 +964,7 @@ mod tests {
             skip_patch_validation: false,
         };
         // empty diff string → should fail with PatchEmpty
-        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "", None).await;
         assert!(
             matches!(result, Err(PatchValidationFailure::Empty)),
             "expected PatchEmpty, got {result:?}"
@@ -797,11 +991,11 @@ mod tests {
             patch_path: work.path().join("out.patch"),
             skip_patch_validation: false,
         };
-        let diff = capture_patch(&LocalEnvironment::new(), &spec)
+        let diff = capture_patch(&LocalEnvironment::new(), &spec, None)
             .await
             .unwrap();
 
-        let result = check_patch_validity(&LocalEnvironment::new(), &spec, &diff).await;
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, &diff, None).await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 
@@ -846,7 +1040,7 @@ index 8a1218a..24c5735 100644\n\
             skip_patch_validation: false,
         };
         let result =
-            check_patch_validity(&LocalEnvironment::new(), &spec_validate, stale_diff).await;
+            check_patch_validity(&LocalEnvironment::new(), &spec_validate, stale_diff, None).await;
         assert!(
             matches!(result, Err(PatchValidationFailure::ApplyFailed(_))),
             "expected ApplyFailed, got {result:?}"
@@ -871,7 +1065,7 @@ index 8a1218a..24c5735 100644\n\
             skip_patch_validation: true,
         };
         // Empty diff + skip_patch_validation=true → should succeed
-        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "", None).await;
         assert!(result.is_ok(), "expected Ok with skip flag, got {result:?}");
     }
 
@@ -891,7 +1085,7 @@ index 8a1218a..24c5735 100644\n\
             patch_path: work.path().join("out.patch"),
             skip_patch_validation: false,
         };
-        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "").await;
+        let result = check_patch_validity(&LocalEnvironment::new(), &spec, "", None).await;
         assert!(
             result.is_ok(),
             "expected Ok when base_commit is None, got {result:?}"
@@ -965,6 +1159,85 @@ index 8a1218a..24c5735 100644\n\
         assert!(
             patch_content.is_empty(),
             "patch file should be empty for a no-op submission"
+        );
+    }
+
+    #[tokio::test]
+    async fn mini_run_honors_cancellation_after_submit_before_patch_capture() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = work.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("hello.txt"), "before\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "initial"]);
+        let base_sha = git_stdout(&repo, &["rev-parse", "HEAD"]).trim().to_owned();
+
+        let runs_dir = work.path().join("runs");
+        let patch_path = work.path().join("out.patch");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        {
+            let mut hook = CANCEL_BEFORE_PATCH_CAPTURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = Some(CancelBeforePatchCaptureHook {
+                trajectory_name: "cancel-after-submit".into(),
+                sender: cancel_tx,
+            });
+        }
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let repo_display = repo.display().to_string();
+        let edit_command = if cfg!(windows) {
+            format!("cd /d \"{repo_display}\" && echo after>hello.txt")
+        } else {
+            format!("cd '{repo_display}' && printf 'after\\n' > hello.txt")
+        };
+
+        let args = MiniArgs {
+            task: "edit then submit".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "cancel-after-submit".into(),
+            deterministic_responses: Some(vec![
+                format!("```bash\n{edit_command}\n```"),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: Some(MiniCancellation::new(cancel_rx)),
+            stream_addr: None,
+            patch_capture: Some(PatchCaptureSpec {
+                base_commit: Some(base_sha),
+                workdir: repo,
+                patch_path: patch_path.clone(),
+                skip_patch_validation: true,
+            }),
+        };
+
+        run(args).await.unwrap();
+        {
+            let mut hook = CANCEL_BEFORE_PATCH_CAPTURE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = None;
+        }
+
+        let traj_path = runs_dir.join("cancel-after-submit.traj.json");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        assert_eq!(
+            traj["info"]["exit_reason"].as_str(),
+            Some(crate::trajectory::exit_reason::CANCELLED),
+            "trajectory should preserve forced cancellation:\n{traj_json}"
+        );
+        assert_eq!(traj["info"]["outcome"].as_str(), Some("error"));
+        assert_eq!(traj["info"].get("failure_category"), None);
+        assert!(
+            !runs_dir.join("cancel-after-submit.output.txt").exists(),
+            "cancelled submission should not write final output artifact"
         );
     }
 }

@@ -251,6 +251,9 @@ fn snapshot_renders_cancelling_deadline_state() {
 
     assert_eq!(snap.status, "cancelling");
     assert_eq!(snap.cancelling_seconds_left, Some(15));
+    assert_eq!(snap.completed, 1);
+    assert_eq!(snap.in_flight, 1);
+    assert_eq!(snap.pending, 1);
     assert!(!snap.is_complete);
     let text = rust_swe_agent::run::tail::render_text(&snap);
     assert!(

@@ -61,6 +61,8 @@ struct SweepMeta {
     status: Option<String>,
     abort_reason: Option<String>,
     cancel_deadline_at: Option<DateTime<Utc>>,
+    in_flight_at_cancel: Option<usize>,
+    not_started: Option<usize>,
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
     parallelism: Option<usize>,
@@ -226,12 +228,20 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
     let abort_reason = abort_reason(&meta, cumulative_cost_usd, completed, total);
     let remaining = total.saturating_sub(completed);
     let running = started.is_some() && !is_complete && abort_reason.is_none();
-    let in_flight = if running {
-        remaining.min(meta.parallelism.unwrap_or(DEFAULT_PARALLELISM))
+    let estimated_in_flight = remaining.min(meta.parallelism.unwrap_or(DEFAULT_PARALLELISM));
+    let in_flight = if status_cancelling {
+        meta.in_flight_at_cancel.unwrap_or(estimated_in_flight)
+    } else if running {
+        estimated_in_flight
     } else {
         0
     };
-    let pending = remaining.saturating_sub(in_flight);
+    let pending = if status_cancelling {
+        meta.not_started
+            .unwrap_or_else(|| remaining.saturating_sub(in_flight))
+    } else {
+        remaining.saturating_sub(in_flight)
+    };
     let burn_rate_usd_per_min = burn_rate(records.values(), options, sweep_model);
     let eta_seconds = eta_seconds(started, options.now, completed, total, is_complete);
     let pct_of_cap_used = meta
@@ -361,6 +371,8 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
             .or_else(|| get_str(value, "error"))
             .map(ToOwned::to_owned),
         cancel_deadline_at: get_str(value, "cancel_deadline_at").and_then(parse_ts),
+        in_flight_at_cancel: get_usize(value, "in_flight_at_cancel"),
+        not_started: get_usize(value, "not_started"),
         started_at,
         finished_at,
         parallelism,

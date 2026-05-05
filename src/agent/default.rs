@@ -646,6 +646,7 @@ impl DefaultAgent {
 
     pub fn finalize_cancelled(&mut self) {
         self.trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
+        self.trajectory.info.failure_category = None;
         self.trajectory.info.steps = Some(self.steps);
         self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
         self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
