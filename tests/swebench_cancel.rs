@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rust_swe_agent::Config;
 use rust_swe_agent::run::swebench::{SwebenchArgs, SweepSignal, run, trajectory_path_for_run};
-use rust_swe_agent::trajectory::{Trajectory, outcome};
+use rust_swe_agent::trajectory::{FailureCategory, Trajectory, outcome};
 use tokio::sync::mpsc;
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
@@ -328,6 +328,19 @@ async fn forced_cancel_preserves_partial_command_output_in_trajectory() {
 
     assert!(started.elapsed() < Duration::from_secs(8));
     assert_eq!(results.sweep_status, "cancelled");
+    let row = results
+        .instances
+        .iter()
+        .find(|row| row.instance_id == "cancelled-with-output")
+        .unwrap();
+    assert_eq!(row.exit_reason, "cancelled");
+    assert_eq!(row.failure_category, None);
+    assert!(
+        !results
+            .failures_by_category
+            .contains_key(&FailureCategory::Unknown),
+        "cancelled tasks must not be counted as unknown failures"
+    );
     let traj: Trajectory = serde_json::from_str(
         &std::fs::read_to_string(trajectory_path_for_run(&output, "cancelled-with-output", 1))
             .unwrap(),

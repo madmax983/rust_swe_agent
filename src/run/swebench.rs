@@ -409,6 +409,31 @@ pub struct ModelManifest {
 #[cfg(test)]
 static PANIC_AFTER_INITIAL_MANIFEST_WRITE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+struct SignalBeforeDispatchHook {
+    output_dir: PathBuf,
+    sender: mpsc::UnboundedSender<SweepSignal>,
+}
+
+#[cfg(test)]
+static SIGNAL_BEFORE_NEXT_DISPATCH: std::sync::Mutex<Option<SignalBeforeDispatchHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn send_signal_before_next_dispatch_if_requested(output_dir: &Path) {
+    let mut hook = SIGNAL_BEFORE_NEXT_DISPATCH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if hook
+        .as_ref()
+        .is_some_and(|hook| hook.output_dir == output_dir)
+    {
+        if let Some(hook) = hook.take() {
+            let _ = hook.sender.send(SweepSignal::Interrupt);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeManifest {
     pub started_at_utc: String,
@@ -1442,54 +1467,25 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 }
             }
             SweepEvent::Signal(Some(signal)) => {
-                if cancellation.is_none() {
-                    let cancel_deadline = Duration::from_secs(args.cancel_deadline_secs);
-                    let cancelled_at = chrono::Utc::now();
-                    let deadline_at = cancelled_at
-                        + chrono::Duration::from_std(cancel_deadline).unwrap_or_default();
-                    let snapshot = CancellationSnapshot {
-                        cancelled_at: cancelled_at.to_rfc3339(),
-                        deadline_at: deadline_at.to_rfc3339(),
-                        deadline: tokio::time::Instant::now() + cancel_deadline,
-                        completed: results.len(),
-                        in_flight_at_cancel: in_flight,
-                        not_started: pending.len(),
-                        exit_code: CANCEL_EXIT_CODE_GRACEFUL,
-                    };
-                    tracing::warn!(
-                        in_flight = snapshot.in_flight_at_cancel,
-                        not_started = snapshot.not_started,
-                        "cancellation requested — stopping new task launches"
-                    );
-                    let mut partial = initial.clone();
-                    partial.sweep_status = SWEEP_STATUS_CANCELLING.into();
-                    partial.cancelled_at = Some(snapshot.cancelled_at.clone());
-                    partial.cancel_deadline_at = Some(snapshot.deadline_at.clone());
-                    partial.cancel_exit_code = Some(snapshot.exit_code);
-                    partial.completed = snapshot.completed;
-                    partial.in_flight_at_cancel = snapshot.in_flight_at_cancel;
-                    partial.not_started = snapshot.not_started;
-                    partial.submitted = submitted;
-                    partial.skipped = skipped;
-                    partial.errored = errored;
-                    partial.budget_halted = budget_halted;
-                    partial.instances = aggregate_run_results(&results, args.reruns);
-                    write_sweep_results_atomic(&summary_path, &partial)?;
-                    cancellation = Some(snapshot);
-                    if args.cancel_deadline_secs == 0 {
-                        force_cancel_sent = true;
-                        let _ = force_cancel_tx.send(true);
-                    }
-                } else if (signal == SweepSignal::Interrupt || signal == SweepSignal::Terminate)
-                    && !force_cancel_sent
-                {
-                    if let Some(cancel) = cancellation.as_mut() {
-                        cancel.exit_code = CANCEL_EXIT_CODE_ESCALATED;
-                    }
-                    force_cancel_sent = true;
-                    let _ = force_cancel_tx.send(true);
-                    tracing::warn!("second interrupt received — forcing in-flight cancellation");
-                }
+                apply_sweep_signal(
+                    signal,
+                    CancellationSignalContext {
+                        initial: &initial,
+                        summary_path: &summary_path,
+                        results: &results,
+                        reruns: args.reruns,
+                        cancel_deadline_secs: args.cancel_deadline_secs,
+                        in_flight,
+                        pending_len: pending.len(),
+                        submitted,
+                        skipped,
+                        errored,
+                        budget_halted,
+                    },
+                    &mut cancellation,
+                    &mut force_cancel_sent,
+                    &force_cancel_tx,
+                )?;
             }
             SweepEvent::Signal(None) => {
                 signal_rx_closed = true;
@@ -1519,21 +1515,48 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 None => 0,
             };
             let effective_parallelism = parallelism.saturating_sub(aimd_suppressed_count as usize);
-            if halted {
-                while let Some(inst) = pending.pop_front() {
-                    results.push(RunSlotResult::new(
-                        inst.run_index,
-                        budget_halt_result(&inst.inst.instance_id),
-                    ));
-                    budget_halted += 1;
-                }
-            } else if in_flight < effective_parallelism {
-                if let Some(inst) = pending.pop_front() {
-                    spawn_one(inst, &mut set, governor_arc.clone());
-                    in_flight += 1;
-                    if let Some(g) = &governor_arc {
-                        g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
-                            .await;
+            #[cfg(test)]
+            send_signal_before_next_dispatch_if_requested(&args.output_dir);
+            if let Some(signal) =
+                take_pending_cancellation_signal(&mut signal_rx, &mut signal_rx_closed)
+            {
+                apply_sweep_signal(
+                    signal,
+                    CancellationSignalContext {
+                        initial: &initial,
+                        summary_path: &summary_path,
+                        results: &results,
+                        reruns: args.reruns,
+                        cancel_deadline_secs: args.cancel_deadline_secs,
+                        in_flight,
+                        pending_len: pending.len(),
+                        submitted,
+                        skipped,
+                        errored,
+                        budget_halted,
+                    },
+                    &mut cancellation,
+                    &mut force_cancel_sent,
+                    &force_cancel_tx,
+                )?;
+            }
+            if cancellation.is_none() {
+                if halted {
+                    while let Some(inst) = pending.pop_front() {
+                        results.push(RunSlotResult::new(
+                            inst.run_index,
+                            budget_halt_result(&inst.inst.instance_id),
+                        ));
+                        budget_halted += 1;
+                    }
+                } else if in_flight < effective_parallelism {
+                    if let Some(inst) = pending.pop_front() {
+                        spawn_one(inst, &mut set, governor_arc.clone());
+                        in_flight += 1;
+                        if let Some(g) = &governor_arc {
+                            g.update_peak_concurrent(u32::try_from(in_flight).unwrap_or(u32::MAX))
+                                .await;
+                        }
                     }
                 }
             }
@@ -2424,6 +2447,107 @@ struct CancellationSnapshot {
     exit_code: i32,
 }
 
+#[derive(Clone, Copy)]
+struct CancellationSignalContext<'a> {
+    initial: &'a SweepResults,
+    summary_path: &'a Path,
+    results: &'a [RunSlotResult],
+    reruns: u32,
+    cancel_deadline_secs: u64,
+    in_flight: usize,
+    pending_len: usize,
+    submitted: usize,
+    skipped: usize,
+    errored: usize,
+    budget_halted: usize,
+}
+
+fn take_pending_cancellation_signal(
+    signal_rx: &mut Option<mpsc::UnboundedReceiver<SweepSignal>>,
+    signal_rx_closed: &mut bool,
+) -> Option<SweepSignal> {
+    if *signal_rx_closed {
+        return None;
+    }
+    let Some(rx) = signal_rx.as_mut() else {
+        *signal_rx_closed = true;
+        return None;
+    };
+    match rx.try_recv() {
+        Ok(signal) => Some(signal),
+        Err(mpsc::error::TryRecvError::Empty) => None,
+        Err(mpsc::error::TryRecvError::Disconnected) => {
+            *signal_rx_closed = true;
+            None
+        }
+    }
+}
+
+fn begin_sweep_cancellation(
+    ctx: CancellationSignalContext<'_>,
+) -> Result<CancellationSnapshot, Error> {
+    let cancel_deadline = Duration::from_secs(ctx.cancel_deadline_secs);
+    let cancelled_at = chrono::Utc::now();
+    let deadline_at =
+        cancelled_at + chrono::Duration::from_std(cancel_deadline).unwrap_or_default();
+    let snapshot = CancellationSnapshot {
+        cancelled_at: cancelled_at.to_rfc3339(),
+        deadline_at: deadline_at.to_rfc3339(),
+        deadline: tokio::time::Instant::now() + cancel_deadline,
+        completed: ctx.results.len(),
+        in_flight_at_cancel: ctx.in_flight,
+        not_started: ctx.pending_len,
+        exit_code: CANCEL_EXIT_CODE_GRACEFUL,
+    };
+    tracing::warn!(
+        in_flight = snapshot.in_flight_at_cancel,
+        not_started = snapshot.not_started,
+        "cancellation requested — stopping new task launches"
+    );
+    let mut partial = ctx.initial.clone();
+    partial.sweep_status = SWEEP_STATUS_CANCELLING.into();
+    partial.cancelled_at = Some(snapshot.cancelled_at.clone());
+    partial.cancel_deadline_at = Some(snapshot.deadline_at.clone());
+    partial.cancel_exit_code = Some(snapshot.exit_code);
+    partial.completed = snapshot.completed;
+    partial.in_flight_at_cancel = snapshot.in_flight_at_cancel;
+    partial.not_started = snapshot.not_started;
+    partial.submitted = ctx.submitted;
+    partial.skipped = ctx.skipped;
+    partial.errored = ctx.errored;
+    partial.budget_halted = ctx.budget_halted;
+    partial.instances = aggregate_run_results(ctx.results, ctx.reruns);
+    write_sweep_results_atomic(ctx.summary_path, &partial)?;
+    Ok(snapshot)
+}
+
+fn apply_sweep_signal(
+    signal: SweepSignal,
+    ctx: CancellationSignalContext<'_>,
+    cancellation: &mut Option<CancellationSnapshot>,
+    force_cancel_sent: &mut bool,
+    force_cancel_tx: &watch::Sender<bool>,
+) -> Result<(), Error> {
+    if cancellation.is_none() {
+        let cancel_deadline_secs = ctx.cancel_deadline_secs;
+        *cancellation = Some(begin_sweep_cancellation(ctx)?);
+        if cancel_deadline_secs == 0 {
+            *force_cancel_sent = true;
+            let _ = force_cancel_tx.send(true);
+        }
+    } else if matches!(signal, SweepSignal::Interrupt | SweepSignal::Terminate)
+        && !*force_cancel_sent
+    {
+        if let Some(cancel) = cancellation.as_mut() {
+            cancel.exit_code = CANCEL_EXIT_CODE_ESCALATED;
+        }
+        *force_cancel_sent = true;
+        let _ = force_cancel_tx.send(true);
+        tracing::warn!("second interrupt received — forcing in-flight cancellation");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct RunSlotResult {
     run_index: u32,
@@ -3124,6 +3248,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                     "step_limit" => Some(FailureCategory::StepLimit),
                     "cost_limit" => Some(FailureCategory::CostLimit),
                     "budget_exhausted" => Some(FailureCategory::BudgetExhausted),
+                    exit_reason::CANCELLED => None,
                     exit_reason::WALLCLOCK_TIMEOUT => Some(FailureCategory::WallclockTimeout),
                     _ => run_err
                         .as_ref()
@@ -3629,6 +3754,132 @@ mod tests {
             tests_run_before_submit: tests_run,
             last_tests_passed: tests_run.then_some(true),
         }
+    }
+
+    fn init_test_repo(dir: &Path) {
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@test"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    }
+
+    fn test_config_with_workdir(dir: &Path) -> Config {
+        let workdir = dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        Config::from_toml_str(&format!("[environment]\nworkdir = \"{workdir}\"\n")).unwrap()
+    }
+
+    fn write_test_dataset(path: &Path, ids: &[&str]) {
+        let mut dataset = String::new();
+        for id in ids {
+            let _ = writeln!(
+                dataset,
+                "{{\"instance_id\":\"{id}\",\"problem_statement\":\"noop\"}}"
+            );
+        }
+        std::fs::write(path, dataset).unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_cancel_signal_stops_dispatch_after_joined_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+        let dataset = tmp.path().join("dataset.jsonl");
+        write_test_dataset(&dataset, &["first", "should-not-start"]);
+        let output = tmp.path().join("out");
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+        {
+            let mut hook = SIGNAL_BEFORE_NEXT_DISPATCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = Some(SignalBeforeDispatchHook {
+                output_dir: output.clone(),
+                sender: signal_tx,
+            });
+        }
+
+        let args = SwebenchArgs {
+            dataset_path: dataset,
+            output_dir: output.clone(),
+            parallel: 1,
+            reruns: 1,
+            config: test_config_with_workdir(&repo),
+            resume: false,
+            cost_limit_usd: None,
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfresh-run\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: Some(1),
+            max_input_tpm: None,
+            cancel_deadline_secs: 0,
+            install_os_signal_handlers: false,
+            cancellation_signals: Some(signal_rx),
+            github_pr: None,
+        };
+
+        let results = tokio::time::timeout(Duration::from_secs(8), run(args))
+            .await
+            .unwrap()
+            .unwrap();
+        {
+            let mut hook = SIGNAL_BEFORE_NEXT_DISPATCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = None;
+        }
+
+        assert_eq!(results.sweep_status, SWEEP_STATUS_CANCELLED);
+        assert_eq!(results.cancel_exit_code, Some(CANCEL_EXIT_CODE_GRACEFUL));
+        assert_eq!(results.submitted, 1);
+        assert_eq!(results.completed, 1);
+        assert_eq!(results.in_flight_at_cancel, 0);
+        assert_eq!(results.not_started, 1);
+        assert!(trajectory_path_for_run(&output, "first", 1).exists());
+        assert!(
+            !trajectory_path_for_run(&output, "should-not-start", 1).exists(),
+            "queued cancellation must stop the next pending task before it starts"
+        );
     }
 
     #[tokio::test]
