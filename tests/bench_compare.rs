@@ -1190,10 +1190,10 @@ completion_tokens: 300\n\
 cache_hit_rate: 0.0000\n\
 total_cost_usd: 0.1500\n\
 cost_per_resolved_usd: NaN\n\
-axis,bucket,n,resolved,resolved_rate\n\
-repo,unknown,2,0,0.0000\n\
-failure_category,model_api,1,0,0.0000\n\
-failure_category,none,1,0,0.0000\n";
+axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd\n\
+repo,unknown,2,0,0.0000,NaN\n\
+failure_category,model_api,1,0,0.0000,NaN\n\
+failure_category,none,1,0,0.0000,NaN\n";
     assert_eq!(stdout, expected);
 
     let eval_path = sweep_dir.path().join("evaluation.json");
@@ -2177,5 +2177,83 @@ fn frontier_emits_ascii_chart_in_text_mode() {
     assert!(
         stdout.contains("frontier") || stdout.contains("cost_per_resolved") || stdout.contains("resolved_rate"),
         "expected frontier output in text mode; got:\n{stdout}"
+    );
+}
+
+// ─── issue #51 AC#6 – budget-exhausted exclusion flag ───────────────────────
+
+#[test]
+fn evaluate_notes_budget_exhausted_exclusion_in_output() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut normal = submitted("django__django-1");
+    normal.cost_usd = Some(2.0);
+    let mut budgeted = errored("django__django-2", FailureCategory::BudgetExhausted);
+    budgeted.cost_usd = Some(5.0);
+    write_results(sweep_dir.path(), vec![normal, budgeted]);
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("budget_exhausted_excluded: 1"),
+        "expected budget_exhausted_excluded note in output; got:\n{stdout}"
+    );
+}
+
+// ─── issue #51 AC#5 – cost_per_resolved_usd per breakdown slice ──────────────
+
+#[test]
+fn evaluate_breakdown_csv_includes_cost_per_resolved_usd_column() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![submitted("django__django-1"), submitted("psf__requests-2")],
+    );
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "repo",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd"),
+        "expected cost_per_resolved_usd column in breakdown header; got:\n{stdout}"
+    );
+    // none backend → nothing resolved → all buckets are NaN
+    assert!(
+        stdout.contains("NaN"),
+        "expected NaN for zero-resolved bucket; got:\n{stdout}"
     );
 }

@@ -145,11 +145,16 @@ pub struct EvaluationSummary {
     pub total_cost_usd: f64,
     pub cache_hit_rate: f64,
     /// Total cost divided by resolved count. `f64::NAN` when `resolved == 0`.
+    /// Computed on budget-respecting runs only when budget-exhausted instances
+    /// are present in the sweep.
     pub cost_per_resolved_usd: f64,
     /// 95% bootstrap CI lower bound. `f64::NAN` when `resolved == 0`.
     pub cost_per_resolved_ci95_lower: f64,
     /// 95% bootstrap CI upper bound. `f64::NAN` when `resolved == 0`.
     pub cost_per_resolved_ci95_upper: f64,
+    /// Instances excluded from `cost_per_resolved_usd` because they were
+    /// killed by the per-task budget cap. Zero when no budget is active.
+    pub budget_exhausted_excluded: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -159,6 +164,10 @@ pub struct BreakdownBucket {
     pub n: usize,
     pub resolved: usize,
     pub resolved_rate: f64,
+    /// `total_cost_usd / resolved` for this bucket, excluding budget-exhausted
+    /// instances. `None` when no instance in this bucket resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_resolved_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -235,7 +244,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     };
     let mut eval = run_output.eval;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
-    eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown);
+    eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown, model_name.as_deref());
     if args.cost_attribution {
         let run_slots = load_run_slots(&args.sweep_dir, &results)?;
         eval.cost_attribution = build_cost_attribution_from_run_slots(
@@ -283,6 +292,7 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
             cost_per_resolved_usd: f64::NAN,
             cost_per_resolved_ci95_lower: f64::NAN,
             cost_per_resolved_ci95_upper: f64::NAN,
+            budget_exhausted_excluded: 0,
         };
     }
     let tokens = results
@@ -321,18 +331,28 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
         .count();
     let pass_at_k = eval.instances.iter().filter(|row| row.resolved).count();
 
-    let cost_per_resolved_usd = if resolved == 0 {
-        f64::NAN
-    } else {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            total_cost_usd / resolved as f64
-        }
-    };
+    // Exclude budget-exhausted instances from cost_per_resolved_usd so we
+    // never silently mix capped and uncapped runs in the efficiency metric.
+    let budget_exhausted_excluded = eval
+        .instances
+        .iter()
+        .filter(|row| {
+            results
+                .get(&row.instance_id)
+                .and_then(|r| r.failure_category)
+                == Some(FailureCategory::BudgetExhausted)
+        })
+        .count();
 
     let per_instance_samples: Vec<(f64, bool)> = eval
         .instances
         .iter()
+        .filter(|row| {
+            results
+                .get(&row.instance_id)
+                .and_then(|r| r.failure_category)
+                != Some(FailureCategory::BudgetExhausted)
+        })
         .map(|row| {
             let cost = results
                 .get(&row.instance_id)
@@ -341,6 +361,16 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
             (cost, row.resolved)
         })
         .collect();
+
+    let br_resolved = per_instance_samples.iter().filter(|(_, r)| *r).count();
+    let cost_per_resolved_usd = if br_resolved == 0 {
+        f64::NAN
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            per_instance_samples.iter().map(|(c, _)| c).sum::<f64>() / br_resolved as f64
+        }
+    };
     let (cost_per_resolved_ci95_lower, cost_per_resolved_ci95_upper) =
         bootstrap_cost_per_resolved_ci95(&per_instance_samples);
 
@@ -359,6 +389,7 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
         cost_per_resolved_usd,
         cost_per_resolved_ci95_lower,
         cost_per_resolved_ci95_upper,
+        budget_exhausted_excluded,
     }
 }
 
@@ -904,10 +935,12 @@ fn build_breakdown(
     evals: &[InstanceEvaluation],
     results: &HashMap<String, InstanceResult>,
     selection: &BreakdownSelection,
+    model_name: Option<&str>,
 ) -> Vec<BreakdownBucket> {
     let mut out = Vec::with_capacity(selection.axes.len());
     for axis in &selection.axes {
-        let mut buckets: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        // (n, resolved, budget_respecting_cost, budget_respecting_resolved)
+        let mut buckets: BTreeMap<String, (usize, usize, f64, usize)> = BTreeMap::new();
         let mut unknown_repo = 0usize;
         for row in evals {
             let bucket_value = match axis {
@@ -931,10 +964,24 @@ fn build_breakdown(
                     }
                 }
             };
-            let entry = buckets.entry(bucket_value).or_insert((0, 0));
+            let is_budget_exhausted = results
+                .get(&row.instance_id)
+                .and_then(|r| r.failure_category)
+                == Some(FailureCategory::BudgetExhausted);
+            let entry = buckets.entry(bucket_value).or_insert((0, 0, 0.0, 0));
             entry.0 += 1;
             if row.resolved {
                 entry.1 += 1;
+            }
+            if !is_budget_exhausted {
+                let cost = results
+                    .get(&row.instance_id)
+                    .and_then(|r| r.effective_cost_usd(model_name))
+                    .unwrap_or(0.0);
+                entry.2 += cost;
+                if row.resolved {
+                    entry.3 += 1;
+                }
             }
         }
         if matches!(axis, BreakdownAxis::Repo) && unknown_repo > 0 {
@@ -945,12 +992,21 @@ fn build_breakdown(
         }
         let mut rows: Vec<BreakdownBucket> = buckets
             .into_iter()
-            .map(|(bucket_value, (n, resolved))| BreakdownBucket {
-                bucket_axis: *axis,
-                bucket_value,
-                n,
-                resolved,
-                resolved_rate: pct(resolved, n),
+            .map(|(bucket_value, (n, resolved, br_cost, br_resolved))| {
+                #[allow(clippy::cast_precision_loss)]
+                let cost_per_resolved_usd = if br_resolved == 0 {
+                    None
+                } else {
+                    Some(br_cost / br_resolved as f64)
+                };
+                BreakdownBucket {
+                    bucket_axis: *axis,
+                    bucket_value,
+                    n,
+                    resolved,
+                    resolved_rate: pct(resolved, n),
+                    cost_per_resolved_usd,
+                }
             })
             .collect();
         rows.sort_by(|a, b| {
@@ -1149,15 +1205,19 @@ fn build_cost_attribution_report(
 
 #[must_use]
 pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
-    let mut out = String::from("axis,bucket,n,resolved,resolved_rate\n");
+    let mut out = String::from("axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd\n");
     for row in rows {
         let axis = match row.bucket_axis {
             BreakdownAxis::Repo => "repo",
             BreakdownAxis::FailureCategory => "failure_category",
         };
+        let cpr = match row.cost_per_resolved_usd {
+            Some(v) => format!("{v:.4}"),
+            None => "NaN".to_owned(),
+        };
         let _ = writeln!(
             out,
-            "{axis},{},{},{},{:.4}",
+            "{axis},{},{},{},{:.4},{cpr}",
             row.bucket_value, row.n, row.resolved, row.resolved_rate
         );
     }
@@ -1212,6 +1272,13 @@ pub fn render_summary_table(summary: &EvaluationSummary) -> String {
             out,
             "cost_per_resolved_ci95: [{:.4}, {:.4}]",
             summary.cost_per_resolved_ci95_lower, summary.cost_per_resolved_ci95_upper
+        );
+    }
+    if summary.budget_exhausted_excluded > 0 {
+        let _ = writeln!(
+            out,
+            "budget_exhausted_excluded: {} (cost_per_resolved computed on budget-respecting runs only)",
+            summary.budget_exhausted_excluded
         );
     }
     out
@@ -1464,9 +1531,68 @@ mod tests {
             &BreakdownSelection {
                 axes: vec![BreakdownAxis::FailureCategory],
             },
+            None,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].bucket_value, "none");
+    }
+
+    #[test]
+    fn breakdown_bucket_cost_per_resolved_usd_per_slice() {
+        let mut django_res = submitted("django__django-1");
+        django_res.cost_usd = Some(3.0);
+        let mut requests_unres = submitted("psf__requests-2");
+        requests_unres.cost_usd = Some(2.0);
+        let results = HashMap::from([
+            ("django__django-1".to_string(), django_res),
+            ("psf__requests-2".to_string(), requests_unres),
+        ]);
+        let evals = vec![
+            eval_row("django__django-1", true),
+            eval_row("psf__requests-2", false),
+        ];
+        let rows = build_breakdown(
+            &evals,
+            &results,
+            &BreakdownSelection {
+                axes: vec![BreakdownAxis::Repo],
+            },
+            None,
+        );
+        let django = rows.iter().find(|r| r.bucket_value == "django/django").unwrap();
+        assert_eq!(django.cost_per_resolved_usd, Some(3.0));
+        let requests = rows.iter().find(|r| r.bucket_value == "psf/requests").unwrap();
+        assert_eq!(requests.cost_per_resolved_usd, None);
+    }
+
+    #[test]
+    fn budget_exhausted_instances_excluded_from_cost_per_resolved() {
+        let mut normal = submitted("a");
+        normal.cost_usd = Some(2.0);
+        let mut budgeted = submitted("b");
+        budgeted.cost_usd = Some(5.0);
+        budgeted.failure_category = Some(FailureCategory::BudgetExhausted);
+        let results = HashMap::from([
+            ("a".to_string(), normal),
+            ("b".to_string(), budgeted),
+        ]);
+        let eval = EvaluationResults {
+            instances: vec![
+                eval_row("a", true),
+                eval_row("b", false),
+            ],
+            behavioral: BehavioralMetrics::default(),
+            breakdown: vec![],
+            cost_attribution: vec![],
+        };
+        let summary = summarize_with_model(&eval, &results, None);
+        assert_eq!(summary.budget_exhausted_excluded, 1);
+        // only "a" is budget-respecting and resolved: cost_per_resolved = $2.0 / 1
+        assert!(
+            (summary.cost_per_resolved_usd - 2.0).abs() < 1e-9,
+            "expected cost_per_resolved_usd=2.0, got {}",
+            summary.cost_per_resolved_usd
+        );
     }
 
     #[test]
