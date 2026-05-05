@@ -1470,7 +1470,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         force_cancel_sent = true;
                         let _ = force_cancel_tx.send(true);
                     }
-                } else if signal == SweepSignal::Interrupt && !force_cancel_sent {
+                } else if (signal == SweepSignal::Interrupt || signal == SweepSignal::Terminate) && !force_cancel_sent {
                     if let Some(cancel) = cancellation.as_mut() {
                         cancel.exit_code = CANCEL_EXIT_CODE_ESCALATED;
                     }
