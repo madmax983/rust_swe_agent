@@ -23,38 +23,64 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 ))]
 pub mod export;
 
+/// Contains constants describing the final macro-outcome of an agent run.
+///
+/// These values provide a coarse summary useful for high-level telemetry and metrics.
 pub mod outcome {
+    /// Indicates the agent explicitly decided it successfully finished the task.
     pub const SUBMITTED: &str = "submitted";
+    /// Indicates the agent exhausted its maximum allowed steps without submitting.
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
+    /// Indicates the agent crashed or failed due to an unrecoverable system error.
     pub const ERROR: &str = "error";
+    /// Indicates the agent's run was halted because its allocated financial or token budget ran out.
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
 }
 
+/// Contains constants for specific technical exit reasons outside of normal loop termination.
+///
+/// These values provide insight into *why* an agent run was forcefully halted.
 pub mod exit_reason {
+    /// Indicates the agent took too much real-world time to complete its task.
     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 
 /// Closed set of non-success terminal failure modes for sweeps.
+///
+/// This enum categorizes failures to help developers understand which part of the
+/// system broke down, be it the environment, the model, or the agent's internal logic.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCategory {
+    /// The agent failed to launch because the underlying execution environment (like Docker) failed to initialize.
     EnvSetup,
+    /// Communication with the Language Model API failed (e.g., rate limits, network timeouts).
     ModelApi,
+    /// The Language Model produced an output that the agent could not parse into valid tool calls or commands.
     ModelParse,
+    /// The agent hit the hard limit for the number of allowed steps without completing the task.
     StepLimit,
+    /// The financial or token cost of the run exceeded the configured maximum.
     CostLimit,
     /// Per-task USD ceiling was reached mid-loop. The harness terminated the
     /// agent; any patch accumulated before the cap fired is preserved.
     BudgetExhausted,
+    /// The run exceeded the maximum allowed real-world time.
     WallclockTimeout,
+    /// The agent encountered a fatal error within its own control logic or harness.
     AgentInternal,
     /// Patch was captured but `git apply --check` rejected it at capture time.
     PatchApplyInvalid,
     /// Agent submitted but the captured diff was empty (zero bytes).
     PatchEmpty,
+    /// The failure did not map to any known category. This is the catch-all for unexpected crashes.
     Unknown,
 }
 
+/// Default list of test commands the agent recognizes across multiple ecosystems.
+///
+/// If an agent issues one of these commands during a run, it is logged in the trajectory
+/// so developers can measure if the agent verified its own code before submitting.
 pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "pytest",
     "python -m pytest",
@@ -74,6 +100,9 @@ pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "./gradlew test",
 ];
 
+/// An executable pattern used to match a portion of an agent's shell command to identify if it is a test invocation.
+///
+/// Internally this can be a simple literal prefix match, or a regular expression.
 #[derive(Debug, Clone)]
 pub struct TestCommandPattern {
     source: String,
@@ -113,14 +142,37 @@ impl TestCommandPattern {
     }
 }
 
+/// Represents a single recorded instance where the agent ran a test suite.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TestInvocation {
+    /// The step number in the agent's main loop where the test was executed.
     pub step_index: u32,
+    /// The raw shell command executed by the agent.
     pub command: String,
+    /// The exit code of the shell command. Usually `0` means the tests passed.
     pub exit_code: i32,
+    /// The specific pattern (e.g., `"cargo test"`) that triggered the recording of this invocation.
     pub matched_pattern: String,
 }
 
+/// Compiles a final list of `TestCommandPattern` matchers based on configuration.
+///
+/// This takes the hardcoded [`DEFAULT_TEST_COMMAND_PATTERNS`] and allows users to append
+/// custom regex patterns or completely replace the default list.
+///
+/// # Examples
+///
+/// ```
+/// use rust_swe_agent::trajectory::{effective_test_command_patterns, TestCommandPattern};
+///
+/// // Keep defaults and add a custom regex for a proprietary testing framework.
+/// let patterns = effective_test_command_patterns(&["^bazel test".to_string()], false).unwrap();
+/// assert!(patterns.len() > 16);
+///
+/// // Discard defaults and strictly use only one regex
+/// let custom = effective_test_command_patterns(&["^npx jest".to_string()], true).unwrap();
+/// assert_eq!(custom.len(), 1);
+/// ```
 pub fn effective_test_command_patterns(
     extra_patterns: &[String],
     replace_defaults: bool,
@@ -139,6 +191,26 @@ pub fn effective_test_command_patterns(
     Ok(patterns)
 }
 
+/// Parses a shell command to see if it invokes a known testing framework.
+///
+/// It does this by evaluating the command (handling shell logic like `&&`, `;`, `|`)
+/// and checking if any segment matches a [`TestCommandPattern`].
+///
+/// # Examples
+///
+/// ```
+/// use rust_swe_agent::trajectory::{detect_test_command, effective_test_command_patterns};
+///
+/// let patterns = effective_test_command_patterns(&[], false).unwrap();
+///
+/// // Detects basic commands
+/// let matched = detect_test_command("cargo test --all", &patterns);
+/// assert_eq!(matched.as_deref(), Some("cargo test"));
+///
+/// // Detects chained commands
+/// let matched_chained = detect_test_command("echo hello && pytest tests/", &patterns);
+/// assert_eq!(matched_chained.as_deref(), Some("pytest"));
+/// ```
 #[must_use]
 pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Option<String> {
     let mut single_quoted = false;
@@ -248,17 +320,42 @@ fn is_command_boundary(ch: char) -> bool {
     ch.is_whitespace() || matches!(ch, ')' | ';' | '&' | '|' | '<' | '>')
 }
 
+/// Represents the cumulative number of tokens consumed by the Language Model during the run.
+///
+/// Models with Context Caching (like Anthropic's Claude) differentiate between newly evaluated
+/// tokens, read tokens from cache, and newly cached tokens.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
+    /// The number of new, uncached tokens passed in the prompt that the model had to evaluate.
     pub prompt_tokens: u64,
+    /// The number of prompt tokens that the model was able to read instantly from its context cache.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub cache_read_tokens: u64,
+    /// The number of prompt tokens that the model processed and stored into its context cache for future use.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub cache_creation_tokens: u64,
+    /// The number of tokens generated by the model as a response.
     pub completion_tokens: u64,
 }
 
 impl TokenUsage {
+    /// Computes the absolute total number of prompt tokens processed, combining uncached, cached, and creation tokens.
+    ///
+    /// Uses saturating addition to prevent overflow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_swe_agent::trajectory::TokenUsage;
+    ///
+    /// let usage = TokenUsage {
+    ///     prompt_tokens: 100,
+    ///     cache_read_tokens: 50,
+    ///     cache_creation_tokens: 10,
+    ///     completion_tokens: 0,
+    /// };
+    /// assert_eq!(usage.total_prompt_tokens(), 160);
+    /// ```
     #[must_use]
     pub fn total_prompt_tokens(&self) -> u64 {
         self.prompt_tokens
@@ -266,6 +363,19 @@ impl TokenUsage {
             .saturating_add(self.cache_creation_tokens)
     }
 
+    /// Checks if any form of context caching was utilized during the run.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_swe_agent::trajectory::TokenUsage;
+    ///
+    /// let usage = TokenUsage {
+    ///     cache_read_tokens: 5,
+    ///     ..Default::default()
+    /// };
+    /// assert!(usage.has_cached_prompt_tokens());
+    /// ```
     #[must_use]
     pub fn has_cached_prompt_tokens(&self) -> bool {
         self.cache_read_tokens > 0 || self.cache_creation_tokens > 0
@@ -277,46 +387,74 @@ const fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+/// Contains metadata and summary statistics for an entire agent run.
+///
+/// This serves as the "header" of the trajectory file. Most fields are `Option`
+/// because the trajectory format is append-only—if an agent crashes early, some metrics
+/// (like `duration_secs`) may not be computable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrajectoryInfo {
+    /// A description of the issue or feature the agent was asked to solve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// The specific LLM model identifier used (e.g., `"claude-3-5-sonnet-20241022"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
+    /// System-level technical reason for termination (see [`exit_reason`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_reason: Option<String>,
+    /// Categorized termination cause, making debugging sweeps easier (see [`FailureCategory`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_category: Option<FailureCategory>,
+    /// The high-level result of the run (see [`outcome`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// The final patch or summary the agent provided when it submitted the task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_output: Option<String>,
+    /// The financial cost of API requests made during the run, in USD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+    /// Cumulative token usage metrics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
+    /// How long the agent loop ran before terminating, in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
+    /// Total number of action loops the agent completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
+    /// A log of all known test commands the agent executed during its run.
     #[serde(default)]
     pub test_invocations: Vec<TestInvocation>,
+    /// Whether the agent successfully executed a test command before calling submit.
     #[serde(default)]
     pub tests_run_before_submit: bool,
+    /// Indicates whether the *last* executed test command returned a successful (`0`) exit code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    /// The wall-clock time the run started, formatted as an ISO 8601 string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    /// The wall-clock time the run concluded, formatted as an ISO 8601 string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+    /// A catch-all map for arbitrary data we want to preserve in the JSON but don't explicitly parse.
     #[serde(flatten, default)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// A serialized version of a message exchanged during the agent run.
+///
+/// Unlike [`crate::model::Message`], this struct is exclusively for serialization and
+/// ensures strict JSON compatibility with Python trajectory readers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageRecord {
+    /// Who sent the message (e.g., `"system"`, `"user"`, `"assistant"`).
     pub role: String,
+    /// The actual text payload.
     pub content: String,
+    /// Optional metadata related to this message, like tool call parsing.
     #[serde(default, skip_serializing_if = "extra_is_empty")]
     pub extra: MessageExtra,
 }
@@ -329,10 +467,19 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.other.is_empty()
 }
 
+/// Represents the complete historical log of an agent run.
+///
+/// A Trajectory contains the initial setup, every message exchanged with the model,
+/// all environment outputs (commands, file changes), and the final outcome metrics.
+/// It is fundamentally designed to be serialized to disk so runs can be reviewed,
+/// evaluated, or replayed later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trajectory {
+    /// The specific schema version string (e.g. `"mini-swe-agent-1.1"`).
     pub trajectory_format: String,
+    /// Run metadata and end-of-run summaries.
     pub info: TrajectoryInfo,
+    /// The chronologically ordered log of LLM interactions and tool usages.
     pub messages: Vec<MessageRecord>,
 }
 
@@ -347,10 +494,23 @@ impl Default for Trajectory {
 }
 
 impl Trajectory {
+    /// Creates a new, blank trajectory with the correct `trajectory_format` pre-populated.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Appends a new message to the trajectory log.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use rust_swe_agent::model::Message;
+    ///
+    /// let mut t = Trajectory::new();
+    /// t.record_message(&Message::system("You are a helpful assistant."));
+    /// assert_eq!(t.messages.len(), 1);
+    /// ```
     pub fn record_message(&mut self, m: &Message) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -359,6 +519,10 @@ impl Trajectory {
         });
     }
 
+    /// Appends a message while forcibly attaching specific metadata.
+    ///
+    /// This is useful when the agent harness wants to inject metrics (like cost or actions taken)
+    /// that aren't natively attached to the [`Message`] object but need to exist in the trajectory log.
     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -367,12 +531,14 @@ impl Trajectory {
         });
     }
 
+    /// Serializes the entire trajectory to formatted JSON and writes it to disk.
     pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
         let s = serde_json::to_string_pretty(self)?;
         std::fs::write(path, s)?;
         Ok(())
     }
 
+    /// Serializes the trajectory to a formatted JSON string in memory.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
