@@ -337,8 +337,18 @@ async fn push_patch_branch(
     token: &str,
     deadline: tokio::time::Instant,
 ) -> Result<(), Error> {
-    let work = create_temp_workdir()?;
     let repo_url = authed_repo_url(&plan.target_repo, token);
+    push_patch_branch_to_repo_url(plan, patch_text, token, deadline, &repo_url).await
+}
+
+async fn push_patch_branch_to_repo_url(
+    plan: &PullRequestPlan,
+    patch_text: &str,
+    token: &str,
+    deadline: tokio::time::Instant,
+    repo_url: &str,
+) -> Result<(), Error> {
+    let work = create_temp_workdir()?;
     run_git(work.path(), &["init", "-q"], token, deadline).await?;
     run_git(
         work.path(),
@@ -363,7 +373,7 @@ async fn push_patch_branch(
     .await?;
     run_git(
         work.path(),
-        &["remote", "add", "origin", &repo_url],
+        &["remote", "add", "origin", repo_url],
         token,
         deadline,
     )
@@ -576,6 +586,7 @@ fn create_temp_workdir() -> Result<tempfile::TempDir, Error> {
 
 struct GithubApiClient {
     http: reqwest::Client,
+    api_base: String,
     token: String,
     max_retries: u32,
     backoff_base: Duration,
@@ -583,12 +594,22 @@ struct GithubApiClient {
 
 impl GithubApiClient {
     fn new(token: String, max_retries: u32, backoff_base_ms: u64) -> Result<Self, Error> {
+        Self::with_api_base(DEFAULT_GITHUB_API_URL, token, max_retries, backoff_base_ms)
+    }
+
+    fn with_api_base(
+        api_base: &str,
+        token: String,
+        max_retries: u32,
+        backoff_base_ms: u64,
+    ) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .user_agent("rust-swe-agent")
             .build()
             .map_err(|e| Error::Github(format!("failed to build GitHub HTTP client: {e}")))?;
         Ok(Self {
             http,
+            api_base: api_base.trim_end_matches('/').to_owned(),
             token,
             max_retries,
             backoff_base: Duration::from_millis(backoff_base_ms.max(1)),
@@ -619,7 +640,8 @@ impl GithubApiClient {
         let repo = parse_repo(&plan.target_repo)?;
         let head = format!("{}:{}", repo.owner, plan.head_branch);
         let url = format!(
-            "{DEFAULT_GITHUB_API_URL}/repos/{}/{}/pulls?state=open&head={}&base={}",
+            "{}/repos/{}/{}/pulls?state=open&head={}&base={}",
+            self.api_base,
             repo.owner,
             repo.name,
             percent_encode(&head),
@@ -633,10 +655,7 @@ impl GithubApiClient {
 
     async fn create_pull_request(&self, plan: &PullRequestPlan) -> Result<String, Error> {
         let repo = parse_repo(&plan.target_repo)?;
-        let url = format!(
-            "{DEFAULT_GITHUB_API_URL}/repos/{}/{}/pulls",
-            repo.owner, repo.name
-        );
+        let url = format!("{}/repos/{}/{}/pulls", self.api_base, repo.owner, repo.name);
         let payload = CreatePullRequestRequest {
             title: &plan.title,
             head: &plan.head_branch,
@@ -862,6 +881,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_dry_run_and_empty_patch_behaviors() {
+        let work = create_temp_workdir().unwrap();
+        let patch = work.path().join("agent.patch");
+        std::fs::write(&patch, sample_patch()).unwrap();
+        let dry_run = publish(GithubPrOptions {
+            mode: PublishMode::DryRun,
+            patch_path: patch.clone(),
+            ..github_pr_options()
+        })
+        .await
+        .unwrap();
+        assert!(dry_run.url.is_none());
+        assert!(
+            dry_run
+                .dry_run_output
+                .unwrap()
+                .contains("github_pr_dry_run")
+        );
+
+        std::fs::write(&patch, "").unwrap();
+        let err = publish(GithubPrOptions {
+            mode: PublishMode::Open,
+            patch_path: patch,
+            ..github_pr_options()
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("refusing to open PR for empty patch")
+        );
+    }
+
+    #[test]
+    fn plan_and_token_validation_cover_error_edges() {
+        let empty_task = build_pr_plan(
+            &GithubPrOptions {
+                task_id: "  ".into(),
+                ..github_pr_options()
+            },
+            sample_patch(),
+        )
+        .unwrap_err();
+        assert!(empty_task.to_string().contains("task id is required"));
+
+        let bad_branch = build_pr_plan(
+            &GithubPrOptions {
+                target_branch: "-bad".into(),
+                ..github_pr_options()
+            },
+            sample_patch(),
+        )
+        .unwrap_err();
+        assert!(bad_branch.to_string().contains("invalid target branch"));
+
+        assert!(read_github_token("").is_err());
+        assert!(read_github_token("__RUST_SWE_AGENT_MISSING_TOKEN__").is_err());
+        assert!(read_github_token("PATH").is_ok());
+    }
+
+    #[test]
+    fn patch_summary_and_urls_cover_formatting_edges() {
+        let summary = summarize_patch(
+            "diff --git a/old.txt b/new.txt\n\
+             --- a/old.txt\n\
+             +++ b/new.txt\n\
+             @@ -1 +1 @@\n\
+             -old\n\
+             +new\n",
+        );
+        assert_eq!(summary.files, vec!["new.txt"]);
+        assert_eq!(summary.additions, 1);
+        assert_eq!(summary.deletions, 1);
+
+        let body = render_pr_body(
+            "task",
+            "traj",
+            Path::new("patch.diff"),
+            &PatchSummary {
+                files_changed: 0,
+                additions: 0,
+                deletions: 0,
+                files: Vec::new(),
+                bytes: 0,
+            },
+        );
+        assert!(body.contains("- (no files detected in patch)"));
+        assert_eq!(
+            authed_repo_url("owner/repo", "abc:def@x/y"),
+            "https://x-access-token:abc%3Adef%40x%2Fy@github.com/owner/repo.git"
+        );
+        assert_eq!(sanitize_secret("unchanged", ""), "unchanged");
+    }
+
+    #[tokio::test]
+    async fn git_fetch_helpers_report_sanitized_failures() {
+        let work = create_temp_workdir().unwrap();
+        let token = "secret-token";
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        git(work.path(), &["init", "-q"], token, deadline).await;
+
+        let base_err = fetch_base_branch(work.path(), "main", token, deadline)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(base_err.contains("git fetch"));
+
+        let head_err = fetch_existing_head_branch(work.path(), "feature", token, deadline)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(head_err.contains("git fetch"));
+
+        let git_err = run_git(
+            work.path(),
+            &["definitely-not-a-git-command", token],
+            token,
+            deadline,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(git_err.contains("<redacted>"));
+        assert!(!git_err.contains(token));
+    }
+
+    #[tokio::test]
     async fn process_capture_timeout_terminates_child() {
         let work = create_temp_workdir().unwrap();
         let marker = work.path().join("timeout-marker.txt");
@@ -940,6 +1086,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_patch_branch_publishes_patch_to_local_remote() {
+        let root = create_temp_workdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let seed = root.path().join("seed");
+        let token = "secret";
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let head_branch = "rust-swe-agent/local-publish";
+        let remote_arg = seed_remote_with_existing_head(
+            root.path(),
+            &seed,
+            &remote,
+            head_branch,
+            token,
+            deadline,
+        )
+        .await;
+        let mut plan = test_plan(head_branch);
+        plan.title = "local publish".into();
+
+        push_patch_branch_to_repo_url(&plan, sample_patch(), token, deadline, &remote_arg)
+            .await
+            .unwrap();
+
+        let file_ref = format!("refs/heads/{head_branch}:file.txt");
+        let output = run_git_capture(
+            root.path(),
+            &["--git-dir", &remote_arg, "show", &file_ref],
+            token,
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+            "patched\n"
+        );
+    }
+
+    #[tokio::test]
     async fn head_branch_fetch_does_not_change_patch_base_checkout() {
         let root = create_temp_workdir().unwrap();
         let remote = root.path().join("remote.git");
@@ -984,6 +1169,95 @@ mod tests {
 
         let checked_out = std::fs::read_to_string(work.join("file.txt")).unwrap();
         assert_eq!(checked_out.replace("\r\n", "\n"), "base\n");
+    }
+
+    #[tokio::test]
+    async fn github_api_client_reuses_existing_pull_request() {
+        let (api_base, requests) = serve_http_responses(vec![json_response(
+            "200 OK",
+            r#"[{"html_url":"https://example.test/pr/1"}]"#,
+        )])
+        .await;
+        let client = GithubApiClient::with_api_base(&api_base, "token".into(), 0, 1).unwrap();
+
+        let url = client
+            .ensure_pull_request(&test_plan("agent/task"))
+            .await
+            .unwrap();
+
+        assert_eq!(url, "https://example.test/pr/1");
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET /repos/madmax983/rust_swe_agent/pulls?"));
+    }
+
+    #[tokio::test]
+    async fn github_api_client_creates_pull_request_when_none_exists() {
+        let (api_base, requests) = serve_http_responses(vec![
+            json_response("200 OK", "[]"),
+            json_response("201 Created", r#"{"html_url":"https://example.test/pr/2"}"#),
+        ])
+        .await;
+        let client = GithubApiClient::with_api_base(&api_base, "token".into(), 0, 1).unwrap();
+
+        let url = client
+            .ensure_pull_request(&test_plan("agent/task"))
+            .await
+            .unwrap();
+
+        assert_eq!(url, "https://example.test/pr/2");
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET "));
+        assert!(requests[1].starts_with("POST /repos/madmax983/rust_swe_agent/pulls "));
+    }
+
+    #[tokio::test]
+    async fn github_api_client_recovers_existing_pull_request_after_422() {
+        let (api_base, _requests) = serve_http_responses(vec![
+            json_response("200 OK", "[]"),
+            text_response("422 Unprocessable Entity", "already exists"),
+            json_response("200 OK", r#"[{"html_url":"https://example.test/pr/3"}]"#),
+        ])
+        .await;
+        let client = GithubApiClient::with_api_base(&api_base, "token".into(), 0, 1).unwrap();
+
+        let url = client
+            .ensure_pull_request(&test_plan("agent/task"))
+            .await
+            .unwrap();
+
+        assert_eq!(url, "https://example.test/pr/3");
+    }
+
+    #[tokio::test]
+    async fn github_api_client_send_json_retries_and_reports_errors() {
+        let (api_base, _requests) = serve_http_responses(vec![
+            HttpResponse {
+                status: "429 Too Many Requests",
+                headers: vec![("retry-after", "0")],
+                body: "slow down".into(),
+            },
+            json_response("200 OK", r#"[{"html_url":"https://example.test/pr/4"}]"#),
+        ])
+        .await;
+        let client = GithubApiClient::with_api_base(&api_base, "token".into(), 1, 1).unwrap();
+        let prs: Vec<PullRequestResponse> = client
+            .send_json(|| client.http.get(format!("{api_base}/retry")))
+            .await
+            .unwrap();
+        assert_eq!(prs[0].html_url, "https://example.test/pr/4");
+
+        let (api_base, _requests) = serve_http_responses(vec![text_response(
+            "400 Bad Request",
+            "token leaked in body",
+        )])
+        .await;
+        let client = GithubApiClient::with_api_base(&api_base, "token".into(), 0, 1).unwrap();
+        let err = client
+            .send_json::<PullRequestResponse, _>(|| client.http.get(format!("{api_base}/bad")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("<redacted>"));
     }
 
     async fn seed_remote_with_existing_head(
@@ -1100,5 +1374,113 @@ mod tests {
 
     fn git_path(path: &Path) -> String {
         path.display().to_string().replace('\\', "/")
+    }
+
+    fn github_pr_options() -> GithubPrOptions {
+        GithubPrOptions {
+            target_repo: "madmax983/rust_swe_agent".into(),
+            target_branch: "main".into(),
+            task_id: "task-1".into(),
+            trajectory_ref: "runs/task-1.traj.json".into(),
+            patch_path: PathBuf::from("runs/task-1.patch"),
+            branch_prefix: "rust-swe-agent".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: PublishMode::DryRun,
+            timeout_secs: 30,
+            max_retries: 2,
+            backoff_base_ms: 250,
+        }
+    }
+
+    fn test_plan(head_branch: &str) -> PullRequestPlan {
+        PullRequestPlan {
+            target_repo: "madmax983/rust_swe_agent".into(),
+            base_branch: "main".into(),
+            head_branch: head_branch.into(),
+            title: "rust-swe-agent: task".into(),
+            body: "body".into(),
+            trajectory_ref: "runs/task.traj.json".into(),
+            patch_path: PathBuf::from("runs/task.patch"),
+            summary: PatchSummary {
+                files_changed: 1,
+                additions: 1,
+                deletions: 1,
+                files: vec!["file.txt".into()],
+                bytes: sample_patch().len(),
+            },
+        }
+    }
+
+    fn sample_patch() -> &'static str {
+        "diff --git a/file.txt b/file.txt\n\
+         --- a/file.txt\n\
+         +++ b/file.txt\n\
+         @@ -1 +1 @@\n\
+         -base\n\
+         +patched\n"
+    }
+
+    struct HttpResponse {
+        status: &'static str,
+        headers: Vec<(&'static str, &'static str)>,
+        body: String,
+    }
+
+    fn json_response(status: &'static str, body: &str) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: vec![("content-type", "application/json")],
+            body: body.into(),
+        }
+    }
+
+    fn text_response(status: &'static str, body: &str) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.into(),
+        }
+    }
+
+    async fn serve_http_responses(
+        responses: Vec<HttpResponse>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = socket.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buffer);
+                requests.push(request.lines().next().unwrap_or_default().to_owned());
+                let mut head = format!(
+                    "HTTP/1.1 {}\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    response.status,
+                    response.body.len()
+                );
+                for (name, value) in response.headers {
+                    let _ = writeln!(head, "{name}: {value}\r");
+                }
+                head.push_str("\r\n");
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(response.body.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (format!("http://{addr}"), handle)
     }
 }
