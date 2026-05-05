@@ -339,34 +339,19 @@ pub fn summarize_with_model<S: std::hash::BuildHasher>(
 
     // Exclude budget-exhausted instances from cost_per_resolved_usd so we
     // never silently mix capped and uncapped runs in the efficiency metric.
-    let budget_exhausted_excluded = eval
-        .instances
-        .iter()
-        .filter(|row| {
-            results
-                .get(&row.instance_id)
-                .and_then(|r| r.failure_category)
-                == Some(FailureCategory::BudgetExhausted)
-        })
-        .count();
-
-    let per_instance_samples: Vec<(f64, bool)> = eval
-        .instances
-        .iter()
-        .filter(|row| {
-            results
-                .get(&row.instance_id)
-                .and_then(|r| r.failure_category)
-                != Some(FailureCategory::BudgetExhausted)
-        })
-        .map(|row| {
-            let cost = results
-                .get(&row.instance_id)
+    let mut budget_exhausted_excluded = 0usize;
+    let mut per_instance_samples: Vec<(f64, bool)> = Vec::with_capacity(eval.instances.len());
+    for row in &eval.instances {
+        let result = results.get(&row.instance_id);
+        if result.and_then(|r| r.failure_category) == Some(FailureCategory::BudgetExhausted) {
+            budget_exhausted_excluded += 1;
+        } else {
+            let cost = result
                 .and_then(|r| r.effective_cost_usd(model_name))
                 .unwrap_or(0.0);
-            (cost, row.resolved)
-        })
-        .collect();
+            per_instance_samples.push((cost, row.resolved));
+        }
+    }
 
     let br_resolved = per_instance_samples.iter().filter(|(_, r)| *r).count();
     let cost_per_resolved_usd = if br_resolved == 0 {

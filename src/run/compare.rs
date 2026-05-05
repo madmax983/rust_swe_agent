@@ -1307,10 +1307,11 @@ fn compute_pareto_verdict(
     let candidate_dominates = (candidate_better_rate || candidate_equal_rate)
         && (candidate_better_cost || candidate_equal_cost)
         && (candidate_better_rate || candidate_better_cost);
-    let baseline_dominates = !candidate_dominates
-        && (b_rate > c_rate + f64::EPSILON || candidate_equal_rate)
-        && (b_cost_finite < c_cost_finite - f64::EPSILON || candidate_equal_cost)
-        && (b_rate > c_rate + f64::EPSILON || b_cost_finite < c_cost_finite - f64::EPSILON);
+    let baseline_better_rate = b_rate > c_rate + f64::EPSILON;
+    let baseline_better_cost = b_cost_finite < c_cost_finite - f64::EPSILON;
+    let baseline_dominates = (baseline_better_rate || candidate_equal_rate)
+        && (baseline_better_cost || candidate_equal_cost)
+        && (baseline_better_rate || baseline_better_cost);
 
     if candidate_dominates {
         ParetoVerdict::CandidateDominates

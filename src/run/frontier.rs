@@ -15,7 +15,7 @@ use crate::run::compare::{LoadedSweep, load_evaluation_results, load_sweep};
 use crate::run::evaluate::{EvaluationResults, pct};
 use crate::run::swebench::InstanceResult;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FrontierFormat {
     Text,
     Json,
@@ -229,22 +229,22 @@ fn write_ascii_chart(out: &mut String, points: &[&FrontierPoint]) {
         return;
     }
 
-    let min_cost = finite_points
-        .iter()
-        .map(|(_, c)| *c)
-        .fold(f64::INFINITY, f64::min);
-    let max_cost = finite_points
-        .iter()
-        .map(|(_, c)| *c)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let min_rate = finite_points
-        .iter()
-        .map(|(p, _)| p.resolved_rate)
-        .fold(f64::INFINITY, f64::min);
-    let max_rate = finite_points
-        .iter()
-        .map(|(p, _)| p.resolved_rate)
-        .fold(f64::NEG_INFINITY, f64::max);
+    let (min_cost, max_cost, min_rate, max_rate) = finite_points.iter().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_c, max_c, min_r, max_r), (p, cost)| {
+            (
+                min_c.min(*cost),
+                max_c.max(*cost),
+                min_r.min(p.resolved_rate),
+                max_r.max(p.resolved_rate),
+            )
+        },
+    );
 
     let cost_range = (max_cost - min_cost).max(f64::EPSILON);
     let rate_range = (max_rate - min_rate).max(f64::EPSILON);

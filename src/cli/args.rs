@@ -237,8 +237,8 @@ pub struct FrontierCmd {
     pub dirs: Vec<std::path::PathBuf>,
 
     /// Output format: `text` (default, ASCII chart) or `json` (machine-readable).
-    #[arg(long, default_value = "text")]
-    pub format: String,
+    #[arg(long, value_enum, default_value_t = crate::run::frontier::FrontierFormat::Text)]
+    pub format: crate::run::frontier::FrontierFormat,
 }
 
 #[derive(Debug, Args)]

@@ -753,15 +753,7 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
 }
 
 fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {
-    let format = match f.format.as_str() {
-        "text" => crate::run::frontier::FrontierFormat::Text,
-        "json" => crate::run::frontier::FrontierFormat::Json,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
-            ))));
-        }
-    };
+    let format = f.format;
     let report =
         crate::run::frontier::compute(&crate::run::frontier::FrontierArgs { dirs: f.dirs })?;
     match format {
