@@ -65,7 +65,10 @@ fn load_point(dir: &Path) -> Result<FrontierPoint, Error> {
     let instances = loaded.instances.len();
 
     let resolved = if let Some(ref ev) = eval {
-        ev.instances.iter().filter(|r| r.resolved).count()
+        ev.instances
+            .iter()
+            .filter(|r| r.resolved && loaded.instances.contains_key(&r.instance_id))
+            .count()
     } else {
         count_sweep_resolved(&loaded.instances)
     };

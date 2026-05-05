@@ -2175,6 +2175,55 @@ fn frontier_emits_ascii_chart_in_text_mode() {
     );
 }
 
+// ─── frontier: resolved count restricted to loaded sweep IDs ─────────────────
+
+#[test]
+fn frontier_resolved_count_capped_to_sweep_instance_ids() {
+    // Sweep has only inst-1.  eval.json has inst-1 AND inst-2 (stale / wider
+    // evaluation).  Resolved count must be 1 (not 2), resolved_rate must be
+    // 1.0 (not >1.0), and cost_per_resolved must reflect only the one loaded
+    // instance — otherwise metrics would be impossible / misleading.
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = submitted("inst-1");
+    r.cost_usd = Some(4.0);
+    write_results(dir.path(), vec![r]);
+    write_evaluation_json(
+        dir.path(),
+        &serde_json::json!({"instances": [
+            {"instance_id": "inst-1", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []},
+            {"instance_id": "inst-2", "resolved": true, "eval_exit_reason": "resolved", "tests_passed": [], "tests_failed": []}
+        ]}),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "frontier",
+            "--format",
+            "json",
+            dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bench frontier should succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("expected JSON; err={e}; got:\n{stdout}");
+    });
+    let p = &v["points"][0];
+    assert_eq!(p["instances"].as_u64(), Some(1), "instances must be 1 (only inst-1 in sweep)");
+    assert_eq!(p["resolved"].as_u64(), Some(1), "resolved must be 1, not 2 (inst-2 not in sweep)");
+    let rate = p["resolved_rate"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        (rate - 1.0).abs() < 1e-9,
+        "resolved_rate must be 1.0, got {rate}"
+    );
+}
+
 // ─── issue #51 AC#6 – budget-exhausted exclusion flag ───────────────────────
 
 #[test]
