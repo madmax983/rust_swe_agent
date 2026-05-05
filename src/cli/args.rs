@@ -225,6 +225,20 @@ pub enum BenchCmd {
     Inspect(InspectCmd),
     /// Tail live aggregate progress for a running sweep directory.
     Tail(TailCmd),
+    /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
+    Frontier(FrontierCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct FrontierCmd {
+    /// Sweep output directories to compare (each must contain `results.json`
+    /// and optionally `evaluation.json`).
+    #[arg(required = true)]
+    pub dirs: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default, ASCII chart) or `json` (machine-readable).
+    #[arg(long, value_enum, default_value_t = crate::run::frontier::FrontierFormat::Text)]
+    pub format: crate::run::frontier::FrontierFormat,
 }
 
 #[derive(Debug, Args)]

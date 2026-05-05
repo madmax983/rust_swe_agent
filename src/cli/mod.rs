@@ -71,6 +71,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Tail(t),
         } => bench_tail(t).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Frontier(f),
+        } => bench_frontier(f),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -745,6 +748,21 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
             "{}",
             crate::run::evaluate::render_cost_attribution_table(&eval.cost_attribution)
         );
+    }
+    Ok(())
+}
+
+fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {
+    let format = f.format;
+    let report =
+        crate::run::frontier::compute(&crate::run::frontier::FrontierArgs { dirs: f.dirs })?;
+    match format {
+        crate::run::frontier::FrontierFormat::Text => {
+            print!("{}", crate::run::frontier::render_text(&report));
+        }
+        crate::run::frontier::FrontierFormat::Json => {
+            println!("{}", crate::run::frontier::render_json(&report));
+        }
     }
     Ok(())
 }
