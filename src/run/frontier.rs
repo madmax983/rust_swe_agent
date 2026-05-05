@@ -5,13 +5,14 @@
 //! simultaneously cheaper and higher-resolved.  Emits an ASCII chart (text
 //! mode) or a JSON dataset (json mode) suitable for downstream plotting.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::run::compare::{load_evaluation_results, load_sweep, LoadedSweep};
-use crate::run::evaluate::{pct, EvaluationResults};
+use crate::run::compare::{LoadedSweep, load_evaluation_results, load_sweep};
+use crate::run::evaluate::{EvaluationResults, pct};
 use crate::run::swebench::InstanceResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,10 +97,7 @@ fn load_point(dir: &Path) -> Result<FrontierPoint, Error> {
 }
 
 fn count_sweep_resolved(instances: &std::collections::HashMap<String, InstanceResult>) -> usize {
-    instances
-        .values()
-        .filter(|r| r.resolved_count > 0)
-        .count()
+    instances.values().filter(|r| r.resolved_count > 0).count()
 }
 
 /// Mark each point as on-frontier if no other point dominates it.
@@ -108,7 +106,7 @@ fn count_sweep_resolved(instances: &std::collections::HashMap<String, InstanceRe
 /// a lower (or equal) cost_per_resolved_usd, with at least one strict
 /// inequality. Points with `cost_per_resolved_usd == NaN` (resolved=0) are
 /// never on the frontier unless all points have resolved=0.
-fn mark_pareto_frontier(points: &mut Vec<FrontierPoint>) {
+fn mark_pareto_frontier(points: &mut [FrontierPoint]) {
     let n = points.len();
     let all_nan = points.iter().all(|p| p.cost_per_resolved_usd.is_nan());
     for i in 0..n {
@@ -136,8 +134,7 @@ fn dominates(a: &FrontierPoint, b: &FrontierPoint) -> bool {
     let better_rate = a.resolved_rate > b.resolved_rate + f64::EPSILON;
     let equal_rate = (a.resolved_rate - b.resolved_rate).abs() <= f64::EPSILON;
     let better_cost = a.cost_per_resolved_usd < b.cost_per_resolved_usd - f64::EPSILON;
-    let equal_cost =
-        (a.cost_per_resolved_usd - b.cost_per_resolved_usd).abs() <= f64::EPSILON;
+    let equal_cost = (a.cost_per_resolved_usd - b.cost_per_resolved_usd).abs() <= f64::EPSILON;
     (better_rate || equal_rate) && (better_cost || equal_cost) && (better_rate || better_cost)
 }
 
@@ -196,8 +193,9 @@ pub fn render_text(report: &FrontierReport) -> String {
             format!("${:.4}", p.cost_per_resolved_usd)
         };
         let frontier_mark = if p.on_frontier { "*" } else { " " };
-        out.push_str(&format!(
-            "{} {:<width$}  {:>9.2}%  {:>14}  {:>8}  ${:.4}\n",
+        let _ = writeln!(
+            out,
+            "{} {:<width$}  {:>9.2}%  {:>14}  {:>8}  ${:.4}",
             frontier_mark,
             p.dir.display(),
             p.resolved_rate * 100.0,
@@ -205,15 +203,16 @@ pub fn render_text(report: &FrontierReport) -> String {
             if p.on_frontier { "yes" } else { "no" },
             p.total_cost_usd,
             width = col_width
-        ));
+        );
     }
 
     out.push('\n');
     let frontier_count = report.points.iter().filter(|p| p.on_frontier).count();
-    out.push_str(&format!(
-        "{frontier_count}/{} runs on the efficient frontier\n",
+    let _ = writeln!(
+        out,
+        "{frontier_count}/{} runs on the efficient frontier",
         report.points.len()
-    ));
+    );
 
     // ASCII scatter chart: resolved_rate on Y, cost_per_resolved on X
     write_ascii_chart(&mut out, &sorted);
@@ -255,9 +254,18 @@ fn write_ascii_chart(out: &mut String, points: &[&FrontierPoint]) {
 
     let mut grid = vec![vec![' '; CHART_WIDTH]; CHART_HEIGHT];
     for p in &finite_points {
-        let x = ((p.cost_per_resolved_usd - min_cost) / cost_range
-            * (CHART_WIDTH - 1) as f64)
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let x = ((p.cost_per_resolved_usd - min_cost) / cost_range * (CHART_WIDTH - 1) as f64)
             .round() as usize;
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let y = ((p.resolved_rate - min_rate) / rate_range * (CHART_HEIGHT - 1) as f64).round()
             as usize;
         let y = CHART_HEIGHT - 1 - y.min(CHART_HEIGHT - 1);

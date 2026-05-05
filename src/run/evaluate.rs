@@ -244,7 +244,12 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     };
     let mut eval = run_output.eval;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
-    eval.breakdown = build_breakdown(&eval.instances, &results, &args.breakdown, model_name.as_deref());
+    eval.breakdown = build_breakdown(
+        &eval.instances,
+        &results,
+        &args.breakdown,
+        model_name.as_deref(),
+    );
     if args.cost_attribution {
         let run_slots = load_run_slots(&args.sweep_dir, &results)?;
         eval.cost_attribution = build_cost_attribution_from_run_slots(
@@ -270,6 +275,7 @@ pub fn summarize<S: std::hash::BuildHasher>(
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn summarize_with_model<S: std::hash::BuildHasher>(
     eval: &EvaluationResults,
     results: &HashMap<String, InstanceResult, S>,
@@ -421,6 +427,7 @@ fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
         let mut total_cost = 0.0_f64;
         let mut resolved = 0usize;
         for _ in 0..n {
+            #[allow(clippy::cast_possible_truncation)]
             let idx = (lcg_next(&mut rng) as usize) % n;
             let (cost, is_resolved) = samples[idx];
             total_cost += cost;
@@ -437,7 +444,17 @@ fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
         return (f64::NAN, f64::NAN);
     }
     estimates.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let lower_idx = ((estimates.len() as f64) * 0.025) as usize;
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let upper_idx = ((estimates.len() as f64) * 0.975) as usize;
     let lower = estimates[lower_idx];
     let upper = estimates[upper_idx.min(estimates.len() - 1)];
@@ -1559,9 +1576,15 @@ mod tests {
             },
             None,
         );
-        let django = rows.iter().find(|r| r.bucket_value == "django/django").unwrap();
+        let django = rows
+            .iter()
+            .find(|r| r.bucket_value == "django/django")
+            .unwrap();
         assert_eq!(django.cost_per_resolved_usd, Some(3.0));
-        let requests = rows.iter().find(|r| r.bucket_value == "psf/requests").unwrap();
+        let requests = rows
+            .iter()
+            .find(|r| r.bucket_value == "psf/requests")
+            .unwrap();
         assert_eq!(requests.cost_per_resolved_usd, None);
     }
 
@@ -1572,15 +1595,9 @@ mod tests {
         let mut budgeted = submitted("b");
         budgeted.cost_usd = Some(5.0);
         budgeted.failure_category = Some(FailureCategory::BudgetExhausted);
-        let results = HashMap::from([
-            ("a".to_string(), normal),
-            ("b".to_string(), budgeted),
-        ]);
+        let results = HashMap::from([("a".to_string(), normal), ("b".to_string(), budgeted)]);
         let eval = EvaluationResults {
-            instances: vec![
-                eval_row("a", true),
-                eval_row("b", false),
-            ],
+            instances: vec![eval_row("a", true), eval_row("b", false)],
             behavioral: BehavioralMetrics::default(),
             breakdown: vec![],
             cost_attribution: vec![],
@@ -1744,13 +1761,11 @@ mod tests {
 
     #[test]
     fn cost_per_resolved_usd_is_nan_when_resolved_count_is_zero() {
-        let results: HashMap<String, InstanceResult> = HashMap::from([
-            ("a".to_string(), {
-                let mut r = errored("a");
-                r.cost_usd = Some(5.0);
-                r
-            }),
-        ]);
+        let results: HashMap<String, InstanceResult> = HashMap::from([("a".to_string(), {
+            let mut r = errored("a");
+            r.cost_usd = Some(5.0);
+            r
+        })]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", false)],
             behavioral: BehavioralMetrics::default(),
@@ -1797,13 +1812,11 @@ mod tests {
 
     #[test]
     fn cost_per_resolved_ci95_is_nan_when_nothing_resolved() {
-        let results: HashMap<String, InstanceResult> = HashMap::from([
-            ("a".to_string(), {
-                let mut r = errored("a");
-                r.cost_usd = Some(5.0);
-                r
-            }),
-        ]);
+        let results: HashMap<String, InstanceResult> = HashMap::from([("a".to_string(), {
+            let mut r = errored("a");
+            r.cost_usd = Some(5.0);
+            r
+        })]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", false)],
             behavioral: BehavioralMetrics::default(),

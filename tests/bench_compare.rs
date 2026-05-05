@@ -1973,8 +1973,7 @@ fn compare_json_includes_cost_per_resolved_and_pareto_verdict() {
     );
     // Candidate dominates: lower cost AND higher resolved rate
     assert_eq!(
-        v["pareto_verdict"],
-        "candidate_dominates",
+        v["pareto_verdict"], "candidate_dominates",
         "candidate should dominate (better resolved rate, lower cost/resolved); got:\n{v}"
     );
 }
@@ -2135,9 +2134,7 @@ fn frontier_emits_pareto_json_with_efficient_frontier() {
     let dir_c_path = dir_c.path().to_str().unwrap();
     let dir_c_point = points
         .iter()
-        .find(|p| {
-            p["dir"].as_str().is_some_and(|d| d == dir_c_path)
-        })
+        .find(|p| p["dir"].as_str().is_some_and(|d| d == dir_c_path))
         .expect("expected dir_c point in frontier output");
     assert_eq!(
         dir_c_point["on_frontier"].as_bool(),
@@ -2160,11 +2157,7 @@ fn frontier_emits_ascii_chart_in_text_mode() {
     );
 
     let out = Command::new(binary_path())
-        .args([
-            "bench",
-            "frontier",
-            dir_a.path().to_str().unwrap(),
-        ])
+        .args(["bench", "frontier", dir_a.path().to_str().unwrap()])
         .output()
         .unwrap();
     assert!(
@@ -2175,7 +2168,9 @@ fn frontier_emits_ascii_chart_in_text_mode() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Should have some kind of chart or table output
     assert!(
-        stdout.contains("frontier") || stdout.contains("cost_per_resolved") || stdout.contains("resolved_rate"),
+        stdout.contains("frontier")
+            || stdout.contains("cost_per_resolved")
+            || stdout.contains("resolved_rate"),
         "expected frontier output in text mode; got:\n{stdout}"
     );
 }

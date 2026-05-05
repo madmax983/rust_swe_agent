@@ -370,12 +370,7 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
     );
 }
 
-fn write_cost_per_resolved_line(
-    s: &mut String,
-    baseline: f64,
-    candidate: f64,
-    delta: f64,
-) {
+fn write_cost_per_resolved_line(s: &mut String, baseline: f64, candidate: f64, delta: f64) {
     let fmt_cpr = |v: f64| {
         if v.is_nan() {
             "NaN".to_owned()
@@ -1143,6 +1138,7 @@ pub fn diff<S: std::hash::BuildHasher>(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn diff_with_overrides<S: std::hash::BuildHasher>(
     baseline_dir: &Path,
     candidate_dir: &Path,
@@ -1292,11 +1288,11 @@ fn compute_pareto_verdict(
         (true, true) => {
             if (c_rate - b_rate).abs() < f64::EPSILON {
                 return ParetoVerdict::NonDominated;
-            } else if c_rate > b_rate {
-                return ParetoVerdict::CandidateDominates;
-            } else {
-                return ParetoVerdict::BaselineDominates;
             }
+            if c_rate > b_rate {
+                return ParetoVerdict::CandidateDominates;
+            }
+            return ParetoVerdict::BaselineDominates;
         }
     };
 
