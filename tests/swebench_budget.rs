@@ -1129,11 +1129,11 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         results.submitted, 0,
         "no task should have submitted: {results:?}"
     );
-    // All tasks accounted for
+    // Budget-exhausted is a resource-limit termination, not counted in errored
+    // (consistent with step_limit_reached). Tasks are visible in failures_by_category.
     assert_eq!(
-        results.submitted + results.errored + results.budget_halted,
-        2,
-        "all tasks must be accounted for: {results:?}"
+        results.errored, 0,
+        "budget_exhausted should not appear in errored: {results:?}"
     );
 
     // At least one trajectory should have failure_category=budget_exhausted

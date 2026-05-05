@@ -1256,7 +1256,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             Ok(r) => {
                 match r.result.outcome.as_deref() {
                     Some(outcome::SUBMITTED) => submitted += 1,
-                    Some(outcome::ERROR | outcome::BUDGET_EXHAUSTED) => errored += 1,
+                    Some(outcome::ERROR) => errored += 1,
                     _ => {}
                 }
                 accounting.add_result(&r.result);
@@ -2848,7 +2848,6 @@ fn classify_error(err: &Error) -> FailureCategory {
 
 fn is_failed_instance(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::ERROR)
-        || r.outcome.as_deref() == Some(outcome::BUDGET_EXHAUSTED)
         || matches!(
             r.failure_category,
             Some(
