@@ -658,10 +658,7 @@ fn write_spend_stat_line(s: &mut String, label: &str, costs: &mut Vec<f64>) {
     } else {
         costs[n / 2]
     };
-    let _ = writeln!(
-        s,
-        "{label}:  mean=${mean:.4} median=${median:.4} n={n}"
-    );
+    let _ = writeln!(s, "{label}:  mean=${mean:.4} median=${median:.4} n={n}");
 }
 
 fn write_rate_limit_summary(s: &mut String, rl: Option<&crate::run::rate_limit::RateLimitEvents>) {
@@ -3585,7 +3582,12 @@ mod tests {
             manifest: None,
             cost_limit_usd: None,
             cache_hit_rate: 0.0,
-            instances: vec![resolved_cheap, resolved_expensive, unresolved_1, unresolved_2],
+            instances: vec![
+                resolved_cheap,
+                resolved_expensive,
+                unresolved_1,
+                unresolved_2,
+            ],
             rate_limit_events: None,
         };
 
@@ -3595,29 +3597,17 @@ mod tests {
             t.contains("Spend/resolved"),
             "missing Spend/resolved line: {t}"
         );
-        assert!(
-            t.contains("mean=$0.2000"),
-            "wrong resolved mean: {t}"
-        );
+        assert!(t.contains("mean=$0.2000"), "wrong resolved mean: {t}");
         // median of [$0.10, $0.30] with even n=2 is ($0.10 + $0.30)/2 = $0.20
-        assert!(
-            t.contains("median=$0.2000"),
-            "wrong resolved median: {t}"
-        );
+        assert!(t.contains("median=$0.2000"), "wrong resolved median: {t}");
         assert!(t.contains("n=2"), "wrong resolved n: {t}");
         // Unresolved: $0.20 and $0.40 → mean=$0.30 median=$0.30
         assert!(
             t.contains("Spend/unresolved"),
             "missing Spend/unresolved line: {t}"
         );
-        assert!(
-            t.contains("mean=$0.3000"),
-            "wrong unresolved mean: {t}"
-        );
-        assert!(
-            t.contains("median=$0.3000"),
-            "wrong unresolved median: {t}"
-        );
+        assert!(t.contains("mean=$0.3000"), "wrong unresolved mean: {t}");
+        assert!(t.contains("median=$0.3000"), "wrong unresolved median: {t}");
     }
 
     #[test]
@@ -3659,8 +3649,14 @@ mod tests {
         };
 
         let t = s.summary_table();
-        assert!(t.contains("Spend/resolved  :  n=0"), "missing n=0 for resolved: {t}");
-        assert!(t.contains("Spend/unresolved:  n=0") || t.contains("n=1"), "unexpected unresolved output: {t}");
+        assert!(
+            t.contains("Spend/resolved  :  n=0"),
+            "missing n=0 for resolved: {t}"
+        );
+        assert!(
+            t.contains("Spend/unresolved:  n=0") || t.contains("n=1"),
+            "unexpected unresolved output: {t}"
+        );
     }
 
     #[test]

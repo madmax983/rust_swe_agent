@@ -1125,7 +1125,10 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
 
     assert_eq!(results.total, 2);
     // Both tasks should be terminated by per-task budget (not submitted)
-    assert_eq!(results.submitted, 0, "no task should have submitted: {results:?}");
+    assert_eq!(
+        results.submitted, 0,
+        "no task should have submitted: {results:?}"
+    );
     // All tasks accounted for
     assert_eq!(
         results.submitted + results.errored + results.budget_halted,
@@ -1215,5 +1218,8 @@ async fn per_task_budget_absent_means_no_enforcement() {
     .await
     .unwrap();
 
-    assert_eq!(results.submitted, 1, "task should submit without a per-task cap: {results:?}");
+    assert_eq!(
+        results.submitted, 1,
+        "task should submit without a per-task cap: {results:?}"
+    );
 }
