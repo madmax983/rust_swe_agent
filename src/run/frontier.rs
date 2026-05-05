@@ -33,8 +33,8 @@ pub struct FrontierPoint {
     pub resolved_rate: f64,
     /// Total USD cost across all instances.
     pub total_cost_usd: f64,
-    /// `total_cost_usd / resolved`. `f64::NAN` when `resolved == 0`.
-    pub cost_per_resolved_usd: f64,
+    /// `total_cost_usd / resolved`. `None` when `resolved == 0`.
+    pub cost_per_resolved_usd: Option<f64>,
     /// Whether this point lies on the Pareto-efficient frontier.
     pub on_frontier: bool,
 }
@@ -76,13 +76,11 @@ fn load_point(dir: &Path) -> Result<FrontierPoint, Error> {
         .filter_map(|r| r.effective_cost_usd(model_name))
         .sum();
 
+    #[allow(clippy::cast_precision_loss)]
     let cost_per_resolved_usd = if resolved == 0 {
-        f64::NAN
+        None
     } else {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            total_cost_usd / resolved as f64
-        }
+        Some(total_cost_usd / resolved as f64)
     };
 
     Ok(FrontierPoint {
@@ -108,12 +106,12 @@ fn count_sweep_resolved(instances: &std::collections::HashMap<String, InstanceRe
 /// never on the frontier unless all points have resolved=0.
 fn mark_pareto_frontier(points: &mut [FrontierPoint]) {
     let n = points.len();
-    let all_nan = points.iter().all(|p| p.cost_per_resolved_usd.is_nan());
+    let all_none = points.iter().all(|p| p.cost_per_resolved_usd.is_none());
     for i in 0..n {
-        let dominated = if all_nan {
+        let dominated = if all_none {
             false
         } else {
-            points[i].cost_per_resolved_usd.is_nan()
+            points[i].cost_per_resolved_usd.is_none()
                 || (0..n)
                     .filter(|&j| j != i)
                     .any(|j| dominates(&points[j], &points[i]))
@@ -125,16 +123,15 @@ fn mark_pareto_frontier(points: &mut [FrontierPoint]) {
 /// Returns true when `a` weakly dominates `b` with at least one strict
 /// improvement on the (resolved_rate, cost_per_resolved_usd) axes.
 fn dominates(a: &FrontierPoint, b: &FrontierPoint) -> bool {
-    if a.cost_per_resolved_usd.is_nan() {
-        return false;
-    }
-    if b.cost_per_resolved_usd.is_nan() {
-        return true;
-    }
+    let (Some(a_cost), Some(b_cost)) = (a.cost_per_resolved_usd, b.cost_per_resolved_usd) else {
+        // a has no resolved instances → cannot dominate
+        // b has no resolved instances → a (with any resolved) dominates
+        return a.cost_per_resolved_usd.is_some();
+    };
     let better_rate = a.resolved_rate > b.resolved_rate + f64::EPSILON;
     let equal_rate = (a.resolved_rate - b.resolved_rate).abs() <= f64::EPSILON;
-    let better_cost = a.cost_per_resolved_usd < b.cost_per_resolved_usd - f64::EPSILON;
-    let equal_cost = (a.cost_per_resolved_usd - b.cost_per_resolved_usd).abs() <= f64::EPSILON;
+    let better_cost = a_cost < b_cost - f64::EPSILON;
+    let equal_cost = (a_cost - b_cost).abs() <= f64::EPSILON;
     (better_rate || equal_rate) && (better_cost || equal_cost) && (better_rate || better_cost)
 }
 
@@ -187,10 +184,9 @@ pub fn render_text(report: &FrontierReport) -> String {
     });
 
     for p in &sorted {
-        let cpr = if p.cost_per_resolved_usd.is_nan() {
-            "NaN".to_owned()
-        } else {
-            format!("${:.4}", p.cost_per_resolved_usd)
+        let cpr = match p.cost_per_resolved_usd {
+            Some(v) => format!("${v:.4}"),
+            None => "NaN".to_owned(),
         };
         let frontier_mark = if p.on_frontier { "*" } else { " " };
         let _ = writeln!(
@@ -224,9 +220,10 @@ fn write_ascii_chart(out: &mut String, points: &[&FrontierPoint]) {
     const CHART_WIDTH: usize = 40;
     const CHART_HEIGHT: usize = 10;
 
-    let finite_points: Vec<&&FrontierPoint> = points
+    // Only plot points that have a finite cost (resolved > 0).
+    let finite_points: Vec<(&FrontierPoint, f64)> = points
         .iter()
-        .filter(|p| !p.cost_per_resolved_usd.is_nan())
+        .filter_map(|p| p.cost_per_resolved_usd.map(|c| (*p, c)))
         .collect();
     if finite_points.is_empty() {
         return;
@@ -234,33 +231,32 @@ fn write_ascii_chart(out: &mut String, points: &[&FrontierPoint]) {
 
     let min_cost = finite_points
         .iter()
-        .map(|p| p.cost_per_resolved_usd)
+        .map(|(_, c)| *c)
         .fold(f64::INFINITY, f64::min);
     let max_cost = finite_points
         .iter()
-        .map(|p| p.cost_per_resolved_usd)
+        .map(|(_, c)| *c)
         .fold(f64::NEG_INFINITY, f64::max);
     let min_rate = finite_points
         .iter()
-        .map(|p| p.resolved_rate)
+        .map(|(p, _)| p.resolved_rate)
         .fold(f64::INFINITY, f64::min);
     let max_rate = finite_points
         .iter()
-        .map(|p| p.resolved_rate)
+        .map(|(p, _)| p.resolved_rate)
         .fold(f64::NEG_INFINITY, f64::max);
 
     let cost_range = (max_cost - min_cost).max(f64::EPSILON);
     let rate_range = (max_rate - min_rate).max(f64::EPSILON);
 
     let mut grid = vec![vec![' '; CHART_WIDTH]; CHART_HEIGHT];
-    for p in &finite_points {
+    for (p, cost) in &finite_points {
         #[allow(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss
         )]
-        let x = ((p.cost_per_resolved_usd - min_cost) / cost_range * (CHART_WIDTH - 1) as f64)
-            .round() as usize;
+        let x = ((cost - min_cost) / cost_range * (CHART_WIDTH - 1) as f64).round() as usize;
         #[allow(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,

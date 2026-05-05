@@ -160,12 +160,15 @@ pub struct CompareReport {
     /// This is the high-signal artifact for CI gating; sorted by
     /// `instance_id` for stable output.
     pub regressions: Vec<TaskTransition>,
-    /// `$/resolved-instance` for the baseline. `f64::NAN` when baseline_resolved == 0.
-    pub baseline_cost_per_resolved_usd: f64,
-    /// `$/resolved-instance` for the candidate. `f64::NAN` when candidate_resolved == 0.
-    pub candidate_cost_per_resolved_usd: f64,
-    /// Candidate minus baseline cost_per_resolved_usd. `f64::NAN` when either is NaN.
-    pub cost_per_resolved_delta_usd: f64,
+    /// `$/resolved-instance` for the baseline. `None` when baseline_resolved == 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_per_resolved_usd: Option<f64>,
+    /// `$/resolved-instance` for the candidate. `None` when candidate_resolved == 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_cost_per_resolved_usd: Option<f64>,
+    /// Candidate minus baseline cost_per_resolved_usd. `None` when either is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_resolved_delta_usd: Option<f64>,
     /// Pareto-dominance verdict on the (resolved_rate, cost_per_resolved_usd) plane.
     pub pareto_verdict: ParetoVerdict,
 }
@@ -370,18 +373,19 @@ fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) 
     );
 }
 
-fn write_cost_per_resolved_line(s: &mut String, baseline: f64, candidate: f64, delta: f64) {
-    let fmt_cpr = |v: f64| {
-        if v.is_nan() {
-            "NaN".to_owned()
-        } else {
-            format!("${v:.4}")
-        }
+fn write_cost_per_resolved_line(
+    s: &mut String,
+    baseline: Option<f64>,
+    candidate: Option<f64>,
+    delta: Option<f64>,
+) {
+    let fmt_cpr = |v: Option<f64>| match v {
+        Some(x) => format!("${x:.4}"),
+        None => "NaN".to_owned(),
     };
-    let delta_str = if delta.is_nan() {
-        "NaN".to_owned()
-    } else {
-        format!("{delta:+.4}")
+    let delta_str = match delta {
+        Some(d) => format!("{d:+.4}"),
+        None => "NaN".to_owned(),
     };
     let _ = writeln!(
         s,
@@ -1190,17 +1194,18 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         cost_per_resolved(baseline_total_cost, resolution.baseline_resolved);
     let candidate_cost_per_resolved_usd =
         cost_per_resolved(candidate_total_cost, resolution.candidate_resolved);
-    let cost_per_resolved_delta_usd =
-        if baseline_cost_per_resolved_usd.is_nan() || candidate_cost_per_resolved_usd.is_nan() {
-            f64::NAN
-        } else {
-            candidate_cost_per_resolved_usd - baseline_cost_per_resolved_usd
-        };
+    let cost_per_resolved_delta_usd = match (
+        baseline_cost_per_resolved_usd,
+        candidate_cost_per_resolved_usd,
+    ) {
+        (Some(b), Some(c)) => Some(c - b),
+        _ => None,
+    };
     let pareto_verdict = compute_pareto_verdict(
         resolution.baseline_resolved_rate,
-        baseline_cost_per_resolved_usd,
+        baseline_cost_per_resolved_usd.unwrap_or(f64::NAN),
         resolution.candidate_resolved_rate,
-        candidate_cost_per_resolved_usd,
+        candidate_cost_per_resolved_usd.unwrap_or(f64::NAN),
     );
 
     CompareReport {
@@ -1258,14 +1263,12 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
     }
 }
 
-fn cost_per_resolved(total_cost: f64, resolved: usize) -> f64 {
+fn cost_per_resolved(total_cost: f64, resolved: usize) -> Option<f64> {
     if resolved == 0 {
-        f64::NAN
+        None
     } else {
         #[allow(clippy::cast_precision_loss)]
-        {
-            total_cost / resolved as f64
-        }
+        Some(total_cost / resolved as f64)
     }
 }
 

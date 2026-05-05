@@ -2116,7 +2116,7 @@ fn frontier_emits_pareto_json_with_efficient_frontier() {
         panic!("expected JSON from bench frontier; err={e}; got:\n{stdout}");
     });
 
-    let points = v["points"].as_array().expect("expected `points` array");
+    let points = v["points"].as_array().unwrap();
     assert_eq!(points.len(), 3, "expected 3 points (one per dir)");
 
     // dir_b should be on the frontier
@@ -2135,7 +2135,7 @@ fn frontier_emits_pareto_json_with_efficient_frontier() {
     let dir_c_point = points
         .iter()
         .find(|p| p["dir"].as_str().is_some_and(|d| d == dir_c_path))
-        .expect("expected dir_c point in frontier output");
+        .unwrap();
     assert_eq!(
         dir_c_point["on_frontier"].as_bool(),
         Some(false),
