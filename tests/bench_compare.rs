@@ -2215,8 +2215,16 @@ fn frontier_resolved_count_capped_to_sweep_instance_ids() {
         panic!("expected JSON; err={e}; got:\n{stdout}");
     });
     let p = &v["points"][0];
-    assert_eq!(p["instances"].as_u64(), Some(1), "instances must be 1 (only inst-1 in sweep)");
-    assert_eq!(p["resolved"].as_u64(), Some(1), "resolved must be 1, not 2 (inst-2 not in sweep)");
+    assert_eq!(
+        p["instances"].as_u64(),
+        Some(1),
+        "instances must be 1 (only inst-1 in sweep)"
+    );
+    assert_eq!(
+        p["resolved"].as_u64(),
+        Some(1),
+        "resolved must be 1, not 2 (inst-2 not in sweep)"
+    );
     let rate = p["resolved_rate"].as_f64().unwrap_or(f64::NAN);
     assert!(
         (rate - 1.0).abs() < 1e-9,
