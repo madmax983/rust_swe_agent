@@ -388,7 +388,10 @@ async fn push_patch_branch_to_repo_url(
     )
     .await?;
 
-    let patch_path = work.path().join("agent.patch");
+    let patch_work = tempfile::Builder::new()
+        .prefix("rust-swe-agent-github-pr-patch-")
+        .tempdir()?;
+    let patch_path = patch_work.path().join("agent.patch");
     std::fs::write(&patch_path, patch_text)?;
     run_git(
         work.path(),
@@ -1122,6 +1125,26 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
             "patched\n"
         );
+
+        let tree_ref = format!("refs/heads/{head_branch}");
+        let tree = run_git_capture(
+            root.path(),
+            &[
+                "--git-dir",
+                &remote_arg,
+                "ls-tree",
+                "-r",
+                "--name-only",
+                &tree_ref,
+            ],
+            token,
+            deadline,
+        )
+        .await
+        .unwrap();
+        let tree = String::from_utf8_lossy(&tree.stdout);
+        assert!(tree.contains("file.txt"));
+        assert!(!tree.contains("agent.patch"));
     }
 
     #[tokio::test]
