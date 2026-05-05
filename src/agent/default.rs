@@ -243,11 +243,7 @@ impl Agent for DefaultAgent {
     // for no real reuse benefit.
     #[allow(clippy::too_many_lines)]
     async fn step(&mut self) -> Result<StepOutcome, Error> {
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
-        {
+        if self.cancellation_requested() {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
@@ -320,6 +316,11 @@ impl Agent for DefaultAgent {
         self.completion_tokens = self
             .completion_tokens
             .saturating_add(resp.usage.output_tokens);
+
+        if self.cancellation_requested() {
+            self.finalize_cancelled();
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
 
         // Record assistant message in trajectory with raw + cost.
         let asst_ts = chrono::Utc::now().to_rfc3339();
@@ -401,6 +402,10 @@ impl Agent for DefaultAgent {
             )
             .await?;
         let tool_use_blocked = pre_hook_results.iter().any(ToolHookResult::blocks_tool_use);
+        if self.cancellation_requested() {
+            self.finalize_cancelled();
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
 
         let (result, post_hook_results) = if tool_use_blocked {
             (blocked_run_result(&pre_hook_results), Vec::new())
@@ -546,11 +551,7 @@ impl Agent for DefaultAgent {
         });
 
         self.steps += 1;
-        if self
-            .cancellation
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
-        {
+        if self.cancellation_requested() {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
@@ -559,6 +560,12 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    fn cancellation_requested(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+
     fn emit_run_ended(
         &self,
         exit_reason: &str,
@@ -963,8 +970,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::env::LocalEnvironment;
-    use crate::model::{DeterministicModel, ModelUsage};
+    use crate::model::{DeterministicModel, ModelResponse, ModelUsage, QueryOpts};
     use crate::trajectory::FailureCategory;
+    use tokio::sync::watch;
 
     #[derive(Clone)]
     struct StaticEnvironment {
@@ -975,6 +983,36 @@ mod tests {
     impl Environment for StaticEnvironment {
         async fn run(&self, _req: RunRequest) -> Result<RunResult, crate::error::EnvError> {
             Ok(self.result.clone())
+        }
+    }
+
+    struct CancelBeforeSubmitModel {
+        cancel_tx: watch::Sender<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model for CancelBeforeSubmitModel {
+        fn name(&self) -> &'static str {
+            "cancel-before-submit"
+        }
+
+        async fn query(
+            &self,
+            _messages: &[Message],
+            _opts: &QueryOpts,
+        ) -> Result<ModelResponse, crate::error::ModelError> {
+            let _ = self.cancel_tx.send(true);
+            Ok(ModelResponse {
+                content: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nlate submit\n```".into(),
+                usage: ModelUsage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cost_usd: Some(0.02),
+                },
+                raw: serde_json::json!({"cancelled_during_query": true}),
+            })
         }
     }
 
@@ -1042,6 +1080,46 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 0);
         assert_eq!(usage.completion_tokens, 0);
         assert!(a.trajectory.info.duration_secs.unwrap() >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_model_response_wins_over_submit_action() {
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: Arc::new(CancelBeforeSubmitModel { cancel_tx }),
+            env: Box::new(StaticEnvironment {
+                result: RunResult {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                },
+            }),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap();
+        agent.cancellation = Some(CancellationToken::new(cancel_rx));
+
+        let exit = agent.run().await.unwrap();
+
+        assert!(matches!(exit, ExitReason::UserInterrupt));
+        assert_eq!(
+            agent.trajectory.info.exit_reason.as_deref(),
+            Some(exit_reason::CANCELLED)
+        );
+        assert_eq!(
+            agent.trajectory.info.outcome.as_deref(),
+            Some(outcome::ERROR)
+        );
+        assert_eq!(agent.trajectory.info.final_output, None);
+        assert_eq!(agent.trajectory.info.token_usage.unwrap().prompt_tokens, 11);
     }
 
     #[tokio::test]

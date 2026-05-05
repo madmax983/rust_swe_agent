@@ -90,7 +90,6 @@ impl DockerEnvironment {
     }
 
     async fn force_remove_container(&self) -> Result<(), EnvError> {
-        self.shutdown_sent.store(true, Ordering::SeqCst);
         let out = Command::new("docker")
             .args(["rm", "-f", self.container_id.as_str()])
             .stdin(StdStdio::null())
@@ -100,10 +99,16 @@ impl DockerEnvironment {
             .await
             .map_err(EnvError::Io)?;
         if !out.status.success() {
-            return Err(EnvError::CommandFailed(
+            return self.mark_shutdown_after_remove(Err(EnvError::CommandFailed(
                 String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
+            )));
         }
+        self.mark_shutdown_after_remove(Ok(()))
+    }
+
+    fn mark_shutdown_after_remove(&self, result: Result<(), EnvError>) -> Result<(), EnvError> {
+        result?;
+        self.shutdown_sent.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -326,6 +331,40 @@ impl Drop for DockerEnvironment {
             .stdout(StdStdio::null())
             .stderr(StdStdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_env() -> DockerEnvironment {
+        DockerEnvironment {
+            container_id: ContainerId::new("test-container"),
+            image: "test-image".into(),
+            workdir: PathBuf::from("/workspace"),
+            shutdown_sent: AtomicBool::new(false),
+            cleanup_on_drop: false,
+        }
+    }
+
+    #[test]
+    fn failed_container_removal_does_not_mark_shutdown_sent() {
+        let env = test_env();
+
+        let result = env.mark_shutdown_after_remove(Err(EnvError::CommandFailed("boom".into())));
+
+        assert!(result.is_err());
+        assert!(!env.shutdown_sent.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn successful_container_removal_marks_shutdown_sent() {
+        let env = test_env();
+
+        env.mark_shutdown_after_remove(Ok(())).unwrap();
+
+        assert!(env.shutdown_sent.load(Ordering::SeqCst));
     }
 }
 
