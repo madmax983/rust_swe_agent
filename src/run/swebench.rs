@@ -1218,7 +1218,7 @@ pub async fn run(args: SwebenchArgs) -> Result<SweepResults, Error> {
             Ok(r) => {
                 match r.result.outcome.as_deref() {
                     Some(outcome::SUBMITTED) => submitted += 1,
-                    Some(outcome::ERROR) => errored += 1,
+                    Some(outcome::ERROR) | Some(outcome::BUDGET_EXHAUSTED) => errored += 1,
                     _ => {}
                 }
                 accounting.add_result(&r.result);
@@ -2505,6 +2505,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "model_parse" => Ok(FailureCategory::ModelParse),
         "step_limit" => Ok(FailureCategory::StepLimit),
         "cost_limit" => Ok(FailureCategory::CostLimit),
+        "budget_exhausted" => Ok(FailureCategory::BudgetExhausted),
         "wallclock_timeout" => Ok(FailureCategory::WallclockTimeout),
         "agent_internal" => Ok(FailureCategory::AgentInternal),
         "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
@@ -2687,6 +2688,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 .or_else(|| match exit_reason.as_str() {
                     "step_limit" => Some(FailureCategory::StepLimit),
                     "cost_limit" => Some(FailureCategory::CostLimit),
+                    "budget_exhausted" => Some(FailureCategory::BudgetExhausted),
                     exit_reason::WALLCLOCK_TIMEOUT => Some(FailureCategory::WallclockTimeout),
                     _ => run_err
                         .as_ref()
@@ -2808,11 +2810,13 @@ fn classify_error(err: &Error) -> FailureCategory {
 
 fn is_failed_instance(r: &InstanceResult) -> bool {
     r.outcome.as_deref() == Some(outcome::ERROR)
+        || r.outcome.as_deref() == Some(outcome::BUDGET_EXHAUSTED)
         || matches!(
             r.failure_category,
             Some(
                 FailureCategory::StepLimit
                     | FailureCategory::CostLimit
+                    | FailureCategory::BudgetExhausted
                     | FailureCategory::WallclockTimeout
             )
         )
@@ -2825,6 +2829,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::BudgetExhausted => "budget_exhausted",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
@@ -3463,6 +3468,45 @@ mod tests {
         assert_eq!(counts.resolved_with_tests, 1);
         assert_eq!(counts.without_tests, 0);
         assert_eq!(counts.resolved_without_tests, 0);
+    }
+
+    #[test]
+    fn summary_table_includes_per_task_budget_kills_when_present() {
+        use crate::trajectory::FailureCategory;
+        let mut failures = BTreeMap::new();
+        failures.insert(FailureCategory::BudgetExhausted, 3usize);
+        let s = SweepResults {
+            total: 5,
+            submitted: 2,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 3,
+            failures_by_category: failures,
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![],
+            rate_limit_events: None,
+        };
+        let t = s.summary_table();
+        assert!(
+            t.contains("budget_exhausted") || t.contains("Budget-exhausted"),
+            "summary should mention budget_exhausted failures; got:\n{t}"
+        );
     }
 
     #[test]

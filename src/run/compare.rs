@@ -1627,6 +1627,7 @@ fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::ModelParse => "model_parse",
         FailureCategory::StepLimit => "step_limit",
         FailureCategory::CostLimit => "cost_limit",
+        FailureCategory::BudgetExhausted => "budget_exhausted",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
