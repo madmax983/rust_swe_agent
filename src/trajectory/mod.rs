@@ -31,6 +31,7 @@ pub mod outcome {
 }
 
 pub mod exit_reason {
+    pub const CANCELLED: &str = "cancelled";
     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 

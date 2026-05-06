@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::env::CancellationToken;
+
 /// Per-sweep rate-limit telemetry emitted in `results.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RateLimitEvents {
@@ -152,19 +154,65 @@ impl RateLimitGovernor {
     /// Must NOT be called while holding any lock that would prevent other
     /// tasks from progressing during the sleep.
     pub async fn acquire(&self, input_token_estimate: u64) {
+        let _ = self.acquire_inner(input_token_estimate, None).await;
+    }
+
+    /// Block until the next API call is permitted or cancellation is requested.
+    ///
+    /// Returns `true` when the permit was acquired and `false` when cancelled
+    /// before acquisition.
+    pub async fn acquire_until_cancelled(
+        &self,
+        input_token_estimate: u64,
+        cancellation: CancellationToken,
+    ) -> bool {
+        self.acquire_inner(input_token_estimate, Some(cancellation))
+            .await
+    }
+
+    async fn acquire_inner(
+        &self,
+        input_token_estimate: u64,
+        mut cancellation: Option<CancellationToken>,
+    ) -> bool {
         loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                return false;
+            }
             let sleep_for = self.check_and_maybe_consume(input_token_estimate).await;
+            if cancellation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                return false;
+            }
             match sleep_for {
-                None => break,
+                None => return true,
                 Some(dur) => {
                     let start = Instant::now();
-                    tokio::time::sleep(dur).await;
-                    let elapsed = start.elapsed().as_secs_f64();
-                    let mut inner = self.inner.lock().await;
-                    inner.events.total_throttled_seconds += elapsed;
+                    if let Some(cancellation) = cancellation.as_mut() {
+                        tokio::select! {
+                            () = tokio::time::sleep(dur) => {}
+                            () = cancellation.cancelled() => {
+                                self.record_throttle_wait(start.elapsed()).await;
+                                return false;
+                            }
+                        }
+                    } else {
+                        tokio::time::sleep(dur).await;
+                    }
+                    self.record_throttle_wait(start.elapsed()).await;
                 }
             }
         }
+    }
+
+    async fn record_throttle_wait(&self, elapsed: Duration) {
+        let mut inner = self.inner.lock().await;
+        inner.events.total_throttled_seconds += elapsed.as_secs_f64();
     }
 
     /// Single check-and-consume pass. Returns the duration to sleep before

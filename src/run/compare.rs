@@ -2195,6 +2195,13 @@ mod tests {
     fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         let sweep = SweepResults {
             total: instances.len(),
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: instances.len(),
             submitted_with_tests: instances
                 .iter()
@@ -2328,6 +2335,13 @@ mod tests {
         let dir_c = tempfile::tempdir().unwrap();
         let baseline_sweep = SweepResults {
             total: 2,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 1,
             submitted_with_tests: 0,
             skipped: 0,
@@ -2661,11 +2675,19 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn prefers_evaluation_json_resolved_over_submission_proxy() {
         let dir_b = tempfile::tempdir().unwrap();
         let dir_c = tempfile::tempdir().unwrap();
         let baseline_sweep = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 1,
             submitted_with_tests: 0,
             skipped: 0,
@@ -2886,6 +2908,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sweep = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,
@@ -2977,6 +3006,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sweep = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 1,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3034,6 +3070,13 @@ mod tests {
         let started = chrono::Utc::now() + chrono::Duration::seconds(10);
         let sweep = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3127,6 +3170,13 @@ mod tests {
         let started = chrono::Utc::now() + chrono::Duration::seconds(10);
         let sweep = SweepResults {
             total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,
@@ -3290,6 +3340,13 @@ mod tests {
         };
         let sweep = SweepResults {
             total: 0,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
             submitted: 0,
             submitted_with_tests: 0,
             skipped: 0,

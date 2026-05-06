@@ -21,6 +21,7 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
         ]),
         deterministic_usage_per_call: None,
         task_timeout_secs: None,
+        cancellation: None,
         stream_addr: None,
         patch_capture: None,
     };
