@@ -521,8 +521,8 @@ impl Trajectory {
 
     /// Appends a message while forcibly attaching specific metadata.
     ///
-    /// This is useful when the agent harness wants to inject metrics (like cost or actions taken)
-    /// that aren't natively attached to the [`Message`] object but need to exist in the trajectory log.
+    /// This is useful when the agent harness wants to override or supplement the metadata (like cost
+    /// or actions taken) that was originally associated with the [Message].
     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
