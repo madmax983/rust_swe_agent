@@ -87,6 +87,9 @@ enum RuleMatcher {
         regex: Regex,
         capture_group: Option<usize>,
     },
+    EnvAssignment {
+        regex: Regex,
+    },
 }
 
 #[derive(Debug)]
@@ -332,6 +335,21 @@ impl Redactor {
                         }
                     }
                 }
+                RuleMatcher::EnvAssignment { regex } => {
+                    for captures in regex.captures_iter(input) {
+                        let (Some(name), Some(value)) = (captures.get(1), captures.get(2)) else {
+                            continue;
+                        };
+                        if env_name_is_sensitive(name.as_str()) && value.start() < value.end() {
+                            out.push(RedactionMatch {
+                                start: value.start(),
+                                end: value.end(),
+                                kind: rule.kind.clone(),
+                                raw: value.as_str().to_owned(),
+                            });
+                        }
+                    }
+                }
             }
         }
         out
@@ -543,29 +561,20 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
-            matcher: RuleMatcher::Regex {
-                regex: Regex::new(
-                    r#"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)[A-Z0-9_]*\s*=\s*)([^ \t\r\n'"]{4,})"#,
-                )?,
-                capture_group: Some(2),
+            matcher: RuleMatcher::EnvAssignment {
+                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*([^ \t\r\n'"]{4,})"#)?,
             },
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
-            matcher: RuleMatcher::Regex {
-                regex: Regex::new(
-                    r#"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)[A-Z0-9_]*\s*=\s*")([^"\r\n]{4,})"#,
-                )?,
-                capture_group: Some(2),
+            matcher: RuleMatcher::EnvAssignment {
+                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*"([^"\r\n]{4,})"#)?,
             },
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
-            matcher: RuleMatcher::Regex {
-                regex: Regex::new(
-                    r#"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)[A-Z0-9_]*\s*=\s*')([^'\r\n]{4,})"#,
-                )?,
-                capture_group: Some(2),
+            matcher: RuleMatcher::EnvAssignment {
+                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*'([^'\r\n]{4,})"#)?,
             },
         },
     ])
@@ -757,6 +766,44 @@ mod tests {
         assert!(env_literal_kind("API_TOKEN", "abc").is_none());
         assert_eq!(env_literal_kind("API_TOKEN", "abcd"), Some("env_token"));
         assert!(env_literal_kind("KEYBOARD_LAYOUT", "us").is_none());
+    }
+
+    #[test]
+    fn env_assignment_redaction_ignores_key_substrings() {
+        let redactor = Redactor::default_enabled();
+
+        let outcome = redactor.redact_text(
+            "MONKEY=abcd\nKEYBOARD_LAYOUT=uspc\nAPI_KEY=secret-value\nGITHUB_TOKEN=\"quoted-token-value\"\n",
+            surface::TRAJECTORY,
+        );
+
+        assert!(outcome.redacted, "expected sensitive assignments to redact");
+        assert!(
+            outcome.text.contains("MONKEY=abcd"),
+            "benign KEY substring was redacted: {}",
+            outcome.text
+        );
+        assert!(
+            outcome.text.contains("KEYBOARD_LAYOUT=uspc"),
+            "ordinary key-containing name was redacted: {}",
+            outcome.text
+        );
+        assert!(
+            !outcome.text.contains("secret-value"),
+            "API_KEY value leaked: {}",
+            outcome.text
+        );
+        assert!(
+            !outcome.text.contains("quoted-token-value"),
+            "GITHUB_TOKEN value leaked: {}",
+            outcome.text
+        );
+        assert!(outcome.text.contains("API_KEY=[REDACTED:env_assignment:"));
+        assert!(
+            outcome
+                .text
+                .contains("GITHUB_TOKEN=\"[REDACTED:env_assignment:")
+        );
     }
 
     #[test]
