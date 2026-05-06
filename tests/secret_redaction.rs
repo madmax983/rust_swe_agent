@@ -17,7 +17,9 @@ use rust_swe_agent::run::swebench::{
     SwebenchArgs, patch_path_for_run, run as run_sweep, trajectory_path_for_run,
 };
 use rust_swe_agent::stream::{BroadcastSink, StreamSink};
-use rust_swe_agent::{Agent, Config, DeterministicModel, Environment, ExitReason, RunResult};
+use rust_swe_agent::{
+    Agent, Config, DeterministicModel, Environment, ExitReason, Model, RunResult,
+};
 
 #[derive(Debug, Clone)]
 struct StaticEnvironment {
@@ -186,6 +188,83 @@ secret_literals = ["{configured_secret}"]
             .as_deref()
             .is_some_and(|task| task.contains("[REDACTED:configured_literal:")),
         "{trajectory_json}"
+    );
+}
+
+#[tokio::test]
+async fn rendered_observation_template_static_literals_are_redacted_before_history() {
+    let configured_secret = "static-observation-template-secret";
+    let mut cfg = Config::from_toml_str(&format!(
+        r#"
+[agent]
+step_limit = 5
+
+[redaction]
+secret_literals = ["{configured_secret}"]
+"#
+    ))
+    .unwrap();
+    cfg.root.agent.observation_template = format!(
+        "ci annotation: {configured_secret}\nExit code: {{{{ returncode }}}}\nOutput:\n{{{{ output }}}}"
+    );
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho visible-output\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let model_for_agent: Arc<dyn Model> = model.clone();
+    let env: Box<dyn Environment> = Box::new(StaticEnvironment {
+        result: RunResult {
+            stdout: "visible-output\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        },
+    });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model: model_for_agent,
+        env,
+        task: "redact static observation template text".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let history_text = agent
+        .history
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!history_text.contains(configured_secret), "{history_text}");
+    assert!(
+        history_text.contains("[REDACTED:configured_literal:"),
+        "{history_text}"
+    );
+
+    let recorded_inputs = model.recorded_inputs();
+    assert!(
+        recorded_inputs.len() >= 2,
+        "expected a second model query, got {recorded_inputs:#?}"
+    );
+    let second_prompt = recorded_inputs[1]
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !second_prompt.contains(configured_secret),
+        "{second_prompt}"
+    );
+    assert!(
+        second_prompt.contains("[REDACTED:configured_literal:"),
+        "{second_prompt}"
     );
 }
 

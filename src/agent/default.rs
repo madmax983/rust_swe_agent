@@ -637,6 +637,10 @@ impl Agent for DefaultAgent {
 
         // 6b. Optionally append the budget block.
         let obs_text = self.append_budget_block(obs_text)?;
+        let obs_text = self
+            .redactor
+            .redact_text(&obs_text, surface::MODEL_OBSERVATION)
+            .text;
 
         // Record assistant turn in history & trajectory.
         self.history.push(Message::assistant(
