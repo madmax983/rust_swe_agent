@@ -92,3 +92,44 @@ impl From<toml::de::Error> for ConfigError {
         Self::Toml(e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_error_from_toml_error() {
+        // We simulate a toml deserialization error to test the From trait implementation
+        let Err(toml_err) = toml::from_str::<serde::de::IgnoredAny>("invalid toml = {") else {
+            panic!("expected error")
+        };
+        let config_err: ConfigError = toml_err.into();
+
+        match config_err {
+            ConfigError::Toml(msg) => {
+                assert!(msg.contains("invalid toml"));
+            }
+            _ => panic!("Expected ConfigError::Toml"),
+        }
+    }
+
+    #[test]
+    fn test_error_display_implementations() {
+        // Test that thiserror attributes render expected messages
+        let err = ConfigError::NotFound("missing.toml".to_string());
+        assert_eq!(err.to_string(), "config file not found: missing.toml");
+
+        let err = EnvError::DockerNotInstalled;
+        assert_eq!(err.to_string(), "docker not installed or not on PATH");
+
+        let err = ModelError::RateLimited("too fast".to_string());
+        assert_eq!(err.to_string(), "rate limited: too fast");
+
+        // Test top level Error delegates appropriately
+        let top_err: Error = err.into();
+        assert_eq!(top_err.to_string(), "rate limited: too fast");
+
+        let tmpl_err = Error::Template("bad syntax".to_string());
+        assert_eq!(tmpl_err.to_string(), "template render failed: bad syntax");
+    }
+}
