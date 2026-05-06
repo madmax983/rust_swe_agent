@@ -236,6 +236,13 @@ mod tests {
     }
 
     #[test]
+    fn empty_bash_block_falls_through_to_ripgrep() {
+        // bash comes first but is empty; ripgrep block is valid and should be returned.
+        let s = "```bash\n\n```\n```ripgrep\nfoo src/\n```";
+        assert_eq!(extract_action(s), Action::Ripgrep("foo src/".into()));
+    }
+
+    #[test]
     fn submit_wins_over_ripgrep() {
         let s = "```ripgrep\nfoo\n```\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nresult\n```";
         assert_eq!(extract_action(s), Action::Submit("result".into()));

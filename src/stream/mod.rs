@@ -148,6 +148,26 @@ mod tests {
     }
 
     #[test]
+    fn ripgrep_event_names() {
+        let start = StreamEvent::RipgrepStart {
+            step: 1,
+            command: "rg --color never foo src/".into(),
+            timestamp: "t".into(),
+        };
+        assert_eq!(start.event_name(), "ripgrep_start");
+
+        let result = StreamEvent::RipgrepResult {
+            step: 1,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        };
+        assert_eq!(result.event_name(), "ripgrep_result");
+    }
+
+    #[test]
     fn serializes_with_type_tag() {
         let e = StreamEvent::BashStart {
             step: 3,

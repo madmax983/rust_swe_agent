@@ -11,6 +11,7 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
+use shell_words;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -913,9 +914,11 @@ impl ToolHookPhase {
 
 /// Build the shell command for a ripgrep action.
 ///
-/// Newlines in the args block are converted to spaces so multiline ripgrep
-/// blocks (e.g. `--type rust\n"pattern" src/`) don't become shell command
-/// separators when passed to `bash -c`.
+/// Multiline args are joined with spaces, then round-tripped through POSIX
+/// shell-word splitting and re-quoting so metacharacters in the pattern or
+/// path (`;`, `$()`, backticks, etc.) can't escape into the enclosing
+/// `bash -c` invocation. Malformed quoting in the original args yields an
+/// empty argument list, causing `rg` to fail safely with a usage error.
 fn ripgrep_command(args: &str) -> String {
     let normalized = args
         .lines()
@@ -923,7 +926,10 @@ fn ripgrep_command(args: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    format!("rg --color never {normalized}")
+    let safe_args = shell_words::split(&normalized)
+        .map(|words| shell_words::join(words))
+        .unwrap_or_default();
+    format!("rg --color never {safe_args}")
 }
 
 fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
@@ -1058,9 +1064,11 @@ mod tests {
 
     #[test]
     fn ripgrep_command_joins_multiline_args() {
+        // Multiline block becomes a single rg invocation; "fn main" is
+        // preserved as one argument by the shell-word round-trip.
         assert_eq!(
             ripgrep_command("--type rust\n\"fn main\" src/"),
-            "rg --color never --type rust \"fn main\" src/"
+            "rg --color never --type rust 'fn main' src/"
         );
     }
 
@@ -1074,10 +1082,17 @@ mod tests {
 
     #[test]
     fn ripgrep_command_single_line_unchanged() {
-        assert_eq!(
-            ripgrep_command("\"TODO\" src/"),
-            "rg --color never \"TODO\" src/"
-        );
+        assert_eq!(ripgrep_command("TODO src/"), "rg --color never TODO src/");
+    }
+
+    #[test]
+    fn ripgrep_command_quotes_shell_metacharacters() {
+        // Semicolons, dollar signs, and backticks in the pattern must be
+        // quoted so they cannot act as shell command separators.
+        let cmd = ripgrep_command("foo; rm -rf /");
+        // The semicolon must be inside a quoted token — not a bare separator.
+        assert!(!cmd.contains("; rm"), "bare semicolon separator in: {cmd}");
+        assert!(cmd.starts_with("rg --color never "), "prefix intact: {cmd}");
     }
 
     #[derive(Clone)]

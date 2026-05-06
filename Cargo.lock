@@ -1663,6 +1663,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shell-words",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
