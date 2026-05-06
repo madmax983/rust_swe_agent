@@ -2403,6 +2403,7 @@ fn persist_cancelled_wait_trajectory(
     trajectory.info.ended_at = Some(now);
     trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
     trajectory.info.outcome = Some(outcome::ERROR.into());
+    trajectory.info.failure_category = None;
     trajectory.info.total_cost_usd.get_or_insert(0.0);
     trajectory
         .info
@@ -4843,6 +4844,38 @@ instance = "inst"
             disabled.backoff_for("inst", 3),
             std::time::Duration::from_millis(0)
         );
+    }
+
+    #[test]
+    fn cancelled_wait_trajectory_clears_prior_failure_category() {
+        let output = tempfile::tempdir().unwrap();
+        let traj_path = trajectory_path_for_run(output.path(), "retry-waiter", 1);
+        std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();
+
+        let mut trajectory = Trajectory::default();
+        trajectory.info.task = Some("old task".into());
+        trajectory.info.model_name = Some("old model".into());
+        trajectory.info.exit_reason = Some("error".into());
+        trajectory.info.outcome = Some(outcome::ERROR.into());
+        trajectory.info.failure_category = Some(FailureCategory::ModelApi);
+        trajectory.save_pretty(&traj_path).unwrap();
+
+        persist_cancelled_wait_trajectory(
+            output.path(),
+            "retry-waiter",
+            1,
+            "cancelled task",
+            "cancelled model",
+        );
+
+        let reread: Trajectory =
+            serde_json::from_str(&std::fs::read_to_string(&traj_path).unwrap()).unwrap();
+        assert_eq!(
+            reread.info.exit_reason.as_deref(),
+            Some(exit_reason::CANCELLED)
+        );
+        assert_eq!(reread.info.outcome.as_deref(), Some(outcome::ERROR));
+        assert_eq!(reread.info.failure_category, None);
     }
 
     #[test]

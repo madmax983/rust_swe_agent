@@ -407,6 +407,7 @@ async fn forced_cancel_interrupts_pre_run_rate_limit_wait() {
     .unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
     assert_eq!(traj.info.exit_reason.as_deref(), Some("cancelled"));
+    assert_eq!(traj.info.failure_category, None);
 }
 
 #[tokio::test]
@@ -459,4 +460,5 @@ async fn forced_cancel_interrupts_retry_backoff_wait() {
     .unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::ERROR));
     assert_eq!(traj.info.exit_reason.as_deref(), Some("cancelled"));
+    assert_eq!(traj.info.failure_category, None);
 }
