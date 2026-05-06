@@ -4,7 +4,7 @@
 //! common structured secret shapes, and current-process environment values
 //! with sensitive names before text reaches persisted or shareable surfaces.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use regex::Regex;
@@ -101,26 +101,29 @@ impl Redactor {
     pub fn from_config(cfg: &RedactionCfg) -> Result<Self, regex::Error> {
         let mut rules = Vec::new();
         let mut blocking_literals = Vec::new();
+        let mut seen_literals = BTreeSet::new();
 
         if cfg.enabled {
             for literal in cfg.secret_literals.iter().filter(|value| !value.is_empty()) {
-                rules.push(RedactionRule {
-                    kind: KIND_CONFIGURED_LITERAL.to_owned(),
-                    matcher: RuleMatcher::Literal(literal.clone()),
-                });
-                blocking_literals.push(literal.clone());
+                push_literal_rule(
+                    &mut rules,
+                    &mut blocking_literals,
+                    &mut seen_literals,
+                    KIND_CONFIGURED_LITERAL,
+                    literal.clone(),
+                );
             }
 
             for (name, value) in std::env::vars() {
-                if value.is_empty() || !env_name_is_sensitive(&name) {
-                    continue;
+                if let Some(kind) = env_literal_kind(&name, &value) {
+                    push_literal_rule(
+                        &mut rules,
+                        &mut blocking_literals,
+                        &mut seen_literals,
+                        kind,
+                        value,
+                    );
                 }
-                let kind = env_secret_kind(&name).to_owned();
-                rules.push(RedactionRule {
-                    kind,
-                    matcher: RuleMatcher::Literal(value.clone()),
-                });
-                blocking_literals.push(value);
             }
 
             rules.extend(default_rules()?);
@@ -586,6 +589,23 @@ fn collect_literal_matches(input: &str, literal: &str, kind: &str, out: &mut Vec
     }
 }
 
+fn push_literal_rule(
+    rules: &mut Vec<RedactionRule>,
+    blocking_literals: &mut Vec<String>,
+    seen_literals: &mut BTreeSet<String>,
+    kind: &str,
+    literal: String,
+) {
+    if literal.is_empty() || !seen_literals.insert(literal.clone()) {
+        return;
+    }
+    rules.push(RedactionRule {
+        kind: kind.to_owned(),
+        matcher: RuleMatcher::Literal(literal.clone()),
+    });
+    blocking_literals.push(literal);
+}
+
 fn new_salt() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -607,9 +627,17 @@ fn size_class(value: &str) -> &'static str {
 
 fn env_name_is_sensitive(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    ["TOKEN", "SECRET", "KEY", "PASSWORD", "CREDENTIAL"]
+    if ["TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"]
         .iter()
         .any(|needle| upper.contains(needle))
+    {
+        return true;
+    }
+    upper.split(['_', '-']).any(|segment| segment == "KEY")
+}
+
+fn env_literal_kind(name: &str, value: &str) -> Option<&'static str> {
+    (value.len() >= 4 && env_name_is_sensitive(name)).then(|| env_secret_kind(name))
 }
 
 fn env_secret_kind(name: &str) -> &'static str {
@@ -687,6 +715,48 @@ mod tests {
                 .configured_literal_leak("x literal-secret y")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn configured_literals_are_deduplicated_before_rules() {
+        let cfg = RedactionCfg {
+            secret_literals: vec!["repeat-secret".into(), "repeat-secret".into()],
+            ..RedactionCfg::default()
+        };
+
+        let redactor = Redactor::from_config(&cfg).unwrap();
+        let configured_rules = redactor
+            .inner
+            .rules
+            .iter()
+            .filter(|rule| rule.kind == KIND_CONFIGURED_LITERAL)
+            .count();
+        let blocking_literals = redactor
+            .inner
+            .blocking_literals
+            .iter()
+            .filter(|literal| literal.as_str() == "repeat-secret")
+            .count();
+
+        assert_eq!(configured_rules, 1);
+        assert_eq!(blocking_literals, 1);
+    }
+
+    #[test]
+    fn env_key_matching_ignores_key_substrings() {
+        assert!(!env_name_is_sensitive("KEYBOARD_LAYOUT"));
+        assert!(!env_name_is_sensitive("GNOME_KEYRING_PID"));
+        assert!(!env_name_is_sensitive("MONKEY"));
+        assert!(env_name_is_sensitive("API_KEY"));
+        assert!(env_name_is_sensitive("API-KEY"));
+        assert!(env_name_is_sensitive("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn env_literal_candidates_require_minimum_length() {
+        assert!(env_literal_kind("API_TOKEN", "abc").is_none());
+        assert_eq!(env_literal_kind("API_TOKEN", "abcd"), Some("env_token"));
+        assert!(env_literal_kind("KEYBOARD_LAYOUT", "us").is_none());
     }
 
     #[test]

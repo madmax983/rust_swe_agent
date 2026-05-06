@@ -2162,14 +2162,6 @@ fn model_base_url() -> Option<String> {
 
 fn redact_argv(argv: Vec<String>, redaction_cfg: &crate::config::RedactionCfg) -> Vec<String> {
     let redactor = Redactor::from_config_lossy(redaction_cfg);
-    let secret_values: Vec<String> = std::env::vars()
-        .filter_map(|(k, v)| {
-            let key = k.to_ascii_lowercase();
-            ((key.ends_with("_key") || key.ends_with("_token") || key.ends_with("_secret"))
-                && !v.is_empty())
-            .then_some(v)
-        })
-        .collect();
     let mut out = Vec::with_capacity(argv.len());
     let mut redact_next = false;
     for arg in argv {
@@ -2189,7 +2181,7 @@ fn redact_argv(argv: Vec<String>, redaction_cfg: &crate::config::RedactionCfg) -
             continue;
         }
         let redacted_arg = redactor.redact_text(&arg, surface::TRAJECTORY);
-        if redacted_arg.redacted || secret_values.iter().any(|s| arg.contains(s)) {
+        if redacted_arg.redacted {
             out.push(redacted_arg.text);
             continue;
         }
@@ -4443,6 +4435,24 @@ mod tests {
         );
         assert_eq!(redacted[1], "--max-tokens");
         assert_eq!(redacted[2], "4096");
+    }
+
+    #[test]
+    fn redact_argv_uses_redactor_for_embedded_literals() {
+        let cfg = crate::config::RedactionCfg {
+            secret_literals: vec!["review-secret-value".into()],
+            ..crate::config::RedactionCfg::default()
+        };
+        let redacted = redact_argv(
+            vec![
+                "rust-swe-agent".into(),
+                "--note=prefix-review-secret-value-suffix".into(),
+            ],
+            &cfg,
+        );
+
+        assert!(!redacted[1].contains("review-secret-value"));
+        assert!(redacted[1].contains("[REDACTED:configured_literal:"));
     }
 
     #[test]
