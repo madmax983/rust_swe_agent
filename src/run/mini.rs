@@ -439,11 +439,8 @@ pub(crate) async fn check_patch_validity(
         Err(e) => Err(e),
     };
 
-    let mut cleanup_req = attach_cancellation(
-        RunRequest::new(format!("git worktree remove --force {wt_name}"))
-            .with_timeout(Duration::from_secs(30)),
-        cancellation,
-    );
+    let mut cleanup_req = RunRequest::new(format!("git worktree remove --force {wt_name}"))
+        .with_timeout(Duration::from_secs(30));
     cleanup_req.cwd = Some(spec.workdir.clone());
     let _ = env.run(cleanup_req).await;
 
@@ -741,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_patch_validity_threads_cancellation_to_git_commands() {
+    async fn check_patch_validity_does_not_cancel_cleanup_command() {
         let env = RecordingEnvironment::default();
         let work = tempfile::tempdir().unwrap();
         let (_tx, rx) = watch::channel(false);
@@ -763,11 +760,14 @@ mod tests {
 
         let requests = env.requests();
         assert_eq!(requests.len(), 3);
+        assert!(requests[0].0.starts_with("git worktree add "));
+        assert!(requests[0].1, "git worktree add should carry cancellation");
+        assert!(requests[1].0.starts_with("git -C "));
+        assert!(requests[1].1, "git apply --check should carry cancellation");
+        assert!(requests[2].0.starts_with("git worktree remove "));
         assert!(
-            requests
-                .iter()
-                .all(|(_, has_cancellation)| *has_cancellation),
-            "every patch validation git command should carry cancellation"
+            !requests[2].1,
+            "cleanup must run best-effort without cancellation"
         );
     }
 
