@@ -199,10 +199,7 @@ mod tests {
     #[test]
     fn extracts_ripgrep_block() {
         let s = "Let me search:\n```ripgrep\n\"TODO\" src/\n```";
-        assert_eq!(
-            extract_action(s),
-            Action::Ripgrep("\"TODO\" src/".into())
-        );
+        assert_eq!(extract_action(s), Action::Ripgrep("\"TODO\" src/".into()));
     }
 
     #[test]
@@ -240,8 +237,7 @@ mod tests {
 
     #[test]
     fn submit_wins_over_ripgrep() {
-        let s =
-            "```ripgrep\nfoo\n```\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nresult\n```";
+        let s = "```ripgrep\nfoo\n```\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nresult\n```";
         assert_eq!(extract_action(s), Action::Submit("result".into()));
     }
 }
