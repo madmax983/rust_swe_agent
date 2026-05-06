@@ -1228,16 +1228,12 @@ mod tests {
         let path3 = subdir.join("run-test.traj.json");
         std::fs::write(&path3, b"invalid too").unwrap();
 
-        // Also test the file format that works
-        // Note: the test output shows records is empty.
-        // `scan_trajectories` reads `dir.path()`, which returns dirs. It finds `nested`.
-        // Then it reads inside `nested` for files.
-        // It checks if name.starts_with("run-") && name.ends_with(".traj.json")
-        // So `run-valid.traj.json` should match.
-        // Let's print out what `warnings` contain.
+        // Verify that invalid JSON and non-JSON files are skipped without error,
+        // and that appropriate warnings are generated for the invalid files.
         let mut warnings = Vec::new();
         let records = scan_trajectories(dir.path(), &mut warnings).unwrap();
 
         assert_eq!(records.len(), 0);
+        assert_eq!(warnings.len(), 2);
     }
 }
