@@ -1311,7 +1311,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     let mut results = skipped_results;
-    let skipped = results
+    let mut skipped = results
         .iter()
         .filter(|r| r.result.exit_reason == "skipped_resume")
         .count();
@@ -1584,6 +1584,37 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
     }
 
+    write_predictions_file(
+        &args.output_dir,
+        &mut results,
+        &args.config.root.model.name,
+        &args.config.root.redaction,
+    )?;
+
+    skipped = results
+        .iter()
+        .filter(|r| r.result.exit_reason == "skipped_resume")
+        .count();
+    submitted = results
+        .iter()
+        .filter(|r| {
+            r.result.exit_reason != "skipped_resume"
+                && r.result.outcome.as_deref() == Some(outcome::SUBMITTED)
+        })
+        .count();
+    errored = results
+        .iter()
+        .filter(|r| r.result.outcome.as_deref() == Some(outcome::ERROR))
+        .count();
+    budget_halted = results
+        .iter()
+        .filter(|r| r.result.exit_reason == EXIT_REASON_BUDGET_HALT)
+        .count();
+    accounting = SweepAccounting::default();
+    for r in &results {
+        accounting.add_result(&r.result);
+    }
+
     let instance_results = aggregate_run_results(&results, args.reruns);
     let pass_at_k = pass_at_k(&instance_results);
     let mut failures_by_category: BTreeMap<FailureCategory, usize> = BTreeMap::new();
@@ -1592,13 +1623,6 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             *failures_by_category.entry(cat).or_insert(0) += 1;
         }
     }
-
-    write_predictions_file(
-        &args.output_dir,
-        &results,
-        &args.config.root.model.name,
-        &args.config.root.redaction,
-    )?;
 
     let token_breakdown = accounting.tokens;
     let total_cost_usd = sum_f64(
@@ -2719,7 +2743,7 @@ pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
 /// to sb-cli, which rejects duplicate `instance_id` rows.
 fn write_predictions_file(
     output_dir: &std::path::Path,
-    results: &[RunSlotResult],
+    results: &mut [RunSlotResult],
     model_name: &str,
     redaction_cfg: &crate::config::RedactionCfg,
 ) -> Result<(), Error> {
@@ -2745,10 +2769,9 @@ fn write_predictions_file(
         if (redactor.configured_literal_leak(&raw_model_patch).is_some() || redacted_patch.redacted)
             && !redactor.unsafe_allow_secret_leaks()
         {
-            return Err(Error::Trajectory(format!(
-                "secret_leak_detected in prediction artifact for `{}` run {}",
-                r.result.instance_id, r.run_index
-            )));
+            std::fs::write(&patch_path, &redacted_patch.text)?;
+            downgrade_prediction_secret_leak(&mut r.result);
+            continue;
         }
         let model_patch = if redactor.unsafe_allow_secret_leaks() {
             raw_model_patch
@@ -2795,6 +2818,15 @@ fn write_predictions_file(
         std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
     }
     Ok(())
+}
+
+fn downgrade_prediction_secret_leak(result: &mut InstanceResult) {
+    result.exit_reason = "error".into();
+    result.outcome = Some(outcome::ERROR.into());
+    result.failure_category = Some(FailureCategory::SecretLeakDetected);
+    result.error = Some("secret_leak_detected in prediction artifact".into());
+    result.resolved_count = 0;
+    result.pass_at_1 = false;
 }
 
 /// Build an `InstanceResult` for a task skipped via `--resume`. Mirrors what
