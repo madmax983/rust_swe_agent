@@ -13,7 +13,6 @@ use super::Trajectory;
 ///
 /// Implement this trait to provide a new serialization layout (e.g., Markdown, CSV).
 pub trait TrajectoryExporter {
-    /// Transforms the provided [`Trajectory`] into a formatted `String`.
     fn export(trajectory: &Trajectory) -> String;
 }
 
@@ -48,6 +47,9 @@ pub struct CsvExporter;
 
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
+
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
 
 use std::fmt::Write;
 
@@ -157,6 +159,71 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut html = String::new();
+
+        html.push_str("<!DOCTYPE html>\n<html>\n<head>\n");
+        html.push_str("<style>\n");
+        html.push_str("body { font-family: sans-serif; margin: 2rem; }\n");
+        html.push_str(".message { margin-bottom: 1rem; padding: 1rem; border-radius: 4px; }\n");
+        html.push_str(".system { background-color: #f0f0f0; border-left: 4px solid #ccc; }\n");
+        html.push_str(".user { background-color: #e6f3ff; border-left: 4px solid #0066cc; }\n");
+        html.push_str(
+            ".assistant { background-color: #f0fff0; border-left: 4px solid #00cc00; }\n",
+        );
+        html.push_str(".tool { background-color: #fff0f0; border-left: 4px solid #cc0000; }\n");
+        html.push_str("</style>\n");
+        html.push_str("</head>\n<body>\n");
+
+        html.push_str("<h1>Trajectory Export</h1>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let _ = writeln!(
+                html,
+                "<strong>Task:</strong> {}<br>",
+                task.replace('<', "&lt;").replace('>', "&gt;")
+            );
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let _ = writeln!(
+                html,
+                "<strong>Outcome:</strong> {}<br>",
+                outcome.replace('<', "&lt;").replace('>', "&gt;")
+            );
+        }
+
+        html.push_str("<h2>Messages</h2>\n");
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let role_title = match role {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+            let safe_content = msg
+                .content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+
+            let _ = write!(
+                html,
+                "<div class=\"message {role}\">\n<h3>{role_title}</h3>\n<pre>{safe_content}</pre>\n</div>\n"
+            );
+        }
+
+        html.push_str("</body>\n</html>");
+
+        html
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +298,39 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<html>"));
+        assert!(html.contains("<head>"));
+        assert!(html.contains("<body>"));
+        assert!(html.contains("<h1>Trajectory Export</h1>"));
+        assert!(html.contains("<strong>Task:</strong> Add a feature"));
+        assert!(html.contains("<strong>Outcome:</strong> submitted"));
+        assert!(html.contains("<h2>Messages</h2>"));
+        assert!(html.contains("<div class=\"message system\">"));
+        assert!(html.contains("<h3>System</h3>"));
+        assert!(html.contains("<pre>System prompt</pre>"));
+        assert!(html.contains("<div class=\"message user\">"));
+        assert!(html.contains("<h3>User</h3>"));
+        assert!(html.contains("<pre>Hello agent\nMulti-line</pre>"));
+        assert!(html.contains("<div class=\"message assistant\">"));
+        assert!(html.contains("<h3>Assistant</h3>"));
+        assert!(html.contains("<pre>Hello user</pre>"));
+        assert!(html.contains("</body>"));
+        assert!(html.contains("</html>"));
     }
 }
