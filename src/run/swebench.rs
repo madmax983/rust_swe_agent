@@ -1130,6 +1130,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     )?;
     let total = instances.len();
     let summary_path = args.output_dir.join("results.json");
+    let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
     let initial_manifest = build_manifest(
         &args,
         &dataset_sha,
@@ -1277,17 +1278,19 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &inst.instance_id,
                             run_index,
                         );
-                        r = publish_github_pr_for_result(
-                            r,
-                            GithubPrPublication {
-                                config: args.github_pr.as_ref(),
-                                instance_id: &inst.instance_id,
-                                run_index,
-                                trajectory_path: &traj_path,
-                                patch_path: &patch_path,
-                            },
-                        )
-                        .await;
+                        if !downgrade_patch_secret_leak_if_needed(&mut r, &patch_path, &redactor)? {
+                            r = publish_github_pr_for_result(
+                                r,
+                                GithubPrPublication {
+                                    config: args.github_pr.as_ref(),
+                                    instance_id: &inst.instance_id,
+                                    run_index,
+                                    trajectory_path: &traj_path,
+                                    patch_path: &patch_path,
+                                },
+                            )
+                            .await;
+                        }
                         bump_cost(
                             r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
@@ -2764,15 +2767,11 @@ fn write_predictions_file(
         }
         let patch_path =
             existing_patch_path_for_run(output_dir, &r.result.instance_id, r.run_index);
-        let raw_model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
-        let redacted_patch = redactor.redact_text(&raw_model_patch, surface::PATCH_SUBMISSION);
-        if (redactor.configured_literal_leak(&raw_model_patch).is_some() || redacted_patch.redacted)
-            && !redactor.unsafe_allow_secret_leaks()
-        {
-            std::fs::write(&patch_path, &redacted_patch.text)?;
-            downgrade_prediction_secret_leak(&mut r.result);
+        if downgrade_patch_secret_leak_if_needed(&mut r.result, &patch_path, &redactor)? {
             continue;
         }
+        let raw_model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        let redacted_patch = redactor.redact_text(&raw_model_patch, surface::PATCH_SUBMISSION);
         let model_patch = if redactor.unsafe_allow_secret_leaks() {
             raw_model_patch
         } else {
@@ -2818,6 +2817,26 @@ fn write_predictions_file(
         std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
     }
     Ok(())
+}
+
+fn downgrade_patch_secret_leak_if_needed(
+    result: &mut InstanceResult,
+    patch_path: &std::path::Path,
+    redactor: &Redactor,
+) -> Result<bool, Error> {
+    if result.outcome.as_deref() != Some(outcome::SUBMITTED) || !result.patch_present {
+        return Ok(false);
+    }
+    let raw_model_patch = std::fs::read_to_string(patch_path).unwrap_or_default();
+    let redacted_patch = redactor.redact_text(&raw_model_patch, surface::PATCH_SUBMISSION);
+    if (redactor.configured_literal_leak(&raw_model_patch).is_some() || redacted_patch.redacted)
+        && !redactor.unsafe_allow_secret_leaks()
+    {
+        std::fs::write(patch_path, &redacted_patch.text)?;
+        downgrade_prediction_secret_leak(result);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn downgrade_prediction_secret_leak(result: &mut InstanceResult) {
