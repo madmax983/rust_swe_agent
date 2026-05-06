@@ -11,7 +11,6 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
-use shell_words;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -914,11 +913,19 @@ impl ToolHookPhase {
 
 /// Build the shell command for a ripgrep action.
 ///
-/// Multiline args are joined with spaces, then round-tripped through POSIX
-/// shell-word splitting and re-quoting so metacharacters in the pattern or
-/// path (`;`, `$()`, backticks, etc.) can't escape into the enclosing
-/// `bash -c` invocation. Malformed quoting in the original args yields an
-/// empty argument list, causing `rg` to fail safely with a usage error.
+/// Multiline args are joined with spaces so a block like:
+///
+/// ```text
+/// --type rust
+/// "fn main" src/
+/// ```
+///
+/// becomes `rg --color never --type rust "fn main" src/` rather than two
+/// shell commands separated by a newline. We intentionally do not apply
+/// further shell-quoting (e.g. via shell_words) because that would strip
+/// backslashes from regex patterns — `\bTODO\b` would become `bTODOb`.
+/// The ripgrep block has the same trust level as a bash block; `pre_tool_use`
+/// hooks are the appropriate layer for deployments that need tighter control.
 fn ripgrep_command(args: &str) -> String {
     let normalized = args
         .lines()
@@ -926,10 +933,7 @@ fn ripgrep_command(args: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let safe_args = shell_words::split(&normalized)
-        .map(|words| shell_words::join(words))
-        .unwrap_or_default();
-    format!("rg --color never {safe_args}")
+    format!("rg --color never {normalized}")
 }
 
 fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
@@ -1064,11 +1068,9 @@ mod tests {
 
     #[test]
     fn ripgrep_command_joins_multiline_args() {
-        // Multiline block becomes a single rg invocation; "fn main" is
-        // preserved as one argument by the shell-word round-trip.
         assert_eq!(
             ripgrep_command("--type rust\n\"fn main\" src/"),
-            "rg --color never --type rust 'fn main' src/"
+            "rg --color never --type rust \"fn main\" src/"
         );
     }
 
@@ -1086,13 +1088,12 @@ mod tests {
     }
 
     #[test]
-    fn ripgrep_command_quotes_shell_metacharacters() {
-        // Semicolons, dollar signs, and backticks in the pattern must be
-        // quoted so they cannot act as shell command separators.
-        let cmd = ripgrep_command("foo; rm -rf /");
-        // The semicolon must be inside a quoted token — not a bare separator.
-        assert!(!cmd.contains("; rm"), "bare semicolon separator in: {cmd}");
-        assert!(cmd.starts_with("rg --color never "), "prefix intact: {cmd}");
+    fn ripgrep_command_preserves_regex_backslashes() {
+        // Backslashes must survive so regex patterns like \bTODO\b work.
+        assert_eq!(
+            ripgrep_command(r"\bTODO\b src/"),
+            r"rg --color never \bTODO\b src/"
+        );
     }
 
     #[derive(Clone)]
