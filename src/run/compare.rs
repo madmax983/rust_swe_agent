@@ -21,6 +21,7 @@ use crate::run::evaluate::{
     BreakdownAxis, CostAttributionBucket, EvaluationResults, cost_attribution_bucket_label, pct,
     round_dp,
 };
+use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{
     FilterSpec, InstanceResult, ProvenanceManifest, SweepResults, TokenBreakdown, effective_runs,
     resolved_count,
@@ -42,6 +43,7 @@ pub struct CompareArgs {
     /// When `Some(n)`, the binary exits non-zero if regressed-task count
     /// strictly exceeds `n`. `None` is informational only.
     pub max_regressions: Option<usize>,
+    pub max_patch_size_regression_pct: Option<f64>,
     pub breakdown: crate::run::evaluate::BreakdownSelection,
     pub min_delta_pp: f64,
     pub cost_attribution: bool,
@@ -109,6 +111,24 @@ pub struct CompareReport {
     pub baseline_resolved: usize,
     pub candidate_resolved: usize,
     pub resolved_delta: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_mean_lines_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_mean_lines_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_lines_changed_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_p90_lines_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_p90_lines_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p90_lines_changed_delta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_mean_files_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_mean_files_changed: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_files_changed_delta: Option<f64>,
     pub baseline_resolved_rate: f64,
     pub candidate_resolved_rate: f64,
     pub resolved_delta_rate: f64,
@@ -231,6 +251,23 @@ impl CompareReport {
         self.regressions.len()
     }
 
+    #[must_use]
+    pub fn patch_size_regression_exceeds(&self, max_pct: f64) -> bool {
+        let (Some(baseline), Some(candidate)) = (
+            self.baseline_mean_lines_changed,
+            self.candidate_mean_lines_changed,
+        ) else {
+            return false;
+        };
+        if candidate <= baseline {
+            return false;
+        }
+        if baseline <= f64::EPSILON {
+            return candidate > 0.0;
+        }
+        ((candidate - baseline) / baseline) * 100.0 > max_pct
+    }
+
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
@@ -241,6 +278,7 @@ impl CompareReport {
         let mut s = String::new();
         s.push_str("\n=== bench compare ===\n");
         write_compare_overview(&mut s, self);
+        write_patch_stats_delta_lines(&mut s, self);
         write_compare_cost_and_token_section(&mut s, self);
         write_rate_limit_events_section(&mut s, self);
         write_mean_steps_line(
@@ -321,6 +359,47 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         if report.within_noise { "true" } else { "false" }
     );
     let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
+}
+
+fn write_patch_stats_delta_lines(s: &mut String, report: &CompareReport) {
+    write_optional_delta_line(
+        s,
+        "Mean lines changed",
+        report.baseline_mean_lines_changed,
+        report.candidate_mean_lines_changed,
+        report.mean_lines_changed_delta,
+    );
+    write_optional_delta_line(
+        s,
+        "P90 lines changed",
+        report.baseline_p90_lines_changed,
+        report.candidate_p90_lines_changed,
+        report.p90_lines_changed_delta,
+    );
+    write_optional_delta_line(
+        s,
+        "Mean files changed",
+        report.baseline_mean_files_changed,
+        report.candidate_mean_files_changed,
+        report.mean_files_changed_delta,
+    );
+}
+
+fn write_optional_delta_line(
+    s: &mut String,
+    label: &str,
+    baseline: Option<f64>,
+    candidate: Option<f64>,
+    delta: Option<f64>,
+) {
+    match (baseline, candidate, delta) {
+        (Some(b), Some(c), Some(d)) => {
+            let _ = writeln!(s, "{label}: {b:.2} -> {c:.2} ({d:+.2})");
+        }
+        _ => {
+            let _ = writeln!(s, "{label}: n/a");
+        }
+    }
 }
 
 fn write_compare_cost_and_token_section(s: &mut String, report: &CompareReport) {
@@ -1032,6 +1111,17 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         &args.breakdown.axes,
         args.min_delta_pp,
     );
+    let baseline_patch_agg = baseline_eval
+        .as_ref()
+        .map_or_else(PatchStatsAggregates::default, |eval| {
+            patch_stats_aggregates(eval, &baseline.instances)
+        });
+    let candidate_patch_agg = candidate_eval
+        .as_ref()
+        .map_or_else(PatchStatsAggregates::default, |eval| {
+            patch_stats_aggregates(eval, &candidate.instances)
+        });
+    apply_patch_stats_aggregates(&mut report, baseline_patch_agg, candidate_patch_agg);
     if args.cost_attribution {
         let baseline_cost_rows = baseline_eval
             .as_ref()
@@ -1219,6 +1309,15 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_resolved: resolution.baseline_resolved,
         candidate_resolved: resolution.candidate_resolved,
         resolved_delta: resolution.resolved_delta,
+        baseline_mean_lines_changed: None,
+        candidate_mean_lines_changed: None,
+        mean_lines_changed_delta: None,
+        baseline_p90_lines_changed: None,
+        candidate_p90_lines_changed: None,
+        p90_lines_changed_delta: None,
+        baseline_mean_files_changed: None,
+        candidate_mean_files_changed: None,
+        mean_files_changed_delta: None,
         baseline_resolved_rate: resolution.baseline_resolved_rate,
         candidate_resolved_rate: resolution.candidate_resolved_rate,
         resolved_delta_rate: resolution.resolved_delta_rate,
@@ -1270,6 +1369,80 @@ fn cost_per_resolved(total_cost: f64, resolved: usize) -> Option<f64> {
         #[allow(clippy::cast_precision_loss)]
         Some(total_cost / resolved as f64)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PatchStatsAggregates {
+    mean_lines_changed: Option<f64>,
+    p90_lines_changed: Option<f64>,
+    mean_files_changed: Option<f64>,
+}
+
+fn apply_patch_stats_aggregates(
+    report: &mut CompareReport,
+    baseline: PatchStatsAggregates,
+    candidate: PatchStatsAggregates,
+) {
+    report.baseline_mean_lines_changed = baseline.mean_lines_changed;
+    report.candidate_mean_lines_changed = candidate.mean_lines_changed;
+    report.mean_lines_changed_delta =
+        optional_delta(baseline.mean_lines_changed, candidate.mean_lines_changed);
+    report.baseline_p90_lines_changed = baseline.p90_lines_changed;
+    report.candidate_p90_lines_changed = candidate.p90_lines_changed;
+    report.p90_lines_changed_delta =
+        optional_delta(baseline.p90_lines_changed, candidate.p90_lines_changed);
+    report.baseline_mean_files_changed = baseline.mean_files_changed;
+    report.candidate_mean_files_changed = candidate.mean_files_changed;
+    report.mean_files_changed_delta =
+        optional_delta(baseline.mean_files_changed, candidate.mean_files_changed);
+}
+
+fn optional_delta(baseline: Option<f64>, candidate: Option<f64>) -> Option<f64> {
+    match (baseline, candidate) {
+        (Some(b), Some(c)) => Some(c - b),
+        _ => None,
+    }
+}
+
+fn patch_stats_aggregates<S: std::hash::BuildHasher>(
+    eval: &EvaluationResults,
+    loaded_instances: &HashMap<String, InstanceResult, S>,
+) -> PatchStatsAggregates {
+    let stats: Vec<&PatchStats> = eval
+        .instances
+        .iter()
+        .filter(|row| row.resolved && loaded_instances.contains_key(&row.instance_id))
+        .filter_map(|row| row.patch_stats.as_ref())
+        .collect();
+    if stats.is_empty() {
+        return PatchStatsAggregates::default();
+    }
+    let lines_changed: Vec<u32> = stats.iter().map(|s| s.lines_changed()).collect();
+    let files_changed: Vec<u32> = stats.iter().map(|s| s.files_changed).collect();
+    PatchStatsAggregates {
+        mean_lines_changed: Some(mean_u32(&lines_changed)),
+        p90_lines_changed: Some(f64::from(p90_u32(&lines_changed))),
+        mean_files_changed: Some(mean_u32(&files_changed)),
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn mean_u32(values: &[u32]) -> f64 {
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    let total: u64 = values.iter().map(|value| u64::from(*value)).sum();
+    total as f64 / values.len() as f64
+}
+
+fn p90_u32(values: &[u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let index = (sorted.len() * 9).div_ceil(10).saturating_sub(1);
+    sorted[index]
 }
 
 fn compute_pareto_verdict(
@@ -2387,6 +2560,7 @@ mod tests {
             candidate: dir_c.path().to_path_buf(),
             format: CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
@@ -2736,6 +2910,7 @@ mod tests {
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
                 eval_log_path: None,
+                patch_stats: None,
             }],
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
@@ -2752,6 +2927,7 @@ mod tests {
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Unresolved,
                 eval_log_path: None,
+                patch_stats: None,
             }],
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
@@ -2774,6 +2950,7 @@ mod tests {
             candidate: dir_c.path().to_path_buf(),
             format: CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
@@ -2803,6 +2980,7 @@ mod tests {
                 tests_failed: vec![],
                 eval_exit_reason: crate::run::evaluate::EvalExitReason::Resolved,
                 eval_log_path: None,
+                patch_stats: None,
             }],
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
@@ -2819,6 +2997,7 @@ mod tests {
             candidate: dir_c.path().to_path_buf(),
             format: CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: crate::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,

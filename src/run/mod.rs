@@ -9,6 +9,7 @@ pub mod github_pr;
 pub mod hello_world;
 pub mod inspect;
 pub mod mini;
+pub mod patch_stats;
 pub mod rate_limit;
 pub mod replay;
 pub mod swebench;

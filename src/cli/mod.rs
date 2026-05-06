@@ -598,6 +598,7 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         candidate: c.candidate.clone(),
         format,
         max_regressions: c.max_regressions,
+        max_patch_size_regression_pct: c.max_patch_size_regression,
         breakdown,
         min_delta_pp: c.breakdown_min_delta_pp / 100.0,
         cost_attribution: matches!(c.cost_attribution, args::OnOffArg::On),
@@ -622,6 +623,17 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 ci_lower = report.resolved_delta_ci95.lower,
                 ci_upper = report.resolved_delta_ci95.upper,
                 "compare: regression count exceeds --max-regressions threshold"
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Some(max) = c.max_patch_size_regression {
+        if report.patch_size_regression_exceeds(max) {
+            tracing::error!(
+                max_pct = max,
+                baseline_mean_lines_changed = report.baseline_mean_lines_changed,
+                candidate_mean_lines_changed = report.candidate_mean_lines_changed,
+                "compare: patch size regression exceeds --max-patch-size-regression threshold"
             );
             std::process::exit(1);
         }

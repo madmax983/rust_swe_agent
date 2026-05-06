@@ -268,6 +268,11 @@ pub struct CompareCmd {
     #[arg(long)]
     pub max_regressions: Option<usize>,
 
+    /// Exit non-zero when candidate mean lines changed over resolved instances
+    /// exceeds baseline by more than N percent. Unset is informational only.
+    #[arg(long = "max-patch-size-regression")]
+    pub max_patch_size_regression: Option<f64>,
+
     /// Optional metric breakdown axes (`repo,failure_category`) or `none`.
     #[arg(long, default_value = "none")]
     pub breakdown: String,

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::compare::{load_run_slots, load_sweep};
+use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
 
@@ -101,6 +102,8 @@ pub struct InstanceEvaluation {
     pub eval_exit_reason: EvalExitReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval_log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_stats: Option<PatchStats>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -243,6 +246,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
     let mut eval = run_output.eval;
+    attach_patch_stats(&mut eval, args, &run_output.resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(
         &eval.instances,
@@ -264,6 +268,68 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         serde_json::to_string_pretty(&eval)?,
     )?;
     Ok(eval)
+}
+
+fn attach_patch_stats(
+    eval: &mut EvaluationResults,
+    args: &EvaluateArgs,
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+) -> Result<(), Error> {
+    let classifiers = PatchClassifiers::from_default_toml()?;
+    let gold_patches = load_gold_patches(args.dataset_path.as_deref())?;
+    for row in &mut eval.instances {
+        let run_index = patch_stats_run_index(&row.instance_id, resolved_by_run);
+        let patch_text = read_patch_or_empty(&args.sweep_dir, &row.instance_id, run_index)?;
+        row.patch_stats = Some(score_patch(
+            &patch_text,
+            &classifiers,
+            gold_patches.get(&row.instance_id).map(String::as_str),
+        ));
+    }
+    Ok(())
+}
+
+fn load_gold_patches(dataset_path: Option<&Path>) -> Result<HashMap<String, String>, Error> {
+    let Some(path) = dataset_path else {
+        return Ok(HashMap::new());
+    };
+    let mut out = HashMap::new();
+    for row in swebench::load_dataset(path)? {
+        if let Some(patch) = row.other.get("patch").and_then(serde_json::Value::as_str) {
+            out.insert(row.instance_id, patch.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+fn patch_stats_run_index(instance_id: &str, resolved_by_run: &HashMap<RunSlotKey, bool>) -> u32 {
+    resolved_by_run
+        .iter()
+        .filter(|(key, resolved)| key.instance_id == instance_id && **resolved)
+        .map(|(key, _)| key.run_index)
+        .min()
+        .unwrap_or(1)
+}
+
+fn read_patch_or_empty(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Result<String, Error> {
+    let path = existing_patch_path_for_run(sweep_dir, instance_id, run_index);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(Error::Io(err)),
+    }
+}
+
+fn existing_patch_path_for_run(sweep_dir: &Path, instance_id: &str, run_index: u32) -> PathBuf {
+    let nested = swebench::patch_path_for_run(sweep_dir, instance_id, run_index);
+    if nested.exists() || run_index != 1 {
+        return nested;
+    }
+    sweep_dir.join(format!("{instance_id}.patch"))
 }
 
 #[must_use]
@@ -476,6 +542,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
             EvalExitReason::EvalError
         },
         eval_log_path: None,
+        patch_stats: None,
     }
 }
 
@@ -680,6 +747,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                                 EvalExitReason::Unresolved
                             },
                             eval_log_path: None,
+                            patch_stats: None,
                         },
                     );
                 }
@@ -697,6 +765,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                                 tests_failed: vec![],
                                 eval_exit_reason: EvalExitReason::Resolved,
                                 eval_log_path: None,
+                                patch_stats: None,
                             },
                         );
                     }
@@ -756,6 +825,7 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         tests_failed,
         eval_exit_reason,
         eval_log_path,
+        patch_stats: None,
     })
 }
 
@@ -796,6 +866,7 @@ fn merge_with_results(
                 EvalExitReason::EvalError
             },
             eval_log_path: None,
+            patch_stats: None,
         });
     }
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -930,6 +1001,7 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
             EvalExitReason::EvalError
         },
         eval_log_path: None,
+        patch_stats: None,
     }
 }
 
@@ -1369,6 +1441,7 @@ mod tests {
                 EvalExitReason::Unresolved
             },
             eval_log_path: None,
+            patch_stats: None,
         }
     }
 
@@ -1469,6 +1542,7 @@ mod tests {
                         tests_failed: vec![],
                         eval_exit_reason: EvalExitReason::Unresolved,
                         eval_log_path: None,
+                        patch_stats: None,
                     },
                 )]),
             ),
@@ -1486,6 +1560,7 @@ mod tests {
                         tests_failed: vec![],
                         eval_exit_reason: EvalExitReason::Resolved,
                         eval_log_path: None,
+                        patch_stats: None,
                     },
                 )]),
             ),
@@ -1526,6 +1601,7 @@ mod tests {
             tests_failed: vec![],
             eval_exit_reason: EvalExitReason::Unresolved,
             eval_log_path: None,
+            patch_stats: None,
         }];
         let rows = build_breakdown(
             &evals,
