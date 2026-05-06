@@ -163,7 +163,7 @@ pub struct TestInvocation {
 /// # Examples
 ///
 /// ```
-/// use rust_swe_agent::trajectory::{effective_test_command_patterns, TestCommandPattern};
+/// use rust_swe_agent::trajectory::effective_test_command_patterns;
 ///
 /// // Keep defaults and add a custom regex for a proprietary testing framework.
 /// let patterns = effective_test_command_patterns(&["^bazel test".to_string()], false).unwrap();
