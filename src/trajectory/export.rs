@@ -8,6 +8,7 @@
 //! You can extend this module with new formats by implementing the [`TrajectoryExporter`] trait.
 
 use super::Trajectory;
+use crate::redaction::{Redactor, surface};
 
 /// A contract for types that can convert a [`Trajectory`] into a specialized string format.
 ///
@@ -54,20 +55,22 @@ use std::fmt::Write;
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
     fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
         let mut csv = String::new();
         csv.push_str("role,content\n");
 
         for msg in &trajectory.messages {
             let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
 
-            let escaped_content = if msg.content.contains('"')
-                || msg.content.contains(',')
-                || msg.content.contains('\n')
-                || msg.content.contains('\r')
+            let escaped_content = if content.contains('"')
+                || content.contains(',')
+                || content.contains('\n')
+                || content.contains('\r')
             {
-                format!("\"{}\"", msg.content.replace('"', "\"\""))
+                format!("\"{}\"", content.replace('"', "\"\""))
             } else {
-                msg.content.clone()
+                content
             };
 
             let _ = writeln!(csv, "{role},{escaped_content}");
@@ -79,11 +82,13 @@ impl TrajectoryExporter for CsvExporter {
 
 impl TrajectoryExporter for MarkdownExporter {
     fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
         let mut md = String::new();
 
         md.push_str("# Trajectory Export\n\n");
 
         if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
             let _ = write!(md, "**Task:** {task}\n\n");
         }
 
@@ -102,7 +107,8 @@ impl TrajectoryExporter for MarkdownExporter {
                 other => other,
             };
 
-            let _ = write!(md, "### {role_title}\n\n{}\n\n", msg.content);
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let _ = write!(md, "### {role_title}\n\n{content}\n\n");
         }
 
         md
@@ -112,10 +118,12 @@ impl TrajectoryExporter for MarkdownExporter {
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
         let mut mermaid = String::new();
         mermaid.push_str("sequenceDiagram\n");
 
         if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
             let _ = writeln!(mermaid, "    title {task}");
         }
 
@@ -133,8 +141,8 @@ impl TrajectoryExporter for MermaidExporter {
                 _ => "U",
             };
 
-            let safe_content = msg
-                .content
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")

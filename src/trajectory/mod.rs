@@ -16,11 +16,6 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 /// Coarse run outcome. Exactly one of three values, suitable for computing
 /// pass@1-style metrics from trajectory files alone:
 /// `"submitted"` | `"step_limit_reached"` | `"error"`.
-#[cfg(any(
-    feature = "markdown-export",
-    feature = "csv-export",
-    feature = "mermaid-export"
-))]
 pub mod export;
 
 pub mod outcome {
@@ -53,6 +48,8 @@ pub enum FailureCategory {
     PatchApplyInvalid,
     /// Agent submitted but the captured diff was empty (zero bytes).
     PatchEmpty,
+    /// A configured secret literal was found in a submission artifact.
+    SecretLeakDetected,
     Unknown,
 }
 
@@ -298,6 +295,8 @@ pub struct TrajectoryInfo {
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redaction: Option<crate::redaction::RedactionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
     #[serde(default)]

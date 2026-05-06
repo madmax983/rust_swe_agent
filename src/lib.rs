@@ -9,13 +9,14 @@ pub mod env;
 pub mod error;
 pub mod ids;
 pub mod model;
+pub mod redaction;
 pub mod run;
 pub mod stream;
 pub mod template;
 pub mod trajectory;
 
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
-pub use config::{Config, ToolHookCfg, ToolHooksCfg};
+pub use config::{Config, RedactionCfg, ToolHookCfg, ToolHooksCfg};
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
@@ -24,6 +25,7 @@ pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
     ModelResponse, ModelUsage, QueryOpts, Role,
 };
+pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
     FORMAT_VERSION, FailureCategory, MessageRecord, TestInvocation, TokenUsage, Trajectory,

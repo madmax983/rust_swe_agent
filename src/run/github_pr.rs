@@ -11,6 +11,7 @@ use std::process::{Output, Stdio};
 use std::time::Duration;
 
 use crate::error::ConfigError;
+use crate::redaction::{Redactor, surface};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -145,13 +146,24 @@ pub fn build_pr_plan(
     let task_slug = task_branch_component(task_id);
     let head_branch = format!("{prefix}/{task_slug}");
     let summary = summarize_patch(patch_text);
-    let title = format!("rust-swe-agent: {task_id}");
-    let body = render_pr_body(
-        task_id,
-        &options.trajectory_ref,
-        &options.patch_path,
-        &summary,
-    );
+    let redactor = Redactor::default_enabled();
+    let title = redactor
+        .redact_text(
+            &format!("rust-swe-agent: {task_id}"),
+            surface::GITHUB_COMMENT,
+        )
+        .text;
+    let body = redactor
+        .redact_text(
+            &render_pr_body(
+                task_id,
+                &options.trajectory_ref,
+                &options.patch_path,
+                &summary,
+            ),
+            surface::GITHUB_COMMENT,
+        )
+        .text;
 
     Ok(PullRequestPlan {
         target_repo: format!("{}/{}", repo.owner, repo.name),

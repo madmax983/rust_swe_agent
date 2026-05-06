@@ -1954,6 +1954,7 @@ fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
+        FailureCategory::SecretLeakDetected => "secret_leak_detected",
         FailureCategory::Unknown => "unknown",
     }
 }

@@ -12,8 +12,8 @@ use crate::error::ConfigError;
 pub mod schema;
 
 pub use schema::{
-    AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RootCfg, SweepCfg, ToolHookCfg,
-    ToolHooksCfg,
+    AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RedactionCfg, RootCfg, SweepCfg,
+    ToolHookCfg, ToolHooksCfg,
 };
 
 const DEFAULT_TOML: &str = include_str!("defaults/default.toml");
@@ -63,6 +63,13 @@ fn validate_test_command_patterns(root: &RootCfg) -> Result<(), ConfigError> {
         Regex::new(pattern).map_err(|err| {
             ConfigError::Invalid(format!(
                 "invalid agent.test_command_patterns regex {pattern:?}: {err}"
+            ))
+        })?;
+    }
+    for pattern in &root.redaction.custom_patterns {
+        Regex::new(pattern).map_err(|err| {
+            ConfigError::Invalid(format!(
+                "invalid redaction.custom_patterns regex {pattern:?}: {err}"
             ))
         })?;
     }

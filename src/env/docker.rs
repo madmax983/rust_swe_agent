@@ -362,7 +362,7 @@ mod tests {
     fn successful_container_removal_marks_shutdown_sent() {
         let env = test_env();
 
-        env.mark_shutdown_after_remove(Ok(())).unwrap();
+        assert!(env.mark_shutdown_after_remove(Ok(())).is_ok());
 
         assert!(env.shutdown_sent.load(Ordering::SeqCst));
     }

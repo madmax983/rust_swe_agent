@@ -159,6 +159,41 @@ pub struct SweepCfg {
     pub max_input_tpm: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RedactionCfg {
+    /// Enable runtime redaction before observations, trajectories, streams,
+    /// exports, and shareable artifacts are persisted or emitted.
+    #[serde(default = "default_redaction_enabled")]
+    pub enabled: bool,
+    /// Explicit literal values to redact for this run. Values are used at run
+    /// time only and are themselves redacted from exported config manifests.
+    #[serde(default)]
+    pub secret_literals: Vec<String>,
+    /// Extra regex patterns whose full matches are redacted for this run.
+    #[serde(default)]
+    pub custom_patterns: Vec<String>,
+    /// Unsafe escape hatch: allow submitted patch/prediction artifacts to
+    /// contain configured secret literals. Redaction remains enabled unless
+    /// `enabled = false` is also set.
+    #[serde(default)]
+    pub unsafe_allow_secret_leaks: bool,
+}
+
+impl Default for RedactionCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            secret_literals: Vec::new(),
+            custom_patterns: Vec::new(),
+            unsafe_allow_secret_leaks: false,
+        }
+    }
+}
+
+const fn default_redaction_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RootCfg {
     #[serde(default)]
@@ -171,6 +206,8 @@ pub struct RootCfg {
     pub prompts: PromptCfg,
     #[serde(default)]
     pub sweep: SweepCfg,
+    #[serde(default)]
+    pub redaction: RedactionCfg,
     /// Optional `extends: <path>` field — handled before serde sees this
     /// struct, but we accept/ignore it here for round-tripping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
