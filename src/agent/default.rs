@@ -386,6 +386,9 @@ impl Agent for DefaultAgent {
             Action::Bash(cmd) => {
                 asst.extra.actions = Some(vec![cmd.clone()]);
             }
+            Action::Ripgrep(args) => {
+                asst.extra.actions = Some(vec![format!("rg --color never {args}")]);
+            }
             Action::None => {
                 // Keep a breadcrumb that at least one model response could
                 // not be parsed into a valid action. Terminal limit checks
@@ -417,15 +420,20 @@ impl Agent for DefaultAgent {
             }
         }
 
-        // 5. PreToolUse hooks, then env.run if not blocked.
-        let Action::Bash(cmd) = action else {
-            unreachable!("Submit and None handled above");
+        // 5. Determine which tool to run and build the shell command.
+        let (tool_name, run_command) = match action {
+            Action::Bash(cmd) => ("bash", cmd),
+            Action::Ripgrep(args) => ("ripgrep", format!("rg --color never {args}")),
+            Action::Submit(_) | Action::None => unreachable!("handled above"),
         };
+
+        // 5a. PreToolUse hooks, then env.run if not blocked.
         let pre_hook_results = self
             .run_tool_hooks(
                 ToolHookPhase::PreToolUse,
                 &self.config.root.agent.hooks.pre_tool_use,
-                &cmd,
+                tool_name,
+                &run_command,
                 None,
             )
             .await?;
@@ -438,12 +446,20 @@ impl Agent for DefaultAgent {
         let (result, post_hook_results) = if tool_use_blocked {
             (blocked_run_result(&pre_hook_results), Vec::new())
         } else {
-            self.stream.emit(StreamEvent::BashStart {
-                step: self.steps,
-                command: cmd.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
-            let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
+            match tool_name {
+                "bash" => self.stream.emit(StreamEvent::BashStart {
+                    step: self.steps,
+                    command: run_command.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                }),
+                "ripgrep" => self.stream.emit(StreamEvent::RipgrepStart {
+                    step: self.steps,
+                    command: run_command.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                }),
+                _ => {}
+            }
+            let run_req = RunRequest::new(&run_command).with_timeout(Duration::from_secs(
                 self.config.root.environment.timeout_secs,
             ));
             let run_req = if let Some(cancellation) = self.cancellation.clone() {
@@ -452,19 +468,31 @@ impl Agent for DefaultAgent {
                 run_req
             };
             let result = self.env.run(run_req).await?;
-            self.stream.emit(StreamEvent::BashResult {
-                step: self.steps,
-                exit_code: result.exit_code,
-                stdout: result.stdout.clone(),
-                stderr: result.stderr.clone(),
-                timed_out: result.timed_out,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
+            match tool_name {
+                "bash" => self.stream.emit(StreamEvent::BashResult {
+                    step: self.steps,
+                    exit_code: result.exit_code,
+                    stdout: result.stdout.clone(),
+                    stderr: result.stderr.clone(),
+                    timed_out: result.timed_out,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                }),
+                "ripgrep" => self.stream.emit(StreamEvent::RipgrepResult {
+                    step: self.steps,
+                    exit_code: result.exit_code,
+                    stdout: result.stdout.clone(),
+                    stderr: result.stderr.clone(),
+                    timed_out: result.timed_out,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                }),
+                _ => {}
+            }
             let post_hook_results = self
                 .run_tool_hooks(
                     ToolHookPhase::PostToolUse,
                     &self.config.root.agent.hooks.post_tool_use,
-                    &cmd,
+                    tool_name,
+                    &run_command,
                     Some(&result),
                 )
                 .await?;
@@ -472,7 +500,7 @@ impl Agent for DefaultAgent {
         };
 
         if !tool_use_blocked {
-            self.record_test_invocation_if_matched(&cmd, result.exit_code);
+            self.record_test_invocation_if_matched(&run_command, result.exit_code);
         }
 
         let trunc_stdout = truncate_observation_text(
@@ -515,7 +543,7 @@ impl Agent for DefaultAgent {
                 "stdout": trunc_stdout.text,
                 "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
-                "command": cmd,
+                "command": run_command,
                 "step": self.steps,
                 "tool_use_blocked": tool_use_blocked,
                 "pre_tool_use_hooks": pre_hook_results_for_observation,
@@ -716,12 +744,16 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hooks: &[ToolHookCfg],
+        tool_name: &str,
         command: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
         let mut reports = Vec::new();
         for hook in hooks {
-            reports.push(self.run_tool_hook(phase, hook, command, result).await?);
+            reports.push(
+                self.run_tool_hook(phase, hook, tool_name, command, result)
+                    .await?,
+            );
         }
         Ok(reports)
     }
@@ -730,10 +762,11 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hook: &ToolHookCfg,
+        tool_name: &str,
         command: &str,
         result: Option<&RunResult>,
     ) -> Result<ToolHookResult, Error> {
-        let context = self.tool_hook_context(phase, hook, command, result);
+        let context = self.tool_hook_context(phase, hook, tool_name, command, result);
         let rendered_command = self.renderer.render_str(&hook.command, &context)?;
         let timeout_secs = hook
             .timeout_secs
@@ -780,6 +813,7 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hook: &ToolHookCfg,
+        tool_name: &str,
         command: &str,
         result: Option<&RunResult>,
     ) -> serde_json::Value {
@@ -803,7 +837,7 @@ impl DefaultAgent {
                 "name": hook.name,
             },
             "tool": {
-                "name": "bash",
+                "name": tool_name,
             },
             "task": task,
             "model": model,
@@ -1292,7 +1326,7 @@ mod tests {
         assert!(
             a.history
                 .iter()
-                .any(|m| m.content.contains("did not include a shell command"))
+                .any(|m| m.content.contains("did not include a valid action"))
         );
     }
 

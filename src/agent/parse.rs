@@ -1,12 +1,16 @@
-//! Extract bash actions or the submit sentinel from assistant-text content.
+//! Extract bash/ripgrep actions or the submit sentinel from assistant-text content.
 //!
-//! The grammar (matching mini-swe-agent's Python):
+//! The grammar:
 //!
-//! * Exactly one ``` ```bash … ``` `` fenced code block — runnable action.
+//! * Exactly one ``` ```bash … ``` `` fenced code block — runnable bash action.
+//! * Exactly one ``` ```ripgrep … ``` `` fenced code block — ripgrep search action.
+//!   The block body is treated as arguments passed to `rg`.
 //! * The sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line,
 //!   typically followed by another fenced block whose contents are the
 //!   final output to submit. The fence language tag is ignored for the
 //!   final block (`text`, nothing, etc. all accepted).
+//! * When both bash and ripgrep blocks are present, the one appearing
+//!   earlier in the text wins.
 //! * Anything else: `Action::None`, so the agent loop emits a
 //!   format_error_template message.
 
@@ -15,15 +19,18 @@ pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Bash(String),
+    /// Arguments to pass to `rg`. The agent prepends `rg --color never`.
+    Ripgrep(String),
     Submit(String),
     None,
 }
 
-/// Extract the first bash code-fence content.
-fn extract_first_bash_block(s: &str) -> Option<String> {
+/// Extract the first fenced code block with a given language tag.
+fn extract_first_tagged_block(s: &str, tag: &str) -> Option<String> {
+    let fence = format!("```{tag}");
     let mut remaining = s;
-    while let Some(start) = remaining.find("```bash") {
-        let after_tag = &remaining[start + "```bash".len()..];
+    while let Some(start) = remaining.find(fence.as_str()) {
+        let after_tag = &remaining[start + fence.len()..];
         // Skip to end of line (consume the `\n` or ` ` + `\n`).
         let body_start = after_tag.find('\n').map_or(0, |i| i + 1);
         let body = &after_tag[body_start..];
@@ -33,6 +40,14 @@ fn extract_first_bash_block(s: &str) -> Option<String> {
         remaining = after_tag;
     }
     None
+}
+
+fn extract_first_bash_block(s: &str) -> Option<String> {
+    extract_first_tagged_block(s, "bash")
+}
+
+fn extract_first_ripgrep_block(s: &str) -> Option<String> {
+    extract_first_tagged_block(s, "ripgrep")
 }
 
 /// Extract the first fenced code block (any or no language tag). Returns
@@ -92,10 +107,33 @@ pub fn extract_action(content: &str) -> Action {
         return Action::Submit(final_output);
     }
 
-    // 2) Otherwise, a bash block is the action.
+    // 2) Among tool blocks, the one appearing earliest in the text wins.
+    let bash_pos = content.find("```bash");
+    let rg_pos = content.find("```ripgrep");
+
+    // Try ripgrep first only if its fence appears strictly before any bash fence.
+    let try_ripgrep_first = matches!((bash_pos, rg_pos), (Some(b), Some(r)) if r < b)
+        || matches!((bash_pos, rg_pos), (None, Some(_)));
+
+    if try_ripgrep_first {
+        if let Some(args) = extract_first_ripgrep_block(content) {
+            if !args.trim().is_empty() {
+                return Action::Ripgrep(args);
+            }
+        }
+    }
+
     if let Some(cmd) = extract_first_bash_block(content) {
         if !cmd.trim().is_empty() {
             return Action::Bash(cmd);
+        }
+    }
+
+    if !try_ripgrep_first {
+        if let Some(args) = extract_first_ripgrep_block(content) {
+            if !args.trim().is_empty() {
+                return Action::Ripgrep(args);
+            }
         }
     }
 
@@ -156,5 +194,54 @@ mod tests {
         let s =
             "The sentinel is COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT in prose.\n```bash\necho x\n```";
         assert_eq!(extract_action(s), Action::Bash("echo x".into()));
+    }
+
+    #[test]
+    fn extracts_ripgrep_block() {
+        let s = "Let me search:\n```ripgrep\n\"TODO\" src/\n```";
+        assert_eq!(
+            extract_action(s),
+            Action::Ripgrep("\"TODO\" src/".into())
+        );
+    }
+
+    #[test]
+    fn ripgrep_block_multiline_args() {
+        let s = "```ripgrep\n--type rust\nfn main\n```";
+        assert_eq!(
+            extract_action(s),
+            Action::Ripgrep("--type rust\nfn main".into())
+        );
+    }
+
+    #[test]
+    fn bash_before_ripgrep_returns_bash() {
+        let s = "```bash\necho x\n```\n```ripgrep\nfoo src/\n```";
+        assert_eq!(extract_action(s), Action::Bash("echo x".into()));
+    }
+
+    #[test]
+    fn ripgrep_before_bash_returns_ripgrep() {
+        let s = "```ripgrep\nfoo src/\n```\n```bash\necho x\n```";
+        assert_eq!(extract_action(s), Action::Ripgrep("foo src/".into()));
+    }
+
+    #[test]
+    fn empty_ripgrep_block_falls_through_to_bash() {
+        let s = "```ripgrep\n\n```\n```bash\necho x\n```";
+        assert_eq!(extract_action(s), Action::Bash("echo x".into()));
+    }
+
+    #[test]
+    fn empty_ripgrep_block_is_none() {
+        let s = "```ripgrep\n\n```";
+        assert_eq!(extract_action(s), Action::None);
+    }
+
+    #[test]
+    fn submit_wins_over_ripgrep() {
+        let s =
+            "```ripgrep\nfoo\n```\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nresult\n```";
+        assert_eq!(extract_action(s), Action::Submit("result".into()));
     }
 }

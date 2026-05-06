@@ -60,6 +60,21 @@ pub enum StreamEvent {
         timed_out: bool,
         timestamp: String,
     },
+    /// About to execute a ripgrep search.
+    RipgrepStart {
+        step: u32,
+        command: String,
+        timestamp: String,
+    },
+    /// Ripgrep search finished.
+    RipgrepResult {
+        step: u32,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+        timed_out: bool,
+        timestamp: String,
+    },
     /// Observation message recorded into the trajectory after a bash run.
     Observation {
         step: u32,
@@ -92,6 +107,8 @@ impl StreamEvent {
             Self::AssistantMessage { .. } => "assistant_message",
             Self::BashStart { .. } => "bash_start",
             Self::BashResult { .. } => "bash_result",
+            Self::RipgrepStart { .. } => "ripgrep_start",
+            Self::RipgrepResult { .. } => "ripgrep_result",
             Self::Observation { .. } => "observation",
             Self::FormatError { .. } => "format_error",
             Self::RunEnded { .. } => "run_ended",

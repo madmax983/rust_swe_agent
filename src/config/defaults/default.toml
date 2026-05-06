@@ -8,12 +8,18 @@ kind = "default"
 step_limit = 50
 # Template rendered when the model's response contains no valid action.
 format_error_template = '''
-Your response did not include a shell command. Respond with a single
+Your response did not include a valid action. Respond with exactly one of:
+
+- A bash command block:
 ```bash
 # command here
 ```
-block, or the sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own
-line followed by the final output block.
+- A ripgrep search block:
+```ripgrep
+"pattern" path/to/search
+```
+- The sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line
+  followed by the final output block.
 '''
 # Template rendered over each command's RunResult to form the next
 # user-observation message. `pre_tool_use_hooks` and
@@ -104,10 +110,15 @@ workdir = "/workspace"
 [prompts]
 system = '''
 You are a skilled software engineer working at a terminal. You have
-access to a bash shell. Each response must contain exactly one action:
-either a single ```bash block to execute, or the literal sentinel
-`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a
-final output block.
+access to a bash shell and a ripgrep search tool. Each response must
+contain exactly one action, chosen from:
+
+1. A single ```bash block to execute a shell command.
+2. A single ```ripgrep block whose body is passed as arguments to `rg`
+   (e.g. `"pattern" path/to/search`). Ripgrep is ideal for quickly
+   searching file contents across a codebase.
+3. The literal sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its
+   own line followed by a final output block.
 '''
 instance = '''
 Task: {{ task }}
