@@ -387,7 +387,7 @@ impl Agent for DefaultAgent {
                 asst.extra.actions = Some(vec![cmd.clone()]);
             }
             Action::Ripgrep(args) => {
-                asst.extra.actions = Some(vec![format!("rg --color never {args}")]);
+                asst.extra.actions = Some(vec![ripgrep_command(args)]);
             }
             Action::None => {
                 // Keep a breadcrumb that at least one model response could
@@ -423,7 +423,7 @@ impl Agent for DefaultAgent {
         // 5. Determine which tool to run and build the shell command.
         let (tool_name, run_command) = match action {
             Action::Bash(cmd) => ("bash", cmd),
-            Action::Ripgrep(args) => ("ripgrep", format!("rg --color never {args}")),
+            Action::Ripgrep(args) => ("ripgrep", ripgrep_command(&args)),
             Action::Submit(_) | Action::None => unreachable!("handled above"),
         };
 
@@ -911,6 +911,21 @@ impl ToolHookPhase {
     }
 }
 
+/// Build the shell command for a ripgrep action.
+///
+/// Newlines in the args block are converted to spaces so multiline ripgrep
+/// blocks (e.g. `--type rust\n"pattern" src/`) don't become shell command
+/// separators when passed to `bash -c`.
+fn ripgrep_command(args: &str) -> String {
+    let normalized = args
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("rg --color never {normalized}")
+}
+
 fn blocked_run_result(pre_hook_results: &[ToolHookResult]) -> RunResult {
     let mut stderr = "tool use blocked by PreToolUse hook".to_owned();
     if let Some(hook) = pre_hook_results
@@ -1040,6 +1055,30 @@ mod tests {
     use crate::trajectory::FailureCategory;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::watch;
+
+    #[test]
+    fn ripgrep_command_joins_multiline_args() {
+        assert_eq!(
+            ripgrep_command("--type rust\n\"fn main\" src/"),
+            "rg --color never --type rust \"fn main\" src/"
+        );
+    }
+
+    #[test]
+    fn ripgrep_command_strips_blank_lines() {
+        assert_eq!(
+            ripgrep_command("pattern\n\npath/"),
+            "rg --color never pattern path/"
+        );
+    }
+
+    #[test]
+    fn ripgrep_command_single_line_unchanged() {
+        assert_eq!(
+            ripgrep_command("\"TODO\" src/"),
+            "rg --color never \"TODO\" src/"
+        );
+    }
 
     #[derive(Clone)]
     struct StaticEnvironment {
