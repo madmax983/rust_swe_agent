@@ -740,6 +740,9 @@ impl DefaultAgent {
             .unwrap_or(self.config.root.agent.tool_hook_timeout_secs);
         let mut req = RunRequest::new(rendered_command.clone())
             .with_timeout(Duration::from_secs(timeout_secs));
+        if let Some(cancellation) = self.cancellation.clone() {
+            req = req.with_cancellation(cancellation);
+        }
         req.env = tool_hook_env(&context)?;
         let hook_result = match self.env.run(req).await {
             Ok(result) => result,
