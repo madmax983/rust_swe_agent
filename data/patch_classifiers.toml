@@ -1,0 +1,24 @@
+test_files = [
+  "**/test/**",
+  "**/tests/**",
+  "**/test_*.py",
+  "**/*_test.*",
+  "**/*_tests.*",
+  "**/*.test.*",
+  "**/*.spec.*",
+]
+
+lock_or_generated_files = [
+  "**/Cargo.lock",
+  "**/package-lock.json",
+  "**/pnpm-lock.yaml",
+  "**/yarn.lock",
+  "**/poetry.lock",
+  "**/Pipfile.lock",
+  "**/go.sum",
+  "**/generated/**",
+  "**/*_generated.*",
+  "**/*.generated.*",
+  "**/*.pb.*",
+  "**/*.snap",
+]

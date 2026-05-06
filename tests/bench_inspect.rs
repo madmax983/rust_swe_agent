@@ -1049,6 +1049,66 @@ fn instance_mode_renders_header_and_steps() {
 }
 
 #[test]
+fn instance_mode_renders_patch_stats_from_evaluation_json() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "abc",
+                "resolved": true,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "resolved",
+                "patch_stats": {
+                    "files_changed": 2,
+                    "hunks": 3,
+                    "lines_added": 8,
+                    "lines_removed": 2,
+                    "is_empty": false,
+                    "touches_test_files": true,
+                    "touches_lock_or_generated": true,
+                    "gold_files_iou": 0.5,
+                    "gold_lines_overlap": 0.25,
+                    "gold_size_ratio": 1.25
+                }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "patch_stats:      files=2 hunks=3 +8 -2 empty=false tests=true lock_or_generated=true"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("gold_distance:    files_iou=0.500 lines_overlap=0.250 size_ratio=1.250"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn instance_mode_renders_test_telemetry_header_line() {
     let sweep = tempfile::tempdir().unwrap();
     let mut t = Trajectory::new();

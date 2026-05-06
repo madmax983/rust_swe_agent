@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
@@ -386,6 +387,115 @@ fn write_evaluation_json(dir: &Path, value: &serde_json::Value) {
     .unwrap();
 }
 
+fn patch_stats_agent_patch() -> &'static str {
+    "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ keep
+-old
++new
++agent only
+ end
+diff --git a/tests/test_lib.rs b/tests/test_lib.rs
+--- a/tests/test_lib.rs
++++ b/tests/test_lib.rs
+@@ -1,2 +1,3 @@
+ test
++assert new
+ end
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1,2 +1,2 @@
+-version = 1
++version = 2
+"
+}
+
+fn patch_stats_gold_patch() -> &'static str {
+    "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ keep
+-old
++new
+ end
+"
+}
+
+fn generated_added_lines_patch(file_path: &str, added_lines: usize) -> String {
+    let mut text = format!(
+        "diff --git a/{file_path} b/{file_path}\n--- a/{file_path}\n+++ b/{file_path}\n@@ -1 +1,{} @@\n anchor\n",
+        added_lines + 1
+    );
+    for i in 0..added_lines {
+        let _ = writeln!(text, "+line {i}");
+    }
+    text
+}
+
+fn bloated_patch_with_unrelated_whitespace_edits() -> String {
+    let mut text = generated_added_lines_patch("src/lib.rs", 10);
+    text.push_str(
+        "diff --git a/docs/unrelated.md b/docs/unrelated.md\n--- a/docs/unrelated.md\n+++ b/docs/unrelated.md\n@@ -1 +1,91 @@\n anchor\n",
+    );
+    for _ in 0..90 {
+        text.push_str("+   \n");
+    }
+    text
+}
+
+fn write_run_patch(dir: &Path, instance_id: &str, patch: &str) {
+    let patch_path = rust_swe_agent::run::swebench::patch_path_for_run(dir, instance_id, 1);
+    std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
+    std::fs::write(patch_path, patch).unwrap();
+}
+
+fn evaluate_none_for_patch_stats(dir: &Path) {
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            dir.to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "evaluate failed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn mark_evaluation_instance_resolved(dir: &Path, instance_id: &str) {
+    let path = dir.join("evaluation.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let row = value["instances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["instance_id"] == instance_id)
+        .unwrap();
+    row["resolved"] = serde_json::json!(true);
+    row["resolved_count"] = serde_json::json!(1);
+    row["pass_at_1"] = serde_json::json!(true);
+    row["eval_exit_reason"] = serde_json::json!("resolved");
+    std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
 #[test]
 fn help_lists_compare_subcommand() {
     let out = Command::new(binary_path())
@@ -720,6 +830,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             candidate: candidate_dir.path().to_path_buf(),
             format: rust_swe_agent::run::compare::CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
@@ -742,6 +853,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             candidate: candidate_dir.path().to_path_buf(),
             format: rust_swe_agent::run::compare::CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
@@ -1134,6 +1246,81 @@ fn evaluate_none_backend_writes_evaluation_json() {
 }
 
 #[test]
+fn evaluate_writes_patch_stats_with_gold_distance_and_data_driven_classifiers() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let dataset = tempfile::NamedTempFile::new().unwrap();
+    write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
+
+    let patch_path =
+        rust_swe_agent::run::swebench::patch_path_for_run(sweep_dir.path(), "django__django-1", 1);
+    std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
+    std::fs::write(&patch_path, patch_stats_agent_patch()).unwrap();
+
+    let row = serde_json::json!({
+        "instance_id": "django__django-1",
+        "problem_statement": "fix it",
+        "patch": patch_stats_gold_patch()
+    });
+    std::fs::write(
+        dataset.path(),
+        format!("{}\n", serde_json::to_string(&row).unwrap()),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--dataset",
+            dataset.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sweep_dir.path().join("evaluation.json")).unwrap(),
+    )
+    .unwrap();
+    let stats = &v["instances"][0]["patch_stats"];
+    assert_eq!(stats["files_changed"], 3);
+    assert_eq!(stats["hunks"], 3);
+    assert_eq!(stats["lines_added"], 4);
+    assert_eq!(stats["lines_removed"], 2);
+    assert_eq!(stats["is_empty"], false);
+    assert_eq!(stats["touches_test_files"], true);
+    assert_eq!(stats["touches_lock_or_generated"], true);
+    assert!(
+        stats["gold_files_iou"]
+            .as_f64()
+            .is_some_and(|v| v > 0.3 && v < 0.4),
+        "expected src/lib.rs overlap across three touched files, got: {stats}"
+    );
+    assert!(
+        stats["gold_lines_overlap"]
+            .as_f64()
+            .is_some_and(|v| v > 0.0),
+        "expected at least one agent-touched line to overlap the gold diff: {stats}"
+    );
+    assert!(
+        stats["gold_size_ratio"].as_f64().is_some_and(|v| v > 1.0),
+        "agent patch should be larger than the gold patch: {stats}"
+    );
+}
+
+#[test]
 fn evaluate_breakdown_none_is_headline_only() {
     let sweep_dir = tempfile::tempdir().unwrap();
     write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
@@ -1155,6 +1342,58 @@ fn evaluate_breakdown_none_is_headline_only() {
     assert!(stdout.contains("resolved: 0"), "{stdout}");
     assert!(
         !stdout.contains("axis,bucket,n,resolved,resolved_rate"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compare_patch_size_regression_gate_fails_when_resolved_rate_ties() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(baseline_dir.path(), vec![submitted("inst-1")]);
+    write_results(candidate_dir.path(), vec![submitted("inst-1")]);
+    write_run_patch(
+        baseline_dir.path(),
+        "inst-1",
+        &generated_added_lines_patch("src/lib.rs", 10),
+    );
+    write_run_patch(
+        candidate_dir.path(),
+        "inst-1",
+        &bloated_patch_with_unrelated_whitespace_edits(),
+    );
+
+    evaluate_none_for_patch_stats(baseline_dir.path());
+    evaluate_none_for_patch_stats(candidate_dir.path());
+    mark_evaluation_instance_resolved(baseline_dir.path(), "inst-1");
+    mark_evaluation_instance_resolved(candidate_dir.path(), "inst-1");
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-patch-size-regression",
+            "50",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected patch-size gate failure; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Resolved:           1 -> 1 (+0)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Mean lines changed: 10.00 -> 100.00 (+90.00)"),
         "{stdout}"
     );
 }
@@ -1245,6 +1484,7 @@ fn compare_uses_manifest_model_for_fallback_cost_repricing() {
             candidate: candidate_dir.path().to_path_buf(),
             format: rust_swe_agent::run::compare::CompareFormat::Json,
             max_regressions: None,
+            max_patch_size_regression_pct: None,
             breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: false,

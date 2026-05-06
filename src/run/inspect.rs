@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::run::evaluate::EvaluationResults;
+use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory};
 
@@ -75,6 +76,8 @@ pub struct InspectReport {
     pub completion_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch_stats: Option<PatchStats>,
     pub test_invocations_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_test_exit_code: Option<i32>,
@@ -142,9 +145,13 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     }
 
     let instance_id = args.instance.clone().unwrap_or_default();
-    let resolved_map = load_resolved_overrides(&args.sweep)?;
-    let report =
-        build_instance_report(&args.sweep, &instance_id, args.full, resolved_map.as_ref())?;
+    let evaluation_overrides = load_evaluation_overrides(&args.sweep)?;
+    let report = build_instance_report(
+        &args.sweep,
+        &instance_id,
+        args.full,
+        evaluation_overrides.as_ref(),
+    )?;
     Ok(InspectOutput::Instance(Box::new(report)))
 }
 
@@ -152,9 +159,9 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     let filter = parse_filter(filter)?;
     let mut rows: Vec<SummaryRow> = Vec::new();
     let loaded = crate::run::compare::load_sweep(sweep)?;
-    let resolved = load_resolved_overrides(sweep)?.unwrap_or_default();
+    let resolved = load_evaluation_overrides(sweep)?.unwrap_or_default();
     for r in loaded.instances.values() {
-        let res = resolved.get(&r.instance_id).copied();
+        let res = resolved.get(&r.instance_id).map(|value| value.resolved);
         if !filter.matches(r, res) {
             continue;
         }
@@ -179,7 +186,7 @@ fn build_instance_report(
     sweep: &Path,
     instance_id: &str,
     full: bool,
-    resolved_map: Option<&HashMap<String, bool>>,
+    evaluation_overrides: Option<&HashMap<String, EvaluationOverride>>,
 ) -> Result<InspectReport, Error> {
     let traj_path = resolve_trajectory_path(sweep, instance_id).ok_or_else(|| {
         Error::Trajectory(format!(
@@ -207,7 +214,12 @@ fn build_instance_report(
                 cache_read_tokens: None,
                 cache_creation_tokens: None,
                 completion_tokens: None,
-                resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
+                resolved: evaluation_overrides
+                    .and_then(|m| m.get(instance_id))
+                    .map(|value| value.resolved),
+                patch_stats: evaluation_overrides
+                    .and_then(|m| m.get(instance_id))
+                    .and_then(|value| value.patch_stats.clone()),
                 test_invocations_count: 0,
                 last_test_exit_code: None,
                 tests_run_before_submit: false,
@@ -233,7 +245,12 @@ fn build_instance_report(
         cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
         cache_creation_tokens: token_usage.map(|t| t.cache_creation_tokens),
         completion_tokens: token_usage.map(|t| t.completion_tokens),
-        resolved: resolved_map.and_then(|m| m.get(instance_id).copied()),
+        resolved: evaluation_overrides
+            .and_then(|m| m.get(instance_id))
+            .map(|value| value.resolved),
+        patch_stats: evaluation_overrides
+            .and_then(|m| m.get(instance_id))
+            .and_then(|value| value.patch_stats.clone()),
         test_invocations_count: traj.info.test_invocations.len(),
         last_test_exit_code: traj
             .info
@@ -412,6 +429,7 @@ fn render_instance_text(report: &InspectReport) -> String {
     if let Some(r) = report.resolved {
         let _ = writeln!(s, "resolved:         {r}");
     }
+    write_patch_stats_lines(&mut s, report.patch_stats.as_ref());
     let submitted_without_tests = report.outcome.as_deref()
         == Some(crate::trajectory::outcome::SUBMITTED)
         && !report.tests_run_before_submit;
@@ -465,6 +483,33 @@ fn render_instance_text(report: &InspectReport) -> String {
         }
     }
     s
+}
+
+fn write_patch_stats_lines(s: &mut String, stats: Option<&PatchStats>) {
+    let Some(stats) = stats else {
+        return;
+    };
+    let _ = writeln!(
+        s,
+        "patch_stats:      files={} hunks={} +{} -{} empty={} tests={} lock_or_generated={}",
+        stats.files_changed,
+        stats.hunks,
+        stats.lines_added,
+        stats.lines_removed,
+        stats.is_empty,
+        stats.touches_test_files,
+        stats.touches_lock_or_generated
+    );
+    if let (Some(files_iou), Some(lines_overlap), Some(size_ratio)) = (
+        stats.gold_files_iou,
+        stats.gold_lines_overlap,
+        stats.gold_size_ratio,
+    ) {
+        let _ = writeln!(
+            s,
+            "gold_distance:    files_iou={files_iou:.3} lines_overlap={lines_overlap:.3} size_ratio={size_ratio:.3}"
+        );
+    }
 }
 
 fn render_token_summary(
@@ -572,7 +617,15 @@ fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
     flat.exists().then_some(flat)
 }
 
-fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, Error> {
+#[derive(Debug, Clone)]
+struct EvaluationOverride {
+    resolved: bool,
+    patch_stats: Option<PatchStats>,
+}
+
+fn load_evaluation_overrides(
+    dir: &Path,
+) -> Result<Option<HashMap<String, EvaluationOverride>>, Error> {
     let eval_path = crate::run::evaluate::evaluation_path(dir);
     if !eval_path.exists() {
         return Ok(None);
@@ -582,7 +635,15 @@ fn load_resolved_overrides(dir: &Path) -> Result<Option<HashMap<String, bool>>, 
     Ok(Some(
         eval.instances
             .into_iter()
-            .map(|x| (x.instance_id, x.resolved))
+            .map(|x| {
+                (
+                    x.instance_id,
+                    EvaluationOverride {
+                        resolved: x.resolved,
+                        patch_stats: x.patch_stats,
+                    },
+                )
+            })
             .collect(),
     ))
 }
