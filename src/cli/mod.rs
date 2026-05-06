@@ -405,7 +405,7 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
 
 fn mini_github_pr_options(
     m: &args::MiniCmd,
-    _cfg: &Config,
+    cfg: &Config,
     trajectory_name: &str,
 ) -> Result<Option<crate::run::github_pr::GithubPrOptions>, Error> {
     if !m.github_pr.open_pr && !m.github_pr.github_pr_dry_run {
@@ -434,6 +434,7 @@ fn mini_github_pr_options(
         timeout_secs: m.github_pr.github_pr_timeout_secs,
         max_retries: m.github_pr.github_pr_max_retries,
         backoff_base_ms: m.github_pr.github_pr_backoff_base_ms,
+        redaction: cfg.root.redaction.clone(),
     }))
 }
 
@@ -1053,6 +1054,7 @@ mod tests {
             timeout_secs: 30,
             max_retries: 2,
             backoff_base_ms: 250,
+            redaction: crate::config::RedactionCfg::default(),
         }))
         .await
         .unwrap();
@@ -1219,6 +1221,7 @@ mod tests {
             timeout_secs: 30,
             max_retries: 2,
             backoff_base_ms: 250,
+            redaction: crate::config::RedactionCfg::default(),
         }
     }
 

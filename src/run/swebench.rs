@@ -1283,6 +1283,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 r,
                                 GithubPrPublication {
                                     config: args.github_pr.as_ref(),
+                                    redaction: &args.config.root.redaction,
                                     instance_id: &inst.instance_id,
                                     run_index,
                                     trajectory_path: &traj_path,
@@ -3321,6 +3322,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             current,
             GithubPrPublication {
                 config: github_pr.as_ref(),
+                redaction: &cfg.root.redaction,
                 instance_id: &id,
                 run_index,
                 trajectory_path: &traj_path,
@@ -3382,6 +3384,7 @@ async fn sleep_or_cancelled(
 
 struct GithubPrPublication<'a> {
     config: Option<&'a crate::run::github_pr::GithubPrSweepConfig>,
+    redaction: &'a crate::config::RedactionCfg,
     instance_id: &'a str,
     run_index: u32,
     trajectory_path: &'a Path,
@@ -3404,6 +3407,7 @@ async fn publish_github_pr_for_result(
         publication.run_index,
         publication.trajectory_path,
         publication.patch_path,
+        publication.redaction,
     );
     match crate::run::github_pr::publish(pr_options).await {
         Ok(result) => {
@@ -3922,11 +3926,13 @@ mod tests {
     #[tokio::test]
     async fn github_pr_publication_is_noop_when_disabled() {
         let result = test_instance_result("inst", true, false);
+        let redaction = crate::config::RedactionCfg::default();
 
         let actual = publish_github_pr_for_result(
             result.clone(),
             GithubPrPublication {
                 config: None,
+                redaction: &redaction,
                 instance_id: "inst",
                 run_index: 1,
                 trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
@@ -3945,6 +3951,7 @@ mod tests {
     #[tokio::test]
     async fn github_pr_publication_failure_preserves_submission_outcome() {
         let result = test_instance_result("inst", true, true);
+        let redaction = crate::config::RedactionCfg::default();
         let config = crate::run::github_pr::GithubPrSweepConfig {
             target_repo: "not-a-valid-owner-repo".into(),
             target_branch: "trunk".into(),
@@ -3960,6 +3967,7 @@ mod tests {
             result.clone(),
             GithubPrPublication {
                 config: Some(&config),
+                redaction: &redaction,
                 instance_id: "inst",
                 run_index: 1,
                 trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
