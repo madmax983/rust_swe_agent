@@ -15,8 +15,6 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
@@ -407,7 +405,32 @@ pub struct ModelManifest {
 }
 
 #[cfg(test)]
-static PANIC_AFTER_INITIAL_MANIFEST_WRITE: AtomicBool = AtomicBool::new(false);
+struct PanicAfterInitialManifestHook {
+    output_dir: PathBuf,
+}
+
+#[cfg(test)]
+static PANIC_AFTER_INITIAL_MANIFEST_WRITE: std::sync::Mutex<Option<PanicAfterInitialManifestHook>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn panic_after_initial_manifest_write_if_requested(output_dir: &Path) {
+    let should_panic = {
+        let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if hook
+            .as_ref()
+            .is_some_and(|hook| hook.output_dir == output_dir)
+        {
+            let _ = hook.take();
+            true
+        } else {
+            false
+        }
+    };
+    assert!(!should_panic, "test panic after initial manifest write");
+}
 
 #[cfg(test)]
 struct SignalBeforeDispatchHook {
@@ -1150,10 +1173,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
-    assert!(
-        !PANIC_AFTER_INITIAL_MANIFEST_WRITE.load(Ordering::Relaxed),
-        "test panic after initial manifest write"
-    );
+    panic_after_initial_manifest_write_if_requested(&args.output_dir);
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<RunSlotResult> = Vec::new();
     let mut pending: std::collections::VecDeque<SweepRun> = std::collections::VecDeque::new();
@@ -4733,12 +4753,24 @@ instance = "inst"
             cancellation_signals: None,
             github_pr: None,
         };
-        PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(true, Ordering::Relaxed);
+        {
+            let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = Some(PanicAfterInitialManifestHook {
+                output_dir: out.clone(),
+            });
+        }
         let panicked = std::panic::AssertUnwindSafe(run(args))
             .catch_unwind()
             .await
             .is_err();
-        PANIC_AFTER_INITIAL_MANIFEST_WRITE.store(false, Ordering::Relaxed);
+        {
+            let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *hook = None;
+        }
         assert!(panicked);
         let text = std::fs::read_to_string(out.join("results.json")).unwrap();
         let parsed: SweepResults = serde_json::from_str(&text).unwrap();
