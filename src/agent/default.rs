@@ -176,7 +176,7 @@ impl DefaultAgentBuilder {
         })?;
 
         let mut trajectory = Trajectory::new();
-        trajectory.info.task = Some(self.task.clone());
+        trajectory.info.task = Some(redactor.redact_text(&self.task, surface::TRAJECTORY).text);
         trajectory.info.model_name = Some(self.model.name().to_owned());
         trajectory.info.started_at = Some(started_at.clone());
         for m in &history {

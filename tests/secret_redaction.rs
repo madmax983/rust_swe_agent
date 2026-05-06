@@ -140,6 +140,55 @@ custom_patterns = ["CUSTOMSECRET-[0-9]{{3}}"]
     );
 }
 
+#[test]
+fn trajectory_task_metadata_redacts_configured_literals_on_build() {
+    let configured_secret = "task-metadata-secret-value";
+    let cfg = Config::from_toml_str(&format!(
+        r#"
+[redaction]
+secret_literals = ["{configured_secret}"]
+"#
+    ))
+    .unwrap();
+    let model = Arc::new(DeterministicModel::new(Vec::new()));
+    let env: Box<dyn Environment> = Box::new(StaticEnvironment {
+        result: RunResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        },
+    });
+
+    let agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: format!("fix the leak with {configured_secret}"),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let trajectory_json = agent.trajectory.to_json_pretty().unwrap();
+    assert_no_raw_values(
+        "trajectory task metadata",
+        &trajectory_json,
+        [configured_secret],
+    );
+    assert!(
+        agent
+            .trajectory
+            .info
+            .task
+            .as_deref()
+            .is_some_and(|task| task.contains("[REDACTED:configured_literal:")),
+        "{trajectory_json}"
+    );
+}
+
 #[cfg(feature = "markdown-export")]
 #[test]
 fn markdown_export_redacts_raw_trajectory_content() {
