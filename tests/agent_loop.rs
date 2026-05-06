@@ -3,10 +3,11 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rust_swe_agent::agent::default::{DefaultAgentBuilder, retag_cache_hints};
+use rust_swe_agent::env::CancellationToken;
 use rust_swe_agent::error::EnvError;
 use rust_swe_agent::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
@@ -446,6 +447,55 @@ async fn post_tool_use_hook_output_is_added_to_next_observation() {
 }
 
 #[tokio::test]
+async fn tool_hooks_receive_cancellation_token() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "pre".into(),
+        command: "echo pre-hook".into(),
+        timeout_secs: None,
+    }];
+    cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
+        name: "post".into(),
+        command: "echo post-hook".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho primary\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env = RecordingCancellationEnv::default();
+    let requests = Arc::clone(&env.requests);
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+    agent.cancellation = Some(CancellationToken::new(cancel_rx));
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.as_slice(),
+        &[
+            ("echo pre-hook".to_owned(), true),
+            ("echo primary".to_owned(), true),
+            ("echo post-hook".to_owned(), true),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn failing_post_tool_use_hook_is_reported_but_does_not_abort() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
@@ -735,6 +785,27 @@ struct FixedExitEnvironment {
 }
 
 struct PreHookSpawnFailureEnv;
+
+#[derive(Default)]
+struct RecordingCancellationEnv {
+    requests: Arc<Mutex<Vec<(String, bool)>>>,
+}
+
+#[async_trait]
+impl Environment for RecordingCancellationEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((req.command, req.cancellation.is_some()));
+        Ok(RunResult {
+            stdout: "ok\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+}
 
 #[async_trait]
 impl Environment for FixedExitEnvironment {

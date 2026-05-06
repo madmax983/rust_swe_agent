@@ -31,6 +31,8 @@ pub enum ForecastOutcome {
     Report(Box<ForecastReport>),
     /// Dry-run stopped after preflight without writing forecast artifacts.
     DryRun(Box<SweepResults>),
+    /// Calibration sweep was cancelled and must not be forecasted.
+    Cancelled(Box<SweepResults>),
 }
 
 /// Stable, serializable forecast report emitted by `bench forecast`.
@@ -204,6 +206,9 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
     sweep.preflight_mode = "forecast".into();
 
     let mut results = swebench::run(sweep).await?;
+    if results.sweep_status == swebench::SWEEP_STATUS_CANCELLED {
+        return Ok(ForecastOutcome::Cancelled(Box::new(results)));
+    }
     if dry_run {
         return Ok(ForecastOutcome::DryRun(Box::new(results)));
     }

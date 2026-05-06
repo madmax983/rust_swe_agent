@@ -47,3 +47,16 @@ jobs:
       - run: cargo build --all-targets --no-default-features
       - run: cargo test --all-targets --no-default-features
       - run: cargo test --doc --no-default-features
+
+  swebench-cancel:
+    name: swebench cancellation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --test swebench_cancel --no-default-features

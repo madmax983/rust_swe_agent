@@ -130,6 +130,13 @@ fn write_results_with_filter_spec_and_model(
 ) {
     let sweep = SweepResults {
         total: instances.len(),
+        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: instances
             .iter()
             .filter(|r| r.outcome.as_deref() == Some(outcome::SUBMITTED))

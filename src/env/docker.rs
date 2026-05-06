@@ -12,17 +12,24 @@
 
 use async_trait::async_trait;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::process::Stdio as StdStdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 use super::{Environment, RunRequest, RunResult};
 use crate::error::EnvError;
 use crate::ids::ContainerId;
 
 pub const LABEL: &str = "rust-swe-agent=1";
+const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
+
+type PipeCollector = JoinHandle<Result<(), EnvError>>;
+type PipeBuffer = Arc<Mutex<Vec<u8>>>;
 
 pub struct DockerEnvironment {
     container_id: ContainerId,
@@ -81,6 +88,29 @@ impl DockerEnvironment {
     pub fn workdir(&self) -> &PathBuf {
         &self.workdir
     }
+
+    async fn force_remove_container(&self) -> Result<(), EnvError> {
+        let out = Command::new("docker")
+            .args(["rm", "-f", self.container_id.as_str()])
+            .stdin(StdStdio::null())
+            .stdout(StdStdio::null())
+            .stderr(StdStdio::piped())
+            .output()
+            .await
+            .map_err(EnvError::Io)?;
+        if !out.status.success() {
+            return self.mark_shutdown_after_remove(Err(EnvError::CommandFailed(
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            )));
+        }
+        self.mark_shutdown_after_remove(Ok(()))
+    }
+
+    fn mark_shutdown_after_remove(&self, result: Result<(), EnvError>) -> Result<(), EnvError> {
+        result?;
+        self.shutdown_sent.store(true, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 pub async fn preflight() -> Result<(), EnvError> {
@@ -124,66 +154,164 @@ impl Environment for DockerEnvironment {
             .kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
-        let mut stdout_pipe = child
+        let stdout_pipe = child
             .stdout
             .take()
             .ok_or_else(|| EnvError::UnexpectedExit("docker exec stdout pipe missing".into()))?;
-        let mut stderr_pipe = child
+        let stderr_pipe = child
             .stderr
             .take()
             .ok_or_else(|| EnvError::UnexpectedExit("docker exec stderr pipe missing".into()))?;
 
-        let fut = async move {
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-            let (r1, r2) = tokio::join!(
-                stdout_pipe.read_to_end(&mut stdout_buf),
-                stderr_pipe.read_to_end(&mut stderr_buf),
-            );
-            r1.map_err(EnvError::Io)?;
-            r2.map_err(EnvError::Io)?;
-            let status = child.wait().await.map_err(EnvError::Io)?;
-            Ok::<_, EnvError>((
-                String::from_utf8_lossy(&stdout_buf).into_owned(),
-                String::from_utf8_lossy(&stderr_buf).into_owned(),
-                status.code().unwrap_or(-1),
-            ))
-        };
+        let (stdout_task, stdout_buffer) = spawn_pipe_collector(stdout_pipe);
+        let (stderr_task, stderr_buffer) = spawn_pipe_collector(stderr_pipe);
 
-        match tokio::time::timeout(req.timeout, fut).await {
-            Ok(Ok((stdout, stderr, exit_code))) => Ok(RunResult {
-                stdout,
-                stderr,
-                exit_code,
-                timed_out: false,
-            }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(RunResult {
-                stdout: String::new(),
-                stderr: format!("timed out after {:?}", req.timeout),
-                exit_code: -1,
-                timed_out: true,
-            }),
+        match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
+            ChildStop::Exited(status) => {
+                let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
+                let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
+                Ok(RunResult {
+                    stdout,
+                    stderr,
+                    exit_code: status.code().unwrap_or(-1),
+                    timed_out: false,
+                })
+            }
+            ChildStop::TimedOut => {
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(FORCE_KILL_WAIT, child.wait()).await;
+                let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
+                let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
+                Ok(RunResult {
+                    stdout,
+                    stderr: append_status_message(
+                        stderr,
+                        &format!("timed out after {:?}", req.timeout),
+                    ),
+                    exit_code: -1,
+                    timed_out: true,
+                })
+            }
+            ChildStop::Cancelled => {
+                let remove_error = self.force_remove_container().await.err();
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(FORCE_KILL_WAIT, child.wait()).await;
+                let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
+                let mut stderr = partial_reader_output(stderr_task, stderr_buffer).await;
+                stderr = append_status_message(stderr, "cancelled");
+                if let Some(err) = remove_error {
+                    stderr =
+                        append_status_message(stderr, &format!("container shutdown failed: {err}"));
+                }
+                Ok(RunResult {
+                    stdout,
+                    stderr,
+                    exit_code: -1,
+                    timed_out: false,
+                })
+            }
         }
     }
 
     async fn shutdown(&mut self) -> Result<(), EnvError> {
-        self.shutdown_sent.store(true, Ordering::SeqCst);
-        let out = Command::new("docker")
-            .args(["rm", "-f", self.container_id.as_str()])
-            .stdin(StdStdio::null())
-            .stdout(StdStdio::null())
-            .stderr(StdStdio::piped())
-            .output()
-            .await
-            .map_err(EnvError::Io)?;
-        if !out.status.success() {
-            return Err(EnvError::CommandFailed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
-        }
-        Ok(())
+        self.force_remove_container().await
     }
+}
+
+enum ChildStop {
+    Exited(ExitStatus),
+    TimedOut,
+    Cancelled,
+}
+
+async fn wait_for_child(
+    child: &mut Child,
+    timeout: Duration,
+    cancellation: Option<super::CancellationToken>,
+) -> Result<ChildStop, EnvError> {
+    let sleep = tokio::time::sleep(timeout);
+    tokio::pin!(sleep);
+    if let Some(mut cancellation) = cancellation {
+        tokio::select! {
+            status = child.wait() => Ok(ChildStop::Exited(status.map_err(EnvError::Io)?)),
+            () = &mut sleep => Ok(ChildStop::TimedOut),
+            () = cancellation.cancelled() => Ok(ChildStop::Cancelled),
+        }
+    } else {
+        tokio::select! {
+            status = child.wait() => Ok(ChildStop::Exited(status.map_err(EnvError::Io)?)),
+            () = &mut sleep => Ok(ChildStop::TimedOut),
+        }
+    }
+}
+
+fn append_status_message(mut stderr: String, message: &str) -> String {
+    if !stderr.is_empty() && !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+    stderr.push_str(message);
+    stderr
+}
+
+fn spawn_pipe_collector<R>(pipe: R) -> (PipeCollector, PipeBuffer)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let task_buffer = Arc::clone(&buffer);
+    let handle = tokio::spawn(async move { read_pipe_to_buffer(pipe, task_buffer).await });
+    (handle, buffer)
+}
+
+async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
+        if n == 0 {
+            return Ok(());
+        }
+        buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(&chunk[..n]);
+    }
+}
+
+async fn join_reader(
+    handle: PipeCollector,
+    buffer: PipeBuffer,
+    name: &str,
+) -> Result<String, EnvError> {
+    handle
+        .await
+        .map_err(|e| EnvError::UnexpectedExit(format!("{name} reader task failed: {e}")))?
+        .map(|()| buffer_to_string(&buffer))
+}
+
+async fn partial_reader_output(mut handle: PipeCollector, buffer: PipeBuffer) -> String {
+    let wait = tokio::time::sleep(FORCE_KILL_WAIT);
+    tokio::pin!(wait);
+    tokio::select! {
+        result = &mut handle => {
+            let _ = result;
+        }
+        () = &mut wait => {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+    buffer_to_string(&buffer)
+}
+
+fn buffer_to_string(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
+    let bytes = buffer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 impl Drop for DockerEnvironment {
@@ -203,6 +331,40 @@ impl Drop for DockerEnvironment {
             .stdout(StdStdio::null())
             .stderr(StdStdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_env() -> DockerEnvironment {
+        DockerEnvironment {
+            container_id: ContainerId::new("test-container"),
+            image: "test-image".into(),
+            workdir: PathBuf::from("/workspace"),
+            shutdown_sent: AtomicBool::new(false),
+            cleanup_on_drop: false,
+        }
+    }
+
+    #[test]
+    fn failed_container_removal_does_not_mark_shutdown_sent() {
+        let env = test_env();
+
+        let result = env.mark_shutdown_after_remove(Err(EnvError::CommandFailed("boom".into())));
+
+        assert!(result.is_err());
+        assert!(!env.shutdown_sent.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn successful_container_removal_marks_shutdown_sent() {
+        let env = test_env();
+
+        env.mark_shutdown_after_remove(Ok(())).unwrap();
+
+        assert!(env.shutdown_sent.load(Ordering::SeqCst));
     }
 }
 

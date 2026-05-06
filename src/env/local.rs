@@ -3,7 +3,9 @@
 //! into `timed_out = true` rather than an error.
 
 use async_trait::async_trait;
+use std::process::ExitStatus;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -17,6 +19,9 @@ const TERMINATE_GRACE: Duration = Duration::from_millis(250);
 const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 #[cfg(not(windows))]
 const PROCESS_EXIT_POLL: Duration = Duration::from_millis(25);
+
+type PipeCollector = JoinHandle<Result<(), EnvError>>;
+type PipeBuffer = Arc<Mutex<Vec<u8>>>;
 
 pub struct LocalEnvironment {
     shell: String,
@@ -70,58 +75,152 @@ impl Environment for LocalEnvironment {
         let mut process_guard = ProcessTreeGuard::new(child.id());
 
         // Take pipes so we can read them concurrently with `wait`.
-        let mut stdout_pipe = child
+        let stdout_pipe = child
             .stdout
             .take()
             .ok_or_else(|| EnvError::UnexpectedExit("stdout pipe missing".into()))?;
-        let mut stderr_pipe = child
+        let stderr_pipe = child
             .stderr
             .take()
             .ok_or_else(|| EnvError::UnexpectedExit("stderr pipe missing".into()))?;
-        let stdout_task = tokio::spawn(async move { read_pipe_to_string(&mut stdout_pipe).await });
-        let stderr_task = tokio::spawn(async move { read_pipe_to_string(&mut stderr_pipe).await });
+        let (stdout_task, stdout_buffer) = spawn_pipe_collector(stdout_pipe);
+        let (stderr_task, stderr_buffer) = spawn_pipe_collector(stderr_pipe);
 
-        if let Ok(status) = tokio::time::timeout(req.timeout, child.wait()).await {
-            let status = status.map_err(EnvError::Io)?;
-            process_guard.disarm();
-            let stdout = join_reader(stdout_task, "stdout").await?;
-            let stderr = join_reader(stderr_task, "stderr").await?;
-            return Ok(RunResult {
-                stdout,
-                stderr,
-                exit_code: status.code().unwrap_or(-1),
-                timed_out: false,
-            });
+        match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
+            ChildStop::Exited(status) => {
+                process_guard.disarm();
+                let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
+                let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
+                Ok(RunResult {
+                    stdout,
+                    stderr,
+                    exit_code: status.code().unwrap_or(-1),
+                    timed_out: false,
+                })
+            }
+            ChildStop::TimedOut => {
+                process_guard.terminate_and_wait(&mut child).await;
+                let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
+                let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
+                Ok(RunResult {
+                    stdout,
+                    stderr: append_status_message(
+                        stderr,
+                        &format!("timed out after {:?}", req.timeout),
+                    ),
+                    exit_code: -1,
+                    timed_out: true,
+                })
+            }
+            ChildStop::Cancelled => {
+                process_guard.terminate_and_wait(&mut child).await;
+                let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
+                let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
+                Ok(RunResult {
+                    stdout,
+                    stderr: append_status_message(stderr, "cancelled"),
+                    exit_code: -1,
+                    timed_out: false,
+                })
+            }
         }
-
-        process_guard.terminate_and_wait(&mut child).await;
-        stdout_task.abort();
-        stderr_task.abort();
-        Ok(RunResult {
-            stdout: String::new(),
-            stderr: format!("timed out after {:?}", req.timeout),
-            exit_code: -1,
-            timed_out: true,
-        })
     }
 }
 
-async fn read_pipe_to_string<R>(pipe: &mut R) -> Result<String, EnvError>
+enum ChildStop {
+    Exited(ExitStatus),
+    TimedOut,
+    Cancelled,
+}
+
+async fn wait_for_child(
+    child: &mut Child,
+    timeout: Duration,
+    cancellation: Option<super::CancellationToken>,
+) -> Result<ChildStop, EnvError> {
+    let sleep = tokio::time::sleep(timeout);
+    tokio::pin!(sleep);
+    if let Some(mut cancellation) = cancellation {
+        tokio::select! {
+            status = child.wait() => Ok(ChildStop::Exited(status.map_err(EnvError::Io)?)),
+            () = &mut sleep => Ok(ChildStop::TimedOut),
+            () = cancellation.cancelled() => Ok(ChildStop::Cancelled),
+        }
+    } else {
+        tokio::select! {
+            status = child.wait() => Ok(ChildStop::Exited(status.map_err(EnvError::Io)?)),
+            () = &mut sleep => Ok(ChildStop::TimedOut),
+        }
+    }
+}
+
+fn append_status_message(mut stderr: String, message: &str) -> String {
+    if !stderr.is_empty() && !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+    stderr.push_str(message);
+    stderr
+}
+
+fn spawn_pipe_collector<R>(pipe: R) -> (PipeCollector, PipeBuffer)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let task_buffer = Arc::clone(&buffer);
+    let handle = tokio::spawn(async move { read_pipe_to_buffer(pipe, task_buffer).await });
+    (handle, buffer)
+}
+
+async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut buf = Vec::new();
-    pipe.read_to_end(&mut buf).await.map_err(EnvError::Io)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
+        if n == 0 {
+            return Ok(());
+        }
+        buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(&chunk[..n]);
+    }
 }
 
 async fn join_reader(
-    handle: JoinHandle<Result<String, EnvError>>,
+    handle: PipeCollector,
+    buffer: PipeBuffer,
     name: &str,
 ) -> Result<String, EnvError> {
     handle
         .await
         .map_err(|e| EnvError::UnexpectedExit(format!("{name} reader task failed: {e}")))?
+        .map(|()| buffer_to_string(&buffer))
+}
+
+async fn partial_reader_output(mut handle: PipeCollector, buffer: PipeBuffer) -> String {
+    let wait = tokio::time::sleep(FORCE_KILL_WAIT);
+    tokio::pin!(wait);
+    tokio::select! {
+        result = &mut handle => {
+            let _ = result;
+        }
+        () = &mut wait => {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+    buffer_to_string(&buffer)
+}
+
+fn buffer_to_string(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
+    let bytes = buffer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 struct ProcessTreeGuard {

@@ -42,6 +42,7 @@ pub mod outcome {
 /// These values provide insight into *why* an agent run was forcefully halted.
 pub mod exit_reason {
     /// Indicates the agent took too much real-world time to complete its task.
+    pub const CANCELLED: &str = "cancelled";
     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 

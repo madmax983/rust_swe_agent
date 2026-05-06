@@ -31,6 +31,8 @@ impl Default for SnapshotOptions {
 #[derive(Debug, Clone, Serialize)]
 pub struct TailSnapshot {
     pub sweep_dir: PathBuf,
+    pub status: String,
+    pub cancelling_seconds_left: Option<i64>,
     pub completed: usize,
     pub in_flight: usize,
     pub pending: usize,
@@ -58,6 +60,9 @@ struct SweepMeta {
     budget_halted: usize,
     status: Option<String>,
     abort_reason: Option<String>,
+    cancel_deadline_at: Option<DateTime<Utc>>,
+    in_flight_at_cancel: Option<usize>,
+    not_started: Option<usize>,
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
     parallelism: Option<usize>,
@@ -138,6 +143,7 @@ impl TerminalRecord {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnapshot, Error> {
     if !sweep_dir.exists() {
         return Err(Error::Trajectory(format!(
@@ -207,26 +213,63 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         .status
         .as_deref()
         .is_some_and(|s| s.eq_ignore_ascii_case("completed"));
-    let is_complete =
-        status_complete || meta.finished_at.is_some() || (total > 0 && completed >= total);
+    let status_cancelled = meta
+        .status
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("cancelled"));
+    let status_cancelling = meta
+        .status
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("cancelling"));
+    let is_complete = status_complete
+        || status_cancelled
+        || meta.finished_at.is_some()
+        || (total > 0 && completed >= total);
     let abort_reason = abort_reason(&meta, cumulative_cost_usd, completed, total);
     let remaining = total.saturating_sub(completed);
     let running = started.is_some() && !is_complete && abort_reason.is_none();
-    let in_flight = if running {
-        remaining.min(meta.parallelism.unwrap_or(DEFAULT_PARALLELISM))
+    let estimated_in_flight = remaining.min(meta.parallelism.unwrap_or(DEFAULT_PARALLELISM));
+    let in_flight = if status_cancelling {
+        meta.in_flight_at_cancel.unwrap_or(estimated_in_flight)
+    } else if running {
+        estimated_in_flight
     } else {
         0
     };
-    let pending = remaining.saturating_sub(in_flight);
+    let pending = if status_cancelling {
+        meta.not_started
+            .unwrap_or_else(|| remaining.saturating_sub(in_flight))
+    } else {
+        remaining.saturating_sub(in_flight)
+    };
     let burn_rate_usd_per_min = burn_rate(records.values(), options, sweep_model);
     let eta_seconds = eta_seconds(started, options.now, completed, total, is_complete);
     let pct_of_cap_used = meta
         .budget_cap_usd
         .filter(|cap| *cap > 0.0)
         .map(|cap| (cumulative_cost_usd / cap) * 100.0);
+    let status = meta.status.clone().unwrap_or_else(|| {
+        if is_complete {
+            "completed".to_owned()
+        } else {
+            "running".to_owned()
+        }
+    });
+    let cancelling_seconds_left = if status_cancelling {
+        meta.cancel_deadline_at.map(|deadline| {
+            deadline
+                .signed_duration_since(options.now)
+                .num_seconds()
+                .max(0)
+        })
+    } else {
+        None
+    };
 
     Ok(TailSnapshot {
         sweep_dir: sweep_dir.to_path_buf(),
+        status,
+        cancelling_seconds_left,
         completed,
         in_flight,
         pending,
@@ -320,11 +363,16 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
             .or_else(|| get_f64(value, "cost_limit_usd"))
             .or_else(|| get_f64(value, "sweep_cost_limit_usd")),
         budget_halted,
-        status: get_str(value, "status").map(ToOwned::to_owned),
+        status: get_str(value, "sweep_status")
+            .or_else(|| get_str(value, "status"))
+            .map(ToOwned::to_owned),
         abort_reason: get_str(value, "fatal_error")
             .or_else(|| get_str(value, "abort_reason"))
             .or_else(|| get_str(value, "error"))
             .map(ToOwned::to_owned),
+        cancel_deadline_at: get_str(value, "cancel_deadline_at").and_then(parse_ts),
+        in_flight_at_cancel: get_usize(value, "in_flight_at_cancel"),
+        not_started: get_usize(value, "not_started"),
         started_at,
         finished_at,
         parallelism,
@@ -643,6 +691,13 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
     }
     if let Some(reason) = &snapshot.abort_reason {
         let _ = writeln!(out, "Abort:       {reason}");
+    } else if snapshot.status == "cancelling" {
+        let left = snapshot
+            .cancelling_seconds_left
+            .map_or_else(|| "deadline unknown".to_owned(), format_countdown);
+        let _ = writeln!(out, "Status:      cancelling ({left} left)");
+    } else if snapshot.status == "cancelled" {
+        out.push_str("Status:      cancelled\n");
     } else if snapshot.is_complete {
         out.push_str("Status:      completed\n");
     } else {
@@ -652,6 +707,12 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         let _ = writeln!(out, "Warning:     {warning}");
     }
     out
+}
+
+fn format_countdown(secs: i64) -> String {
+    let mins = secs / 60;
+    let rem = secs % 60;
+    format!("{mins}m:{rem:02}s")
 }
 
 fn parse_parallelism(argv: &[String]) -> Option<usize> {

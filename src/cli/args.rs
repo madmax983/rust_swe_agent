@@ -488,6 +488,11 @@ pub struct SwebenchCmd {
     #[arg(long)]
     pub max_input_tpm: Option<u64>,
 
+    /// Seconds to wait after first Ctrl-C before forcing in-flight tasks
+    /// to persist `exit_reason: "cancelled"`.
+    #[arg(long, default_value_t = 30)]
+    pub cancel_deadline: u64,
+
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
 }

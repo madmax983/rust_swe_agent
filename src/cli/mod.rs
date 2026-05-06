@@ -157,6 +157,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         deterministic_responses: None,
         deterministic_usage_per_call: None,
         task_timeout_secs: m.task_timeout_secs,
+        cancellation: None,
         stream_addr,
         patch_capture,
     };
@@ -212,8 +213,10 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
                     ))));
                 }
             }
-            crate::run::forecast::ForecastOutcome::DryRun(results) => {
+            crate::run::forecast::ForecastOutcome::DryRun(results)
+            | crate::run::forecast::ForecastOutcome::Cancelled(results) => {
                 print_dry_run_summary(&results, &sweep_cmd.format);
+                exit_if_cancelled_sweep(&results);
                 return Ok(());
             }
         }
@@ -246,6 +249,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep complete"
     );
     print!("{}", results.summary_table());
+    exit_if_cancelled_sweep(&results);
     let github_pr_failures = github_pr_failure_count(&results);
     if github_pr_failures > 0 {
         return Err(Error::Github(format!(
@@ -263,6 +267,7 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     if output_format != "json" {
         print!("{}", results.summary_table());
     }
+    exit_if_cancelled_sweep(&results);
     Ok(())
 }
 
@@ -274,10 +279,26 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
             print_forecast_report(&report, &output_format)?;
             crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
         }
-        crate::run::forecast::ForecastOutcome::DryRun(results) => {
+        crate::run::forecast::ForecastOutcome::DryRun(results)
+        | crate::run::forecast::ForecastOutcome::Cancelled(results) => {
             print_dry_run_summary(&results, &output_format);
+            exit_if_cancelled_sweep(&results);
             Ok(())
         }
+    }
+}
+
+fn cancellation_exit_code(results: &crate::run::swebench::SweepResults) -> Option<i32> {
+    (results.sweep_status == crate::run::swebench::SWEEP_STATUS_CANCELLED).then_some(
+        results
+            .cancel_exit_code
+            .unwrap_or(crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL),
+    )
+}
+
+fn exit_if_cancelled_sweep(results: &crate::run::swebench::SweepResults) {
+    if let Some(code) = cancellation_exit_code(results) {
+        std::process::exit(code);
     }
 }
 
@@ -544,6 +565,9 @@ fn swebench_args_from_cmd(
         skip_patch_validation: s.skip_patch_validation,
         max_rpm: s.max_rpm.or(cfg_max_rpm),
         max_input_tpm: s.max_input_tpm.or(cfg_max_input_tpm),
+        cancel_deadline_secs: s.cancel_deadline,
+        install_os_signal_handlers: true,
+        cancellation_signals: None,
         github_pr,
     }
 }
@@ -904,13 +928,15 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
-        args, maybe_publish_mini_github_pr, mini_github_pr_options, required_github_arg,
-        swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
-        validate_swebench_github_pr_args,
+        Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
+        required_github_arg, swebench_args_from_cmd, swebench_github_pr_config,
+        trajectory_submitted, validate_observation_head_ratio, validate_swebench_github_pr_args,
     };
     use crate::error::Error;
     use crate::run::github_pr::PublishMode;
+    use crate::run::swebench::{CANCEL_EXIT_CODE_ESCALATED, SweepResults};
     use crate::trajectory::{Trajectory, outcome};
+    use clap::Parser as _;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1044,6 +1070,47 @@ mod tests {
         assert!(!trajectory_submitted(&errored).unwrap());
     }
 
+    #[test]
+    fn cancellation_exit_code_only_applies_to_cancelled_sweeps() {
+        let mut results = empty_sweep_results();
+        assert_eq!(cancellation_exit_code(&results), None);
+
+        results.sweep_status = crate::run::swebench::SWEEP_STATUS_CANCELLED.into();
+        assert_eq!(
+            cancellation_exit_code(&results),
+            Some(crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL)
+        );
+
+        results.cancel_exit_code = Some(CANCEL_EXIT_CODE_ESCALATED);
+        assert_eq!(cancellation_exit_code(&results), Some(137));
+    }
+
+    #[test]
+    fn swebench_cli_defers_os_signal_handler_installation_to_run_loop() {
+        let cli = Cli::parse_from([
+            "rust-swe-agent",
+            "bench",
+            "swebench",
+            "--dataset-path",
+            "dataset.jsonl",
+            "--output",
+            "runs",
+        ]);
+        let crate::cli::Command::Bench {
+            cmd: args::BenchCmd::Swebench(cmd),
+        } = cli.command
+        else {
+            panic!("expected bench swebench command");
+        };
+
+        let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep");
+        assert!(args.install_os_signal_handlers);
+        assert!(
+            args.cancellation_signals.is_none(),
+            "CLI construction must not install process-level Ctrl-C handlers before preflight"
+        );
+    }
+
     fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
         args::MiniCmd {
             task: "Fix it".into(),
@@ -1073,6 +1140,43 @@ mod tests {
                 github_pr_backoff_base_ms: 250,
                 github_pr_branch_prefix: "rust-swe-agent".into(),
             },
+        }
+    }
+
+    fn empty_sweep_results() -> SweepResults {
+        SweepResults {
+            total: 0,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
+            submitted: 0,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: Default::default(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: Default::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: Vec::new(),
+            rate_limit_events: None,
         }
     }
 

@@ -3,8 +3,9 @@
 #![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use rust_swe_agent::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
 use rust_swe_agent::run::forecast::{
@@ -12,10 +13,11 @@ use rust_swe_agent::run::forecast::{
     forecast_from_results, forecast_gate_allows_sweep, run, validate_fail_over_cap,
 };
 use rust_swe_agent::run::swebench::{
-    InstanceResult, SwebenchArgs, SweepResults, trajectory_path_for_run,
+    InstanceResult, SwebenchArgs, SweepResults, SweepSignal, trajectory_path_for_run,
 };
 use rust_swe_agent::trajectory::{FailureCategory, outcome};
 use rust_swe_agent::{Config, ModelUsage};
+use tokio::sync::mpsc;
 
 fn binary_path() -> std::path::PathBuf {
     std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
@@ -81,6 +83,30 @@ fn submit_response() -> String {
     "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".to_owned()
 }
 
+fn cancellation_blocking_response(started_marker: &Path) -> Vec<String> {
+    let marker = started_marker.display().to_string();
+    let command = if cfg!(windows) {
+        let blocker = started_marker.with_file_name("forecast-blocker.cmd");
+        std::fs::write(&blocker, "@echo off\r\n:loop\r\ngoto loop\r\n").unwrap();
+        let blocker = blocker.display().to_string();
+        format!("echo forecast-partial & echo started>\"{marker}\" & call \"{blocker}\"")
+    } else {
+        format!("echo forecast-partial; echo started > '{marker}'; sleep 30")
+    };
+    vec![format!("```bash\n{command}\n```")]
+}
+
+async fn wait_for_path(path: PathBuf) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
 fn instance(
     id: &str,
     input_tokens: u64,
@@ -132,6 +158,13 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
     ];
     SweepResults {
         total: instances.len(),
+        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
         submitted: 2,
         submitted_with_tests: 0,
         skipped: 0,
@@ -201,6 +234,7 @@ fn expect_forecast_report(outcome: ForecastOutcome) -> ForecastReport {
     match outcome {
         ForecastOutcome::Report(report) => *report,
         ForecastOutcome::DryRun(_) => panic!("expected measured forecast report, got dry-run"),
+        ForecastOutcome::Cancelled(_) => panic!("expected measured forecast report, got cancelled"),
     }
 }
 
@@ -700,6 +734,9 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
             github_pr: None,
         },
         calibration_n: 2,
@@ -770,6 +807,91 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
 }
 
 #[tokio::test]
+async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_report() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let dataset = work.path().join("dataset.jsonl");
+    write_dataset(&dataset, &["cancelled-calibration"]);
+    let output = work.path().join("runs");
+    let started_marker = work.path().join("forecast-command-started");
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    tokio::spawn({
+        let started_marker = started_marker.clone();
+        async move {
+            wait_for_path(started_marker).await;
+            signal_tx.send(SweepSignal::Interrupt).unwrap();
+        }
+    });
+
+    let outcome = run(ForecastArgs {
+        sweep: SwebenchArgs {
+            dataset_path: dataset,
+            output_dir: output,
+            parallel: 1,
+            reruns: 1,
+            config: config_with_workdir(&repo),
+            resume: false,
+            cost_limit_usd: Some(0.50),
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: Some(cancellation_blocking_response(&started_marker)),
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            max_rpm: None,
+            max_input_tpm: None,
+            cancel_deadline_secs: 0,
+            install_os_signal_handlers: false,
+            cancellation_signals: Some(signal_rx),
+            github_pr: None,
+        },
+        calibration_n: 1,
+        seed: 7,
+        target_n: Some(1),
+        confidence_pct: 80.0,
+    })
+    .await
+    .unwrap();
+
+    match outcome {
+        ForecastOutcome::Cancelled(results) => {
+            assert_eq!(
+                results.sweep_status,
+                rust_swe_agent::run::swebench::SWEEP_STATUS_CANCELLED
+            );
+            assert_eq!(
+                results.cancel_exit_code,
+                Some(rust_swe_agent::run::swebench::CANCEL_EXIT_CODE_GRACEFUL)
+            );
+            assert_eq!(results.instances.len(), 1);
+            assert_eq!(results.instances[0].exit_reason, "cancelled");
+        }
+        ForecastOutcome::Report(_) => panic!("cancelled calibration must not produce a forecast"),
+        ForecastOutcome::DryRun(_) => panic!("cancelled calibration must not be a dry run"),
+    }
+}
+
+#[tokio::test]
 async fn default_target_n_honors_planned_sample_and_seed() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
@@ -816,6 +938,9 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
             github_pr: None,
         },
         calibration_n: 1,
@@ -877,6 +1002,9 @@ async fn calibration_sampling_stays_within_planned_limit() {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
             github_pr: None,
         },
         calibration_n: 1,
@@ -939,6 +1067,9 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
             github_pr: None,
         },
         calibration_n: 1,
@@ -1006,6 +1137,9 @@ async fn forecast_with_stratified_planning_runs_calibration_subset() {
             skip_patch_validation: true,
             max_rpm: None,
             max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
             github_pr: None,
         },
         calibration_n: 2,
