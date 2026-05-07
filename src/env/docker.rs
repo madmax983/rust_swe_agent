@@ -334,7 +334,6 @@ impl Drop for DockerEnvironment {
     }
 }
 
-
 /// Reap any container with our label. Called by `rust-swe-agent cleanup`.
 /// Returns the list of reaped container ids.
 pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
@@ -406,7 +405,9 @@ mod tests {
     fn successful_container_removal_marks_shutdown_sent() {
         let env = test_env();
 
-        let Ok(()) = env.mark_shutdown_after_remove(Ok(())) else { panic!("expected Ok") };
+        let Ok(()) = env.mark_shutdown_after_remove(Ok(())) else {
+            panic!("expected Ok")
+        };
 
         assert!(env.shutdown_sent.load(Ordering::SeqCst));
     }
