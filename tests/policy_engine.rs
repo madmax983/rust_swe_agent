@@ -696,6 +696,44 @@ fn invalid_extra_deny_regex_returns_error() {
     }
 }
 
+// ── Shell-wrapper bypass (Codex P1) ──────────────────────────────────────────
+
+#[test]
+fn safe_blocks_dangerous_command_with_shell_wrapper() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // `command` builtin (skips functions)
+        "command rm -rf /",
+        "command dd if=/dev/zero of=/dev/sda",
+        // `env` (modifies environment)
+        "env rm -rf /",
+        "env PATH=/bin rm -rf /",
+        "env -i rm -rf /",
+        // `time` reserved word
+        "time rm -rf /",
+        "time dd if=/dev/zero of=/dev/sda",
+        // `exec` replaces shell
+        "exec rm -rf /",
+        // `nohup` immune to hangups
+        "nohup rm -rf /",
+        // `nice` modifies scheduling
+        "nice rm -rf /",
+        // Combined wrappers
+        "time sudo rm -rf /",
+        "nohup env rm -rf /etc",
+        "command env PATH=/bin dd if=/dev/zero of=/dev/sda",
+        // After a separator
+        "ls; command rm -rf /",
+        "echo ok && time rm -rf /",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "shell-wrapper bypass must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

@@ -213,26 +213,26 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `-r`, harmless) are acceptable safety conservatism.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-root-glob",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/\*"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+['"]?/\*"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-no-preserve-root",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*--no-preserve-root\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*--no-preserve-root\b",
         ),
         // Note: quoted `~` does NOT undergo tilde expansion in bash, so
         // `rm -rf '~'` removes a file literally named `~`, not the home dir.
         // Only the unquoted form is catastrophic.
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),
@@ -273,31 +273,31 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
         PolicyRule::deny_static(
             "dd-device-write",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
         ),
         PolicyRule::deny_static(
             "mkfs-on-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "shred-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?shred\b[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*shred\b[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "badblocks-write",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
         ),
         PolicyRule::deny_static(
             "hdparm-erase",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?hdparm\s+--security-erase\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*hdparm\s+--security-erase\b",
         ),
         PolicyRule::deny_static(
             "fdisk-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?fdisk\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*fdisk\s+/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "parted-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?parted\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*parted\s+/dev/[a-zA-Z]",
         ),
         // --- Credential file reads ---
         PolicyRule::deny_static(
