@@ -292,7 +292,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let s = String::from_utf8_lossy(&buf[..n]).to_string();
+        // Use `.into_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+        // to avoid unnecessary Display allocation when converting `Cow` directly to `String`.
+        let s = String::from_utf8_lossy(&buf[..n]).into_owned();
         assert!(s.contains("HTTP/1.1 200 OK"), "missing status, got: {s:?}");
         assert!(
             s.contains("text/event-stream"),

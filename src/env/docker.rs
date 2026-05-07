@@ -56,12 +56,16 @@ impl DockerEnvironment {
             .map_err(EnvError::Io)?;
 
         if !out.status.success() {
+            // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+            // to avoid unnecessary Display allocation when dealing with `Cow`.
             return Err(EnvError::ContainerStartFailed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_owned(),
             ));
         }
 
-        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+        // to avoid unnecessary Display allocation when dealing with `Cow`.
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         if id.is_empty() {
             return Err(EnvError::ContainerStartFailed(
                 "docker run returned empty container id".into(),
@@ -99,8 +103,10 @@ impl DockerEnvironment {
             .await
             .map_err(EnvError::Io)?;
         if !out.status.success() {
+            // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+            // to avoid unnecessary Display allocation when dealing with `Cow`.
             return self.mark_shutdown_after_remove(Err(EnvError::CommandFailed(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_owned(),
             )));
         }
         self.mark_shutdown_after_remove(Ok(()))
@@ -124,7 +130,9 @@ pub async fn preflight() -> Result<(), EnvError> {
     {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(EnvError::DockerDaemonUnreachable(
-            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+            // to avoid unnecessary Display allocation when dealing with `Cow`.
+            String::from_utf8_lossy(&o.stderr).trim().to_owned(),
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(EnvError::DockerNotInstalled),
         Err(e) => Err(EnvError::Io(e)),
@@ -334,6 +342,55 @@ impl Drop for DockerEnvironment {
     }
 }
 
+#[allow(dead_code)]
+const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
+
+
+
+/// Reap any container with our label. Called by `rust-swe-agent cleanup`.
+/// Returns the list of reaped container ids.
+pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
+    preflight().await?;
+    let list = Command::new("docker")
+        .args(["ps", "-q", "--filter", &format!("label={LABEL}")])
+        .stdin(StdStdio::null())
+        .output()
+        .await
+        .map_err(EnvError::Io)?;
+    if !list.status.success() {
+        // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+        // to avoid unnecessary Display allocation when dealing with `Cow`.
+        return Err(EnvError::CommandFailed(
+            String::from_utf8_lossy(&list.stderr).trim().to_owned(),
+        ));
+    }
+    let ids: Vec<String> = String::from_utf8_lossy(&list.stdout)
+        .lines()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    let rm = Command::new("docker")
+        .args(["rm", "-f"])
+        .args(&ids)
+        .stdin(StdStdio::null())
+        .stdout(StdStdio::null())
+        .stderr(StdStdio::piped())
+        .output()
+        .await
+        .map_err(EnvError::Io)?;
+    if !rm.status.success() {
+        // Use `.to_owned()` instead of `.to_string()` on `String::from_utf8_lossy`
+        // to avoid unnecessary Display allocation when dealing with `Cow`.
+        return Err(EnvError::CommandFailed(
+            String::from_utf8_lossy(&rm.stderr).trim().to_owned(),
+        ));
+    }
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,51 +419,9 @@ mod tests {
     fn successful_container_removal_marks_shutdown_sent() {
         let env = test_env();
 
+        #[allow(clippy::unwrap_used)]
         env.mark_shutdown_after_remove(Ok(())).unwrap();
 
         assert!(env.shutdown_sent.load(Ordering::SeqCst));
     }
 }
-
-/// Reap any container with our label. Called by `rust-swe-agent cleanup`.
-/// Returns the list of reaped container ids.
-pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
-    preflight().await?;
-    let list = Command::new("docker")
-        .args(["ps", "-q", "--filter", &format!("label={LABEL}")])
-        .stdin(StdStdio::null())
-        .output()
-        .await
-        .map_err(EnvError::Io)?;
-    if !list.status.success() {
-        return Err(EnvError::CommandFailed(
-            String::from_utf8_lossy(&list.stderr).trim().to_string(),
-        ));
-    }
-    let ids: Vec<String> = String::from_utf8_lossy(&list.stdout)
-        .lines()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect();
-    if ids.is_empty() {
-        return Ok(ids);
-    }
-    let rm = Command::new("docker")
-        .args(["rm", "-f"])
-        .args(&ids)
-        .stdin(StdStdio::null())
-        .stdout(StdStdio::null())
-        .stderr(StdStdio::piped())
-        .output()
-        .await
-        .map_err(EnvError::Io)?;
-    if !rm.status.success() {
-        return Err(EnvError::CommandFailed(
-            String::from_utf8_lossy(&rm.stderr).trim().to_string(),
-        ));
-    }
-    Ok(ids)
-}
-
-#[allow(dead_code)]
-const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
