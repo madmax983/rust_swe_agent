@@ -102,8 +102,8 @@ struct RedactionMatch {
 
 impl Redactor {
     pub fn from_config(cfg: &RedactionCfg) -> Result<Self, regex::Error> {
-        let mut rules = Vec::new();
-        let mut blocking_literals = Vec::new();
+        let mut rules = Vec::with_capacity(cfg.secret_literals.len());
+        let mut blocking_literals = Vec::with_capacity(cfg.secret_literals.len());
         let mut seen_literals = BTreeSet::new();
 
         if cfg.enabled {
@@ -201,7 +201,7 @@ impl Redactor {
                 .then_with(|| a.kind.cmp(&b.kind))
         });
 
-        let mut filtered = Vec::new();
+        let mut filtered = Vec::with_capacity(matches.len());
         let mut next_available = 0usize;
         for candidate in matches {
             if candidate.start < next_available {
