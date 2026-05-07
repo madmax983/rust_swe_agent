@@ -734,6 +734,41 @@ fn safe_blocks_dangerous_command_with_shell_wrapper() {
     }
 }
 
+// ── Nested-shell `-c` payload bypass (Codex P1) ──────────────────────────────
+
+#[test]
+fn safe_blocks_dangerous_command_in_nested_shell() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // bash -c with single quotes
+        "bash -c 'rm -rf /'",
+        "bash -c 'rm -rf /etc'",
+        "bash -c 'dd if=/dev/zero of=/dev/sda'",
+        // bash -c with double quotes
+        "bash -c \"rm -rf /\"",
+        "bash -c \"cat /etc/shadow\"",
+        // sh -c
+        "sh -c 'rm -rf /'",
+        "sh -c \"dd if=/dev/zero of=/dev/sda\"",
+        // Other shells
+        "zsh -c 'rm -rf /'",
+        "dash -c 'rm -rf /'",
+        // Multiple flags
+        "bash -lc 'rm -rf /'",
+        "bash -i -c 'rm -rf /'",
+        // sudo + nested shell
+        "sudo bash -c 'rm -rf /'",
+        // After a separator
+        "ls; bash -c 'rm -rf /'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "nested shell -c payload must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
