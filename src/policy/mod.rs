@@ -169,28 +169,31 @@ impl PolicyRule {
 fn builtin_deny_rules() -> Vec<PolicyRule> {
     vec![
         // --- Catastrophic deletes ---
-        // `$|[\s;&|]` — command terminator: end-of-string, whitespace, or shell
-        // separator.  Using `\s*$` alone allows the bypass `rm -rf / ; ls`.
+        // Any `rm` (regardless of flag form) targeting bare `/` or `/*` or
+        // `~` is treated as catastrophic.  Earlier versions tried to enforce
+        // a specific `-rf` shape, which `rm -fr /`, `rm -Rf /`, `rm -r -f /`,
+        // and `rm -rf -- /` all bypass.  Matching by target instead avoids
+        // the flag-permutation rabbit hole.  False positives like `rm /` (no
+        // `-r`, harmless) are acceptable safety conservatism.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r"(?x)
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)   # command boundary or start
-            (?:sudo\s+)?rm\s+                      # rm (optionally sudo)
-            (?:[^|;\n]*\s)?                        # any flags
-            --no-preserve-root\b|                  # explicit --no-preserve-root
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)
-            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:$|[\s;&|)`])|  # rm -rf /
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)
-            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/\*  # rm -rf /*
-            ",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/(?:$|[\s;&|)`])",
+        ),
+        PolicyRule::deny_static(
+            "catastrophic-delete-root-glob",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/\*",
+        ),
+        PolicyRule::deny_static(
+            "catastrophic-delete-no-preserve-root",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*--no-preserve-root\b",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+~/?(?:$|[\s;&|)`])",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),

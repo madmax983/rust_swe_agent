@@ -430,6 +430,89 @@ fn safe_blocks_dangerous_command_in_command_substitution() {
     }
 }
 
+// ── rm flag-variant bypass (Codex P1) ────────────────────────────────────────
+
+#[test]
+fn safe_blocks_all_rm_recursive_force_variants() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Different flag orderings
+        "rm -rf /",
+        "rm -fr /",
+        "rm -Rf /",
+        "rm -RF /",
+        "rm -rF /",
+        "rm -fR /",
+        // Separated args
+        "rm -r -f /",
+        "rm -f -r /",
+        "rm -R -f /",
+        // End-of-options separator
+        "rm -rf -- /",
+        "rm -fr -- /",
+        // Long options
+        "rm --recursive --force /",
+        "rm --force --recursive /",
+        // No flags at all (harmless but conservative)
+        "rm /",
+        // Glob form
+        "rm -fr /*",
+        "rm -Rf /*",
+        // With sudo prefix
+        "sudo rm -fr /",
+        "sudo rm -Rf /",
+        // --no-preserve-root variants
+        "rm --no-preserve-root /",
+        "rm -rf --no-preserve-root /",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "rm flag-variant must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_blocks_rm_home_variants() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf ~",
+        "rm -fr ~",
+        "rm -Rf ~",
+        "rm ~",
+        "rm -rf ~/",
+        "rm -- ~",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "rm ~-variant must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_rm_of_specific_files() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm /tmp/file.txt",
+        "rm /tmp/foo",
+        "rm -rf /tmp/scratch",
+        "rm -rf /home/user/project/target",
+        "rm file.txt",
+        "rm -rf build/",
+        "rm -rf ./node_modules",
+        "rm -- /tmp/file",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "specific-file rm should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
