@@ -482,13 +482,18 @@ fn strip_heredoc_bodies(command: &str) -> String {
     let mut cursor = 0usize;
 
     while let Some(m) = heredoc_start.find_at(command, cursor) {
-        // If an interpreter (bash/sh/python/...) is the consumer, the body
-        // is executable.  Don't strip — leave it in place so deny rules
-        // can scan it.  We check the prefix from the start of the current
-        // logical line up to `<<`.
+        // Find the bounds of the heredoc-introducing line.
         let line_start = command[..m.start()].rfind('\n').map_or(0, |i| i + 1);
-        let prefix = &command[line_start..m.start()];
-        if interpreter_re.is_match(prefix) {
+        let line_end_after_op = command[m.end()..]
+            .find('\n')
+            .map_or(command.len(), |i| m.end() + i + 1);
+        // Scan the WHOLE introducing line (not just the prefix before `<<`)
+        // so a pipe to an interpreter — `cat <<'EOF' | bash` — keeps the
+        // body visible to the deny corpus.  This is conservative: any
+        // interpreter mention on the line, even a sequenced `&& bash`, is
+        // treated as "body might execute".
+        let whole_intro_line = &command[line_start..line_end_after_op];
+        if interpreter_re.is_match(whole_intro_line) {
             // Pass through up to and including the operator; resume after.
             out.push_str(&command[cursor..m.end()]);
             cursor = m.end();
@@ -496,9 +501,6 @@ fn strip_heredoc_bodies(command: &str) -> String {
         }
 
         // Append everything up to and including the heredoc operator line.
-        let line_end_after_op = command[m.end()..]
-            .find('\n')
-            .map_or(command.len(), |i| m.end() + i + 1);
         out.push_str(&command[cursor..line_end_after_op]);
 
         // Extract the delimiter word from whichever quote style matched.

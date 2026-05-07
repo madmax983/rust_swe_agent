@@ -1094,6 +1094,30 @@ fn safe_blocks_unquoted_heredoc_body_dangerous_substitution() {
 }
 
 #[test]
+fn safe_blocks_heredoc_piped_to_interpreter() {
+    // `cat <<'EOF' | bash` runs the body in the downstream `bash`, even
+    // though `cat` is the immediate consumer.  Inspecting only the prefix
+    // before `<<` would miss `| bash` on the same line.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat <<'EOF' | bash\nrm -rf /\nEOF",
+        "cat <<'EOF' | sh\nrm -rf /\nEOF",
+        "cat <<'EOF' | /bin/bash\nrm -rf /\nEOF",
+        "cat <<'EOF' | bash -s\nrm -rf /\nEOF",
+        // Multiple interpreters along a pipeline
+        "cat <<'EOF' | tr -d '\\r' | bash\nrm -rf /\nEOF",
+        // Conservative: interpreter mentioned via `&&` on the same line
+        "cat <<'EOF' && bash other.sh\nrm -rf /\nEOF",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc piped to interpreter must remain visible: {cmd:?}"
+        );
+    }
+}
+
+#[test]
 fn safe_blocks_shell_heredoc_body_executable_script() {
     // Even with a quoted delimiter, when the heredoc is fed to a shell
     // interpreter the body IS the script and executes.  Must NOT be
