@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::env::RunResult;
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::evaluate::EvaluationResults;
 use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
@@ -196,7 +197,7 @@ fn build_instance_report(
     })?;
     let text = std::fs::read_to_string(&traj_path)?;
     let mut warnings = Vec::new();
-    let traj: Trajectory = match serde_json::from_str(&text) {
+    let mut traj: Trajectory = match serde_json::from_str(&text) {
         Ok(t) => t,
         Err(err) => {
             warnings.push(format!(
@@ -229,6 +230,20 @@ fn build_instance_report(
             });
         }
     };
+
+    let inspect_redactor = Redactor::default_enabled();
+    let redacted_at_view = redact_trajectory_for_inspect(&mut traj, &inspect_redactor);
+    if traj
+        .info
+        .redaction
+        .as_ref()
+        .is_some_and(|summary| summary.redacted)
+    {
+        warnings.push("content was redacted at run time".into());
+    }
+    if redacted_at_view {
+        warnings.push("bench inspect redacted secret-shaped content at view time".into());
+    }
 
     let steps = build_inspect_steps(&traj, full);
 
@@ -708,6 +723,43 @@ fn failure_label(c: FailureCategory) -> &'static str {
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
+        FailureCategory::SecretLeakDetected => "secret_leak_detected",
         FailureCategory::Unknown => "unknown",
     }
+}
+
+fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redactor) -> bool {
+    let mut redacted = false;
+    if let Some(task) = &mut trajectory.info.task {
+        let outcome = redactor.redact_text(task, surface::INSPECT);
+        redacted |= outcome.redacted;
+        *task = outcome.text;
+    }
+    if let Some(final_output) = &mut trajectory.info.final_output {
+        let outcome = redactor.redact_text(final_output, surface::INSPECT);
+        redacted |= outcome.redacted;
+        *final_output = outcome.text;
+    }
+    for value in trajectory.info.other.values_mut() {
+        redacted |= redactor.redact_json_value(value, surface::INSPECT);
+    }
+    for message in &mut trajectory.messages {
+        let outcome = redactor.redact_text(&message.content, surface::INSPECT);
+        redacted |= outcome.redacted;
+        message.content = outcome.text;
+        if let Some(actions) = &mut message.extra.actions {
+            for action in actions {
+                let outcome = redactor.redact_text(action, surface::INSPECT);
+                redacted |= outcome.redacted;
+                *action = outcome.text;
+            }
+        }
+        if let Some(response) = &mut message.extra.response {
+            redacted |= redactor.redact_json_value(response, surface::INSPECT);
+        }
+        for value in message.extra.other.values_mut() {
+            redacted |= redactor.redact_json_value(value, surface::INSPECT);
+        }
+    }
+    redacted
 }

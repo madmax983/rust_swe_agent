@@ -17,7 +17,7 @@ use rust_swe_agent::Config;
 use rust_swe_agent::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{Trajectory, outcome};
+use rust_swe_agent::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Initialize a git repo at `dir` with one tracked file at the base
 /// commit. The file's existence is what makes the working tree's
@@ -267,6 +267,107 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     )
     .unwrap();
     assert_eq!(traj.info.outcome.as_deref(), Some(outcome::SUBMITTED));
+}
+
+#[tokio::test]
+async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let base_commit = init_repo_with_file(&repo, "settings.env", "before\n");
+
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["benign-key-substrings"], &base_commit);
+
+    let settings_path = repo.join("settings.env");
+    let mod_cmd = format!(
+        "echo MONKEY=abcd> {} && echo KEYBOARD_LAYOUT=uspc>> {}",
+        settings_path.display(),
+        settings_path.display()
+    );
+    let responses = vec![
+        format!("```bash\n{mod_cmd}\n```"),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nmodified\n```".into(),
+    ];
+
+    let toml = format!(
+        "[environment]\nworkdir = \"{}\"\n\n[model]\nname = \"scripted-test-model\"\n",
+        toml_escape_path(&repo)
+    );
+    let cfg = Config::from_toml_str(&toml).unwrap();
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(responses),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.total, 1);
+    assert_eq!(results.submitted, 1, "{results:#?}");
+    assert_eq!(results.errored, 0, "{results:#?}");
+    assert_eq!(
+        results
+            .failures_by_category
+            .get(&FailureCategory::SecretLeakDetected),
+        None
+    );
+
+    let patch_text =
+        std::fs::read_to_string(patch_path_for_run(&output, "benign-key-substrings", 1)).unwrap();
+    assert!(patch_text.contains("+MONKEY=abcd"), "{patch_text}");
+    assert!(patch_text.contains("+KEYBOARD_LAYOUT=uspc"), "{patch_text}");
+    assert!(!patch_text.contains("[REDACTED:"), "{patch_text}");
+
+    let preds_text = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    let lines: Vec<&str> = preds_text.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "expected one prediction line: {preds_text}");
+    let row: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let model_patch = row
+        .get("model_patch")
+        .and_then(|value| value.as_str())
+        .unwrap();
+    assert!(model_patch.contains("+MONKEY=abcd"), "{model_patch}");
+    assert!(
+        model_patch.contains("+KEYBOARD_LAYOUT=uspc"),
+        "{model_patch}"
+    );
+    assert!(!model_patch.contains("[REDACTED:"), "{model_patch}");
 }
 
 #[tokio::test]

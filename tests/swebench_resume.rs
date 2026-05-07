@@ -15,7 +15,9 @@ use rust_swe_agent::run::github_pr::{GithubPrSweepConfig, PublishMode};
 use rust_swe_agent::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
+use rust_swe_agent::trajectory::{
+    FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
+};
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
     let mut s = String::new();
@@ -88,6 +90,24 @@ fn config_with_workdir(dir: &Path) -> Config {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let toml = format!("[environment]\nworkdir = \"{workdir}\"\n");
+    Config::from_toml_str(&toml).unwrap()
+}
+
+fn config_with_workdir_and_redaction(dir: &Path, secret: &str) -> Config {
+    let workdir = dir
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let toml = format!(
+        r#"
+[environment]
+workdir = "{workdir}"
+
+[redaction]
+secret_literals = ["{secret}"]
+"#
+    );
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -513,6 +533,211 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         pred.get("model_patch").and_then(serde_json::Value::as_str),
         Some("diff --git a/x b/x\n")
     );
+}
+
+#[tokio::test]
+async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["leaky", "clean"]);
+
+    let secret = "legacy-prediction-secret-value";
+    write_valid_trajectory(&output.join("leaky.traj.json"), "leaky");
+    write_valid_trajectory(&output.join("clean.traj.json"), "clean");
+    std::fs::write(
+        output.join("leaky.patch"),
+        format!("diff --git a/x b/x\n+{secret}\n"),
+    )
+    .unwrap();
+    std::fs::write(output.join("clean.patch"), "diff --git a/x b/x\n+clean\n").unwrap();
+
+    let cfg = config_with_workdir_and_redaction(&repo, secret);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.total, 2);
+    assert_eq!(results.skipped, 1, "{results:#?}");
+    assert_eq!(results.errored, 1, "{results:#?}");
+    assert_eq!(results.submitted, 0, "{results:#?}");
+    assert_eq!(
+        results
+            .failures_by_category
+            .get(&FailureCategory::SecretLeakDetected),
+        Some(&1)
+    );
+
+    let leaky = results
+        .instances
+        .iter()
+        .find(|row| row.instance_id == "leaky")
+        .unwrap();
+    assert_eq!(leaky.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(leaky.exit_reason, "error");
+    assert_eq!(
+        leaky.failure_category,
+        Some(FailureCategory::SecretLeakDetected)
+    );
+    assert!(!leaky.pass_at_1);
+    assert_eq!(leaky.resolved_count, 0);
+
+    let results_json = std::fs::read_to_string(output.join("results.json")).unwrap();
+    assert!(results_json.contains("\"sweep_status\": \"completed\""));
+    assert!(results_json.contains("secret_leak_detected"));
+    assert!(!results_json.contains(secret), "{results_json}");
+
+    let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert_eq!(preds.lines().count(), 1, "{preds}");
+    assert!(preds.contains("\"instance_id\":\"clean\""), "{preds}");
+    assert!(!preds.contains(secret), "{preds}");
+
+    let leaky_patch = std::fs::read_to_string(output.join("leaky.patch")).unwrap();
+    assert!(!leaky_patch.contains(secret), "{leaky_patch}");
+    assert!(leaky_patch.contains("[REDACTED:configured_literal:"));
+}
+
+#[tokio::test]
+async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, &["leaky-pr"]);
+
+    let secret = "legacy-pr-secret-value";
+    write_valid_trajectory(&output.join("leaky-pr.traj.json"), "leaky-pr");
+    std::fs::write(
+        output.join("leaky-pr.patch"),
+        format!("diff --git a/x b/x\n+{secret}\n"),
+    )
+    .unwrap();
+
+    let cfg = config_with_workdir_and_redaction(&repo, secret);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: true,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses()),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: Some(GithubPrSweepConfig {
+            target_repo: "not-a-valid-owner-repo".into(),
+            target_branch: "trunk".into(),
+            token_env: "GITHUB_TOKEN".into(),
+            mode: PublishMode::DryRun,
+            timeout_secs: 1,
+            max_retries: 0,
+            backoff_base_ms: 1,
+            branch_prefix: "rust-swe-agent".into(),
+        }),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.total, 1);
+    assert_eq!(results.errored, 1, "{results:#?}");
+    assert_eq!(results.submitted, 0, "{results:#?}");
+    assert_eq!(results.github_pr_failures, 0, "{results:#?}");
+    assert_eq!(
+        results
+            .failures_by_category
+            .get(&FailureCategory::SecretLeakDetected),
+        Some(&1)
+    );
+
+    let row = &results.instances[0];
+    assert_eq!(row.instance_id, "leaky-pr");
+    assert_eq!(row.outcome.as_deref(), Some(outcome::ERROR));
+    assert_eq!(
+        row.failure_category,
+        Some(FailureCategory::SecretLeakDetected)
+    );
+    assert!(
+        row.github_pr_error.is_none(),
+        "leaky resumed patch reached PR publisher: {:?}",
+        row.github_pr_error
+    );
+
+    let leaky_patch = std::fs::read_to_string(output.join("leaky-pr.patch")).unwrap();
+    assert!(!leaky_patch.contains(secret), "{leaky_patch}");
+    assert!(leaky_patch.contains("[REDACTED:configured_literal:"));
+
+    let preds = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert!(preds.is_empty(), "{preds}");
 }
 
 #[tokio::test]

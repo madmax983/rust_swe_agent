@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use rust_swe_agent::config::RedactionCfg;
 use rust_swe_agent::run::github_pr::{GithubPrOptions, PublishMode, build_pr_plan, render_dry_run};
 
 const SIMPLE_PATCH: &str = "diff --git a/src/lib.rs b/src/lib.rs\n\
@@ -28,6 +29,7 @@ fn options() -> GithubPrOptions {
         timeout_secs: 30,
         max_retries: 2,
         backoff_base_ms: 10,
+        redaction: RedactionCfg::default(),
     }
 }
 
@@ -101,4 +103,74 @@ fn dry_run_renders_pr_fields_without_token_material() {
         );
     }
     assert!(!rendered.contains("GITHUB_TOKEN_VALUE"));
+}
+
+#[test]
+fn pr_text_redaction_uses_configured_run_literals() {
+    let configured_secret = "configured-pr-secret-value";
+    let mut options = options();
+    options.task_id = format!("task-{configured_secret}");
+    options.trajectory_ref = format!("runs/{configured_secret}/run-1.traj.json");
+    options.patch_path = PathBuf::from(format!("runs/{configured_secret}/run-1.patch"));
+    options.redaction.secret_literals = vec![configured_secret.into()];
+
+    let plan = build_pr_plan(&options, SIMPLE_PATCH).unwrap();
+    let rendered = render_dry_run(&plan);
+
+    assert!(!plan.head_branch.contains(configured_secret), "{plan:#?}");
+    assert!(!plan.title.contains(configured_secret), "{plan:#?}");
+    assert!(!plan.body.contains(configured_secret), "{plan:#?}");
+    assert!(!rendered.contains(configured_secret), "{rendered}");
+    assert!(
+        rendered.contains("[REDACTED:configured_literal:"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn pr_dry_run_redacts_secret_bearing_summary_filenames() {
+    let configured_secret = "configured-file-secret-value";
+    let structured_secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let patch = format!(
+        "diff --git a/src/{configured_secret}.rs b/src/{configured_secret}.rs\n\
+         index e69de29..8ab686e 100644\n\
+         --- a/src/{configured_secret}.rs\n\
+         +++ b/src/{configured_secret}.rs\n\
+         @@ -0,0 +1 @@\n\
+         +configured\n\
+         diff --git a/src/{structured_secret}.rs b/src/{structured_secret}.rs\n\
+         index e69de29..8ab686e 100644\n\
+         --- a/src/{structured_secret}.rs\n\
+         +++ b/src/{structured_secret}.rs\n\
+         @@ -0,0 +1 @@\n\
+         +structured\n"
+    );
+    let mut options = options();
+    options.redaction.secret_literals = vec![configured_secret.into()];
+
+    let plan = build_pr_plan(&options, &patch).unwrap();
+    let rendered = render_dry_run(&plan);
+
+    assert_eq!(plan.summary.files_changed, 2);
+    for leaked in [configured_secret, structured_secret] {
+        assert!(
+            !plan.summary.files.iter().any(|file| file.contains(leaked)),
+            "{plan:#?}"
+        );
+        assert!(!rendered.contains(leaked), "{rendered}");
+    }
+    assert!(
+        plan.summary
+            .files
+            .iter()
+            .any(|file| file.contains("[REDACTED:configured_literal:")),
+        "{plan:#?}"
+    );
+    assert!(
+        plan.summary
+            .files
+            .iter()
+            .any(|file| file.contains("[REDACTED:github_token:")),
+        "{plan:#?}"
+    );
 }

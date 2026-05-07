@@ -26,6 +26,7 @@ use crate::config::Config;
 use crate::error::Error;
 use crate::model::litellm::is_anthropic_model;
 use crate::model::{Model, ModelUsage};
+use crate::redaction::{Redactor, surface};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
 
 /// Sentinel `exit_reason` for tasks that never started because the
@@ -1129,6 +1130,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     )?;
     let total = instances.len();
     let summary_path = args.output_dir.join("results.json");
+    let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
     let initial_manifest = build_manifest(
         &args,
         &dataset_sha,
@@ -1276,17 +1278,20 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &inst.instance_id,
                             run_index,
                         );
-                        r = publish_github_pr_for_result(
-                            r,
-                            GithubPrPublication {
-                                config: args.github_pr.as_ref(),
-                                instance_id: &inst.instance_id,
-                                run_index,
-                                trajectory_path: &traj_path,
-                                patch_path: &patch_path,
-                            },
-                        )
-                        .await;
+                        if !downgrade_patch_secret_leak_if_needed(&mut r, &patch_path, &redactor)? {
+                            r = publish_github_pr_for_result(
+                                r,
+                                GithubPrPublication {
+                                    config: args.github_pr.as_ref(),
+                                    redaction: &args.config.root.redaction,
+                                    instance_id: &inst.instance_id,
+                                    run_index,
+                                    trajectory_path: &traj_path,
+                                    patch_path: &patch_path,
+                                },
+                            )
+                            .await;
+                        }
                         bump_cost(
                             r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
                             &mut cumulative_cost,
@@ -1310,7 +1315,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     let mut results = skipped_results;
-    let skipped = results
+    let mut skipped = results
         .iter()
         .filter(|r| r.result.exit_reason == "skipped_resume")
         .count();
@@ -1583,6 +1588,37 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         }
     }
 
+    write_predictions_file(
+        &args.output_dir,
+        &mut results,
+        &args.config.root.model.name,
+        &args.config.root.redaction,
+    )?;
+
+    skipped = results
+        .iter()
+        .filter(|r| r.result.exit_reason == "skipped_resume")
+        .count();
+    submitted = results
+        .iter()
+        .filter(|r| {
+            r.result.exit_reason != "skipped_resume"
+                && r.result.outcome.as_deref() == Some(outcome::SUBMITTED)
+        })
+        .count();
+    errored = results
+        .iter()
+        .filter(|r| r.result.outcome.as_deref() == Some(outcome::ERROR))
+        .count();
+    budget_halted = results
+        .iter()
+        .filter(|r| r.result.exit_reason == EXIT_REASON_BUDGET_HALT)
+        .count();
+    accounting = SweepAccounting::default();
+    for r in &results {
+        accounting.add_result(&r.result);
+    }
+
     let instance_results = aggregate_run_results(&results, args.reruns);
     let pass_at_k = pass_at_k(&instance_results);
     let mut failures_by_category: BTreeMap<FailureCategory, usize> = BTreeMap::new();
@@ -1591,8 +1627,6 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             *failures_by_category.entry(cat).or_insert(0) += 1;
         }
     }
-
-    write_predictions_file(&args.output_dir, &results, &args.config.root.model.name)?;
 
     let token_breakdown = accounting.tokens;
     let total_cost_usd = sum_f64(
@@ -2009,7 +2043,8 @@ fn build_manifest(
         args.config.root.prompts.system, args.config.root.prompts.instance
     );
     let mut config_raw = effective_runtime_config(&args.config);
-    redact_json_secrets(&mut config_raw);
+    let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
+    redactor.redact_json_value(&mut config_raw, surface::TRAJECTORY);
     let resolved = toml::to_string(&strip_json_nulls(config_raw)).unwrap_or_default();
     ProvenanceManifest {
         purpose: None,
@@ -2055,7 +2090,7 @@ fn build_manifest(
             rust_version: rust_version(),
         },
         cli: CliManifest {
-            argv: redact_argv(std::env::args().collect()),
+            argv: redact_argv(std::env::args().collect(), &args.config.root.redaction),
         },
     }
 }
@@ -2074,6 +2109,9 @@ fn effective_runtime_config(cfg: &Config) -> serde_json::Value {
         }
         if let Ok(prompts) = serde_json::to_value(&cfg.root.prompts) {
             m.insert("prompts".into(), prompts);
+        }
+        if let Ok(redaction) = serde_json::to_value(&cfg.root.redaction) {
+            m.insert("redaction".into(), redaction);
         }
     }
     raw
@@ -2150,15 +2188,8 @@ fn model_base_url() -> Option<String> {
     })
 }
 
-fn redact_argv(argv: Vec<String>) -> Vec<String> {
-    let secret_values: Vec<String> = std::env::vars()
-        .filter_map(|(k, v)| {
-            let key = k.to_ascii_lowercase();
-            ((key.ends_with("_key") || key.ends_with("_token") || key.ends_with("_secret"))
-                && !v.is_empty())
-            .then_some(v)
-        })
-        .collect();
+fn redact_argv(argv: Vec<String>, redaction_cfg: &crate::config::RedactionCfg) -> Vec<String> {
+    let redactor = Redactor::from_config_lossy(redaction_cfg);
     let mut out = Vec::with_capacity(argv.len());
     let mut redact_next = false;
     for arg in argv {
@@ -2177,52 +2208,14 @@ fn redact_argv(argv: Vec<String>) -> Vec<String> {
             }
             continue;
         }
-        if secret_values.iter().any(|s| arg.contains(s)) {
-            out.push("<redacted>".into());
+        let redacted_arg = redactor.redact_text(&arg, surface::TRAJECTORY);
+        if redacted_arg.redacted {
+            out.push(redacted_arg.text);
             continue;
         }
         out.push(arg);
     }
     out
-}
-
-fn redact_json_secrets(v: &mut serde_json::Value) {
-    let secret_values: Vec<String> = std::env::vars()
-        .filter_map(|(k, v)| {
-            let key = k.to_ascii_lowercase();
-            ((key.ends_with("_key") || key.ends_with("_token") || key.ends_with("_secret"))
-                && !v.is_empty())
-            .then_some(v)
-        })
-        .collect();
-    redact_json_secrets_inner(v, &secret_values);
-}
-
-fn redact_json_secrets_inner(v: &mut serde_json::Value, secret_values: &[String]) {
-    match v {
-        serde_json::Value::Object(m) => {
-            for (k, val) in m.iter_mut() {
-                if json_key_is_sensitive(k) {
-                    *val = serde_json::Value::String("<redacted>".into());
-                } else {
-                    redact_json_secrets_inner(val, secret_values);
-                }
-            }
-        }
-        serde_json::Value::Array(xs) => {
-            for x in xs {
-                redact_json_secrets_inner(x, secret_values);
-            }
-        }
-        serde_json::Value::String(s)
-            if secret_values
-                .iter()
-                .any(|secret| !secret.is_empty() && s.contains(secret)) =>
-        {
-            *s = "<redacted>".into();
-        }
-        _ => {}
-    }
 }
 
 fn strip_json_nulls(v: serde_json::Value) -> serde_json::Value {
@@ -2238,25 +2231,6 @@ fn strip_json_nulls(v: serde_json::Value) -> serde_json::Value {
         }
         other => other,
     }
-}
-
-fn json_key_is_sensitive(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    matches!(
-        k.as_str(),
-        "api_key"
-            | "apikey"
-            | "key"
-            | "token"
-            | "secret"
-            | "password"
-            | "access_token"
-            | "auth_token"
-            | "bearer_token"
-    ) || k.ends_with("_key")
-        || k.ends_with("_token")
-        || k.ends_with("_secret")
-        || k.ends_with("_password")
 }
 
 fn flag_name_is_sensitive(flag: &str) -> bool {
@@ -2773,9 +2747,11 @@ pub fn is_resolved_instance_result(row: &InstanceResult) -> bool {
 /// to sb-cli, which rejects duplicate `instance_id` rows.
 fn write_predictions_file(
     output_dir: &std::path::Path,
-    results: &[RunSlotResult],
+    results: &mut [RunSlotResult],
     model_name: &str,
+    redaction_cfg: &crate::config::RedactionCfg,
 ) -> Result<(), Error> {
+    let redactor = Redactor::from_config_lossy(redaction_cfg);
     let max_run = results.iter().map(|r| r.run_index).max().unwrap_or(1);
     let use_unique_prediction_ids = max_run > 1;
     let mut aggregate = String::new();
@@ -2792,7 +2768,16 @@ fn write_predictions_file(
         }
         let patch_path =
             existing_patch_path_for_run(output_dir, &r.result.instance_id, r.run_index);
-        let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        if downgrade_patch_secret_leak_if_needed(&mut r.result, &patch_path, &redactor)? {
+            continue;
+        }
+        let raw_model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        let redacted_patch = redactor.redact_text(&raw_model_patch, surface::PATCH_SUBMISSION);
+        let model_patch = if redactor.unsafe_allow_secret_leaks() {
+            raw_model_patch
+        } else {
+            redacted_patch.text
+        };
         let run_line = serde_json::json!({
             "instance_id": r.result.instance_id,
             "model_patch": model_patch,
@@ -2833,6 +2818,35 @@ fn write_predictions_file(
         std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
     }
     Ok(())
+}
+
+fn downgrade_patch_secret_leak_if_needed(
+    result: &mut InstanceResult,
+    patch_path: &std::path::Path,
+    redactor: &Redactor,
+) -> Result<bool, Error> {
+    if result.outcome.as_deref() != Some(outcome::SUBMITTED) || !result.patch_present {
+        return Ok(false);
+    }
+    let raw_model_patch = std::fs::read_to_string(patch_path).unwrap_or_default();
+    let redacted_patch = redactor.redact_text(&raw_model_patch, surface::PATCH_SUBMISSION);
+    if (redactor.configured_literal_leak(&raw_model_patch).is_some() || redacted_patch.redacted)
+        && !redactor.unsafe_allow_secret_leaks()
+    {
+        std::fs::write(patch_path, &redacted_patch.text)?;
+        downgrade_prediction_secret_leak(result);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn downgrade_prediction_secret_leak(result: &mut InstanceResult) {
+    result.exit_reason = "error".into();
+    result.outcome = Some(outcome::ERROR.into());
+    result.failure_category = Some(FailureCategory::SecretLeakDetected);
+    result.error = Some("secret_leak_detected in prediction artifact".into());
+    result.resolved_count = 0;
+    result.pass_at_1 = false;
 }
 
 /// Build an `InstanceResult` for a task skipped via `--resume`. Mirrors what
@@ -3076,6 +3090,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "agent_internal" => Ok(FailureCategory::AgentInternal),
         "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
         "patch_empty" => Ok(FailureCategory::PatchEmpty),
+        "secret_leak_detected" => Ok(FailureCategory::SecretLeakDetected),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
@@ -3307,6 +3322,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             current,
             GithubPrPublication {
                 config: github_pr.as_ref(),
+                redaction: &cfg.root.redaction,
                 instance_id: &id,
                 run_index,
                 trajectory_path: &traj_path,
@@ -3368,6 +3384,7 @@ async fn sleep_or_cancelled(
 
 struct GithubPrPublication<'a> {
     config: Option<&'a crate::run::github_pr::GithubPrSweepConfig>,
+    redaction: &'a crate::config::RedactionCfg,
     instance_id: &'a str,
     run_index: u32,
     trajectory_path: &'a Path,
@@ -3390,6 +3407,7 @@ async fn publish_github_pr_for_result(
         publication.run_index,
         publication.trajectory_path,
         publication.patch_path,
+        publication.redaction,
     );
     match crate::run::github_pr::publish(pr_options).await {
         Ok(result) => {
@@ -3430,6 +3448,7 @@ fn is_failed_instance(r: &InstanceResult) -> bool {
                     | FailureCategory::CostLimit
                     | FailureCategory::BudgetExhausted
                     | FailureCategory::WallclockTimeout
+                    | FailureCategory::SecretLeakDetected
             )
         )
 }
@@ -3446,6 +3465,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::AgentInternal => "agent_internal",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
+        FailureCategory::SecretLeakDetected => "secret_leak_detected",
         FailureCategory::Unknown => "unknown",
     }
 }
@@ -3906,11 +3926,13 @@ mod tests {
     #[tokio::test]
     async fn github_pr_publication_is_noop_when_disabled() {
         let result = test_instance_result("inst", true, false);
+        let redaction = crate::config::RedactionCfg::default();
 
         let actual = publish_github_pr_for_result(
             result.clone(),
             GithubPrPublication {
                 config: None,
+                redaction: &redaction,
                 instance_id: "inst",
                 run_index: 1,
                 trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
@@ -3929,6 +3951,7 @@ mod tests {
     #[tokio::test]
     async fn github_pr_publication_failure_preserves_submission_outcome() {
         let result = test_instance_result("inst", true, true);
+        let redaction = crate::config::RedactionCfg::default();
         let config = crate::run::github_pr::GithubPrSweepConfig {
             target_repo: "not-a-valid-owner-repo".into(),
             target_branch: "trunk".into(),
@@ -3944,6 +3967,7 @@ mod tests {
             result.clone(),
             GithubPrPublication {
                 config: Some(&config),
+                redaction: &redaction,
                 instance_id: "inst",
                 run_index: 1,
                 trajectory_path: std::path::Path::new("inst/run-1.traj.json"),
@@ -4445,25 +4469,49 @@ mod tests {
 
     #[test]
     fn redact_argv_masks_secret_flags() {
-        let redacted = redact_argv(vec![
-            "rust-swe-agent".into(),
-            "--anthropic-api-key".into(),
-            "sk-test".into(),
-            "--github-token=ghp_123".into(),
-        ]);
+        let redacted = redact_argv(
+            vec![
+                "rust-swe-agent".into(),
+                "--anthropic-api-key".into(),
+                "sk-test".into(),
+                "--github-token=ghp_123".into(),
+            ],
+            &crate::config::RedactionCfg::default(),
+        );
         assert_eq!(redacted[2], "<redacted>");
         assert_eq!(redacted[3], "--github-token=<redacted>");
     }
 
     #[test]
     fn redact_argv_does_not_mask_max_tokens_flag() {
-        let redacted = redact_argv(vec![
-            "rust-swe-agent".into(),
-            "--max-tokens".into(),
-            "4096".into(),
-        ]);
+        let redacted = redact_argv(
+            vec![
+                "rust-swe-agent".into(),
+                "--max-tokens".into(),
+                "4096".into(),
+            ],
+            &crate::config::RedactionCfg::default(),
+        );
         assert_eq!(redacted[1], "--max-tokens");
         assert_eq!(redacted[2], "4096");
+    }
+
+    #[test]
+    fn redact_argv_uses_redactor_for_embedded_literals() {
+        let cfg = crate::config::RedactionCfg {
+            secret_literals: vec!["review-secret-value".into()],
+            ..crate::config::RedactionCfg::default()
+        };
+        let redacted = redact_argv(
+            vec![
+                "rust-swe-agent".into(),
+                "--note=prefix-review-secret-value-suffix".into(),
+            ],
+            &cfg,
+        );
+
+        assert!(!redacted[1].contains("review-secret-value"));
+        assert!(redacted[1].contains("[REDACTED:configured_literal:"));
     }
 
     #[test]
@@ -4478,9 +4526,15 @@ mod tests {
         let mut cfg = serde_json::json!({
             "model": { "max_tokens": 4096, "api_key": "sk-test" }
         });
-        redact_json_secrets(&mut cfg);
+        let redactor = Redactor::default_enabled();
+        redactor.redact_json_value(&mut cfg, surface::TRAJECTORY);
         assert_eq!(cfg["model"]["max_tokens"], 4096);
-        assert_eq!(cfg["model"]["api_key"], "<redacted>");
+        assert!(
+            cfg["model"]["api_key"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("[REDACTED:env_key:")),
+            "{cfg}"
+        );
     }
 
     #[test]

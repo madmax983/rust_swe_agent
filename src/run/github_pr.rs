@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
+use crate::config::RedactionCfg;
 use crate::error::ConfigError;
+use crate::redaction::{Redactor, surface};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -38,6 +40,7 @@ pub struct GithubPrOptions {
     pub timeout_secs: u64,
     pub max_retries: u32,
     pub backoff_base_ms: u64,
+    pub redaction: RedactionCfg,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ impl GithubPrSweepConfig {
         run_index: u32,
         trajectory_path: &Path,
         patch_path: &Path,
+        redaction: &RedactionCfg,
     ) -> GithubPrOptions {
         let task_id = if run_index == 1 {
             instance_id.to_owned()
@@ -77,6 +81,7 @@ impl GithubPrSweepConfig {
             timeout_secs: self.timeout_secs,
             max_retries: self.max_retries,
             backoff_base_ms: self.backoff_base_ms,
+            redaction: redaction.clone(),
         }
     }
 }
@@ -140,18 +145,33 @@ pub fn build_pr_plan(
             "task id is required for PR publishing".into(),
         ));
     }
+    let redactor = Redactor::from_config_lossy(&options.redaction);
     let base_branch = validate_branch_component(&options.target_branch, "target branch")?;
     let prefix = normalize_branch_prefix(&options.branch_prefix).map_err(Error::Github)?;
-    let task_slug = task_branch_component(task_id);
-    let head_branch = format!("{prefix}/{task_slug}");
-    let summary = summarize_patch(patch_text);
-    let title = format!("rust-swe-agent: {task_id}");
-    let body = render_pr_body(
-        task_id,
-        &options.trajectory_ref,
-        &options.patch_path,
-        &summary,
+    let branch_task_id = normalize_redaction_markers_for_branch(
+        &redactor.redact_text(task_id, surface::GITHUB_COMMENT).text,
     );
+    let task_slug = task_branch_component(&branch_task_id);
+    let head_branch = format!("{prefix}/{task_slug}");
+    let mut summary = summarize_patch(patch_text);
+    redact_patch_summary_files(&mut summary, &redactor);
+    let title = redactor
+        .redact_text(
+            &format!("rust-swe-agent: {task_id}"),
+            surface::GITHUB_COMMENT,
+        )
+        .text;
+    let body = redactor
+        .redact_text(
+            &render_pr_body(
+                task_id,
+                &options.trajectory_ref,
+                &options.patch_path,
+                &summary,
+            ),
+            surface::GITHUB_COMMENT,
+        )
+        .text;
 
     Ok(PullRequestPlan {
         target_repo: format!("{}/{}", repo.owner, repo.name),
@@ -285,6 +305,12 @@ fn summarize_patch(patch_text: &str) -> PatchSummary {
         deletions,
         files: files.into_iter().collect(),
         bytes: patch_text.len(),
+    }
+}
+
+fn redact_patch_summary_files(summary: &mut PatchSummary, redactor: &Redactor) {
+    for file in &mut summary.files {
+        *file = redactor.redact_text(file, surface::GITHUB_COMMENT).text;
     }
 }
 
@@ -801,6 +827,23 @@ fn task_branch_component(raw: &str) -> String {
     let slug = slug_for_branch(raw);
     let digest = short_task_id_hash(raw);
     format!("{slug}-{digest}")
+}
+
+fn normalize_redaction_markers_for_branch(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut remaining = raw;
+    while let Some(start) = remaining.find("[REDACTED:") {
+        out.push_str(&remaining[..start]);
+        let marker_and_rest = &remaining[start..];
+        let Some(end) = marker_and_rest.find(']') else {
+            out.push_str(marker_and_rest);
+            return out;
+        };
+        out.push_str("redacted");
+        remaining = &marker_and_rest[end + 1..];
+    }
+    out.push_str(remaining);
+    out
 }
 
 fn slug_for_branch(raw: &str) -> String {
@@ -1412,6 +1455,7 @@ mod tests {
             timeout_secs: 30,
             max_retries: 2,
             backoff_base_ms: 250,
+            redaction: RedactionCfg::default(),
         }
     }
 

@@ -101,6 +101,22 @@ workdir = "/workspace"
 # Maps to --max-input-tpm on the CLI. CLI value always wins over this key.
 # max_input_tpm = 400000
 
+[redaction]
+# Secret redaction is enabled by default for trajectories, model-visible
+# observations, streams, inspect/export output, and submission artifacts.
+enabled = true
+#
+# Add per-run literals and regexes here or in an overlay config. Literal values
+# are redacted from resolved config manifests before they are written.
+# secret_literals = ["actual-token-value"]
+# custom_patterns = ["INTERNAL-TOKEN-[A-Za-z0-9]{24}"]
+#
+# Unsafe escape hatch: when false, submitted patches/prediction artifacts that
+# contain configured literals or structured secret shapes are downgraded to
+# failure_category = "secret_leak_detected". Leave this off unless you are
+# intentionally producing a private, non-shareable artifact.
+unsafe_allow_secret_leaks = false
+
 [prompts]
 system = '''
 You are a skilled software engineer working at a terminal. You have

@@ -20,6 +20,7 @@ use crate::config::{Config, ToolHookCfg};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
+use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{
@@ -128,7 +129,9 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    pub redactor: Redactor,
     pub cancellation: Option<CancellationToken>,
+    raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
 }
 
@@ -167,15 +170,24 @@ impl DefaultAgentBuilder {
         ];
 
         let started_at = chrono::Utc::now().to_rfc3339();
+        let redactor = Redactor::from_config(&self.config.root.redaction).map_err(|err| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid redaction config: {err}"
+            )))
+        })?;
+
         let mut trajectory = Trajectory::new();
-        trajectory.info.task = Some(self.task.clone());
+        trajectory.info.task = Some(redactor.redact_text(&self.task, surface::TRAJECTORY).text);
         trajectory.info.model_name = Some(self.model.name().to_owned());
         trajectory.info.started_at = Some(started_at.clone());
         for m in &history {
-            trajectory.record_message(m);
+            record_redacted_message(&mut trajectory, m, m.extra.clone(), &redactor);
         }
 
-        let stream: Arc<dyn StreamSink> = self.stream.unwrap_or_else(|| Arc::new(NullSink));
+        let stream: Arc<dyn StreamSink> = self.stream.map_or_else(
+            || Arc::new(NullSink) as Arc<dyn StreamSink>,
+            |sink| Arc::new(RedactingSink::new(sink, redactor.clone())) as Arc<dyn StreamSink>,
+        );
         let test_command_patterns = effective_test_command_patterns(
             &self.config.root.agent.test_command_patterns,
             self.config.root.agent.test_command_patterns_replace,
@@ -206,7 +218,9 @@ impl DefaultAgentBuilder {
             cache_creation_tokens: 0,
             completion_tokens: 0,
             stream,
+            redactor,
             cancellation: None,
+            raw_task: self.task,
             test_command_patterns,
         })
     }
@@ -251,6 +265,41 @@ async fn query_model_until_cancelled(
         result = model.query(history, opts) => result.map(Some),
         () = cancellation.cancelled() => Ok(None),
     }
+}
+
+fn record_redacted_message(
+    trajectory: &mut Trajectory,
+    message: &Message,
+    extra: MessageExtra,
+    redactor: &Redactor,
+) {
+    let mut redacted = message.clone();
+    redacted.content = redactor
+        .redact_text(&message.content, surface::TRAJECTORY)
+        .text;
+    trajectory.record_with_extra(
+        &redacted,
+        redact_message_extra(extra, redactor, surface::TRAJECTORY),
+    );
+}
+
+fn redact_message_extra(
+    mut extra: MessageExtra,
+    redactor: &Redactor,
+    surface_name: &str,
+) -> MessageExtra {
+    if let Some(actions) = &mut extra.actions {
+        for action in actions {
+            *action = redactor.redact_text(action, surface_name).text;
+        }
+    }
+    if let Some(response) = &mut extra.response {
+        redactor.redact_json_value(response, surface_name);
+    }
+    for value in extra.other.values_mut() {
+        redactor.redact_json_value(value, surface_name);
+    }
+    extra
 }
 
 #[async_trait]
@@ -369,18 +418,28 @@ impl Agent for DefaultAgent {
         match &action {
             Action::Submit(output) => {
                 asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
-                self.history.push(Message::assistant(resp.content.clone()));
-                self.trajectory.record_message(&asst);
+                self.history.push(Message::assistant(
+                    self.redactor
+                        .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                        .text,
+                ));
+                record_redacted_message(
+                    &mut self.trajectory,
+                    &asst,
+                    asst.extra.clone(),
+                    &self.redactor,
+                );
+                let final_output = self.redactor.redact_text(output, surface::TRAJECTORY).text;
                 self.trajectory.info.exit_reason = Some("submitted".into());
                 self.trajectory.info.failure_category = None;
-                self.trajectory.info.final_output = Some(output.clone());
+                self.trajectory.info.final_output = Some(final_output.clone());
                 self.trajectory.info.steps = Some(self.steps);
                 self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
                 self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
                 self.finalize_run_metadata(outcome::SUBMITTED);
                 self.emit_run_ended("submitted", None, Some(output.clone()));
                 return Ok(StepOutcome::Terminate(ExitReason::Submitted {
-                    final_output: output.clone(),
+                    final_output,
                 }));
             }
             Action::Bash(cmd) => {
@@ -395,8 +454,17 @@ impl Agent for DefaultAgent {
                     .info
                     .failure_category
                     .get_or_insert(FailureCategory::ModelParse);
-                self.history.push(Message::assistant(resp.content.clone()));
-                self.trajectory.record_message(&asst);
+                self.history.push(Message::assistant(
+                    self.redactor
+                        .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                        .text,
+                ));
+                record_redacted_message(
+                    &mut self.trajectory,
+                    &asst,
+                    asst.extra.clone(),
+                    &self.redactor,
+                );
                 // Observation = format_error_template, verbatim (no vars in
                 // default template, but we still render to pick up any
                 // future placeholders).
@@ -409,9 +477,18 @@ impl Agent for DefaultAgent {
                     content: err.clone(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 });
-                let obs = Message::user(err);
+                let obs = Message::user(
+                    self.redactor
+                        .redact_text(&err, surface::MODEL_OBSERVATION)
+                        .text,
+                );
                 self.history.push(obs.clone());
-                self.trajectory.record_message(&obs);
+                record_redacted_message(
+                    &mut self.trajectory,
+                    &obs,
+                    obs.extra.clone(),
+                    &self.redactor,
+                );
                 self.steps += 1;
                 return Ok(StepOutcome::Continue);
             }
@@ -475,13 +552,38 @@ impl Agent for DefaultAgent {
             self.record_test_invocation_if_matched(&cmd, result.exit_code);
         }
 
+        let result_for_observation = RunResult {
+            stdout: self
+                .redactor
+                .redact_text(&result.stdout, surface::MODEL_OBSERVATION)
+                .text,
+            stderr: self
+                .redactor
+                .redact_text(&result.stderr, surface::MODEL_OBSERVATION)
+                .text,
+            exit_code: result.exit_code,
+            timed_out: result.timed_out,
+        };
+        let result_for_trajectory = RunResult {
+            stdout: self
+                .redactor
+                .redact_text(&result.stdout, surface::TRAJECTORY)
+                .text,
+            stderr: self
+                .redactor
+                .redact_text(&result.stderr, surface::TRAJECTORY)
+                .text,
+            exit_code: result.exit_code,
+            timed_out: result.timed_out,
+        };
+
         let trunc_stdout = truncate_observation_text(
-            &result.stdout,
+            &result_for_observation.stdout,
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
         let trunc_stderr = truncate_observation_text(
-            &result.stderr,
+            &result_for_observation.stderr,
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
@@ -496,16 +598,28 @@ impl Agent for DefaultAgent {
             self.config.root.agent.observation_max_bytes,
             self.config.root.agent.observation_head_ratio,
         );
-        let pre_hook_results_for_observation = truncate_hook_results_for_observation(
-            &pre_hook_results,
-            self.config.root.agent.observation_max_bytes,
-            self.config.root.agent.observation_head_ratio,
+        let pre_hook_results_for_observation = redact_hook_results_for_surface(
+            truncate_hook_results_for_observation(
+                &pre_hook_results,
+                self.config.root.agent.observation_max_bytes,
+                self.config.root.agent.observation_head_ratio,
+            ),
+            &self.redactor,
+            surface::MODEL_OBSERVATION,
         );
-        let post_hook_results_for_observation = truncate_hook_results_for_observation(
-            &post_hook_results,
-            self.config.root.agent.observation_max_bytes,
-            self.config.root.agent.observation_head_ratio,
+        let post_hook_results_for_observation = redact_hook_results_for_surface(
+            truncate_hook_results_for_observation(
+                &post_hook_results,
+                self.config.root.agent.observation_max_bytes,
+                self.config.root.agent.observation_head_ratio,
+            ),
+            &self.redactor,
+            surface::MODEL_OBSERVATION,
         );
+        let cmd_for_observation = self
+            .redactor
+            .redact_text(&cmd, surface::MODEL_OBSERVATION)
+            .text;
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
             &self.config.root.agent.observation_template,
@@ -515,7 +629,7 @@ impl Agent for DefaultAgent {
                 "stdout": trunc_stdout.text,
                 "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
-                "command": cmd,
+                "command": cmd_for_observation,
                 "step": self.steps,
                 "tool_use_blocked": tool_use_blocked,
                 "pre_tool_use_hooks": pre_hook_results_for_observation,
@@ -525,10 +639,23 @@ impl Agent for DefaultAgent {
 
         // 6b. Optionally append the budget block.
         let obs_text = self.append_budget_block(obs_text)?;
+        let obs_text = self
+            .redactor
+            .redact_text(&obs_text, surface::MODEL_OBSERVATION)
+            .text;
 
         // Record assistant turn in history & trajectory.
-        self.history.push(Message::assistant(resp.content.clone()));
-        self.trajectory.record_message(&asst);
+        self.history.push(Message::assistant(
+            self.redactor
+                .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                .text,
+        ));
+        record_redacted_message(
+            &mut self.trajectory,
+            &asst,
+            asst.extra.clone(),
+            &self.redactor,
+        );
 
         // Record user observation.
         let obs_ts = chrono::Utc::now().to_rfc3339();
@@ -537,16 +664,20 @@ impl Agent for DefaultAgent {
         let mut obs_extra = MessageExtra::default();
         obs_extra.other.insert(
             "run_result".into(),
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+            serde_json::to_value(&result_for_trajectory).unwrap_or(serde_json::Value::Null),
         );
-        obs_extra.other.insert(
-            "pre_tool_use_hooks".into(),
-            serde_json::to_value(&pre_hook_results)?,
-        );
-        obs_extra.other.insert(
-            "post_tool_use_hooks".into(),
-            serde_json::to_value(&post_hook_results)?,
-        );
+        let mut pre_hook_value = serde_json::to_value(&pre_hook_results)?;
+        self.redactor
+            .redact_json_value(&mut pre_hook_value, surface::TRAJECTORY);
+        obs_extra
+            .other
+            .insert("pre_tool_use_hooks".into(), pre_hook_value);
+        let mut post_hook_value = serde_json::to_value(&post_hook_results)?;
+        self.redactor
+            .redact_json_value(&mut post_hook_value, surface::TRAJECTORY);
+        obs_extra
+            .other
+            .insert("post_tool_use_hooks".into(), post_hook_value);
         obs_extra.other.insert(
             "tool_use_blocked".into(),
             serde_json::Value::Bool(tool_use_blocked),
@@ -570,7 +701,7 @@ impl Agent for DefaultAgent {
             serde_json::json!(trunc_output.bytes_omitted),
         );
         obs_extra.timestamp = Some(obs_ts.clone());
-        self.trajectory.record_with_extra(&obs_msg, obs_extra);
+        record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
 
         self.stream.emit(StreamEvent::Observation {
             step: self.steps,
@@ -595,7 +726,7 @@ impl DefaultAgent {
     }
 
     fn emit_run_ended(
-        &self,
+        &mut self,
         exit_reason: &str,
         failure_category: Option<FailureCategory>,
         final_output: Option<String>,
@@ -608,6 +739,7 @@ impl DefaultAgent {
             total_cost_usd: self.total_cost_usd,
             ended_at: chrono::Utc::now().to_rfc3339(),
         });
+        self.trajectory.info.redaction = Some(self.redactor.summary());
     }
 
     /// Stamp the trajectory with the coarse `outcome`, accumulated
@@ -623,6 +755,7 @@ impl DefaultAgent {
             completion_tokens: self.completion_tokens,
         });
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
+        self.trajectory.info.redaction = Some(self.redactor.summary());
         self.refresh_test_metadata();
     }
 
@@ -684,7 +817,7 @@ impl DefaultAgent {
         if let Some(matched_pattern) = detect_test_command(command, &self.test_command_patterns) {
             self.trajectory.info.test_invocations.push(TestInvocation {
                 step_index: self.steps,
-                command: command.to_owned(),
+                command: self.redactor.redact_text(command, surface::TRAJECTORY).text,
                 exit_code,
                 matched_pattern,
             });
@@ -783,7 +916,6 @@ impl DefaultAgent {
         command: &str,
         result: Option<&RunResult>,
     ) -> serde_json::Value {
-        let task = self.trajectory.info.task.as_deref().unwrap_or_default();
         let model = self
             .trajectory
             .info
@@ -805,7 +937,7 @@ impl DefaultAgent {
             "tool": {
                 "name": "bash",
             },
-            "task": task,
+            "task": self.raw_task,
             "model": model,
             "step": self.steps,
             "command": command,
@@ -858,6 +990,26 @@ fn truncate_hook_results_for_observation(
     results
         .iter()
         .map(|result| result.truncated_for_observation(max_bytes, head_ratio))
+        .collect()
+}
+
+fn redact_hook_results_for_surface(
+    results: Vec<ToolHookResult>,
+    redactor: &Redactor,
+    surface_name: &str,
+) -> Vec<ToolHookResult> {
+    results
+        .into_iter()
+        .map(|result| ToolHookResult {
+            phase: result.phase,
+            name: result.name,
+            command: redactor.redact_text(&result.command, surface_name).text,
+            stdout: redactor.redact_text(&result.stdout, surface_name).text,
+            stderr: redactor.redact_text(&result.stderr, surface_name).text,
+            output: redactor.redact_text(&result.output, surface_name).text,
+            exit_code: result.exit_code,
+            timed_out: result.timed_out,
+        })
         .collect()
 }
 

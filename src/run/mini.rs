@@ -15,6 +15,7 @@ use crate::env::{Environment, LocalEnvironment, RunRequest};
 use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, Model, ModelUsage};
+use crate::redaction::surface;
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 use crate::trajectory::FailureCategory;
 
@@ -180,7 +181,43 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 }
                 // Always write the patch file — operators need to inspect
                 // failed patches too.
-                std::fs::write(&spec.patch_path, &diff)?;
+                let redacted_patch = agent.redactor.redact_text(&diff, surface::PATCH_SUBMISSION);
+                let detected_configured_literal = agent.redactor.configured_literal_leak(&diff);
+                if (detected_configured_literal.is_some() || redacted_patch.redacted)
+                    && !agent.redactor.unsafe_allow_secret_leaks()
+                {
+                    std::fs::write(&spec.patch_path, redacted_patch.text)?;
+                    patch_written = true;
+                    tracing::warn!(
+                        instance = %args.trajectory_name,
+                        "secret leak detected in submitted patch; downgrading outcome to error"
+                    );
+                    agent.trajectory.info.exit_reason = Some("error".into());
+                    agent.trajectory.info.failure_category =
+                        Some(FailureCategory::SecretLeakDetected);
+                    let leak_kind = detected_configured_literal
+                        .map_or_else(|| "structured_secret".to_owned(), |leak| leak.kind);
+                    agent.trajectory.info.other.insert(
+                        "secret_leak_detected".into(),
+                        serde_json::json!({
+                            "surface": surface::PATCH_SUBMISSION,
+                            "kind": leak_kind,
+                        }),
+                    );
+                    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    agent.trajectory.save_pretty(&traj_path)?;
+                    tracing::info!(?traj_path, patch_written, "trajectory written");
+                    if let Some(server) = server {
+                        server.shutdown().await;
+                    }
+                    return Ok(());
+                }
+                let patch_text = if agent.redactor.unsafe_allow_secret_leaks() {
+                    diff.clone()
+                } else {
+                    redacted_patch.text
+                };
+                std::fs::write(&spec.patch_path, patch_text)?;
                 patch_written = true;
 
                 match check_patch_validity(
@@ -210,6 +247,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
                             run_result = Ok(crate::agent::ExitReason::UserInterrupt);
                         } else {
+                            let reason = agent
+                                .redactor
+                                .redact_text(&reason, surface::TRAJECTORY)
+                                .text;
                             tracing::warn!(
                                 instance = %args.trajectory_name,
                                 error = %reason,
@@ -231,6 +272,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
                     run_result = Ok(crate::agent::ExitReason::UserInterrupt);
                 } else {
+                    let reason = agent
+                        .redactor
+                        .redact_text(&reason, surface::TRAJECTORY)
+                        .text;
                     tracing::warn!(
                         instance = %args.trajectory_name,
                         error = %reason,
@@ -312,7 +357,14 @@ fn finalize_error_trajectory(agent: &mut DefaultAgent, err: &Error) {
         .info
         .other
         .entry("error_message".into())
-        .or_insert_with(|| serde_json::Value::String(err.to_string()));
+        .or_insert_with(|| {
+            serde_json::Value::String(
+                agent
+                    .redactor
+                    .redact_text(&err.to_string(), surface::TRAJECTORY)
+                    .text,
+            )
+        });
     agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
 }
 
