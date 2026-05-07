@@ -88,6 +88,42 @@ impl PolicyProfile {
     }
 }
 
+// ── Policy config errors ─────────────────────────────────────────────────────
+
+/// Error raised when an operator-supplied policy config cannot be parsed
+/// into a [`PolicyEngine`].
+#[derive(Debug)]
+pub enum PolicyConfigError {
+    /// `[policy] profile = "..."` was not one of `safe`, `ask`, `yolo`.
+    UnknownProfile(String),
+    /// A regex in `extra_allow_patterns` or `extra_deny_patterns` failed
+    /// to compile.
+    InvalidRegex { label: String, source: regex::Error },
+}
+
+impl std::fmt::Display for PolicyConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownProfile(p) => write!(
+                f,
+                "unknown policy profile {p:?} (expected one of: safe, ask, yolo)"
+            ),
+            Self::InvalidRegex { label, source } => {
+                write!(f, "invalid regex in policy rule {label:?}: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolicyConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnknownProfile(_) => None,
+            Self::InvalidRegex { source, .. } => Some(source),
+        }
+    }
+}
+
 // ── Policy decision ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,26 +213,26 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `-r`, harmless) are acceptable safety conservatism.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-root-glob",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/\*"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/\*"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-no-preserve-root",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?rm\b[^|;\n]*--no-preserve-root\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*--no-preserve-root\b",
         ),
         // Note: quoted `~` does NOT undergo tilde expansion in bash, so
         // `rm -rf '~'` removes a file literally named `~`, not the home dir.
         // Only the unquoted form is catastrophic.
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*)?rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),
@@ -219,16 +255,19 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         ),
         PolicyRule::deny_static(
             "chmod-sensitive-files",
-            r"(?:sudo\s+)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
         ),
-        PolicyRule::deny_static("chmod-777-system", r"(?:sudo\s+)?chmod\s+-R\s+777\s+/"),
+        PolicyRule::deny_static(
+            "chmod-777-system",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+-R\s+777\s+/",
+        ),
         PolicyRule::deny_static(
             "chown-system-root",
-            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|)`])",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "chown-system-dirs",
-            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chown\s+-R\s+\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
         ),
         // --- Raw disk / device writes ---
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
@@ -376,6 +415,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
 
 // ── PolicyEngine ──────────────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct PolicyEngine {
     profile: PolicyProfile,
     /// Rules are evaluated in order; first match wins.
@@ -427,32 +467,47 @@ impl PolicyEngine {
     }
 
     /// Build an engine from an operator config.
-    pub fn from_cfg(cfg: &PolicyCfg) -> Result<Self, regex::Error> {
-        let profile = PolicyProfile::from_str(&cfg.profile).unwrap_or(PolicyProfile::Safe);
+    ///
+    /// # Errors
+    /// Returns [`PolicyConfigError::UnknownProfile`] if `cfg.profile` is not
+    /// `"safe"`, `"ask"`, or `"yolo"` (case-insensitive).  Silently falling
+    /// back to `Safe` on a typo would downgrade an operator who selected
+    /// `ask` for fail-closed behaviour, so it is treated as a hard error.
+    /// Returns [`PolicyConfigError::InvalidRegex`] if any extra
+    /// allow/deny pattern fails to compile.
+    pub fn from_cfg(cfg: &PolicyCfg) -> Result<Self, PolicyConfigError> {
+        let profile = PolicyProfile::from_str(&cfg.profile)
+            .ok_or_else(|| PolicyConfigError::UnknownProfile(cfg.profile.clone()))?;
         let extra_allow = cfg
             .extra_allow_patterns
             .iter()
             .enumerate()
             .map(|(i, pat)| {
-                Ok(PolicyRule {
-                    label: format!("cfg-allow-{i}"),
-                    pattern: Regex::new(pat)?,
-                    decision: RuleDecision::Allow,
-                })
+                let label = format!("cfg-allow-{i}");
+                Regex::new(pat)
+                    .map(|r| PolicyRule {
+                        label: label.clone(),
+                        pattern: r,
+                        decision: RuleDecision::Allow,
+                    })
+                    .map_err(|source| PolicyConfigError::InvalidRegex { label, source })
             })
-            .collect::<Result<Vec<_>, regex::Error>>()?;
+            .collect::<Result<Vec<_>, PolicyConfigError>>()?;
         let extra_deny = cfg
             .extra_deny_patterns
             .iter()
             .enumerate()
             .map(|(i, pat)| {
-                Ok(PolicyRule {
-                    label: format!("cfg-deny-{i}"),
-                    pattern: Regex::new(pat)?,
-                    decision: RuleDecision::Deny,
-                })
+                let label = format!("cfg-deny-{i}");
+                Regex::new(pat)
+                    .map(|r| PolicyRule {
+                        label: label.clone(),
+                        pattern: r,
+                        decision: RuleDecision::Deny,
+                    })
+                    .map_err(|source| PolicyConfigError::InvalidRegex { label, source })
             })
-            .collect::<Result<Vec<_>, regex::Error>>()?;
+            .collect::<Result<Vec<_>, PolicyConfigError>>()?;
         Ok(Self::with_extra_rules(profile, extra_allow, extra_deny))
     }
 

@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rust_swe_agent::policy::{
-    PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile, PolicyRule,
+    PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
+    PolicyRule,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -630,11 +631,75 @@ fn safe_blocks_sudo_prefixed_device_writes() {
     }
 }
 
+// ── sudo-flag bypass on rm/chmod/chown (Codex P1) ────────────────────────────
+
+#[test]
+fn safe_blocks_sudo_with_flags_before_rm() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "sudo -n rm -rf /",
+        "sudo -E rm -rf /",
+        "sudo -H rm -rf /",
+        "sudo -nE rm -rf /",
+        "sudo --non-interactive rm -rf /",
+        "sudo --preserve-env rm -rf /",
+        "sudo -n rm -rf /etc",
+        "sudo -E rm -rf '/'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "sudo with flags before rm must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Unknown profile error (Codex P2) ─────────────────────────────────────────
+
+#[test]
+fn unknown_profile_returns_error_instead_of_silently_defaulting() {
+    let cfg = PolicyCfg {
+        profile: "aks".into(), // typo of "ask"
+        extra_deny_patterns: vec![],
+        extra_allow_patterns: vec![],
+    };
+    let result = PolicyEngine::from_cfg(&cfg);
+    match result {
+        Err(PolicyConfigError::UnknownProfile(p)) => assert_eq!(p, "aks"),
+        Err(other) => panic!("expected UnknownProfile, got {other:?}"),
+        Ok(_) => panic!("expected error for typo'd profile, got Ok"),
+    }
+}
+
+#[test]
+fn unknown_profile_error_message_lists_valid_options() {
+    let err = PolicyConfigError::UnknownProfile("nonsense".into());
+    let msg = err.to_string();
+    assert!(msg.contains("nonsense"));
+    assert!(msg.contains("safe"));
+    assert!(msg.contains("ask"));
+    assert!(msg.contains("yolo"));
+}
+
+#[test]
+fn invalid_extra_deny_regex_returns_error() {
+    let cfg = PolicyCfg {
+        profile: "safe".into(),
+        extra_deny_patterns: vec!["[unclosed".into()],
+        extra_allow_patterns: vec![],
+    };
+    match PolicyEngine::from_cfg(&cfg) {
+        Err(PolicyConfigError::InvalidRegex { label, .. }) => {
+            assert!(label.starts_with("cfg-deny-"));
+        }
+        other => panic!("expected InvalidRegex error, got {other:?}"),
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
 fn policy_cfg_deserializes_from_toml() {
-    use rust_swe_agent::policy::PolicyCfg;
     let toml = r#"
         profile = "safe"
         extra_deny_patterns = ["^evil_cmd"]
@@ -647,7 +712,6 @@ fn policy_cfg_deserializes_from_toml() {
 
 #[test]
 fn policy_cfg_defaults_to_safe() {
-    use rust_swe_agent::policy::PolicyCfg;
     let cfg = PolicyCfg::default();
     assert_eq!(cfg.profile, "safe");
 }
@@ -656,7 +720,6 @@ fn policy_cfg_defaults_to_safe() {
 
 #[test]
 fn engine_builds_from_cfg() {
-    use rust_swe_agent::policy::PolicyCfg;
     let cfg = PolicyCfg {
         profile: "yolo".into(),
         extra_deny_patterns: vec![],
