@@ -57,6 +57,13 @@ jobs:
 
       - name: Run smoke sweep
         id: sweep
+        # IMPORTANT: cwd must be the cloned SWE-bench repo. The agent
+        # builds bash commands without an explicit `cwd`, so the model's
+        # edits land in whatever directory the binary inherits. Patch
+        # capture, in contrast, always diffs `environment.workdir`. Run
+        # from the clone so both halves agree, and pass absolute paths
+        # for inputs/outputs so artifacts land at repo root.
+        working-directory: runs-input/workdir
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
@@ -64,11 +71,11 @@ jobs:
             echo "::error::OPENROUTER_API_KEY secret is not set on this repository."
             exit 1
           fi
-          ./target/release/rust-swe-agent bench swebench \
-            --dataset-path runs-input/dataset.jsonl \
-            --output runs \
+          "${GITHUB_WORKSPACE}/target/release/rust-swe-agent" bench swebench \
+            --dataset-path "${GITHUB_WORKSPACE}/runs-input/dataset.jsonl" \
+            --output "${GITHUB_WORKSPACE}/runs" \
             --model "${SWE_BENCH_MODEL}" \
-            --config runs-input/config.toml \
+            --config "${GITHUB_WORKSPACE}/runs-input/config.toml" \
             --parallel 1 \
             --step-limit 8 \
             --task-timeout-secs 300 \
