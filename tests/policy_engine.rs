@@ -1338,6 +1338,69 @@ fn safe_does_not_block_heredoc_when_target_is_not_later_invoked() {
     }
 }
 
+// ── sudo long-option shell spawn (Codex P1) ──────────────────────────────────
+
+#[test]
+fn safe_blocks_sudo_long_option_shell_spawn() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Long options before the shell
+        "sudo --non-interactive bash",
+        "sudo --preserve-env bash",
+        // Mixed flag groups
+        "sudo -n -s",
+        "sudo -nE bash",
+        "sudo -E -i",
+        // --shell long option
+        "sudo --shell",
+        "sudo --non-interactive --shell",
+        // Long option + run-as-user shell
+        "sudo --non-interactive -u root bash",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "sudo long-option shell spawn must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── tee heredoc-then-execute (Codex P1) ──────────────────────────────────────
+
+#[test]
+fn safe_blocks_tee_heredoc_when_target_is_later_invoked() {
+    // `tee` writes its stdin (the heredoc body) to FILE.  If a later
+    // command runs that FILE through an interpreter, the body executes.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "tee /tmp/x <<'EOF'\nrm -rf /\nEOF\nbash /tmp/x",
+        "tee -a /tmp/x <<'EOF'\nrm -rf /\nEOF\nbash /tmp/x",
+        "sudo tee /tmp/x <<'EOF'\nrm -rf /\nEOF\nbash /tmp/x",
+        "tee /tmp/x <<'EOF'\nrm -rf /\nEOF\nsource /tmp/x",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "tee heredoc-then-execute must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_tee_heredoc_pure_data_write() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "tee /tmp/fixture.sh <<'EOF'\nrm -rf /\nEOF",
+        "sudo tee /etc/myapp.conf <<'EOF'\nrm -rf /\nEOF",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "tee data-write without later exec should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

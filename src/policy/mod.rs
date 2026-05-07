@@ -277,17 +277,24 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*tee\b[^|;\n]*\s+['"]?/dev/(?:sd[a-z]|hd[a-z]|nvme\d|xvd[a-z]|vd[a-z]|disk[\d/]|mapper/|dm-|md\d|loop\d|ram\d)"#,
         ),
         // --- Privilege escalation ---
+        // `-\S+` matches any short or long option (e.g. `-n`, `-nE`,
+        // `--non-interactive`, `--preserve-env`).  Repeated to allow
+        // multiple option groups separated by spaces.
         PolicyRule::deny_static(
             "sudo-shell-spawn",
-            r"sudo\s+(?:-[a-zA-Z]+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
+            r"sudo\s+(?:-\S+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
         ),
-        PolicyRule::deny_static("sudo-interactive-root", r"sudo\s+-[a-zA-Z]*i[a-zA-Z]*\b"),
-        PolicyRule::deny_static("sudo-spawn-shell-s", r"sudo\s+-s\b"),
-        PolicyRule::deny_static("sudo-passwd-change", r"sudo\s+passwd\b"),
-        PolicyRule::deny_static("sudo-visudo", r"sudo\s+visudo\b"),
+        PolicyRule::deny_static(
+            "sudo-interactive-root",
+            r"sudo\s+(?:-\S+\s+)*-[a-zA-Z]*i[a-zA-Z]*\b",
+        ),
+        // `-s` (short) and `--shell` (long) both spawn the user's shell.
+        PolicyRule::deny_static("sudo-spawn-shell-s", r"sudo\s+(?:-\S+\s+)*(?:-s|--shell)\b"),
+        PolicyRule::deny_static("sudo-passwd-change", r"sudo\s+(?:-\S+\s+)*passwd\b"),
+        PolicyRule::deny_static("sudo-visudo", r"sudo\s+(?:-\S+\s+)*visudo\b"),
         PolicyRule::deny_static(
             "sudo-run-as-user-shell",
-            r"sudo\s+-u\s+\S+\s+(?:bash|sh|zsh|fish|dash|su)\b",
+            r"sudo\s+(?:-\S+\s+)*-u\s+\S+\s+(?:-\S+\s+)*(?:bash|sh|zsh|fish|dash|su)\b",
         ),
         PolicyRule::deny_static(
             "su-root",
@@ -455,20 +462,35 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
 
 // ── Heredoc body stripping ───────────────────────────────────────────────────
 
-/// Extract a redirect target file from the heredoc-introducing line, if any.
+/// Extract a write-target file from the heredoc-introducing line, if any.
 ///
-/// Looks for the last `>` or `>>` followed by a path token, ignoring `&>`
-/// and the heredoc operator itself.  Returns the target path with any
-/// surrounding quotes trimmed, or `None` when no plain redirect is present.
+/// Recognizes both shell redirection (`>`/`>>`) and `tee [-a] FILE`
+/// pipelines.  Surrounding quotes are trimmed.  Returns `None` when the
+/// line writes to no file (or only to non-file targets like `/dev/null`).
 fn extract_redirect_target(intro_line: &str) -> Option<String> {
     // Strip from `<<` onwards so we don't accidentally interpret it.
     let upto_heredoc = intro_line
         .find("<<")
         .map_or(intro_line, |i| &intro_line[..i]);
-    let Ok(re) = Regex::new(r#">>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
+    // Try `>`/`>>` redirect first.
+    let Ok(redirect_re) = Regex::new(r#">>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
         return None;
     };
-    re.captures_iter(upto_heredoc)
+    if let Some(target) = redirect_re
+        .captures_iter(upto_heredoc)
+        .last()
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
+    {
+        return Some(target);
+    }
+    // Then `tee FILE` / `tee -a FILE` / `sudo tee FILE` etc. — `tee`
+    // duplicates stdin to a file as well as stdout, so the heredoc body
+    // ends up in FILE.
+    let Ok(tee_re) = Regex::new(r#"\btee\b(?:\s+-\S+)*\s+['"]?([^\s'"<>|;&]+)['"]?"#) else {
+        return None;
+    };
+    tee_re
+        .captures_iter(upto_heredoc)
         .last()
         .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
 }
@@ -482,9 +504,7 @@ fn interpreter_invokes_file(region: &str, file: &str) -> bool {
     let pattern = format!(
         r"(?:^|[\s/;&|`(])(?:bash|sh|zsh|ksh|dash|fish|python[23]?|perl|ruby|node|php|tclsh|source|\.)\s+(?:-\S+\s+)*{escaped}\b"
     );
-    Regex::new(&pattern)
-        .map(|re| re.is_match(region))
-        .unwrap_or(false)
+    Regex::new(&pattern).is_ok_and(|re| re.is_match(region))
 }
 
 /// Remove the bodies of NON-EXECUTABLE here-documents from a command.
