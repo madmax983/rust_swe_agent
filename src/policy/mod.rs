@@ -3,7 +3,7 @@
 //! Three profiles:
 //! - `safe`  — default unattended: blocks a built-in dangerous-command corpus.
 //! - `ask`   — human approval for every non-allowlisted command; in
-//!             non-interactive contexts, Ask decisions fail closed (Deny).
+//!   non-interactive contexts, Ask decisions fail closed (Deny).
 //! - `yolo`  — explicit opt-out; preserves current unrestricted behaviour.
 //!
 //! Threat model: this is a pre-execution guardrail and audit layer.  It is
@@ -118,6 +118,7 @@ impl PolicyRule {
     /// # Panics
     /// Panics if `pattern` is not a valid regex — only use for static built-in
     /// patterns known to compile.
+    #[allow(clippy::expect_used)]
     fn deny_static(label: &str, pattern: &str) -> Self {
         Self {
             label: label.to_owned(),
@@ -127,21 +128,27 @@ impl PolicyRule {
     }
 
     /// Public constructor for a deny rule from a user-supplied pattern.
-    pub fn deny(label: impl Into<String>, pattern: impl AsRef<str>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns a [`regex::Error`] if `pattern` does not compile.
+    pub fn deny(label: impl Into<String>, pattern: impl AsRef<str>) -> Result<Self, regex::Error> {
+        Ok(Self {
             label: label.into(),
-            pattern: Regex::new(pattern.as_ref()).expect("caller must supply valid regex"),
+            pattern: Regex::new(pattern.as_ref())?,
             decision: RuleDecision::Deny,
-        }
+        })
     }
 
     /// Public constructor for an allow rule from a user-supplied pattern.
-    pub fn allow(label: impl Into<String>, pattern: impl AsRef<str>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns a [`regex::Error`] if `pattern` does not compile.
+    pub fn allow(label: impl Into<String>, pattern: impl AsRef<str>) -> Result<Self, regex::Error> {
+        Ok(Self {
             label: label.into(),
-            pattern: Regex::new(pattern.as_ref()).expect("caller must supply valid regex"),
+            pattern: Regex::new(pattern.as_ref())?,
             decision: RuleDecision::Allow,
-        }
+        })
     }
 
     fn matches(&self, command: &str) -> bool {
@@ -151,116 +158,95 @@ impl PolicyRule {
 
 // ── Built-in dangerous-command corpus ─────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn builtin_deny_rules() -> Vec<PolicyRule> {
     vec![
         // --- Catastrophic deletes ---
+        // `$|[\s;&|]` — command terminator: end-of-string, whitespace, or shell
+        // separator.  Using `\s*$` alone allows the bypass `rm -rf / ; ls`.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
             r"(?x)
-            (?:^|\|\s*|;\s*|&&\s*|\|\|\s*)   # command boundary or start
-            (?:sudo\s+)?rm\s+                  # rm (optionally sudo)
-            (?:[^|;\n]*\s)?                    # any flags
-            --no-preserve-root\b|              # explicit --no-preserve-root
-            (?:^|\|\s*|;\s*|&&\s*|\|\|\s*)
-            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/\s*$|  # rm -rf /
-            (?:^|\|\s*|;\s*|&&\s*|\|\|\s*)
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)   # command boundary or start
+            (?:sudo\s+)?rm\s+                      # rm (optionally sudo)
+            (?:[^|;\n]*\s)?                        # any flags
+            --no-preserve-root\b|                  # explicit --no-preserve-root
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)
+            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:$|[\s;&|])|  # rm -rf /
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)
             (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/\*  # rm -rf /*
             ",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+~/?\s*$",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+~/?(?:$|[\s;&|])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)\b",
         ),
-        PolicyRule::deny_static(
-            "find-delete-all",
-            r"find\s+/\s+[^|;\n]*-delete\b",
-        ),
-        PolicyRule::deny_static(
-            "find-exec-rm-all",
-            r"find\s+/\s+[^|;\n]*-exec\s+rm\b",
-        ),
-
+        PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
+        PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),
         // --- Privilege escalation ---
         PolicyRule::deny_static(
             "sudo-shell-spawn",
             r"sudo\s+(?:-[a-zA-Z]+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
         ),
-        PolicyRule::deny_static(
-            "sudo-interactive-root",
-            r"sudo\s+-[a-zA-Z]*i[a-zA-Z]*\b",
-        ),
-        PolicyRule::deny_static(
-            "sudo-spawn-shell-s",
-            r"sudo\s+-s\b",
-        ),
-        PolicyRule::deny_static(
-            "sudo-passwd-change",
-            r"sudo\s+passwd\b",
-        ),
-        PolicyRule::deny_static(
-            "sudo-visudo",
-            r"sudo\s+visudo\b",
-        ),
+        PolicyRule::deny_static("sudo-interactive-root", r"sudo\s+-[a-zA-Z]*i[a-zA-Z]*\b"),
+        PolicyRule::deny_static("sudo-spawn-shell-s", r"sudo\s+-s\b"),
+        PolicyRule::deny_static("sudo-passwd-change", r"sudo\s+passwd\b"),
+        PolicyRule::deny_static("sudo-visudo", r"sudo\s+visudo\b"),
         PolicyRule::deny_static(
             "sudo-run-as-user-shell",
             r"sudo\s+-u\s+\S+\s+(?:bash|sh|zsh|fish|dash|su)\b",
         ),
         PolicyRule::deny_static(
             "su-root",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)su\s*(?:-\s*)?(?:root\s*)?$",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)su(?:\s+-)?(?:\s+root)?(?:$|[\s;&|])",
         ),
         PolicyRule::deny_static(
             "chmod-sensitive-files",
             r"(?:sudo\s+)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
         ),
-        PolicyRule::deny_static(
-            "chmod-777-system",
-            r"(?:sudo\s+)?chmod\s+-R\s+777\s+/",
-        ),
+        PolicyRule::deny_static("chmod-777-system", r"(?:sudo\s+)?chmod\s+-R\s+777\s+/"),
         PolicyRule::deny_static(
             "chown-system-root",
-            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/\s*$",
+            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|])",
         ),
         PolicyRule::deny_static(
             "chown-system-dirs",
             r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
         ),
-
         // --- Raw disk / device writes ---
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
         PolicyRule::deny_static(
             "dd-device-write",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
         ),
         PolicyRule::deny_static(
             "mkfs-on-device",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "shred-device",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)shred\b[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)shred\b[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "badblocks-write",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
         ),
         PolicyRule::deny_static(
             "hdparm-erase",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)hdparm\s+--security-erase\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)hdparm\s+--security-erase\b",
         ),
         PolicyRule::deny_static(
             "fdisk-device",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)fdisk\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)fdisk\s+/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "parted-device",
-            r"(?:^|\|\s*|;\s*|&&\s*|\|\|\s*)parted\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)parted\s+/dev/[a-zA-Z]",
         ),
-
         // --- Credential file reads ---
         PolicyRule::deny_static(
             "read-ssh-private-key",
@@ -302,7 +288,6 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "find-read-private-keys",
             r"find\s+[^|;\n]*-name\s+[^|;\n]*-exec\s+cat\b",
         ),
-
         // --- Shell-script-from-network ---
         PolicyRule::deny_static(
             "script-from-network-pipe-shell",
@@ -324,7 +309,6 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "python-exec-from-network",
             r"python[23]?\s+-c\s+.+(?:urllib|requests).+exec\b",
         ),
-
         // --- Outbound exfiltration ---
         PolicyRule::deny_static(
             "exfil-curl-post-sensitive",
@@ -350,17 +334,9 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "exfil-tar-pipe-curl",
             r"tar\s+[^|;\n]*~?/?\.(?:ssh|aws)\s*\|\s*curl\b",
         ),
-
         // --- Fork bombs ---
-        PolicyRule::deny_static(
-            "fork-bomb-colon",
-            r":\s*\(\s*\)\s*\{",
-        ),
-        PolicyRule::deny_static(
-            "fork-bomb-named",
-            r"\w+\s*\(\s*\)\s*\{[^}]*\|\s*\w+\s*&",
-        ),
-
+        PolicyRule::deny_static("fork-bomb-colon", r":\s*\(\s*\)\s*\{"),
+        PolicyRule::deny_static("fork-bomb-named", r"\w+\s*\(\s*\)\s*\{[^}]*\|\s*\w+\s*&"),
         // --- Reverse shells ---
         PolicyRule::deny_static(
             "reverse-shell-tcp-redirect",
@@ -407,6 +383,11 @@ impl PolicyEngine {
                 Self { profile: p, rules }
             }
         }
+    }
+
+    /// The active policy profile.
+    pub fn profile(&self) -> &PolicyProfile {
+        &self.profile
     }
 
     /// Create an engine with operator-supplied extra rules.
@@ -470,9 +451,8 @@ impl PolicyEngine {
     /// - `ask`   → Ask
     /// - `yolo`  → Allow (counted as yolo-bypass by caller)
     pub fn check_command(&self, command: &str) -> PolicyDecision {
-        match self.profile {
-            PolicyProfile::Yolo => return PolicyDecision::Allow,
-            _ => {}
+        if self.profile == PolicyProfile::Yolo {
+            return PolicyDecision::Allow;
         }
 
         for rule in &self.rules {
@@ -488,9 +468,8 @@ impl PolicyEngine {
         }
 
         match self.profile {
-            PolicyProfile::Safe => PolicyDecision::Allow,
             PolicyProfile::Ask => PolicyDecision::Ask,
-            PolicyProfile::Yolo => PolicyDecision::Allow,
+            PolicyProfile::Safe | PolicyProfile::Yolo => PolicyDecision::Allow,
         }
     }
 
@@ -570,7 +549,7 @@ pub struct PolicyCounts {
 }
 
 impl PolicyCounts {
-    pub fn record(&mut self, decision: PolicyDecision) {
+    pub fn record(&mut self, decision: &PolicyDecision) {
         match decision {
             PolicyDecision::Allow => self.allowed += 1,
             PolicyDecision::Ask => self.asked += 1,
@@ -583,9 +562,6 @@ impl PolicyCounts {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.allowed == 0
-            && self.asked == 0
-            && self.blocked == 0
-            && self.yolo_bypassed == 0
+        self.allowed == 0 && self.asked == 0 && self.blocked == 0 && self.yolo_bypassed == 0
     }
 }

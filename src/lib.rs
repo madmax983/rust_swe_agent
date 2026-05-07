@@ -27,7 +27,9 @@ pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
     ModelResponse, ModelUsage, QueryOpts, Role,
 };
-pub use policy::{PolicyCfg, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile, PolicyRule};
+pub use policy::{
+    PolicyCfg, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile, PolicyRule,
+};
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
