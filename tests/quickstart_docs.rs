@@ -2,21 +2,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::path::PathBuf;
 use std::process::Command;
 
-fn binary_path() -> PathBuf {
-    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
-        |_| {
-            let mut p = std::env::current_exe().unwrap();
-            p.pop();
-            p.pop();
-            p.push("rust-swe-agent");
-            p
-        },
-        PathBuf::from,
-    )
-}
+mod support;
 
 fn marked_code_block(readme: &str, marker: &str, language: &str) -> String {
     let marker_text = format!("<!-- {marker} -->");
@@ -30,7 +18,11 @@ fn marked_code_block(readme: &str, marker: &str, language: &str) -> String {
     let Some((block, _)) = after_fence.split_once("```") else {
         panic!("README marker {marker_text} has an unterminated code block");
     };
-    block.trim().to_owned()
+    normalize_newlines(block.trim())
+}
+
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 fn command_after_cargo_run(command: &str) -> Vec<String> {
@@ -38,6 +30,10 @@ fn command_after_cargo_run(command: &str) -> Vec<String> {
     let Some(rest) = command.strip_prefix(prefix) else {
         panic!("quickstart smoke command must start with `{prefix}`; got `{command}`");
     };
+    assert!(
+        !rest.contains(['"', '\'']),
+        "quickstart smoke command parser only supports unquoted smoke-path args; got `{command}`"
+    );
     rest.split_whitespace().map(str::to_owned).collect()
 }
 
@@ -70,7 +66,10 @@ fn readme_no_key_smoke_command_writes_documented_artifacts() {
     };
     args[output_flag + 1] = output_dir.display().to_string();
 
-    let out = Command::new(binary_path()).args(&args).output().unwrap();
+    let out = Command::new(support::binary_path())
+        .args(&args)
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "smoke command failed\nstdout:\n{}\nstderr:\n{}",

@@ -17,21 +17,8 @@ use std::process::Command;
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
 use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
-fn binary_path() -> std::path::PathBuf {
-    // CARGO_BIN_EXE_<name> is set by cargo when running integration tests.
-    // Fallback covers `cargo test --bin rust-swe-agent` invocations that
-    // don't set it (rare in practice but harmless).
-    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
-        |_| {
-            let mut p = std::env::current_exe().unwrap();
-            p.pop(); // tests/deps
-            p.pop(); // debug
-            p.push("rust-swe-agent");
-            p
-        },
-        std::path::PathBuf::from,
-    )
-}
+mod support;
+use support::binary_path;
 
 fn submitted(id: &str) -> InstanceResult {
     InstanceResult {

@@ -10,18 +10,8 @@ use chrono::{TimeZone, Utc};
 use rust_swe_agent::run::tail::{SnapshotOptions, snapshot};
 use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
-fn binary_path() -> std::path::PathBuf {
-    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
-        |_| {
-            let mut p = std::env::current_exe().unwrap();
-            p.pop();
-            p.pop();
-            p.push("rust-swe-agent");
-            p
-        },
-        std::path::PathBuf::from,
-    )
-}
+mod support;
+use support::binary_path;
 
 fn write_results(dir: &Path, value: &serde_json::Value) {
     std::fs::write(

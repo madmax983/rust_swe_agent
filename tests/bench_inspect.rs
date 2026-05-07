@@ -9,18 +9,8 @@ use rust_swe_agent::trajectory::{
     FailureCategory, TestInvocation, TokenUsage, Trajectory, outcome,
 };
 
-fn binary_path() -> std::path::PathBuf {
-    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
-        |_| {
-            let mut p = std::env::current_exe().unwrap();
-            p.pop();
-            p.pop();
-            p.push("rust-swe-agent");
-            p
-        },
-        std::path::PathBuf::from,
-    )
-}
+mod support;
+use support::binary_path;
 
 fn write_traj(dir: &Path, instance_id: &str, huge_stderr: bool) {
     write_traj_with_tokens(
