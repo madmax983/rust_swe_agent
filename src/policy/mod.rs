@@ -177,23 +177,26 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `-r`, harmless) are acceptable safety conservatism.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/(?:$|[\s;&|)`])",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-root-glob",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/\*",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/\*"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-no-preserve-root",
             r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*--no-preserve-root\b",
         ),
+        // Note: quoted `~` does NOT undergo tilde expansion in bash, so
+        // `rm -rf '~'` removes a file literally named `~`, not the home dir.
+        // Only the unquoted form is catastrophic.
         PolicyRule::deny_static(
             "catastrophic-delete-home",
             r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?(?:$|[\s;&|)`])",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`])"#,
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),

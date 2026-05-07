@@ -513,6 +513,41 @@ fn safe_does_not_block_rm_of_specific_files() {
     }
 }
 
+// ── Quoted-target bypass (Codex P1) ──────────────────────────────────────────
+
+#[test]
+fn safe_blocks_quoted_catastrophic_targets() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Single-quoted bare root
+        "rm -rf '/'",
+        "sudo rm -rf '/'",
+        // Double-quoted bare root
+        "rm -rf \"/\"",
+        "sudo rm -rf \"/\"",
+        // Quoted system dirs
+        "rm -rf '/etc'",
+        "rm -rf \"/etc\"",
+        "rm -rf '/home'",
+        "rm -rf \"/home\"",
+        "rm -rf '/etc/'",
+        "rm -rf \"/etc/\"",
+        "sudo rm -rf '/var'",
+        // Quoted /* glob
+        "rm -rf '/*'",
+        "rm -rf \"/*\"",
+        // Other dangerous forms with quotes
+        "rm -fr '/'",
+        "rm -Rf \"/\"",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "quoted catastrophic target must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
