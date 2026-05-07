@@ -876,6 +876,75 @@ fn safe_does_not_block_find_in_benign_paths() {
     }
 }
 
+// ── Home glob and $HOME variants (Codex P1) ─────────────────────────────────
+
+#[test]
+fn safe_blocks_home_glob_and_dollar_home_variants() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Bare tilde with glob
+        "rm -rf ~/*",
+        "rm -rf ~/",
+        // $HOME variants
+        "rm -rf $HOME",
+        "rm -rf ${HOME}",
+        // Double-quoted (bash expands)
+        "rm -rf \"$HOME\"",
+        "rm -rf \"${HOME}\"",
+        // sudo + variants
+        "sudo rm -rf ~/*",
+        "sudo rm -rf $HOME",
+        "sudo rm -rf \"$HOME\"",
+        // After separators
+        "ls; rm -rf ~/*",
+        "echo ok && rm -rf $HOME",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "home-glob / $HOME bypass must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_quoted_dollar_home_literal() {
+    // Single quotes prevent expansion in bash, so `'$HOME'` is the literal
+    // string `$HOME` (a file named that), not the home directory.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cmd = "rm -rf '$HOME'";
+    assert!(
+        !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+        "single-quoted '$HOME' should NOT be blocked (bash treats it as literal): {cmd:?}"
+    );
+}
+
+// ── Quoted dd device operands (Codex P1) ─────────────────────────────────────
+
+#[test]
+fn safe_blocks_quoted_dd_device_operands() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Quoted dd of=
+        "dd if=/dev/zero of=\"/dev/sda\"",
+        "dd if=/dev/zero of='/dev/sda'",
+        "sudo dd if=/dev/zero of=\"/dev/sda\"",
+        "sudo dd if=/dev/zero of='/dev/nvme0n1'",
+        // Quoted device for other tools
+        "mkfs.ext4 \"/dev/sda\"",
+        "mkfs.ext4 '/dev/sda'",
+        "shred -v \"/dev/sda\"",
+        "fdisk \"/dev/sda\"",
+        "parted \"/dev/sda\" mklabel gpt",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "quoted device operand must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
