@@ -945,6 +945,39 @@ fn safe_blocks_quoted_dd_device_operands() {
     }
 }
 
+// ── Shell compound-list bypass (Codex P1) ────────────────────────────────────
+
+#[test]
+fn safe_blocks_dangerous_command_in_compound_list() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Brace group
+        "{ rm -rf /; }",
+        "{ rm -rf /etc; }",
+        "func() { rm -rf /; }",
+        // if/then
+        "if true; then rm -rf /; fi",
+        "if [ -d /tmp ]; then rm -rf /; fi",
+        "if true; then dd if=/dev/zero of=/dev/sda; fi",
+        // while/do
+        "while true; do rm -rf /; done",
+        "while true; do dd if=/dev/zero of=/dev/sda; done",
+        // for/do
+        "for i in 1 2 3; do rm -rf /; done",
+        // else branch
+        "if false; then echo ok; else rm -rf /; fi",
+        // case arm
+        "case x in y) rm -rf /;; esac",
+        "case $1 in start) rm -rf /etc;; esac",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "compound-list bypass must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
