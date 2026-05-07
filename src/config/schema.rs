@@ -208,6 +208,8 @@ pub struct RootCfg {
     pub sweep: SweepCfg,
     #[serde(default)]
     pub redaction: RedactionCfg,
+    #[serde(default)]
+    pub policy: crate::policy::PolicyCfg,
     /// Optional `extends: <path>` field — handled before serde sees this
     /// struct, but we accept/ignore it here for round-tripping.
     #[serde(default, skip_serializing_if = "Option::is_none")]

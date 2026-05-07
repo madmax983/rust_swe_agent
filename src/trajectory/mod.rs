@@ -310,6 +310,9 @@ pub struct TrajectoryInfo {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+    /// Command-policy telemetry: counts of allowed/asked/blocked/yolo commands.
+    #[serde(default, skip_serializing_if = "crate::policy::PolicyCounts::is_empty")]
+    pub policy_counts: crate::policy::PolicyCounts,
     #[serde(flatten, default)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }

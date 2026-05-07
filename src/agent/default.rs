@@ -20,6 +20,7 @@ use crate::config::{Config, ToolHookCfg};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
+use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
@@ -131,6 +132,7 @@ pub struct DefaultAgent {
     pub stream: Arc<dyn StreamSink>,
     pub redactor: Redactor,
     pub cancellation: Option<CancellationToken>,
+    pub policy_engine: PolicyEngine,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
 }
@@ -197,6 +199,12 @@ impl DefaultAgentBuilder {
                 "invalid agent.test_command_patterns regex: {err}"
             )))
         })?;
+        let policy_engine =
+            PolicyEngine::from_cfg(&self.config.root.policy).map_err(|err| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "invalid policy config: {err}"
+                )))
+            })?;
         stream.emit(StreamEvent::RunStarted {
             task: self.task.clone(),
             model: self.model.name().to_owned(),
@@ -220,6 +228,7 @@ impl DefaultAgentBuilder {
             stream,
             redactor,
             cancellation: None,
+            policy_engine,
             raw_task: self.task,
             test_command_patterns,
         })
@@ -494,10 +503,68 @@ impl Agent for DefaultAgent {
             }
         }
 
-        // 5. PreToolUse hooks, then env.run if not blocked.
+        // 5. Policy gate: check command before hooks or execution.
         let Action::Bash(cmd) = action else {
             unreachable!("Submit and None handled above");
         };
+        let policy_decision = self.policy_engine.check_command_non_interactive(&cmd);
+        if let PolicyDecision::Deny { ref label } = policy_decision {
+            self.trajectory.info.policy_counts.blocked += 1;
+            let rejection = format!(
+                "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
+                 The command was not executed. Please attempt a safer alternative.",
+            );
+            self.history.push(Message::assistant(
+                self.redactor
+                    .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                    .text,
+            ));
+            record_redacted_message(
+                &mut self.trajectory,
+                &asst,
+                asst.extra.clone(),
+                &self.redactor,
+            );
+            let obs_msg = Message::user(rejection.clone());
+            self.history.push(obs_msg.clone());
+            let mut obs_extra = crate::model::MessageExtra::default();
+            obs_extra
+                .other
+                .insert("policy_blocked".into(), serde_json::Value::Bool(true));
+            obs_extra.other.insert(
+                "policy_rule".into(),
+                serde_json::Value::String(label.clone()),
+            );
+            obs_extra.other.insert(
+                "blocked_command".into(),
+                serde_json::Value::String(
+                    self.redactor
+                        .redact_text(&cmd, surface::TRAJECTORY)
+                        .text,
+                ),
+            );
+            record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+            self.stream.emit(StreamEvent::Observation {
+                step: self.steps,
+                content: rejection,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+            self.steps += 1;
+            return Ok(StepOutcome::Continue);
+        }
+        let is_yolo = self
+            .config
+            .root
+            .policy
+            .profile
+            .eq_ignore_ascii_case("yolo");
+        if is_yolo {
+            self.trajectory.info.policy_counts.yolo_bypassed += 1;
+        } else {
+            self.trajectory.info.policy_counts.allowed += 1;
+        }
+
+        // 5c. PreToolUse hooks, then env.run if not blocked.
         let pre_hook_results = self
             .run_tool_hooks(
                 ToolHookPhase::PreToolUse,

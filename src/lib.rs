@@ -10,6 +10,7 @@ pub mod env;
 pub mod error;
 pub mod ids;
 pub mod model;
+pub mod policy;
 pub mod redaction;
 pub mod run;
 pub mod stream;
@@ -26,6 +27,7 @@ pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
     ModelResponse, ModelUsage, QueryOpts, Role,
 };
+pub use policy::{PolicyCfg, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile, PolicyRule};
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
