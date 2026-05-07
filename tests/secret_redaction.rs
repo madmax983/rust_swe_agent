@@ -389,6 +389,93 @@ secret_literals = ["{configured_secret}"]
     );
 }
 
+#[tokio::test]
+async fn lowercase_key_token_assignments_in_patch_do_not_block_predictions() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let base_commit = init_repo_with_file(&repo, "fixture.rs", "fn main() {}\n");
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+    write_dataset(&dataset, "ordinary-key-fixture", &base_commit);
+
+    let source = "let key = name; let api_key = test; let token = none;";
+    let edit_cmd = write_file_command(&repo.join("fixture.rs"), source);
+    let cfg = Config::from_toml_str(&format!(
+        r#"
+[environment]
+workdir = "{}"
+
+[model]
+name = "scripted-test-model"
+"#,
+        toml_escape_path(&repo)
+    ))
+    .unwrap();
+
+    let results = run_sweep(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output.clone(),
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(vec![
+            format!("```bash\n{edit_cmd}\n```"),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+        ]),
+        deterministic_usage_per_call: None,
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 1, "{results:#?}");
+    assert_eq!(results.errored, 0, "{results:#?}");
+    assert_eq!(results.instances[0].failure_category, None);
+
+    let patch_text =
+        std::fs::read_to_string(patch_path_for_run(&output, "ordinary-key-fixture", 1))
+            .unwrap_or_default();
+    assert!(patch_text.contains(source), "{patch_text}");
+    assert!(!patch_text.contains("[REDACTED:"), "{patch_text}");
+
+    let predictions = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
+    assert!(predictions.contains(source), "{predictions}");
+    assert!(
+        !predictions.contains("secret_leak_detected"),
+        "{predictions}"
+    );
+}
+
 #[test]
 fn bench_inspect_redacts_legacy_raw_trajectory_and_warns() {
     let work = tempfile::tempdir().unwrap();

@@ -562,19 +562,25 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
             matcher: RuleMatcher::EnvAssignment {
-                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*([^ \t\r\n'"]{4,})"#)?,
+                regex: Regex::new(
+                    r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*([^ \t\r\n'";]{4,})[ \t]*(?:#.*)?$"#,
+                )?,
             },
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
             matcher: RuleMatcher::EnvAssignment {
-                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*"([^"\r\n]{4,})"#)?,
+                regex: Regex::new(
+                    r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*"([^"\r\n]{4,})"[ \t]*(?:#.*)?$"#,
+                )?,
             },
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
             matcher: RuleMatcher::EnvAssignment {
-                regex: Regex::new(r#"(?i)\b([A-Z0-9_-]+)\s*=\s*'([^'\r\n]{4,})"#)?,
+                regex: Regex::new(
+                    r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*'([^'\r\n]{4,})'[ \t]*(?:#.*)?$"#,
+                )?,
             },
         },
     ])
@@ -803,6 +809,40 @@ mod tests {
             outcome
                 .text
                 .contains("GITHUB_TOKEN=\"[REDACTED:env_assignment:")
+        );
+    }
+
+    #[test]
+    fn env_assignment_redaction_ignores_lowercase_source_assignments() {
+        let redactor = Redactor::default_enabled();
+
+        let patch =
+            "+let key = \"name\";\n+api_key = \"test\";\n+token = \"none\";\n+API_KEY = test;\n";
+        let outcome = redactor.redact_text(patch, surface::PATCH_SUBMISSION);
+
+        assert!(
+            !outcome.redacted,
+            "ordinary source assignments should not be redacted:\n{}",
+            outcome.text
+        );
+        assert_eq!(outcome.text, patch);
+    }
+
+    #[test]
+    fn env_assignment_redaction_detects_env_style_patch_lines() {
+        let redactor = Redactor::default_enabled();
+
+        let outcome = redactor.redact_text(
+            "+API_KEY=secret-value\n+export GITHUB_TOKEN=\"quoted-token-value\"\n",
+            surface::PATCH_SUBMISSION,
+        );
+
+        assert!(outcome.redacted, "expected env-style assignments to redact");
+        assert!(!outcome.text.contains("secret-value"), "{}", outcome.text);
+        assert!(
+            !outcome.text.contains("quoted-token-value"),
+            "{}",
+            outcome.text
         );
     }
 
