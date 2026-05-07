@@ -2,8 +2,9 @@
 
 # rust_swe_agent
 
-A minimal Rust port of mini-swe-agent with inspectable trajectory artifacts,
-SWE-bench sweep tooling, cost controls, streaming, and patch diagnostics.
+A minimal harness for operators who want to own the SWE agent loop: start with
+a small bash-only agent, produce inspectable trajectories, and measure each
+change before adding more machinery.
 
 ## Getting Started
 

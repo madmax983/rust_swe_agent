@@ -108,3 +108,23 @@ fn readme_no_key_smoke_command_writes_documented_artifacts() {
     assert_eq!(trajectory["info"]["outcome"].as_str(), Some("submitted"));
     assert_eq!(trajectory["info"]["total_cost_usd"].as_f64(), Some(0.0));
 }
+
+#[test]
+fn readme_positions_project_as_measure_first_harness() {
+    let readme = std::fs::read_to_string("README.md").unwrap();
+
+    assert!(
+        !readme
+            .to_ascii_lowercase()
+            .contains("port of mini-swe-agent"),
+        "README should not lead with port framing"
+    );
+    assert!(
+        readme.contains("minimal harness"),
+        "README should describe the project as a minimal harness"
+    );
+    assert!(
+        readme.contains("measure"),
+        "README should make the measure-first philosophy visible"
+    );
+}

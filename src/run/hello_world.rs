@@ -1,5 +1,5 @@
-//! Port of `run/hello_world.py`: sanity-check the pipeline with a scripted
-//! model. Runs a two-turn agent that echoes hello, then submits "ok".
+//! Sanity-check the pipeline with a scripted model. Runs a two-turn agent that
+//! echoes hello, then submits "ok".
 
 use std::path::PathBuf;
 

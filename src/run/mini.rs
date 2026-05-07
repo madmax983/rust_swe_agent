@@ -1,4 +1,4 @@
-//! One-shot task runner — the port of `run/mini.py`. Resolves backend from
+//! One-shot task runner for the minimal bash-only loop. Resolves backend from
 //! the model name, builds `DefaultAgent`, runs to completion, writes a
 //! trajectory file and (if submitted) an output artifact.
 
