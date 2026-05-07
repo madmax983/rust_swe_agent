@@ -1222,6 +1222,122 @@ fn safe_blocks_eval_with_quoted_dangerous_payload() {
     }
 }
 
+// ── Shell redirection / tee to block device (Codex P1) ──────────────────────
+
+#[test]
+fn safe_blocks_redirection_to_block_device() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Plain `>` and `>>` redirections
+        "cat image > /dev/sda",
+        "cat image >> /dev/sda",
+        "echo x > /dev/nvme0n1",
+        "cat /tmp/img > /dev/mapper/vg-root",
+        "cat img > /dev/dm-0",
+        // tee variants
+        "printf x | tee /dev/sda",
+        "printf x | sudo tee /dev/nvme0n1",
+        "printf x | sudo tee -a /dev/sda",
+        // Quoted device path
+        "cat img > \"/dev/sda\"",
+        "cat img > '/dev/sda'",
+        // After a separator
+        "ls; cat img > /dev/sda",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "redirect/tee to block device must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_redirection_to_safe_pseudo_devices() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "echo x > /dev/null",
+        "echo x >> /tmp/log",
+        "printf x | tee /tmp/out.txt",
+        "cat src > out.bin",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "redirect to safe target should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Sensitive system file deletes (Codex P1) ─────────────────────────────────
+
+#[test]
+fn safe_blocks_deletes_of_sensitive_system_files() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm /etc/passwd",
+        "rm -f /etc/passwd",
+        "rm -rf /etc/shadow",
+        "sudo rm -f /etc/sudoers",
+        "rm /etc/group",
+        "rm /etc/hosts",
+        "rm /etc/fstab",
+        "rm /etc/resolv.conf",
+        "rm /boot/grub/grub.cfg",
+        "rm /boot/grub2/grub.cfg",
+        // Quoted forms
+        "rm '/etc/passwd'",
+        "rm \"/etc/shadow\"",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "sensitive system file delete must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Heredoc-then-execute (Codex P1) ──────────────────────────────────────────
+
+#[test]
+fn safe_blocks_heredoc_body_when_target_is_later_invoked() {
+    // The model writes a script via heredoc, then runs it with `bash`.
+    // The body IS executed and must remain visible to the deny corpus.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > /tmp/x <<'EOF'\nrm -rf /\nEOF\nbash /tmp/x",
+        "cat > /tmp/x <<'EOF'\nrm -rf /\nEOF\nsh /tmp/x",
+        "cat > /tmp/x <<EOF\nrm -rf /\nEOF\n/bin/bash /tmp/x",
+        "cat > script.sh <<'EOF'\ndd if=/dev/zero of=/dev/sda\nEOF\nbash script.sh",
+        "cat > /tmp/x <<'EOF'\nrm -rf /\nEOF\nsource /tmp/x",
+        "cat > /tmp/x <<'EOF'\nrm -rf /\nEOF\n. /tmp/x",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc-then-execute must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_heredoc_when_target_is_not_later_invoked() {
+    // Pure data-write workflow (no later interpreter invocation on the
+    // target) should still be allowed.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > /tmp/fixture.sh <<'EOF'\nrm -rf /\nEOF",
+        // Different script invoked, not the one we wrote
+        "cat > /tmp/fixture.sh <<'EOF'\nrm -rf /\nEOF\nbash /tmp/other.sh",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc data-write without later exec should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
