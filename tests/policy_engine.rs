@@ -1170,6 +1170,35 @@ fn safe_blocks_heredoc_with_unclosed_delimiter() {
     );
 }
 
+// ── Quoted eval payload (Codex P1) ───────────────────────────────────────────
+
+#[test]
+fn safe_blocks_eval_with_quoted_dangerous_payload() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Single-quoted
+        "eval 'rm -rf /'",
+        "eval 'rm -rf /etc'",
+        "eval 'dd if=/dev/zero of=/dev/sda'",
+        // Double-quoted
+        "eval \"rm -rf /\"",
+        "eval \"cat /etc/shadow\"",
+        // With end-of-options separator
+        "eval -- 'rm -rf /'",
+        // sudo + eval + quoted
+        "sudo eval 'rm -rf /'",
+        // After separator
+        "ls; eval 'rm -rf /'",
+        "echo ok && eval 'rm -rf /'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "quoted eval payload must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
