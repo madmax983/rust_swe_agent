@@ -1,0 +1,10 @@
+{
+  "mode": "doctor",
+  "checks": [
+    {
+      "status": "ok",
+      "name": "dataset.read",
+      "message": "readable"
+    }
+  ]
+}

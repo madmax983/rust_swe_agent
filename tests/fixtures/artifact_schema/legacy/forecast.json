@@ -1,0 +1,35 @@
+{
+  "calibration": {
+    "n": 1,
+    "seed": 42,
+    "output_dir": "forecast",
+    "instance_ids": ["task-a"]
+  },
+  "per_instance": {
+    "input_tokens": {"p10": 10.0, "median": 10.0, "p90": 10.0},
+    "output_tokens": {"p10": 2.0, "median": 2.0, "p90": 2.0},
+    "usd_cost": {"p10": 0.0, "median": 0.0, "p90": 0.0},
+    "step_count": {"p10": 1.0, "median": 1.0, "p90": 1.0},
+    "wall_clock_seconds": {"p10": 1.0, "median": 1.0, "p90": 1.0}
+  },
+  "forecast": {
+    "target_n": 1,
+    "parallel": 1,
+    "confidence_pct": 80.0,
+    "total_cost_usd": {"point": 0.0, "lower": 0.0, "upper": 0.0},
+    "total_input_tokens": {"point": 10.0, "lower": 10.0, "upper": 10.0},
+    "total_output_tokens": {"point": 2.0, "lower": 2.0, "upper": 2.0},
+    "wall_clock_seconds": {"point": 1.0, "lower": 1.0, "upper": 1.0}
+  },
+  "resolution_rate": {
+    "resolved": 1,
+    "total": 1,
+    "point": 1.0,
+    "disclaimer": "n=1, treat as directional only"
+  },
+  "threshold": {
+    "limit_usd": null,
+    "status": "not_configured",
+    "message": "no sweep cost limit configured"
+  }
+}

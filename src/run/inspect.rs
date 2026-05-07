@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
@@ -197,6 +198,15 @@ fn build_instance_report(
     })?;
     let text = std::fs::read_to_string(&traj_path)?;
     let mut warnings = Vec::new();
+    if let Ok(traj_value) = serde_json::from_str::<serde_json::Value>(&text) {
+        let compat = classify_json_value(
+            &traj_value,
+            ArtifactKind::Trajectory,
+            traj_path.display().to_string(),
+        )
+        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        warnings.extend(compat.warnings);
+    }
     let mut traj: Trajectory = match serde_json::from_str(&text) {
         Ok(t) => t,
         Err(err) => {
@@ -645,8 +655,15 @@ fn load_evaluation_overrides(
     if !eval_path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(eval_path)?;
-    let eval: EvaluationResults = serde_json::from_str(&text)?;
+    let text = std::fs::read_to_string(&eval_path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    classify_json_value(
+        &value,
+        ArtifactKind::EvaluationResults,
+        eval_path.display().to_string(),
+    )
+    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let eval: EvaluationResults = serde_json::from_value(value)?;
     Ok(Some(
         eval.instances
             .into_iter()

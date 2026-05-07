@@ -1,0 +1,19 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {"major": 2, "minor": 0},
+  "total": 1,
+  "sweep_status": "completed",
+  "submitted": 1,
+  "skipped": 0,
+  "errored": 0,
+  "failures_by_category": {},
+  "instances": [
+    {
+      "instance_id": "task-a",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "patch_present": true,
+      "non_empty_patch": false
+    }
+  ]
+}

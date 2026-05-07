@@ -266,7 +266,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     }
     std::fs::write(
         evaluation_path(&args.sweep_dir),
-        serde_json::to_string_pretty(&eval)?,
+        crate::artifact::to_string_pretty(crate::artifact::ArtifactKind::EvaluationResults, &eval)?,
     )?;
     Ok(eval)
 }

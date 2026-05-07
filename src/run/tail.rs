@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
 
+use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::error::Error;
 use crate::run::swebench::estimate_cost_usd;
 use crate::trajectory::{FailureCategory, Trajectory};
@@ -297,7 +298,13 @@ fn read_json_value(
     }
     let text = std::fs::read_to_string(path)?;
     match serde_json::from_str(&text) {
-        Ok(v) => Ok(Some(v)),
+        Ok(v) => {
+            let compat =
+                classify_json_value(&v, ArtifactKind::SweepResults, path.display().to_string())
+                    .map_err(|err| Error::Trajectory(err.to_string()))?;
+            warnings.extend(compat.warnings);
+            Ok(Some(v))
+        }
         Err(err) => {
             warnings.push(format!(
                 "{}: partial or invalid JSON ({err})",
@@ -455,7 +462,7 @@ fn scan_trajectories(
                 };
                 if name.starts_with("run-") && name.ends_with(".traj.json") {
                     if let Some(record) =
-                        terminal_record_from_trajectory(&nested_path, &instance_id, warnings)
+                        terminal_record_from_trajectory(&nested_path, &instance_id, warnings)?
                     {
                         records.push(record);
                     }
@@ -472,7 +479,7 @@ fn scan_trajectories(
         let Some(instance_id) = name.strip_suffix(".traj.json") else {
             continue;
         };
-        if let Some(record) = terminal_record_from_trajectory(&path, instance_id, warnings) {
+        if let Some(record) = terminal_record_from_trajectory(&path, instance_id, warnings)? {
             records.push(record);
         }
     }
@@ -483,22 +490,36 @@ fn terminal_record_from_trajectory(
     path: &Path,
     instance_id: &str,
     warnings: &mut Vec<String>,
-) -> Option<TerminalRecord> {
+) -> Result<Option<TerminalRecord>, Error> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) => {
             warnings.push(format!("{}: failed to read ({err})", path.display()));
-            return None;
+            return Ok(None);
         }
     };
-    let traj: Trajectory = match serde_json::from_str(&text) {
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => {
+            warnings.push(format!(
+                "{}: partial or invalid JSON ({err})",
+                path.display()
+            ));
+            return Ok(None);
+        }
+    };
+    match classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string()) {
+        Ok(compat) => warnings.extend(compat.warnings),
+        Err(err) => return Err(Error::Trajectory(err.to_string())),
+    }
+    let traj: Trajectory = match serde_json::from_value(value) {
         Ok(traj) => traj,
         Err(err) => {
             warnings.push(format!(
                 "{}: partial or invalid JSON ({err})",
                 path.display()
             ));
-            return None;
+            return Ok(None);
         }
     };
     let info = traj.info;
@@ -513,7 +534,7 @@ fn terminal_record_from_trajectory(
                 Some(t.completion_tokens),
             )
         });
-    Some(TerminalRecord {
+    Ok(Some(TerminalRecord {
         instance_id: instance_id.to_owned(),
         outcome: info.outcome,
         exit_reason: info.exit_reason,
@@ -526,7 +547,7 @@ fn terminal_record_from_trajectory(
         completion_tokens,
         started_at: info.started_at.as_deref().and_then(parse_ts),
         ended_at: info.ended_at.as_deref().and_then(parse_ts),
-    })
+    }))
 }
 
 fn failure_counts_from_records<'a>(

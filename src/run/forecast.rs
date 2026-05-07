@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::artifact::{ArtifactCompatibility, ArtifactKind, classify_json_value};
 use crate::error::{ConfigError, Error};
 use crate::run::swebench::{self, InstanceResult, SweepResults};
 use crate::trajectory::{Trajectory, outcome};
@@ -33,6 +34,14 @@ pub enum ForecastOutcome {
     DryRun(Box<SweepResults>),
     /// Calibration sweep was cancelled and must not be forecasted.
     Cancelled(Box<SweepResults>),
+}
+
+/// Calibration sweep artifact loaded through the artifact compatibility gate.
+#[derive(Debug, Clone)]
+pub struct LoadedCalibrationResults {
+    pub results: SweepResults,
+    pub compatibility: ArtifactCompatibility,
+    pub warnings: Vec<String>,
 }
 
 /// Stable, serializable forecast report emitted by `bench forecast`.
@@ -216,8 +225,12 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
         .instances
         .sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     mark_forecast_manifest(&mut results, &calibration_dir)?;
+    let loaded = load_calibration_results(&calibration_dir)?;
+    for warning in &loaded.warnings {
+        tracing::warn!(warning = %warning, "forecast calibration artifact schema warning");
+    }
     let mut report = forecast_from_results(
-        &results,
+        &loaded.results,
         args.seed,
         target_n,
         parallel,
@@ -226,6 +239,28 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
     )?;
     report.calibration.output_dir = calibration_dir.display().to_string();
     Ok(ForecastOutcome::Report(Box::new(report)))
+}
+
+/// Load a completed forecast calibration sweep after classifying its
+/// `results.json` artifact. Future major versions fail before forecast metrics
+/// are computed.
+pub fn load_calibration_results(calibration_dir: &Path) -> Result<LoadedCalibrationResults, Error> {
+    let path = calibration_dir.join("results.json");
+    let text = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let compatibility = classify_json_value(
+        &value,
+        ArtifactKind::SweepResults,
+        path.display().to_string(),
+    )
+    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let warnings = compatibility.warnings.clone();
+    let results: SweepResults = serde_json::from_value(value)?;
+    Ok(LoadedCalibrationResults {
+        results,
+        compatibility,
+        warnings,
+    })
 }
 
 /// Build a forecast report from an already-completed calibration sweep.
@@ -324,7 +359,7 @@ pub fn forecast_gate_allows_sweep(
 
 /// Serialize a forecast report as stable pretty JSON.
 pub fn to_json(report: &ForecastReport) -> Result<String, Error> {
-    serde_json::to_string_pretty(report).map_err(Error::from)
+    crate::artifact::to_string_pretty(ArtifactKind::ForecastReport, report).map_err(Error::from)
 }
 
 /// Render a terminal-friendly forecast report.
@@ -445,7 +480,10 @@ fn mark_forecast_manifest(results: &mut SweepResults, calibration_dir: &Path) ->
     }
     mark_trajectory_purpose(results, calibration_dir)?;
     let path = calibration_dir.join("results.json");
-    std::fs::write(path, serde_json::to_string_pretty(results)?)?;
+    std::fs::write(
+        path,
+        crate::artifact::to_string_pretty(ArtifactKind::SweepResults, results)?,
+    )?;
     Ok(())
 }
 
