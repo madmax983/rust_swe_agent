@@ -823,6 +823,59 @@ fn safe_does_not_block_specific_files_under_system_dirs() {
     }
 }
 
+// ── find under protected directories (Codex P1) ──────────────────────────────
+
+#[test]
+fn safe_blocks_find_delete_under_protected_dirs() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // -delete action
+        "find / -delete",
+        "find /etc -delete",
+        "find /var -delete",
+        "find /home -delete",
+        "find /usr -delete",
+        // With more flags
+        "find /etc -type f -delete",
+        "find /var/log -type f -delete",
+        // Quoted path
+        "find '/etc' -delete",
+        "find \"/var\" -delete",
+        // -exec rm
+        "find / -exec rm -rf {} +",
+        "find /etc -exec rm -rf {} +",
+        "find /home -exec rm -rf {} \\;",
+        "find /var -type f -exec rm -f {} \\;",
+        // sudo + find
+        "sudo find /etc -delete",
+        "sudo find /home -exec rm -rf {} +",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "find delete/exec under protected dir must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_find_in_benign_paths() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "find . -name '*.rs'",
+        "find ./src -type f",
+        "find /tmp/scratch -delete",
+        "find ./build -exec rm -rf {} +",
+        "find . -name '*.pyc' -delete",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "find on benign path should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
