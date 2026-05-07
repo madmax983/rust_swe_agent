@@ -444,28 +444,31 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
 ///    parameter or command substitution in the body.  The body is literal.
 /// 2. **Unquoted delimiter** (`<<EOF`): bash DOES perform `$VAR` and
 ///    `$(cmd)` expansion in the body — so `cat <<EOF\n$(rm -rf /)\nEOF`
-///    actually executes `rm -rf /` during heredoc processing.
+///    actually executes `rm -rf /` during heredoc processing.  But a body
+///    that contains no `$` or `` ` `` is still pure data even with an
+///    unquoted delimiter.
 ///
 /// And independently:
 ///
 /// 3. **Consumer** matters: `cat <<'EOF'\nrm -rf /\nEOF` writes `rm -rf /`
 ///    as data.  But `bash <<'EOF'\nrm -rf /\nEOF` runs the body AS A
-///    SCRIPT — the heredoc IS the input to the shell.
+///    SCRIPT — the heredoc IS the input to the shell.  Pipes on the same
+///    line (`cat <<'EOF' | bash\n...`) likewise route the body to a shell.
 ///
-/// We only strip the body when BOTH:
-/// - the delimiter is quoted (no expansion → body is literal data), AND
-/// - the consumer is not a known shell/script interpreter.
+/// We strip the body when ALL of:
+/// - the consumer line mentions no shell/script interpreter, AND
+/// - either the delimiter is quoted, OR the body contains no `$` or `` ` ``
+///   (no expansion sites where bash could execute substitution).
 ///
-/// Anything else (unquoted delimiter, interpreter consumer, malformed) is
-/// left intact so the deny corpus can scan it.  Fail-safe: if we cannot
-/// find a closing delimiter we also leave the body in place.
+/// Anything else is left intact so the deny corpus can scan it.  Fail-safe:
+/// when we cannot find a closing delimiter we also leave the body in place.
 fn strip_heredoc_bodies(command: &str) -> String {
-    // Only match QUOTED delimiters.  The regex crate has no backreferences,
-    // so we list the two quote styles as separate alternatives and read
-    // whichever capture group fires.
-    let Ok(heredoc_start) =
-        Regex::new(r#"<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)")"#)
-    else {
+    // Match all three delimiter styles: single-quoted, double-quoted, and
+    // bare.  The regex crate has no backreferences so we list each style
+    // as its own alternative and read whichever capture group fired.
+    let Ok(heredoc_start) = Regex::new(
+        r#"<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))"#,
+    ) else {
         return command.to_owned();
     };
     // Interpreter detection: when one of these is the consumer, the body
@@ -489,53 +492,48 @@ fn strip_heredoc_bodies(command: &str) -> String {
             .map_or(command.len(), |i| m.end() + i + 1);
         // Scan the WHOLE introducing line (not just the prefix before `<<`)
         // so a pipe to an interpreter — `cat <<'EOF' | bash` — keeps the
-        // body visible to the deny corpus.  This is conservative: any
-        // interpreter mention on the line, even a sequenced `&& bash`, is
-        // treated as "body might execute".
+        // body visible to the deny corpus.
         let whole_intro_line = &command[line_start..line_end_after_op];
         if interpreter_re.is_match(whole_intro_line) {
-            // Pass through up to and including the operator; resume after.
             out.push_str(&command[cursor..m.end()]);
             cursor = m.end();
             continue;
         }
 
-        // Append everything up to and including the heredoc operator line.
-        out.push_str(&command[cursor..line_end_after_op]);
-
-        // Extract the delimiter word from whichever quote style matched.
+        // Extract the delimiter word and remember whether it was quoted.
         let Some(caps) = heredoc_start.captures(&command[m.start()..m.end()]) else {
-            cursor = line_end_after_op;
+            out.push_str(&command[cursor..m.end()]);
+            cursor = m.end();
             continue;
         };
-        let Some(delim) = caps.get(1).or_else(|| caps.get(2)) else {
-            cursor = line_end_after_op;
+        let (delim_word, is_quoted) = if let Some(d) = caps.get(1) {
+            (d.as_str(), true)
+        } else if let Some(d) = caps.get(2) {
+            (d.as_str(), true)
+        } else if let Some(d) = caps.get(3) {
+            (d.as_str(), false)
+        } else {
+            out.push_str(&command[cursor..m.end()]);
+            cursor = m.end();
             continue;
         };
-        let delim_word = delim.as_str();
 
-        // Search for a line whose trimmed content is exactly the delimiter
-        // word.  `<<-` allows tab-indented terminators, but we accept
-        // arbitrary leading whitespace conservatively.
+        // Locate the closing-delimiter line and the body in between.
         let body_start = line_end_after_op;
         let mut search_pos = body_start;
-        let mut closed = false;
+        let mut close_start: Option<usize> = None;
+        let mut close_end_with_nl: usize = body_start;
         while search_pos <= command.len() {
             let line_end = command[search_pos..]
                 .find('\n')
                 .map_or(command.len(), |i| search_pos + i);
             if command[search_pos..line_end].trim() == delim_word {
-                // Skip the body, then append the closing-delim line so the
-                // boundary regex still sees the surrounding command shape.
-                out.push('\n');
-                let line_end_with_nl = if line_end < command.len() {
+                close_start = Some(search_pos);
+                close_end_with_nl = if line_end < command.len() {
                     line_end + 1
                 } else {
                     line_end
                 };
-                out.push_str(&command[search_pos..line_end_with_nl]);
-                cursor = line_end_with_nl;
-                closed = true;
                 break;
             }
             if line_end >= command.len() {
@@ -544,12 +542,30 @@ fn strip_heredoc_bodies(command: &str) -> String {
             search_pos = line_end + 1;
         }
 
-        if !closed {
-            // No closing delimiter found — leave the rest of the command
-            // intact so dangerous content is still examined (fail-safe).
-            out.push_str(&command[body_start..]);
+        let Some(close_line_start) = close_start else {
+            // No closing delimiter — leave everything intact (fail-safe).
+            out.push_str(&command[cursor..]);
             return out;
+        };
+
+        // For unquoted heredocs, only strip when the body has no expansion
+        // markers (`$` or `` ` ``).  Otherwise bash could perform command
+        // substitution at heredoc time.
+        let body = &command[body_start..close_line_start];
+        let body_has_expansion = body.contains('$') || body.contains('`');
+        let safe_to_strip = is_quoted || !body_has_expansion;
+
+        if safe_to_strip {
+            // Append intro line, blank line in place of body, closing-delim
+            // line preserved so boundary regex sees the surrounding shape.
+            out.push_str(&command[cursor..line_end_after_op]);
+            out.push('\n');
+            out.push_str(&command[close_line_start..close_end_with_nl]);
+        } else {
+            // Pass through verbatim so the body is visible to deny rules.
+            out.push_str(&command[cursor..close_end_with_nl]);
         }
+        cursor = close_end_with_nl;
     }
 
     out.push_str(&command[cursor..]);

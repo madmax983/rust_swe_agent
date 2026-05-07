@@ -1077,18 +1077,41 @@ fn safe_does_not_block_quoted_heredoc_body_to_data_tool() {
 
 #[test]
 fn safe_blocks_unquoted_heredoc_body_dangerous_substitution() {
-    // Unquoted delimiter (`<<EOF`) DOES expand `$VAR` and `$(cmd)` in the
-    // body — `cat <<EOF\n$(rm -rf /)\nEOF` actually executes `rm -rf /`
-    // during heredoc processing.  Body must NOT be stripped.
+    // Unquoted delimiter (`<<EOF`) with `$` or `` ` `` expansion markers in
+    // the body: bash performs `$(cmd)` substitution during heredoc
+    // processing, so `cat <<EOF\n$(rm -rf /)\nEOF` actually executes
+    // `rm -rf /`.  Body must NOT be stripped.
     let engine = PolicyEngine::new(PolicyProfile::Safe);
     let cases = [
-        "cat > test.sh <<EOF\nrm -rf /\nEOF",
         "cat <<EOF\n$(rm -rf /)\nEOF",
+        "cat <<EOF\n`rm -rf /`\nEOF",
+        "tee out.txt <<EOF\nx=$(rm -rf /etc)\nEOF",
     ];
     for cmd in cases {
         assert!(
             matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
-            "unquoted heredoc body must remain visible (substitution risk): {cmd:?}"
+            "unquoted heredoc body with expansion must remain visible: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_unquoted_heredoc_pure_data_body() {
+    // Unquoted delimiter but the body contains no `$` or `` ` ``, so bash
+    // performs no substitution — the lines are literal data being written
+    // to a file.  This is the common SWE workflow of writing a fixture or
+    // doc that mentions a dangerous command.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > test.sh <<EOF\nrm -rf /\nEOF",
+        "cat > policy_fixture.sh <<EOF\nrm -rf /etc\ndd if=/dev/zero of=/dev/sda\nEOF",
+        "cat > test.sh <<-EOF\n\trm -rf /\n\tEOF",
+        "tee out.txt <<EOF\ndelete the world\nrm -rf /\nEOF",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "unquoted heredoc with pure-data body should NOT be blocked: {cmd:?}"
         );
     }
 }
