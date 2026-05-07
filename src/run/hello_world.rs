@@ -1,5 +1,5 @@
-//! Port of `run/hello_world.py`: sanity-check the pipeline with a scripted
-//! model. Runs a two-turn agent that echoes hello, then submits "ok".
+//! Sanity-check the pipeline with a scripted model. Runs a two-turn agent that
+//! echoes hello, then submits "ok".
 
 use std::path::PathBuf;
 
@@ -9,11 +9,13 @@ use crate::error::Error;
 
 pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
     let cfg = Config::defaults()?;
+    let traj_path = output_dir.join("hello-world.traj.json");
+    let out_path = output_dir.join("hello-world.output.txt");
     let args = MiniArgs {
         task: "Say hello".to_owned(),
         extra_context: None,
         config: cfg,
-        output_dir,
+        output_dir: output_dir.clone(),
         trajectory_name: "hello-world".into(),
         deterministic_responses: Some(vec![
             "```bash\necho hello\n```".into(),
@@ -25,7 +27,11 @@ pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
         stream_addr: None,
         patch_capture: None,
     };
-    run(args).await
+    run(args).await?;
+    println!("hello-world smoke complete");
+    println!("trajectory: {}", traj_path.display());
+    println!("output: {}", out_path.display());
+    Ok(())
 }
 
 #[cfg(test)]

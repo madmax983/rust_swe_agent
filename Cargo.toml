@@ -3,7 +3,7 @@ name = "rust_swe_agent"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Rust port of mini-swe-agent: a ~100-line agent loop with bash-only tool semantics"
+description = "Measure-first SWE agent harness with a minimal bash-only loop and inspectable trajectories"
 license = "MIT"
 
 [lib]

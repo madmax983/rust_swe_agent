@@ -19,18 +19,8 @@ use rust_swe_agent::trajectory::{FailureCategory, outcome};
 use rust_swe_agent::{Config, ModelUsage};
 use tokio::sync::mpsc;
 
-fn binary_path() -> std::path::PathBuf {
-    std::env::var("CARGO_BIN_EXE_rust-swe-agent").map_or_else(
-        |_| {
-            let mut p = std::env::current_exe().unwrap();
-            p.pop();
-            p.pop();
-            p.push("rust-swe-agent");
-            p
-        },
-        std::path::PathBuf::from,
-    )
-}
+mod support;
+use support::binary_path;
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
     let mut s = String::new();

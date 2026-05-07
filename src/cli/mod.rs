@@ -14,7 +14,7 @@ pub mod args;
 #[command(
     name = "rust-swe-agent",
     version,
-    about = "Rust port of mini-swe-agent"
+    about = "Measure-first SWE agent harness"
 )]
 pub struct Cli {
     #[command(subcommand)]

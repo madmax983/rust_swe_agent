@@ -1,4 +1,4 @@
-//! `DefaultAgent`: the port of mini-swe-agent's ~100-line `agents/default.py`.
+//! `DefaultAgent`: the minimal bash-only agent loop.
 //!
 //! Loop:
 //!   1. Limit check → Terminate if exceeded

@@ -1,4 +1,4 @@
-//! Rust port of mini-swe-agent.
+//! Measure-first SWE agent harness with a minimal bash-only loop.
 //!
 //! Re-exports the public surface. See module docs for the architecture.
 
