@@ -1,10 +1,12 @@
 name: SWE-bench Nightly Smoke
 
 # End-to-end harness check against an OpenRouter free model. The point is
-# to catch regressions in the sweep runner / patch capture / trajectory
-# pipeline, NOT to measure solve rate. Free-tier models routinely fail to
-# produce a working patch; the gate below treats that as an acceptable
-# outcome and only fails on harness-level errors (errored > 0).
+# to catch regressions in the sweep runner, agent loop, patch capture, and
+# trajectory pipeline. The gate fails on any sweep-level error
+# (errored > 0), which includes empty-diff and invalid-diff downgrades —
+# those are the exact failure modes a patch-capture regression produces,
+# so we keep validation enabled even though it can also flag a weak
+# free-tier model that simply fails to edit anything.
 #
 # Required repo secret:
 #   OPENROUTER_API_KEY  — OpenRouter API key with access to the pinned
@@ -80,8 +82,7 @@ jobs:
             --step-limit 8 \
             --task-timeout-secs 300 \
             --max-retries 0 \
-            --skip-preflight \
-            --skip-patch-validation
+            --skip-preflight
 
       - name: Gate on harness errors
         id: gate
