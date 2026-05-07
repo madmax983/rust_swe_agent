@@ -126,3 +126,51 @@ fn pr_text_redaction_uses_configured_run_literals() {
         "{rendered}"
     );
 }
+
+#[test]
+fn pr_dry_run_redacts_secret_bearing_summary_filenames() {
+    let configured_secret = "configured-file-secret-value";
+    let structured_secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let patch = format!(
+        "diff --git a/src/{configured_secret}.rs b/src/{configured_secret}.rs\n\
+         index e69de29..8ab686e 100644\n\
+         --- a/src/{configured_secret}.rs\n\
+         +++ b/src/{configured_secret}.rs\n\
+         @@ -0,0 +1 @@\n\
+         +configured\n\
+         diff --git a/src/{structured_secret}.rs b/src/{structured_secret}.rs\n\
+         index e69de29..8ab686e 100644\n\
+         --- a/src/{structured_secret}.rs\n\
+         +++ b/src/{structured_secret}.rs\n\
+         @@ -0,0 +1 @@\n\
+         +structured\n"
+    );
+    let mut options = options();
+    options.redaction.secret_literals = vec![configured_secret.into()];
+
+    let plan = build_pr_plan(&options, &patch).unwrap();
+    let rendered = render_dry_run(&plan);
+
+    assert_eq!(plan.summary.files_changed, 2);
+    for leaked in [configured_secret, structured_secret] {
+        assert!(
+            !plan.summary.files.iter().any(|file| file.contains(leaked)),
+            "{plan:#?}"
+        );
+        assert!(!rendered.contains(leaked), "{rendered}");
+    }
+    assert!(
+        plan.summary
+            .files
+            .iter()
+            .any(|file| file.contains("[REDACTED:configured_literal:")),
+        "{plan:#?}"
+    );
+    assert!(
+        plan.summary
+            .files
+            .iter()
+            .any(|file| file.contains("[REDACTED:github_token:")),
+        "{plan:#?}"
+    );
+}

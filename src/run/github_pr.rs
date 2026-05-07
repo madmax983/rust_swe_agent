@@ -153,7 +153,8 @@ pub fn build_pr_plan(
     );
     let task_slug = task_branch_component(&branch_task_id);
     let head_branch = format!("{prefix}/{task_slug}");
-    let summary = summarize_patch(patch_text);
+    let mut summary = summarize_patch(patch_text);
+    redact_patch_summary_files(&mut summary, &redactor);
     let title = redactor
         .redact_text(
             &format!("rust-swe-agent: {task_id}"),
@@ -304,6 +305,12 @@ fn summarize_patch(patch_text: &str) -> PatchSummary {
         deletions,
         files: files.into_iter().collect(),
         bytes: patch_text.len(),
+    }
+}
+
+fn redact_patch_summary_files(summary: &mut PatchSummary, redactor: &Redactor) {
+    for file in &mut summary.files {
+        *file = redactor.redact_text(file, surface::GITHUB_COMMENT).text;
     }
 }
 
