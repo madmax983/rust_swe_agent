@@ -211,13 +211,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // and `rm -rf -- /` all bypass.  Matching by target instead avoids
         // the flag-permutation rabbit hole.  False positives like `rm /` (no
         // `-r`, harmless) are acceptable safety conservatism.
+        // Match `rm` targeting the (normalized) root: `/`, `//`, `///`, `/.`,
+        // `/./`, `///./`, etc.  Linux resolves all of these to `/`.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/['"]?(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/*)*['"]?(?:$|[\s;&|)`'"])"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-root-glob",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/\*"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*\*"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-no-preserve-root",
@@ -241,7 +243,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `/home/user/project/target`) are NOT blocked.
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/(?:[^\s;&|)`'"]*\*[^\s;&|)`'"]*)?)?['"]?(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/(?:[^\s;&|)`'"]*\*[^\s;&|)`'"]*)?)?['"]?(?:$|[\s;&|)`'"])"#,
         ),
         // `find` actions (-delete / -exec rm) targeting bare `/` or any
         // protected system directory.  Optional surrounding quotes are
@@ -291,7 +293,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
         PolicyRule::deny_static(
             "dd-device-write",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*dd\b[^|;\n]*of=['"]?/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*dd\b[^|;\n]*of=['"]?/dev/(?:sd[a-z]|hd[a-z]|nvme\d|xvd[a-z]|vd[a-z]|disk[\d/]|mapper/|dm-|md\d|loop\d|ram\d)"#,
         ),
         PolicyRule::deny_static(
             "mkfs-on-device",

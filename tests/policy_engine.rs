@@ -978,6 +978,79 @@ fn safe_blocks_dangerous_command_in_compound_list() {
     }
 }
 
+// ── Path normalization (Codex P1) ────────────────────────────────────────────
+
+#[test]
+fn safe_blocks_normalized_root_and_system_dir_paths() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Multiple-slash variants of bare root
+        "rm -rf //",
+        "rm -rf ///",
+        "rm -rf //./",
+        "rm -rf /.",
+        "rm -rf /./",
+        // Multiple-slash / dot variants of system dirs
+        "rm -rf ///etc",
+        "rm -rf //etc",
+        "rm -rf /./etc",
+        "rm -rf /.//etc",
+        "rm -rf ///./home",
+        // Glob with normalization
+        "rm -rf //*",
+        "rm -rf /./*",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "normalized path must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Block-device aliases (Codex P1) ──────────────────────────────────────────
+
+#[test]
+fn safe_blocks_dd_writes_to_device_aliases() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "dd if=/dev/zero of=/dev/mapper/vg-root",
+        "dd if=/dev/zero of=/dev/dm-0",
+        "dd if=/dev/zero of=/dev/md0",
+        "dd if=/dev/zero of=/dev/loop0",
+        "dd if=/dev/zero of=/dev/ram0",
+        "dd if=/dev/zero of=/dev/disk/by-id/wwn-0x12345",
+        "dd if=/dev/zero of=/dev/disk/by-uuid/abc",
+        "sudo dd if=/dev/zero of=/dev/mapper/vg-root",
+        // Quoted forms
+        "dd if=/dev/zero of=\"/dev/mapper/vg-root\"",
+        "dd if=/dev/zero of='/dev/dm-0'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "device-alias dd write must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_dd_to_safe_pseudo_devices() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "dd if=/dev/zero of=/dev/null",
+        "dd if=/dev/urandom of=/tmp/data bs=1M count=10",
+        // /dev/random (close to /dev/ram*) must NOT be confused as a device alias
+        "echo test > /dev/random",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "safe pseudo-device write should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
