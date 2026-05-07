@@ -230,9 +230,13 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "catastrophic-delete-home",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+~/?(?:$|[\s;&|)`'"])"#,
         ),
+        // Match `/etc`, `/etc/`, and any path under a system dir that contains
+        // a glob `*` (e.g. `/etc/*`, `/etc/*.conf`, `/etc/passwd*`,
+        // `/var/log/*`).  Specific subpaths without a glob (e.g.
+        // `/home/user/project/target`) are NOT blocked.
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)/?['"]?(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?)*rm\b[^|;\n]*\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/(?:[^\s;&|)`'"]*\*[^\s;&|)`'"]*)?)?['"]?(?:$|[\s;&|)`'"])"#,
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),

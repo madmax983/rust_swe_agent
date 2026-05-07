@@ -769,6 +769,60 @@ fn safe_blocks_dangerous_command_in_nested_shell() {
     }
 }
 
+// ── Glob deletes inside protected system dirs (Codex P1) ─────────────────────
+
+#[test]
+fn safe_blocks_glob_deletes_in_system_dirs() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Bare glob
+        "rm -rf /etc/*",
+        "rm -rf /var/*",
+        "rm -rf /usr/*",
+        "rm -rf /home/*",
+        "rm -rf /boot/*",
+        "rm -rf /lib/*",
+        // Glob with extension or prefix
+        "rm -rf /etc/*.conf",
+        "rm -rf /etc/passwd*",
+        "rm -rf /var/log/*",
+        // sudo + glob
+        "sudo rm -rf /etc/*",
+        "sudo rm -rf /home/*",
+        // Quoted glob
+        "rm -rf '/etc/*'",
+        "rm -rf \"/etc/*\"",
+        // After separator
+        "ls; rm -rf /etc/*",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "system-dir glob delete must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_specific_files_under_system_dirs() {
+    // `/etc/passwd` (single file delete) is bad but distinct from `/etc/*`
+    // which wipes everything.  Keep the existing distinction: subdirs in
+    // /home are OK (`/home/user/project`), specific files in /etc are not
+    // catastrophic in the same way.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf /home/user/project/target",
+        "rm -rf /home/user/.cache",
+        "rm /home/user/file.txt",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "specific subdir under /home should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
