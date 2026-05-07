@@ -738,6 +738,59 @@ async fn pre_tool_use_hook_env_preserves_full_command_for_policy_checks() {
     assert!(matches!(exit, ExitReason::Submitted { .. }));
 }
 
+#[tokio::test]
+async fn tool_hook_task_context_keeps_raw_task_while_trajectory_is_redacted() {
+    let configured_secret = "task-hook-secret-value";
+    let structured_secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let task = format!("fix {configured_secret} for {structured_secret}");
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.redaction.secret_literals = vec![configured_secret.into()];
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "task-probe".into(),
+        command: "hook-task={{ task }}".into(),
+        timeout_secs: None,
+    }];
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```bash\necho primary\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env: Box<dyn Environment> = Box::new(TaskHookEnv {
+        expected_task: task.clone(),
+        calls: Mutex::new(0),
+    });
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: task.clone(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let trajectory_json = agent.trajectory.to_json_pretty().unwrap();
+    for leaked in [configured_secret, structured_secret] {
+        assert!(!trajectory_json.contains(leaked), "{trajectory_json}");
+    }
+    assert!(
+        agent
+            .trajectory
+            .info
+            .task
+            .as_deref()
+            .is_some_and(|task| task.contains("[REDACTED:configured_literal:")
+                && task.contains("[REDACTED:github_token:")),
+        "{trajectory_json}"
+    );
+}
+
 fn hook_command(vars: &[&str]) -> String {
     if cfg!(windows) {
         vars.chunks_exact(2)
@@ -778,6 +831,11 @@ struct LargeHookOutputEnv {
 #[derive(Default)]
 struct CommandPolicyHookEnv {
     calls: std::sync::Mutex<u32>,
+}
+
+struct TaskHookEnv {
+    expected_task: String,
+    calls: Mutex<u32>,
 }
 
 struct FixedExitEnvironment {
@@ -881,6 +939,54 @@ impl Environment for CommandPolicyHookEnv {
                 exit_code: 0,
                 timed_out: false,
             }),
+            other => Err(EnvError::CommandFailed(format!(
+                "unexpected env call {other}"
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl Environment for TaskHookEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        match *calls {
+            1 => {
+                let expected_command = format!("hook-task={}", self.expected_task);
+                if req.command != expected_command {
+                    return Err(EnvError::CommandFailed(format!(
+                        "hook command used redacted task: {}",
+                        req.command
+                    )));
+                }
+                let Some(task_env) = req.env.get("RUST_SWE_AGENT_TASK") else {
+                    return Err(EnvError::CommandFailed("missing task env".into()));
+                };
+                if task_env != &self.expected_task {
+                    return Err(EnvError::CommandFailed(format!(
+                        "task env used redacted task: {task_env}"
+                    )));
+                }
+                let context_json = req.env.get("RUST_SWE_AGENT_CONTEXT_JSON").unwrap();
+                let context: serde_json::Value = serde_json::from_str(context_json).unwrap();
+                assert_eq!(context["task"].as_str(), Some(self.expected_task.as_str()));
+                Ok(RunResult {
+                    stdout: "hook-ok\n".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                })
+            }
+            2 => {
+                assert_eq!(req.command, "echo primary");
+                Ok(RunResult {
+                    stdout: "primary\n".into(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    timed_out: false,
+                })
+            }
             other => Err(EnvError::CommandFailed(format!(
                 "unexpected env call {other}"
             ))),

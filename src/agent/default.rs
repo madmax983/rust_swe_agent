@@ -131,6 +131,7 @@ pub struct DefaultAgent {
     pub stream: Arc<dyn StreamSink>,
     pub redactor: Redactor,
     pub cancellation: Option<CancellationToken>,
+    raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
 }
 
@@ -219,6 +220,7 @@ impl DefaultAgentBuilder {
             stream,
             redactor,
             cancellation: None,
+            raw_task: self.task,
             test_command_patterns,
         })
     }
@@ -914,7 +916,6 @@ impl DefaultAgent {
         command: &str,
         result: Option<&RunResult>,
     ) -> serde_json::Value {
-        let task = self.trajectory.info.task.as_deref().unwrap_or_default();
         let model = self
             .trajectory
             .info
@@ -936,7 +937,7 @@ impl DefaultAgent {
             "tool": {
                 "name": "bash",
             },
-            "task": task,
+            "task": self.raw_task,
             "model": model,
             "step": self.steps,
             "command": command,
