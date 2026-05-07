@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 
+use crate::artifact::ArtifactKind;
 use crate::config::Config;
 use crate::error::Error;
 use crate::model::litellm::is_anthropic_model;
@@ -993,6 +994,16 @@ pub fn predictions_path_for_run(output_dir: &std::path::Path, run_index: u32) ->
     output_dir.join(format!("all_preds.run-{run_index}.jsonl"))
 }
 
+#[must_use]
+pub fn predictions_metadata_path(output_dir: &std::path::Path) -> PathBuf {
+    output_dir.join("all_preds.metadata.json")
+}
+
+#[must_use]
+pub fn predictions_metadata_path_for_run(output_dir: &std::path::Path, run_index: u32) -> PathBuf {
+    output_dir.join(format!("all_preds.run-{run_index}.metadata.json"))
+}
+
 /// Inspect a trajectory path on disk. Returns `Some(info)` only when the file
 /// exists *and* parses as valid trajectory JSON; truncated or corrupt files
 /// (e.g. a mid-write crash) yield `None` so the task re-runs.
@@ -1714,7 +1725,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(), Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(temp.as_file_mut(), results)?;
+    crate::artifact::to_writer_pretty(temp.as_file_mut(), ArtifactKind::SweepResults, results)?;
     writeln!(temp.as_file_mut())?;
     temp.as_file_mut().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
@@ -1952,7 +1963,7 @@ fn render_preflight_report(
                 })
                 .collect(),
         };
-        return serde_json::to_string_pretty(&payload)
+        return crate::artifact::to_string_pretty(ArtifactKind::PreflightReport, &payload)
             .map_err(|e| Error::Trajectory(format!("preflight json encode: {e}")));
     }
     let mut out = String::new();
@@ -2755,7 +2766,9 @@ fn write_predictions_file(
     let max_run = results.iter().map(|r| r.run_index).max().unwrap_or(1);
     let use_unique_prediction_ids = max_run > 1;
     let mut aggregate = String::new();
+    let mut aggregate_row_count = 0usize;
     let mut per_run: BTreeMap<u32, String> = BTreeMap::new();
+    let mut per_run_row_counts: BTreeMap<u32, usize> = BTreeMap::new();
     for r in results {
         if r.result.outcome.as_deref() != Some(outcome::SUBMITTED) {
             continue;
@@ -2789,6 +2802,7 @@ fn write_predictions_file(
             "{}",
             serde_json::to_string(&run_line)?
         );
+        *per_run_row_counts.entry(r.run_index).or_insert(0) += 1;
 
         let aggregate_instance_id = if use_unique_prediction_ids {
             format!("{}::run-{}", r.result.instance_id, r.run_index)
@@ -2812,11 +2826,48 @@ fn write_predictions_file(
         };
         aggregate.push_str(&serde_json::to_string(&aggregate_line)?);
         aggregate.push('\n');
+        aggregate_row_count += 1;
     }
     std::fs::write(predictions_path(output_dir), aggregate)?;
+    write_predictions_metadata(
+        &predictions_metadata_path(output_dir),
+        &PredictionsMetadata {
+            predictions_file: "all_preds.jsonl".into(),
+            aggregate: true,
+            run_index: None,
+            row_count: aggregate_row_count,
+            swebench_evaluator_compatible: !use_unique_prediction_ids,
+        },
+    )?;
     for (run_index, text) in per_run {
         std::fs::write(predictions_path_for_run(output_dir, run_index), text)?;
+        write_predictions_metadata(
+            &predictions_metadata_path_for_run(output_dir, run_index),
+            &PredictionsMetadata {
+                predictions_file: format!("all_preds.run-{run_index}.jsonl"),
+                aggregate: false,
+                run_index: Some(run_index),
+                row_count: per_run_row_counts.get(&run_index).copied().unwrap_or(0),
+                swebench_evaluator_compatible: true,
+            },
+        )?;
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PredictionsMetadata {
+    predictions_file: String,
+    aggregate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_index: Option<u32>,
+    row_count: usize,
+    swebench_evaluator_compatible: bool,
+}
+
+fn write_predictions_metadata(path: &Path, metadata: &PredictionsMetadata) -> Result<(), Error> {
+    let file = std::fs::File::create(path)?;
+    crate::artifact::to_writer_pretty(file, ArtifactKind::SwebenchPredictionsMetadata, metadata)?;
     Ok(())
 }
 
@@ -3836,6 +3887,31 @@ mod tests {
             );
         }
         std::fs::write(path, dataset).unwrap();
+    }
+
+    #[test]
+    fn predictions_metadata_deserializes_from_versioned_artifact_json() {
+        let original = PredictionsMetadata {
+            predictions_file: "all_preds.run-2.jsonl".into(),
+            aggregate: false,
+            run_index: Some(2),
+            row_count: 3,
+            swebench_evaluator_compatible: true,
+        };
+        let json =
+            crate::artifact::to_string_pretty(ArtifactKind::SwebenchPredictionsMetadata, &original)
+                .unwrap();
+
+        let decoded: PredictionsMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.predictions_file, original.predictions_file);
+        assert_eq!(decoded.aggregate, original.aggregate);
+        assert_eq!(decoded.run_index, original.run_index);
+        assert_eq!(decoded.row_count, original.row_count);
+        assert_eq!(
+            decoded.swebench_evaluator_compatible,
+            original.swebench_evaluator_compatible
+        );
     }
 
     #[tokio::test]
@@ -5292,6 +5368,11 @@ instance = "inst"
         }];
         let payload = render_preflight_report(&checks, "json", "doctor").unwrap();
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["artifact_kind"], "preflight_report");
+        assert_eq!(
+            v["schema_version"],
+            serde_json::json!({"major": 1, "minor": 0})
+        );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());
         let c0 = &v["checks"][0];

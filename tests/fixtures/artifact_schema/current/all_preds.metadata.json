@@ -1,0 +1,8 @@
+{
+  "artifact_kind": "swebench_predictions_metadata",
+  "schema_version": {"major": 1, "minor": 0},
+  "predictions_file": "all_preds.jsonl",
+  "aggregate": true,
+  "row_count": 1,
+  "swebench_evaluator_compatible": true
+}

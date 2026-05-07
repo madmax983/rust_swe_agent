@@ -1,0 +1,14 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "info": {
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "exit_reason": "submitted",
+    "total_cost_usd": 0.0,
+    "token_usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 2
+    }
+  },
+  "messages": []
+}

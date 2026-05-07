@@ -334,40 +334,6 @@ impl Drop for DockerEnvironment {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_env() -> DockerEnvironment {
-        DockerEnvironment {
-            container_id: ContainerId::new("test-container"),
-            image: "test-image".into(),
-            workdir: PathBuf::from("/workspace"),
-            shutdown_sent: AtomicBool::new(false),
-            cleanup_on_drop: false,
-        }
-    }
-
-    #[test]
-    fn failed_container_removal_does_not_mark_shutdown_sent() {
-        let env = test_env();
-
-        let result = env.mark_shutdown_after_remove(Err(EnvError::CommandFailed("boom".into())));
-
-        assert!(result.is_err());
-        assert!(!env.shutdown_sent.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn successful_container_removal_marks_shutdown_sent() {
-        let env = test_env();
-
-        assert!(env.mark_shutdown_after_remove(Ok(())).is_ok());
-
-        assert!(env.shutdown_sent.load(Ordering::SeqCst));
-    }
-}
-
 /// Reap any container with our label. Called by `rust-swe-agent cleanup`.
 /// Returns the list of reaped container ids.
 pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
@@ -410,3 +376,37 @@ pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
 
 #[allow(dead_code)]
 const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_env() -> DockerEnvironment {
+        DockerEnvironment {
+            container_id: ContainerId::new("test-container"),
+            image: "test-image".into(),
+            workdir: PathBuf::from("/workspace"),
+            shutdown_sent: AtomicBool::new(false),
+            cleanup_on_drop: false,
+        }
+    }
+
+    #[test]
+    fn failed_container_removal_does_not_mark_shutdown_sent() {
+        let env = test_env();
+
+        let result = env.mark_shutdown_after_remove(Err(EnvError::CommandFailed("boom".into())));
+
+        assert!(result.is_err());
+        assert!(!env.shutdown_sent.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn successful_container_removal_marks_shutdown_sent() {
+        let env = test_env();
+
+        assert!(env.mark_shutdown_after_remove(Ok(())).is_ok());
+
+        assert!(env.shutdown_sent.load(Ordering::SeqCst));
+    }
+}

@@ -264,9 +264,11 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         )
         .rows;
     }
-    std::fs::write(
-        evaluation_path(&args.sweep_dir),
-        serde_json::to_string_pretty(&eval)?,
+    let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
+    crate::artifact::to_writer_pretty(
+        file,
+        crate::artifact::ArtifactKind::EvaluationResults,
+        &eval,
     )?;
     Ok(eval)
 }

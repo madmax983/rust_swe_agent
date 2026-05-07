@@ -3,6 +3,7 @@
 //! Re-exports the public surface. See module docs for the architecture.
 
 pub mod agent;
+pub mod artifact;
 pub mod cli;
 pub mod config;
 pub mod env;

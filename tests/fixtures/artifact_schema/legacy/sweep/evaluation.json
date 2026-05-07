@@ -1,0 +1,14 @@
+{
+  "instances": [
+    {
+      "instance_id": "task-a",
+      "resolved": false,
+      "eval_exit_reason": "eval_error"
+    }
+  ],
+  "behavioral": {
+    "tests_run_before_submit_rate": 0.0,
+    "resolved_rate_when_tests_run": 0.0,
+    "resolved_rate_when_tests_skipped": 0.0
+  }
+}

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::trajectory::{FailureCategory, MessageRecord, TokenUsage, Trajectory};
@@ -437,7 +438,10 @@ fn first_divergent_step_label(header: &TrajectoryDiffHeader) -> String {
 
 fn load_named_trajectory(path: &Path) -> Result<NamedTrajectory, Error> {
     let text = std::fs::read_to_string(path)?;
-    let trajectory: Trajectory = serde_json::from_str(&text)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
+        .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let trajectory: Trajectory = serde_json::from_value(value)?;
     let instance_id = explicit_instance_id(&trajectory)
         .or_else(|| derive_instance_id(path))
         .ok_or_else(|| {

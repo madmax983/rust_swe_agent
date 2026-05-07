@@ -16,6 +16,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::artifact::{ArtifactCompatibility, ArtifactKind, classify_json_value};
 use crate::error::Error;
 use crate::run::evaluate::{
     BreakdownAxis, CostAttributionBucket, EvaluationResults, cost_attribution_bucket_label, pct,
@@ -162,6 +163,10 @@ pub struct CompareReport {
     pub failure_category_delta: BTreeMap<FailureCategory, i64>,
     #[serde(default)]
     pub manifest_deltas: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_version_mismatches: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subset_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -328,6 +333,11 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         report.transitions.values().sum::<usize>()
     );
     write_manifest_delta_section(s, &report.manifest_deltas);
+    write_artifact_version_section(
+        s,
+        &report.artifact_version_mismatches,
+        &report.artifact_warnings,
+    );
     let _ = writeln!(
         s,
         "Resolved:           {} -> {} ({:+})",
@@ -561,6 +571,19 @@ fn write_manifest_delta_section(s: &mut String, manifest_deltas: &[String]) {
     }
 }
 
+fn write_artifact_version_section(s: &mut String, mismatches: &[String], warnings: &[String]) {
+    if mismatches.is_empty() && warnings.is_empty() {
+        return;
+    }
+    s.push_str("Artifact versions:\n");
+    for mismatch in mismatches {
+        let _ = writeln!(s, "  - {mismatch}");
+    }
+    for warning in warnings {
+        let _ = writeln!(s, "  ! {warning}");
+    }
+}
+
 fn write_transition_matrix(s: &mut String, transitions: &BTreeMap<TransitionKind, usize>) {
     s.push_str("\nTransition matrix:\n");
     for kind in [
@@ -695,10 +718,14 @@ pub struct LoadedSweep {
     pub manifest: Option<ProvenanceManifest>,
     pub filter_spec: Option<FilterSpec>,
     pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
+    pub artifact: Option<ArtifactCompatibility>,
+    pub artifact_warnings: Vec<String>,
 }
 
 struct DiffContext<'a> {
     manifest_deltas: Vec<String>,
+    artifact_version_mismatches: Vec<String>,
+    artifact_warnings: Vec<String>,
     baseline_model_name: Option<&'a str>,
     candidate_model_name: Option<&'a str>,
 }
@@ -714,11 +741,16 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     let results_path = dir.join("results.json");
     if results_path.exists() {
         let text = std::fs::read_to_string(&results_path)?;
-        let filter_spec_present = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v.get("filter_spec").cloned())
-            .is_some();
-        let sweep: SweepResults = serde_json::from_str(&text)?;
+        let value: serde_json::Value = serde_json::from_str(&text)?;
+        let artifact = classify_json_value(
+            &value,
+            ArtifactKind::SweepResults,
+            results_path.display().to_string(),
+        )
+        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        let artifact_warnings = artifact.warnings.clone();
+        let filter_spec_present = value.get("filter_spec").is_some();
+        let sweep: SweepResults = serde_json::from_value(value)?;
         let rate_limit_events = sweep.rate_limit_events.clone();
         let partial_incomplete = sweep
             .manifest
@@ -759,6 +791,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                     None
                 },
                 rate_limit_events,
+                artifact: Some(artifact),
+                artifact_warnings,
             });
         }
         return Ok(LoadedSweep {
@@ -774,6 +808,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 None
             },
             rate_limit_events,
+            artifact: Some(artifact),
+            artifact_warnings,
         });
     }
     if !dir.exists() {
@@ -789,6 +825,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         manifest: None,
         filter_spec: None,
         rate_limit_events: None,
+        artifact: None,
+        artifact_warnings: Vec::new(),
     })
 }
 
@@ -920,7 +958,13 @@ fn instance_result_from_trajectory(
     path: &Path,
 ) -> Result<Option<InstanceResult>, Error> {
     let text = std::fs::read_to_string(path)?;
-    let traj: Trajectory = match serde_json::from_str(&text) {
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
+        .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let traj: Trajectory = match serde_json::from_value(value) {
         Ok(t) => t,
         Err(_) => return Ok(None),
     };
@@ -1075,12 +1119,20 @@ fn optional_sum(values: impl Iterator<Item = f64>) -> Option<f64> {
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline = load_sweep(&args.baseline)?;
     let candidate = load_sweep(&args.candidate)?;
-    let baseline_eval = load_evaluation_results(&args.baseline)?;
-    let candidate_eval = load_evaluation_results(&args.candidate)?;
+    let baseline_eval = load_evaluation_results_checked(&args.baseline)?;
+    let candidate_eval = load_evaluation_results_checked(&args.candidate)?;
     let baseline_model_name = baseline.manifest.as_ref().map(|m| m.model.name.as_str());
     let candidate_model_name = candidate.manifest.as_ref().map(|m| m.model.name.as_str());
-    let baseline_resolved_override = baseline_eval.as_ref().map(resolved_overrides_from_eval);
-    let candidate_resolved_override = candidate_eval.as_ref().map(resolved_overrides_from_eval);
+    let baseline_eval_results = baseline_eval.as_ref().map(|loaded| &loaded.results);
+    let candidate_eval_results = candidate_eval.as_ref().map(|loaded| &loaded.results);
+    let baseline_resolved_override = baseline_eval_results.map(resolved_overrides_from_eval);
+    let candidate_resolved_override = candidate_eval_results.map(resolved_overrides_from_eval);
+    let artifact_warnings = artifact_warning_lines(
+        &baseline,
+        &candidate,
+        baseline_eval.as_ref(),
+        candidate_eval.as_ref(),
+    );
     let mut report = diff_with_overrides(
         &args.baseline,
         &args.candidate,
@@ -1093,6 +1145,13 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
                 baseline.manifest.as_ref(),
                 candidate.manifest.as_ref(),
             ),
+            artifact_version_mismatches: artifact_version_mismatch_lines(
+                &baseline,
+                &candidate,
+                baseline_eval.as_ref(),
+                candidate_eval.as_ref(),
+            ),
+            artifact_warnings,
             baseline_model_name,
             candidate_model_name,
         },
@@ -1101,8 +1160,12 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         baseline.filter_spec.as_ref(),
         candidate.filter_spec.as_ref(),
     );
-    report.baseline_rate_limit_events = baseline.rate_limit_events;
-    report.candidate_rate_limit_events = candidate.rate_limit_events;
+    report
+        .baseline_rate_limit_events
+        .clone_from(&baseline.rate_limit_events);
+    report
+        .candidate_rate_limit_events
+        .clone_from(&candidate.rate_limit_events);
     report.breakdown_delta = build_breakdown_delta(
         &baseline.instances,
         &candidate.instances,
@@ -1114,55 +1177,80 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline_patch_agg = baseline_eval
         .as_ref()
         .map_or_else(PatchStatsAggregates::default, |eval| {
-            patch_stats_aggregates(eval, &baseline.instances)
+            patch_stats_aggregates(&eval.results, &baseline.instances)
         });
     let candidate_patch_agg = candidate_eval
         .as_ref()
         .map_or_else(PatchStatsAggregates::default, |eval| {
-            patch_stats_aggregates(eval, &candidate.instances)
+            patch_stats_aggregates(&eval.results, &candidate.instances)
         });
     apply_patch_stats_aggregates(&mut report, baseline_patch_agg, candidate_patch_agg);
-    if args.cost_attribution {
-        let baseline_cost_rows = baseline_eval
-            .as_ref()
-            .and_then(non_empty_cost_attribution_rows);
-        let candidate_cost_rows = candidate_eval
-            .as_ref()
-            .and_then(non_empty_cost_attribution_rows);
-        let baseline_fallback_rows = if baseline_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(
-                &load_run_slots(&args.baseline, &baseline.instances)?,
-                baseline_model_name,
-            ))
-        } else {
-            None
-        };
-        let candidate_fallback_rows = if candidate_cost_rows.is_none() {
-            Some(build_cost_attribution_rows_from_run_slots(
-                &load_run_slots(&args.candidate, &candidate.instances)?,
-                candidate_model_name,
-            ))
-        } else {
-            None
-        };
-        let baseline_rows = if let Some(rows) = baseline_cost_rows {
-            rows
-        } else {
-            baseline_fallback_rows.as_deref().unwrap_or(&[])
-        };
-        let candidate_rows = if let Some(rows) = candidate_cost_rows {
-            rows
-        } else {
-            candidate_fallback_rows.as_deref().unwrap_or(&[])
-        };
-        report.cost_attribution_delta = build_cost_attribution_delta_from_rows(
-            baseline_rows,
-            candidate_rows,
-            args.cost_attribution_min_delta_usd,
-        );
-        report.cost_attribution_warnings = build_cost_attribution_warnings(&report.subset_warnings);
-    }
+    apply_cost_attribution_delta(
+        &mut report,
+        CostAttributionContext {
+            args,
+            baseline: &baseline,
+            candidate: &candidate,
+            baseline_eval: baseline_eval.as_ref(),
+            candidate_eval: candidate_eval.as_ref(),
+            baseline_model_name,
+            candidate_model_name,
+        },
+    )?;
     Ok(report)
+}
+
+#[derive(Clone, Copy)]
+struct CostAttributionContext<'a> {
+    args: &'a CompareArgs,
+    baseline: &'a LoadedSweep,
+    candidate: &'a LoadedSweep,
+    baseline_eval: Option<&'a LoadedEvaluationResults>,
+    candidate_eval: Option<&'a LoadedEvaluationResults>,
+    baseline_model_name: Option<&'a str>,
+    candidate_model_name: Option<&'a str>,
+}
+
+fn apply_cost_attribution_delta(
+    report: &mut CompareReport,
+    ctx: CostAttributionContext<'_>,
+) -> Result<(), Error> {
+    if !ctx.args.cost_attribution {
+        return Ok(());
+    }
+    let baseline_cost_rows = ctx
+        .baseline_eval
+        .and_then(|eval| non_empty_cost_attribution_rows(&eval.results));
+    let candidate_cost_rows = ctx
+        .candidate_eval
+        .and_then(|eval| non_empty_cost_attribution_rows(&eval.results));
+    let baseline_fallback_rows = if baseline_cost_rows.is_none() {
+        Some(build_cost_attribution_rows_from_run_slots(
+            &load_run_slots(&ctx.args.baseline, &ctx.baseline.instances)?,
+            ctx.baseline_model_name,
+        ))
+    } else {
+        None
+    };
+    let candidate_fallback_rows = if candidate_cost_rows.is_none() {
+        Some(build_cost_attribution_rows_from_run_slots(
+            &load_run_slots(&ctx.args.candidate, &ctx.candidate.instances)?,
+            ctx.candidate_model_name,
+        ))
+    } else {
+        None
+    };
+    let baseline_rows =
+        baseline_cost_rows.unwrap_or_else(|| baseline_fallback_rows.as_deref().unwrap_or(&[]));
+    let candidate_rows =
+        candidate_cost_rows.unwrap_or_else(|| candidate_fallback_rows.as_deref().unwrap_or(&[]));
+    report.cost_attribution_delta = build_cost_attribution_delta_from_rows(
+        baseline_rows,
+        candidate_rows,
+        ctx.args.cost_attribution_min_delta_usd,
+    );
+    report.cost_attribution_warnings = build_cost_attribution_warnings(&report.subset_warnings);
+    Ok(())
 }
 
 pub fn write_diff_script(report: &CompareReport, out_path: &Path) -> Result<(), Error> {
@@ -1226,6 +1314,8 @@ pub fn diff<S: std::hash::BuildHasher>(
         None,
         DiffContext {
             manifest_deltas: Vec::new(),
+            artifact_version_mismatches: Vec::new(),
+            artifact_warnings: Vec::new(),
             baseline_model_name: None,
             candidate_model_name: None,
         },
@@ -1348,6 +1438,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         failure_category_candidate,
         failure_category_delta,
         manifest_deltas: diff_context.manifest_deltas,
+        artifact_version_mismatches: diff_context.artifact_version_mismatches,
+        artifact_warnings: diff_context.artifact_warnings,
         subset_warnings: Vec::new(),
         breakdown_delta: Vec::new(),
         cost_attribution_delta: Vec::new(),
@@ -1819,12 +1911,37 @@ fn wilson_ci(successes: u64, total: u64) -> ConfidenceInterval {
 }
 
 pub fn load_evaluation_results(dir: &Path) -> Result<Option<EvaluationResults>, Error> {
+    Ok(load_evaluation_results_checked(dir)?.map(|loaded| loaded.results))
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedEvaluationResults {
+    pub results: EvaluationResults,
+    pub artifact: ArtifactCompatibility,
+    pub artifact_warnings: Vec<String>,
+}
+
+pub fn load_evaluation_results_checked(
+    dir: &Path,
+) -> Result<Option<LoadedEvaluationResults>, Error> {
     let path = crate::run::evaluate::evaluation_path(dir);
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path)?;
-    Ok(Some(serde_json::from_str(&text)?))
+    let text = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let artifact = classify_json_value(
+        &value,
+        ArtifactKind::EvaluationResults,
+        path.display().to_string(),
+    )
+    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let artifact_warnings = artifact.warnings.clone();
+    Ok(Some(LoadedEvaluationResults {
+        results: serde_json::from_value(value)?,
+        artifact,
+        artifact_warnings,
+    }))
 }
 
 fn resolved_overrides_from_eval(eval: &EvaluationResults) -> HashMap<String, ResolutionOverride> {
@@ -1883,6 +2000,93 @@ fn manifest_delta_lines(
         ));
     }
     out
+}
+
+fn artifact_version_mismatch_lines(
+    baseline: &LoadedSweep,
+    candidate: &LoadedSweep,
+    baseline_eval: Option<&LoadedEvaluationResults>,
+    candidate_eval: Option<&LoadedEvaluationResults>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let baseline_results =
+        artifact_identity(baseline.artifact.as_ref(), ArtifactKind::SweepResults);
+    let candidate_results =
+        artifact_identity(candidate.artifact.as_ref(), ArtifactKind::SweepResults);
+    push_artifact_mismatch(
+        &mut out,
+        "results.json",
+        &baseline_results,
+        &candidate_results,
+    );
+    if baseline_eval.is_some() || candidate_eval.is_some() {
+        let baseline_evaluation = artifact_identity(
+            baseline_eval.map(|loaded| &loaded.artifact),
+            ArtifactKind::EvaluationResults,
+        );
+        let candidate_evaluation = artifact_identity(
+            candidate_eval.map(|loaded| &loaded.artifact),
+            ArtifactKind::EvaluationResults,
+        );
+        push_artifact_mismatch(
+            &mut out,
+            "evaluation.json",
+            &baseline_evaluation,
+            &candidate_evaluation,
+        );
+    }
+    out
+}
+
+fn artifact_warning_lines(
+    baseline: &LoadedSweep,
+    candidate: &LoadedSweep,
+    baseline_eval: Option<&LoadedEvaluationResults>,
+    candidate_eval: Option<&LoadedEvaluationResults>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(
+        baseline
+            .artifact_warnings
+            .iter()
+            .map(|warning| format!("baseline {warning}")),
+    );
+    out.extend(
+        candidate
+            .artifact_warnings
+            .iter()
+            .map(|warning| format!("candidate {warning}")),
+    );
+    if let Some(eval) = baseline_eval {
+        out.extend(
+            eval.artifact_warnings
+                .iter()
+                .map(|warning| format!("baseline {warning}")),
+        );
+    }
+    if let Some(eval) = candidate_eval {
+        out.extend(
+            eval.artifact_warnings
+                .iter()
+                .map(|warning| format!("candidate {warning}")),
+        );
+    }
+    out
+}
+
+fn push_artifact_mismatch(out: &mut Vec<String>, label: &str, baseline: &str, candidate: &str) {
+    if baseline != candidate {
+        out.push(format!(
+            "{label}: baseline {baseline} candidate {candidate}"
+        ));
+    }
+}
+
+fn artifact_identity(artifact: Option<&ArtifactCompatibility>, expected: ArtifactKind) -> String {
+    artifact.map_or_else(
+        || format!("{expected}@unavailable"),
+        ArtifactCompatibility::identity_label,
+    )
 }
 
 fn diff_config_keys(

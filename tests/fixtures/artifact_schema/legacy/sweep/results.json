@@ -1,0 +1,23 @@
+{
+  "total": 1,
+  "sweep_status": "completed",
+  "submitted": 1,
+  "skipped": 0,
+  "errored": 0,
+  "failures_by_category": {},
+  "budget_halted": 0,
+  "with_patch": 1,
+  "total_prompt_tokens": 10,
+  "total_completion_tokens": 2,
+  "estimated_cost_usd": 0.0,
+  "instances": [
+    {
+      "instance_id": "task-a",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.0,
+      "patch_present": true,
+      "non_empty_patch": false
+    }
+  ]
+}

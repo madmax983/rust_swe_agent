@@ -6,7 +6,8 @@
 //! `info`, `messages`.
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use std::path::Path;
 
 use crate::model::{Message, MessageExtra};
@@ -329,11 +330,29 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.other.is_empty()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Trajectory {
     pub trajectory_format: String,
     pub info: TrajectoryInfo,
     pub messages: Vec<MessageRecord>,
+}
+
+impl Serialize for Trajectory {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Trajectory", 5)?;
+        state.serialize_field("trajectory_format", &self.trajectory_format)?;
+        state.serialize_field("artifact_kind", &crate::artifact::ArtifactKind::Trajectory)?;
+        state.serialize_field(
+            "schema_version",
+            &crate::artifact::ArtifactSchemaVersion::CURRENT,
+        )?;
+        state.serialize_field("info", &self.info)?;
+        state.serialize_field("messages", &self.messages)?;
+        state.end()
+    }
 }
 
 impl Default for Trajectory {

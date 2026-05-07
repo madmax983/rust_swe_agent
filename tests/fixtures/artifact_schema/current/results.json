@@ -1,0 +1,95 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {"major": 1, "minor": 0},
+  "total": 1,
+  "sweep_status": "completed",
+  "completed": 1,
+  "in_flight_at_cancel": 0,
+  "not_started": 0,
+  "submitted": 1,
+  "submitted_with_tests": 0,
+  "skipped": 0,
+  "errored": 0,
+  "failures_by_category": {},
+  "budget_halted": 0,
+  "with_patch": 1,
+  "patch_empty": 0,
+  "patch_apply_invalid": 0,
+  "github_pr_failures": 0,
+  "total_input_tokens": 10,
+  "total_cache_read_tokens": 0,
+  "total_cache_creation_tokens": 0,
+  "total_completion_tokens": 2,
+  "total_cost_usd": 0.0,
+  "cache_hit_rate": 0.0,
+  "retries": 0,
+  "retried_instances": 0,
+  "pass_at_k": 1.0,
+  "filter_spec": {
+    "original_count": 1,
+    "selected_count": 1
+  },
+  "manifest": {
+    "harness": {
+      "name": "rust_swe_agent",
+      "version": "fixture",
+      "git_sha": "fixture",
+      "git_dirty": false,
+      "git_resolution": "fixture"
+    },
+    "dataset": {
+      "path": "dataset.jsonl",
+      "sha256": "fixture",
+      "instance_count": 1,
+      "filter_spec": {
+        "original_count": 1,
+        "selected_count": 1
+      }
+    },
+    "prompt_template": {
+      "source": "inline",
+      "sha256": "fixture"
+    },
+    "config": {
+      "resolved": "fixture",
+      "overlay_paths": []
+    },
+    "model": {
+      "name": "fixture-model",
+      "backend": "deterministic"
+    },
+    "runtime": {
+      "started_at_utc": "2026-05-01T00:00:00Z",
+      "finished_at_utc": "2026-05-01T00:00:01Z",
+      "host_os": "fixture",
+      "resume_mode": false,
+      "rust_version": "fixture"
+    },
+    "cli": {
+      "argv": ["fixture"]
+    }
+  },
+  "instances": [
+    {
+      "instance_id": "task-a",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "steps": 1,
+      "cost_usd": 0.0,
+      "total_input_tokens": 10,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_completion_tokens": 2,
+      "duration_secs": 1.0,
+      "error": null,
+      "patch_present": true,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "retry_reasons": [],
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_run_before_submit": false
+    }
+  ]
+}

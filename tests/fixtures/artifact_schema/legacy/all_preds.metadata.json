@@ -1,0 +1,6 @@
+{
+  "predictions_file": "all_preds.jsonl",
+  "aggregate": true,
+  "row_count": 1,
+  "swebench_evaluator_compatible": true
+}

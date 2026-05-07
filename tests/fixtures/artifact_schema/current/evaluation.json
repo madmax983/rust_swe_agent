@@ -1,0 +1,28 @@
+{
+  "artifact_kind": "evaluation_results",
+  "schema_version": {"major": 1, "minor": 0},
+  "instances": [
+    {
+      "instance_id": "task-a",
+      "resolved": false,
+      "runs": 1,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "eval_error",
+      "patch_stats": {
+        "is_empty": true,
+        "lines_added": 0,
+        "lines_removed": 0,
+        "files_changed": 0,
+        "hunks": 0,
+        "touches_test_files": false,
+        "touches_lock_or_generated": false
+      }
+    }
+  ],
+  "behavioral": {
+    "tests_run_before_submit_rate": 0.0,
+    "resolved_rate_when_tests_run": 0.0,
+    "resolved_rate_when_tests_skipped": 0.0
+  }
+}

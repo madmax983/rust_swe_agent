@@ -1,0 +1,11 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 2, "minor": 0},
+  "info": {
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "exit_reason": "submitted"
+  },
+  "messages": []
+}
