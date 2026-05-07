@@ -1,0 +1,137 @@
+name: SWE-bench Nightly Smoke
+
+# End-to-end harness check against an OpenRouter free model. The point is
+# to catch regressions in the sweep runner / patch capture / trajectory
+# pipeline, NOT to measure solve rate. Free-tier models routinely fail to
+# produce a working patch; the gate below treats that as an acceptable
+# outcome and only fails on harness-level errors (errored > 0).
+#
+# Required repo secret:
+#   OPENROUTER_API_KEY  — OpenRouter API key with access to the pinned
+#                         free-tier model.
+
+on:
+  schedule:
+    # 07:23 UTC daily. Off the top of the hour to dodge the cron stampede.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      offset:
+        description: "SWE-bench Lite offset to pull (0-based)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: swe-bench-nightly
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: openrouter free-tier smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      SWE_BENCH_MODEL: openrouter/deepseek/deepseek-chat-v3.1:free
+      SWE_BENCH_OFFSET: ${{ github.event.inputs.offset || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-smoke
+
+      - name: Build rust-swe-agent (release)
+        run: cargo build --release --bin rust-swe-agent --no-default-features
+
+      - name: Fetch one SWE-bench Lite instance + clone repo
+        id: fetch
+        run: bash scripts/swe-bench-nightly-fetch.sh
+
+      - name: Run smoke sweep
+        id: sweep
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+            echo "::error::OPENROUTER_API_KEY secret is not set on this repository."
+            exit 1
+          fi
+          ./target/release/rust-swe-agent bench swebench \
+            --dataset-path runs-input/dataset.jsonl \
+            --output runs \
+            --model "${SWE_BENCH_MODEL}" \
+            --config runs-input/config.toml \
+            --parallel 1 \
+            --step-limit 8 \
+            --task-timeout-secs 300 \
+            --max-retries 0 \
+            --skip-preflight \
+            --skip-patch-validation
+
+      - name: Gate on harness errors
+        id: gate
+        run: |
+          if [[ ! -f runs/results.json ]]; then
+            echo "::error::runs/results.json missing — sweep did not produce a summary"
+            exit 1
+          fi
+          jq '{total, submitted, errored, skipped, failures_by_category}' runs/results.json
+          # Pass criterion: harness completed without errors. Unsolved tasks
+          # are expected on free-tier models.
+          jq -e '.errored == 0' runs/results.json > /dev/null
+
+      - name: Upload trajectories + inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swe-bench-nightly-${{ github.run_id }}
+          path: |
+            runs
+            runs-input/dataset.jsonl
+            runs-input/config.toml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Open issue on scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        env:
+          INSTANCE_ID: ${{ steps.fetch.outputs.instance_id }}
+          REPO_SLUG: ${{ steps.fetch.outputs.repo }}
+          BASE_COMMIT: ${{ steps.fetch.outputs.base_commit }}
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const instance = process.env.INSTANCE_ID || "(fetch failed)";
+            const repoSlug = process.env.REPO_SLUG || "(unknown)";
+            const baseCommit = process.env.BASE_COMMIT || "(unknown)";
+            const title = `Nightly SWE-bench smoke failed (${today})`;
+            const body = [
+              `The nightly OpenRouter free-tier SWE-bench smoke run failed.`,
+              ``,
+              `- Workflow run: ${runUrl}`,
+              `- Instance:    \`${instance}\``,
+              `- Repo:        \`${repoSlug}\` @ \`${baseCommit}\``,
+              `- Model:       \`openrouter/deepseek/deepseek-chat-v3.1:free\``,
+              ``,
+              `Trajectories and the input dataset are attached as workflow`,
+              `artifacts on the run page.`,
+              ``,
+              `_Auto-filed by .github/workflows/swe-bench-nightly.yml._`,
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["nightly-smoke", "ci"],
+            });
