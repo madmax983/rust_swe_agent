@@ -521,6 +521,11 @@ impl Agent for DefaultAgent {
             &self.redactor,
         );
 
+        // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
+        // spec for issue #90 we use the non-interactive resolver: any `Ask`
+        // decision fails closed before a child process is launched.  Future
+        // `InteractiveAgent` integration should call `check_command` directly
+        // and present an approval prompt for `Ask` decisions.
         let policy_decision = self.policy_engine.check_command_non_interactive(&cmd);
         if let PolicyDecision::Deny { ref label } = policy_decision {
             self.trajectory.info.policy_counts.record(&policy_decision);

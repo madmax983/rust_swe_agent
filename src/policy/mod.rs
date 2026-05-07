@@ -55,7 +55,14 @@ pub enum PolicyProfile {
     /// Block the built-in dangerous-command corpus; allow everything else.
     Safe,
     /// All commands require human approval unless they match an explicit
-    /// allow-rule.  In non-interactive contexts, unresolved Ask → Deny.
+    /// allow-rule.  Interpretation depends on the runtime:
+    /// - non-interactive runners (`DefaultAgent`, sweeps, CI) MUST resolve
+    ///   `Ask` to `Deny` via [`PolicyEngine::check_command_non_interactive`].
+    ///   Per the spec, ask "fails closed in non-interactive contexts" — so in
+    ///   `DefaultAgent` this profile behaves as a stricter `Safe`.
+    /// - interactive runners (e.g. a future `InteractiveAgent` integration)
+    ///   should call [`PolicyEngine::check_command`] and present the operator
+    ///   with an approval prompt for `Ask` decisions.
     Ask,
     /// No restrictions; preserves unrestricted behaviour.  Every command is
     /// allowed but counts as a yolo-bypass in telemetry.
@@ -167,23 +174,23 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         PolicyRule::deny_static(
             "catastrophic-delete-root",
             r"(?x)
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)   # command boundary or start
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)   # command boundary or start
             (?:sudo\s+)?rm\s+                      # rm (optionally sudo)
             (?:[^|;\n]*\s)?                        # any flags
             --no-preserve-root\b|                  # explicit --no-preserve-root
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)
-            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:$|[\s;&|])|  # rm -rf /
-            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)
+            (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:$|[\s;&|)`])|  # rm -rf /
+            (?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)
             (?:sudo\s+)?rm\b[^|;\n]*?-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/\*  # rm -rf /*
             ",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+~/?(?:$|[\s;&|])",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+~/?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)(?:sudo\s+)?rm\s+[^|;\n]*-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:etc|var|usr|home|root|boot|lib|bin|sbin)\b",
         ),
         PolicyRule::deny_static("find-delete-all", r"find\s+/\s+[^|;\n]*-delete\b"),
         PolicyRule::deny_static("find-exec-rm-all", r"find\s+/\s+[^|;\n]*-exec\s+rm\b"),
@@ -202,7 +209,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         ),
         PolicyRule::deny_static(
             "su-root",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)su(?:\s+-)?(?:\s+root)?(?:$|[\s;&|])",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)su(?:\s+-)?(?:\s+root)?(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "chmod-sensitive-files",
@@ -211,7 +218,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         PolicyRule::deny_static("chmod-777-system", r"(?:sudo\s+)?chmod\s+-R\s+777\s+/"),
         PolicyRule::deny_static(
             "chown-system-root",
-            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|])",
+            r"(?:sudo\s+)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|)`])",
         ),
         PolicyRule::deny_static(
             "chown-system-dirs",
@@ -221,31 +228,31 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
         PolicyRule::deny_static(
             "dd-device-write",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)dd\b[^|;\n]*of=/dev/(?:sd|hd|nvme|xvd|vd|disk)[a-zA-Z0-9]",
         ),
         PolicyRule::deny_static(
             "mkfs-on-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "shred-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)shred\b[^|;\n]*/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)shred\b[^|;\n]*/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "badblocks-write",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s",
         ),
         PolicyRule::deny_static(
             "hdparm-erase",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)hdparm\s+--security-erase\b",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)hdparm\s+--security-erase\b",
         ),
         PolicyRule::deny_static(
             "fdisk-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)fdisk\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)fdisk\s+/dev/[a-zA-Z]",
         ),
         PolicyRule::deny_static(
             "parted-device",
-            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*)parted\s+/dev/[a-zA-Z]",
+            r"(?:^|\n\s*|\|\s*|;\s*|&&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*)parted\s+/dev/[a-zA-Z]",
         ),
         // --- Credential file reads ---
         PolicyRule::deny_static(
