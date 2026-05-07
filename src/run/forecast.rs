@@ -480,10 +480,8 @@ fn mark_forecast_manifest(results: &mut SweepResults, calibration_dir: &Path) ->
     }
     mark_trajectory_purpose(results, calibration_dir)?;
     let path = calibration_dir.join("results.json");
-    std::fs::write(
-        path,
-        crate::artifact::to_string_pretty(ArtifactKind::SweepResults, results)?,
-    )?;
+    let file = std::fs::File::create(path)?;
+    crate::artifact::to_writer_pretty(file, ArtifactKind::SweepResults, results)?;
     Ok(())
 }
 

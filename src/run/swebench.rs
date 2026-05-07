@@ -1725,8 +1725,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(), Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    let json = crate::artifact::to_string_pretty(ArtifactKind::SweepResults, results)?;
-    temp.as_file_mut().write_all(json.as_bytes())?;
+    crate::artifact::to_writer_pretty(temp.as_file_mut(), ArtifactKind::SweepResults, results)?;
     writeln!(temp.as_file_mut())?;
     temp.as_file_mut().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
@@ -2856,7 +2855,7 @@ fn write_predictions_file(
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PredictionsMetadata {
     predictions_file: String,
     aggregate: bool,
@@ -2867,10 +2866,8 @@ struct PredictionsMetadata {
 }
 
 fn write_predictions_metadata(path: &Path, metadata: &PredictionsMetadata) -> Result<(), Error> {
-    std::fs::write(
-        path,
-        crate::artifact::to_string_pretty(ArtifactKind::SwebenchPredictionsMetadata, metadata)?,
-    )?;
+    let file = std::fs::File::create(path)?;
+    crate::artifact::to_writer_pretty(file, ArtifactKind::SwebenchPredictionsMetadata, metadata)?;
     Ok(())
 }
 
@@ -3890,6 +3887,31 @@ mod tests {
             );
         }
         std::fs::write(path, dataset).unwrap();
+    }
+
+    #[test]
+    fn predictions_metadata_deserializes_from_versioned_artifact_json() {
+        let original = PredictionsMetadata {
+            predictions_file: "all_preds.run-2.jsonl".into(),
+            aggregate: false,
+            run_index: Some(2),
+            row_count: 3,
+            swebench_evaluator_compatible: true,
+        };
+        let json =
+            crate::artifact::to_string_pretty(ArtifactKind::SwebenchPredictionsMetadata, &original)
+                .unwrap();
+
+        let decoded: PredictionsMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.predictions_file, original.predictions_file);
+        assert_eq!(decoded.aggregate, original.aggregate);
+        assert_eq!(decoded.run_index, original.run_index);
+        assert_eq!(decoded.row_count, original.row_count);
+        assert_eq!(
+            decoded.swebench_evaluator_compatible,
+            original.swebench_evaluator_compatible
+        );
     }
 
     #[tokio::test]

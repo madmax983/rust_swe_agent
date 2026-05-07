@@ -98,6 +98,22 @@ fn artifact_classifier_rejects_kind_mismatch() {
 }
 
 #[test]
+fn artifact_writer_pretty_matches_string_serializer() {
+    let payload = serde_json::json!({
+        "total": 1,
+        "instances": [{"instance_id": "task-a"}]
+    });
+    let expected =
+        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &payload).unwrap();
+    let mut actual = Vec::new();
+
+    rust_swe_agent::artifact::to_writer_pretty(&mut actual, ArtifactKind::SweepResults, &payload)
+        .unwrap();
+
+    assert_eq!(String::from_utf8(actual).unwrap(), expected);
+}
+
+#[test]
 fn trajectory_serialization_includes_artifact_header() {
     let json = Trajectory::new().to_json_pretty().unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();

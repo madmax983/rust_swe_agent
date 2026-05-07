@@ -258,6 +258,26 @@ where
     })
 }
 
+/// Serialize a payload with the standard artifact header flattened into the
+/// top-level JSON object, streaming directly to a writer.
+pub fn to_writer_pretty<W, T>(
+    writer: W,
+    kind: ArtifactKind,
+    payload: &T,
+) -> Result<(), serde_json::Error>
+where
+    W: std::io::Write,
+    T: Serialize,
+{
+    serde_json::to_writer_pretty(
+        writer,
+        &VersionedArtifact {
+            header: ArtifactHeader::current(kind),
+            payload,
+        },
+    )
+}
+
 #[derive(Serialize)]
 struct VersionedArtifact<'a, T>
 where
