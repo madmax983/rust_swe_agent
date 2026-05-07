@@ -39,7 +39,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
-      SWE_BENCH_MODEL: openrouter/deepseek/deepseek-chat-v3.1:free
+      SWE_BENCH_MODEL: openrouter/baidu/cobuddy:free
       SWE_BENCH_OFFSET: ${{ github.event.inputs.offset || '0' }}
     steps:
       - uses: actions/checkout@v4
