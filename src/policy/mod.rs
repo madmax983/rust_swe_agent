@@ -433,6 +433,97 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
     ]
 }
 
+// ── Heredoc body stripping ───────────────────────────────────────────────────
+
+/// Remove the bodies of any here-documents from a command string.
+///
+/// Bash heredocs (`<<DELIM` / `<<-DELIM` / `<<'DELIM'` / `<<"DELIM"`) feed
+/// the lines between the operator and a line containing only `DELIM` to the
+/// preceding command's stdin.  Those lines are data, not commands, so a
+/// model writing `cat > fixture.sh <<'EOF'\nrm -rf /\nEOF` should not be
+/// flagged as executing `rm -rf /`.
+///
+/// The result preserves the surrounding command structure (heredoc
+/// operator and closing delimiter line are kept) but replaces the body
+/// with a single empty line so newline-based command boundaries don't
+/// see the data as a new command position.
+///
+/// Limitations: this is a heuristic.  It does not handle nested heredocs,
+/// heredocs inside subshells with mismatched delimiters, or quoted-string
+/// contexts.  It is conservative — when the closing delimiter cannot be
+/// found, the body is left in place (defaulting to "block" rather than
+/// silently allowing).
+fn strip_heredoc_bodies(command: &str) -> String {
+    // Match the heredoc operator and capture the delimiter word.  The
+    // delimiter may itself be quoted (single or double); we strip those
+    // for the closing-line comparison.
+    let Ok(heredoc_start) = Regex::new(r#"<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?"#) else {
+        return command.to_owned();
+    };
+
+    let mut out = String::with_capacity(command.len());
+    let mut cursor = 0usize;
+
+    while let Some(m) = heredoc_start.find_at(command, cursor) {
+        // Append everything up to and including the heredoc operator line.
+        let line_end_after_op = command[m.end()..]
+            .find('\n')
+            .map_or(command.len(), |i| m.end() + i + 1);
+        out.push_str(&command[cursor..line_end_after_op]);
+
+        // Extract the delimiter word (already validated by the regex).
+        let Some(caps) = heredoc_start.captures(&command[m.start()..m.end()]) else {
+            cursor = line_end_after_op;
+            continue;
+        };
+        let Some(delim) = caps.get(1) else {
+            cursor = line_end_after_op;
+            continue;
+        };
+        let delim_word = delim.as_str();
+
+        // Search for a line whose trimmed content is exactly the delimiter
+        // word.  `<<-` allows tab-indented terminators, but we accept
+        // arbitrary leading whitespace conservatively.
+        let body_start = line_end_after_op;
+        let mut search_pos = body_start;
+        let mut closed = false;
+        while search_pos <= command.len() {
+            let line_end = command[search_pos..]
+                .find('\n')
+                .map_or(command.len(), |i| search_pos + i);
+            if command[search_pos..line_end].trim() == delim_word {
+                // Skip the body, then append the closing-delim line so the
+                // boundary regex still sees the surrounding command shape.
+                out.push('\n');
+                let line_end_with_nl = if line_end < command.len() {
+                    line_end + 1
+                } else {
+                    line_end
+                };
+                out.push_str(&command[search_pos..line_end_with_nl]);
+                cursor = line_end_with_nl;
+                closed = true;
+                break;
+            }
+            if line_end >= command.len() {
+                break;
+            }
+            search_pos = line_end + 1;
+        }
+
+        if !closed {
+            // No closing delimiter found — leave the rest of the command
+            // intact so dangerous content is still examined (fail-safe).
+            out.push_str(&command[body_start..]);
+            return out;
+        }
+    }
+
+    out.push_str(&command[cursor..]);
+    out
+}
+
 // ── PolicyEngine ──────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -543,8 +634,14 @@ impl PolicyEngine {
             return PolicyDecision::Allow;
         }
 
+        // Heredoc bodies are data fed to a tool (e.g. `cat`), not commands
+        // to execute.  Strip them before applying boundary-based rules so a
+        // model writing a fixture or test file that contains `rm -rf /` text
+        // is not incorrectly blocked.
+        let normalized = strip_heredoc_bodies(command);
+
         for rule in &self.rules {
-            if rule.matches(command) {
+            if rule.matches(&normalized) {
                 return match rule.decision {
                     RuleDecision::Allow => PolicyDecision::Allow,
                     RuleDecision::Ask => PolicyDecision::Ask,
