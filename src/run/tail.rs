@@ -50,6 +50,8 @@ pub struct TailSnapshot {
     pub is_complete: bool,
     pub abort_reason: Option<String>,
     pub warnings: Vec<String>,
+    pub total_fallbacks: u64,
+    pub model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +73,8 @@ struct SweepMeta {
     finished_at: Option<DateTime<Utc>>,
     parallelism: Option<usize>,
     failure_counts: BTreeMap<FailureCategory, usize>,
+    total_fallbacks: u64,
+    model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +316,8 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         is_complete,
         abort_reason,
         warnings,
+        total_fallbacks: meta.total_fallbacks,
+        model_mix: meta.model_mix,
     })
 }
 
@@ -409,6 +415,16 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
         finished_at,
         parallelism,
         failure_counts: parse_failure_counts(value),
+        total_fallbacks: get_u64(value, "total_fallbacks").unwrap_or(0),
+        model_mix: value
+            .get("model_mix")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_u64().map(|n| (k.clone(), n as usize)))
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -768,6 +784,15 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         out.push_str("Status:      completed\n");
     } else {
         out.push_str("Status:      running\n");
+    }
+    if snapshot.total_fallbacks > 0 || !snapshot.model_mix.is_empty() {
+        out.push_str("Model mix:\n");
+        for (model, count) in &snapshot.model_mix {
+            let _ = writeln!(out, "  - {model}: {count}");
+        }
+        if snapshot.total_fallbacks > 0 {
+            let _ = writeln!(out, "Fallbacks:   {}", snapshot.total_fallbacks);
+        }
     }
     for warning in &snapshot.warnings {
         let _ = writeln!(out, "Warning:     {warning}");

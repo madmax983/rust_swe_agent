@@ -15,7 +15,7 @@ use crate::redaction::{Redactor, surface};
 use crate::run::evaluate::EvaluationResults;
 use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
-use crate::trajectory::{FailureCategory, TokenUsage, Trajectory};
+use crate::trajectory::{FailureCategory, FallbackSummary, TokenUsage, Trajectory};
 
 const TRUNCATE_MAX_LINES: usize = 40;
 const TRUNCATE_MAX_BYTES: usize = 2 * 1024;
@@ -95,6 +95,8 @@ pub struct InspectReport {
     pub tests_run_before_submit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_summary: Option<FallbackSummary>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
@@ -249,6 +251,7 @@ fn build_instance_report(
                 last_test_exit_code: None,
                 tests_run_before_submit: false,
                 last_tests_passed: None,
+                fallback_summary: None,
                 warnings,
                 steps: vec![],
             });
@@ -302,6 +305,7 @@ fn build_instance_report(
             .map(|invocation| invocation.exit_code),
         tests_run_before_submit: traj.info.tests_run_before_submit,
         last_tests_passed: traj.info.last_tests_passed,
+        fallback_summary: traj.info.fallback_summary,
         warnings,
         steps,
     })
@@ -513,6 +517,16 @@ fn render_instance_text(report: &InspectReport) -> String {
             .last_tests_passed
             .map_or_else(|| "?".into(), |passed| passed.to_string()),
     );
+    if let Some(fb) = &report.fallback_summary {
+        let _ = writeln!(
+            s,
+            "fallback:         happened={} count={} primary={} final={}",
+            fb.fallback_happened, fb.fallback_count, fb.primary_model, fb.final_model,
+        );
+        if !fb.attempted_models.is_empty() {
+            let _ = writeln!(s, "fallback_chain:   {}", fb.attempted_models.join(" → "));
+        }
+    }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");
     }

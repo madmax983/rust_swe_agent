@@ -728,6 +728,15 @@ impl SweepResults {
         let model_name = self.manifest.as_ref().map(|m| m.model.name.as_str());
         write_spend_stats_by_resolution(&mut s, &self.instances, model_name);
         write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
+        if self.total_fallbacks > 0 || !self.model_mix.is_empty() {
+            s.push_str("Model mix (by final model):\n");
+            for (model, count) in &self.model_mix {
+                let _ = writeln!(s, "  - {model}: {count}");
+            }
+            if self.total_fallbacks > 0 {
+                let _ = writeln!(s, "Total fallbacks:    {}", self.total_fallbacks);
+            }
+        }
         s
     }
 
@@ -1769,6 +1778,17 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         .copied()
         .unwrap_or(0);
 
+    let total_fallbacks: u64 = instance_results
+        .iter()
+        .filter_map(|r| r.fallback_count)
+        .map(u64::from)
+        .sum();
+    let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &instance_results {
+        if let Some(model) = r.final_model.as_deref() {
+            *model_mix.entry(model.to_owned()).or_insert(0) += 1;
+        }
+    }
     let mut sweep = SweepResults {
         total,
         sweep_status: SWEEP_STATUS_COMPLETED.into(),
@@ -1819,8 +1839,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             Some(g) => Some(g.events().await),
             None => None,
         },
-        total_fallbacks: 0,
-        model_mix: BTreeMap::new(),
+        total_fallbacks,
+        model_mix,
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -3100,9 +3120,8 @@ fn skipped_result_from_info(
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
 
-        fallback_count: None,
-
-        final_model: None,
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        final_model: info.fallback_summary.as_ref().map(|s| s.final_model.clone()),
     }
 }
 
@@ -3520,9 +3539,14 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
 
-            fallback_count: None,
-
-            final_model: None,
+            fallback_count: info
+                .as_ref()
+                .and_then(|i| i.fallback_summary.as_ref())
+                .map(|s| s.fallback_count),
+            final_model: info
+                .as_ref()
+                .and_then(|i| i.fallback_summary.as_ref())
+                .map(|s| s.final_model.clone()),
         };
         let current = publish_github_pr_for_result(
             current,

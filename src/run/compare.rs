@@ -196,6 +196,10 @@ pub struct CompareReport {
     pub cost_per_resolved_delta_usd: Option<f64>,
     /// Pareto-dominance verdict on the (resolved_rate, cost_per_resolved_usd) plane.
     pub pareto_verdict: ParetoVerdict,
+    /// Warnings when the baseline and candidate used different model mixes
+    /// (fallback chains differ). Empty when both sides used the same model(s).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_mix_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -286,6 +290,9 @@ impl CompareReport {
         write_patch_stats_delta_lines(&mut s, self);
         write_compare_cost_and_token_section(&mut s, self);
         write_rate_limit_events_section(&mut s, self);
+        for w in &self.model_mix_warnings {
+            let _ = writeln!(s, "WARNING: {w}");
+        }
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -783,6 +790,8 @@ pub struct LoadedSweep {
     pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
     pub artifact: Option<ArtifactCompatibility>,
     pub artifact_warnings: Vec<String>,
+    pub total_fallbacks: u64,
+    pub model_mix: std::collections::BTreeMap<String, usize>,
 }
 
 struct DiffContext<'a> {
@@ -815,6 +824,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         let filter_spec_present = value.get("filter_spec").is_some();
         let sweep: SweepResults = serde_json::from_value(value)?;
         let rate_limit_events = sweep.rate_limit_events.clone();
+        let total_fallbacks = sweep.total_fallbacks;
+        let model_mix = sweep.model_mix.clone();
         let partial_incomplete = sweep
             .manifest
             .as_ref()
@@ -856,6 +867,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 rate_limit_events,
                 artifact: Some(artifact),
                 artifact_warnings,
+                total_fallbacks,
+                model_mix: model_mix.clone(),
             });
         }
         return Ok(LoadedSweep {
@@ -873,6 +886,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             rate_limit_events,
             artifact: Some(artifact),
             artifact_warnings,
+            total_fallbacks,
+            model_mix,
         });
     }
     if !dir.exists() {
@@ -890,6 +905,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         rate_limit_events: None,
         artifact: None,
         artifact_warnings: Vec::new(),
+        total_fallbacks: 0,
+        model_mix: std::collections::BTreeMap::new(),
     })
 }
 
@@ -1262,6 +1279,16 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             candidate_model_name,
         },
     )?;
+    report.model_mix_warnings = build_model_mix_warnings(
+        &ModelMixSnapshot {
+            model_mix: baseline.model_mix.clone(),
+            total_fallbacks: baseline.total_fallbacks,
+        },
+        &ModelMixSnapshot {
+            model_mix: candidate.model_mix.clone(),
+            total_fallbacks: candidate.total_fallbacks,
+        },
+    );
     Ok(report)
 }
 
@@ -1516,6 +1543,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_cost_per_resolved_usd,
         cost_per_resolved_delta_usd,
         pareto_verdict,
+        model_mix_warnings: Vec::new(),
     }
 }
 
@@ -3229,6 +3257,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -3246,6 +3275,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
 
         std::fs::write(
@@ -3299,6 +3329,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),

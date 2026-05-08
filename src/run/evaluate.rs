@@ -126,6 +126,8 @@ pub struct EvaluationResults {
     pub breakdown: Vec<BreakdownBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cost_attribution: Vec<CostAttributionBucket>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_mix_summary: Vec<ModelMixBucket>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -181,6 +183,16 @@ pub struct CostAttributionBucket {
     pub total_usd: f64,
     pub mean_usd: f64,
     pub share_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelMixBucket {
+    pub model: String,
+    pub n: usize,
+    pub resolved: usize,
+    pub resolved_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,6 +276,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         )
         .rows;
     }
+    eval.model_mix_summary = build_model_mix_summary(&eval.instances, &results);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -526,6 +539,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -878,6 +892,7 @@ fn merge_with_results(
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -985,6 +1000,7 @@ fn merge_rerun_reports_with_results(
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -1006,6 +1022,50 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
         eval_log_path: None,
         patch_stats: None,
     }
+}
+
+fn build_model_mix_summary(
+    evals: &[InstanceEvaluation],
+    results: &HashMap<String, InstanceResult>,
+) -> Vec<ModelMixBucket> {
+    let resolved_by_id: HashMap<&str, bool> = evals
+        .iter()
+        .map(|row| (row.instance_id.as_str(), row.resolved))
+        .collect();
+    let mut by_model: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
+    for (id, r) in results {
+        let model = r
+            .final_model
+            .clone()
+            .unwrap_or_else(|| "unknown".to_owned());
+        let (n, res, cost) = by_model.entry(model).or_default();
+        *n += 1;
+        if resolved_by_id.get(id.as_str()).copied().unwrap_or(false) {
+            *res += 1;
+        }
+        *cost += r.cost_usd.unwrap_or(0.0);
+    }
+    if by_model.is_empty() {
+        return Vec::new();
+    }
+    by_model
+        .into_iter()
+        .map(|(model, (n, resolved, total_cost))| {
+            #[allow(clippy::cast_precision_loss)]
+            let resolved_rate = if n == 0 { 0.0 } else { resolved as f64 / n as f64 };
+            ModelMixBucket {
+                model,
+                n,
+                resolved,
+                resolved_rate,
+                total_cost_usd: if total_cost > 0.0 {
+                    Some(total_cost)
+                } else {
+                    None
+                },
+            }
+        })
+        .collect()
 }
 
 fn build_breakdown(
@@ -1494,6 +1554,7 @@ mod tests {
             ],
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -1674,6 +1735,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: vec![],
             cost_attribution: vec![],
+            model_mix_summary: vec![],
         };
         let summary = summarize_with_model(&eval, &results, None);
         assert_eq!(summary.budget_exhausted_excluded, 1);
@@ -1795,6 +1857,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -1844,6 +1907,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1875,6 +1939,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -1895,6 +1960,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1922,6 +1988,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -1947,6 +2014,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);

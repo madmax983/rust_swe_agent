@@ -25,8 +25,9 @@ use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
+use crate::model::FallbackAttemptRecord;
 use crate::trajectory::{
-    FailureCategory, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
+    FailureCategory, FallbackSummary, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
     detect_test_command, effective_test_command_patterns, exit_reason, outcome,
 };
 
@@ -137,6 +138,10 @@ pub struct DefaultAgent {
     pub policy_engine: PolicyEngine,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
+    /// Accumulated fallback failure records across every model call in this run.
+    fallback_failed_attempts: Vec<FallbackAttemptRecord>,
+    /// The model name that produced the most recent successful response.
+    last_responding_model: Option<String>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -233,6 +238,8 @@ impl DefaultAgentBuilder {
             policy_engine,
             raw_task: self.task,
             test_command_patterns,
+            fallback_failed_attempts: Vec::new(),
+            last_responding_model: None,
         })
     }
 }
@@ -404,6 +411,10 @@ impl Agent for DefaultAgent {
         self.completion_tokens = self
             .completion_tokens
             .saturating_add(resp.usage.output_tokens);
+        // Accumulate fallback telemetry from this response.
+        self.fallback_failed_attempts
+            .extend(resp.fallback_attempts.iter().cloned());
+        self.last_responding_model = resp.responding_model.clone();
 
         if self.cancellation_requested() {
             self.finalize_cancelled();
@@ -851,6 +862,41 @@ impl DefaultAgent {
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
         self.trajectory.info.redaction = Some(self.redactor.summary());
         self.refresh_test_metadata();
+        // Populate fallback summary only when fallback was configured and used.
+        let primary = self.model.name().to_owned();
+        let final_model = self
+            .last_responding_model
+            .clone()
+            .unwrap_or_else(|| primary.clone());
+        if !self.fallback_failed_attempts.is_empty() {
+            let mut attempted_models: Vec<String> = self
+                .fallback_failed_attempts
+                .iter()
+                .map(|a| a.model.clone())
+                .collect();
+            attempted_models.push(final_model.clone());
+            let fallback_count =
+                u32::try_from(self.fallback_failed_attempts.len()).unwrap_or(u32::MAX);
+            self.trajectory.info.fallback_summary = Some(FallbackSummary {
+                primary_model: primary,
+                final_model,
+                fallback_happened: true,
+                fallback_count,
+                attempted_models,
+                failed_attempts: self.fallback_failed_attempts.clone(),
+            });
+        } else if self.last_responding_model.is_some() {
+            // FallbackModel succeeded on primary — record a "no fallback" summary
+            // so operators can confirm the primary model was used.
+            self.trajectory.info.fallback_summary = Some(FallbackSummary {
+                primary_model: primary.clone(),
+                final_model,
+                fallback_happened: false,
+                fallback_count: 0,
+                attempted_models: vec![primary],
+                failed_attempts: Vec::new(),
+            });
+        }
     }
 
     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
