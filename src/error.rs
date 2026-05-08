@@ -169,7 +169,7 @@ pub enum ConfigError {
     #[error("include chain exceeded {0} levels (possible cycle)")]
     IncludeDepthExceeded(usize),
 
-    #[error("invalid config: {0}")]
+    #[error("invalid config: {0} (see docs/config-reference.md for valid values and examples)")]
     Invalid(String),
 }
 
