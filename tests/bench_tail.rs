@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
-use rust_swe_agent::run::tail::{SnapshotOptions, snapshot};
+use rust_swe_agent::run::tail::{SnapshotOptions, render_text, snapshot};
 use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
 mod support;
@@ -55,6 +55,114 @@ fn opts_at(ts: chrono::DateTime<Utc>) -> SnapshotOptions {
         now: ts,
         burn_rate_window: chrono::Duration::minutes(5),
     }
+}
+
+#[test]
+fn snapshot_keeps_zero_actual_cost_separate_from_baseline_cost() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "total": 1,
+            "submitted": 1,
+            "skipped": 0,
+            "errored": 0,
+            "budget_halted": 0,
+            "with_patch": 1,
+            "actual_cost_usd": 0.0,
+            "actual_cost_source": "free_tier_inferred",
+            "baseline_cost_usd": 1.8,
+            "baseline_cost_model": "claude-3-5-sonnet",
+            "instances": []
+        }),
+    );
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some(outcome::SUBMITTED.into());
+    traj.info.exit_reason = Some("submitted".into());
+    traj.info.total_cost_usd = Some(0.0);
+    traj.info.actual_cost_usd = Some(0.0);
+    traj.info.actual_cost_source = Some(rust_swe_agent::cost::CostSource::FreeTierInferred);
+    traj.info.baseline_cost_usd = Some(1.8);
+    traj.info.baseline_cost_model = Some("claude-3-5-sonnet".into());
+    traj.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 100_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        completion_tokens: 100_000,
+    });
+    traj.info.started_at = Some("2026-04-30T01:55:00Z".into());
+    traj.info.ended_at = Some("2026-04-30T01:56:00Z".into());
+    std::fs::write(
+        dir.path().join("free-tier.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap()),
+    )
+    .unwrap();
+
+    assert!(snap.cumulative_cost_usd.abs() < f64::EPSILON);
+    assert!((snap.baseline_cumulative_cost_usd - 1.8).abs() < 1e-9);
+    let text = render_text(&snap);
+    assert!(text.contains("Actual cost: $0.0000"), "{text}");
+    assert!(text.contains("Baseline:    $1.8000"), "{text}");
+}
+
+#[test]
+fn snapshot_prefers_legacy_trajectory_actual_over_results_estimate() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(
+        dir.path(),
+        &serde_json::json!({
+            "artifact_kind": "sweep_results",
+            "schema_version": {"major": 1, "minor": 0},
+            "total": 1,
+            "submitted": 0,
+            "skipped": 0,
+            "errored": 1,
+            "budget_halted": 0,
+            "with_patch": 0,
+            "total_cost_usd": 1.8,
+            "instances": [{
+                "instance_id": "legacy-free",
+                "exit_reason": "error",
+                "outcome": "error",
+                "cost_usd": 1.8,
+                "total_input_tokens": 100_000,
+                "total_completion_tokens": 100_000
+            }]
+        }),
+    );
+    let mut traj = Trajectory::new();
+    traj.info.model_name = Some("openrouter/baidu/cobuddy:free".into());
+    traj.info.outcome = Some(outcome::ERROR.into());
+    traj.info.exit_reason = Some("error".into());
+    traj.info.token_usage = Some(TokenUsage {
+        prompt_tokens: 100_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        completion_tokens: 100_000,
+    });
+    std::fs::write(
+        dir.path().join("legacy-free.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let snap = snapshot(
+        dir.path(),
+        &opts_at(Utc.with_ymd_and_hms(2026, 4, 30, 2, 0, 0).unwrap()),
+    )
+    .unwrap();
+
+    assert!(snap.cumulative_cost_usd.abs() < f64::EPSILON, "{snap:#?}");
+    assert!(
+        (snap.baseline_cumulative_cost_usd - 1.8).abs() < 1e-9,
+        "{snap:#?}"
+    );
 }
 
 #[test]
@@ -281,7 +389,7 @@ fn snapshot_uses_total_cost_usd_metadata_when_no_records_exist() {
 }
 
 #[test]
-fn snapshot_uses_sweep_model_for_anthropic_cache_repricing() {
+fn snapshot_reports_zero_actual_and_baseline_cache_repricing() {
     let dir = tempfile::tempdir().unwrap();
     write_results(
         dir.path(),
@@ -317,11 +425,14 @@ fn snapshot_uses_sweep_model_for_anthropic_cache_repricing() {
     )
     .unwrap();
 
-    assert!((snap.cumulative_cost_usd - 0.3).abs() < 1e-9, "{snap:#?}");
+    assert!(snap.cumulative_cost_usd.abs() < f64::EPSILON, "{snap:#?}");
+    assert!(
+        (snap.baseline_cumulative_cost_usd - 0.3).abs() < 1e-9,
+        "{snap:#?}"
+    );
     assert_eq!(snap.abort_reason, None, "{snap:#?}");
     assert!(
-        snap.pct_of_cap_used
-            .is_some_and(|pct| (pct - 30.0).abs() < 1e-9),
+        snap.pct_of_cap_used.is_some_and(|pct| pct.abs() < 1e-9),
         "{snap:#?}"
     );
 }

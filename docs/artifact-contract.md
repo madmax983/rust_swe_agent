@@ -5,7 +5,7 @@ Run artifacts use explicit top-level metadata:
 ```json
 {
   "artifact_kind": "sweep_results",
-  "schema_version": { "major": 1, "minor": 0 }
+  "schema_version": { "major": 1, "minor": 1 }
 }
 ```
 
@@ -15,14 +15,21 @@ Run artifacts use explicit top-level metadata:
 
 | Kind | File(s) | Required fields | Optional/additive fields |
 | --- | --- | --- | --- |
-| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | extra `info` fields, message `extra` fields |
-| `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | manifest, filter spec, cost, token, retry, rate-limit, cancellation fields |
+| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, extra `info` fields, message `extra` fields |
+| `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, manifest, filter spec, token, retry, rate-limit, cancellation fields |
 | `evaluation_results` | `evaluation.json` | `artifact_kind`, `schema_version`, `instances` | behavioral metrics, breakdown rows, cost attribution |
 | `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | additional forecast diagnostics |
 | `preflight_report` | `bench doctor/swebench --format json` | `artifact_kind`, `schema_version`, `mode`, `checks` | additional check metadata |
 | `swebench_predictions_metadata` | `all_preds.metadata.json`, `all_preds.run-k.metadata.json` | `artifact_kind`, `schema_version`, `predictions_file`, `aggregate`, `row_count`, `swebench_evaluator_compatible` | `run_index`, future provenance fields |
 
 `all_preds*.jsonl` rows intentionally do not carry artifact metadata. They stay compatible with SWE-bench evaluators; version metadata lives in the companion metadata JSON files.
+
+Cost fields are split deliberately:
+
+- `actual_cost_usd` is the cost recorded for the model/provider actually used.
+- `actual_cost_source` is typed as `provider_reported`, `rate_card_estimate`, `free_tier_inferred`, or `unknown`.
+- `baseline_cost_usd` is a counterfactual estimate for the same token usage using `baseline_cost_model`.
+- Legacy `total_cost_usd` remains present for compatibility and should be treated as historical/summary cost, not as the only cost signal.
 
 ## Reader Policy
 

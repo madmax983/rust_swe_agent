@@ -10,6 +10,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use std::path::Path;
 
+use crate::cost::CostSource;
 use crate::model::{Message, MessageExtra};
 
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
@@ -292,6 +293,14 @@ pub struct TrajectoryInfo {
     pub final_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_cost_source: Option<CostSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

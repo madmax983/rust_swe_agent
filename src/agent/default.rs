@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::{Config, ToolHookCfg};
+use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::Error;
 use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
@@ -116,6 +117,7 @@ pub struct DefaultAgent {
     pub trajectory: Trajectory,
     pub steps: u32,
     pub total_cost_usd: f64,
+    pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
     /// Accumulated uncached input tokens across every model call in this run.
@@ -212,6 +214,7 @@ impl DefaultAgentBuilder {
             trajectory,
             steps: 0,
             total_cost_usd: 0.0,
+            actual_cost_source: None,
             started_at_instant: Instant::now(),
             prompt_tokens: 0,
             cache_read_tokens: 0,
@@ -382,7 +385,7 @@ impl Agent for DefaultAgent {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         };
-        self.total_cost_usd += resp.usage.cost_usd.unwrap_or(0.0);
+        self.record_model_cost(resp.usage.cost_usd);
         self.prompt_tokens = self.prompt_tokens.saturating_add(resp.usage.input_tokens);
         self.cache_read_tokens = self
             .cache_read_tokens
@@ -719,6 +722,40 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    fn record_model_cost(&mut self, cost_usd: Option<f64>) {
+        let source = match cost_usd {
+            Some(cost) => {
+                self.total_cost_usd += cost;
+                CostSource::RateCardEstimate
+            }
+            None if is_free_tier_model(self.model.name()) => CostSource::FreeTierInferred,
+            None => CostSource::Unknown,
+        };
+        self.actual_cost_source = Some(
+            self.actual_cost_source
+                .map_or(source, |current| current.combine(source)),
+        );
+    }
+
+    fn baseline_cost_usd(&self) -> f64 {
+        estimate_cost_usd(
+            self.prompt_tokens,
+            self.cache_read_tokens,
+            self.cache_creation_tokens,
+            self.completion_tokens,
+            BASELINE_COST_MODEL,
+        )
+    }
+
+    fn stamp_cost_metadata(&mut self) {
+        self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+        self.trajectory.info.actual_cost_usd = Some(self.total_cost_usd);
+        self.trajectory.info.actual_cost_source =
+            Some(self.actual_cost_source.unwrap_or(CostSource::Unknown));
+        self.trajectory.info.baseline_cost_usd = Some(self.baseline_cost_usd());
+        self.trajectory.info.baseline_cost_model = Some(BASELINE_COST_MODEL.to_owned());
+    }
+
     fn cancellation_requested(&self) -> bool {
         self.cancellation
             .as_ref()
@@ -748,6 +785,7 @@ impl DefaultAgent {
     /// fields without callers needing to remember.
     pub fn finalize_run_metadata(&mut self, outcome_label: &str) {
         self.trajectory.info.outcome = Some(outcome_label.to_owned());
+        self.stamp_cost_metadata();
         self.trajectory.info.token_usage = Some(TokenUsage {
             prompt_tokens: self.prompt_tokens,
             cache_read_tokens: self.cache_read_tokens,

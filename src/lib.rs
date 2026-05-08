@@ -6,6 +6,7 @@ pub mod agent;
 pub mod artifact;
 pub mod cli;
 pub mod config;
+pub mod cost;
 pub mod env;
 pub mod error;
 pub mod ids;

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::artifact::{ArtifactKind, classify_json_value};
+use crate::cost::CostSource;
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
@@ -66,6 +67,14 @@ pub struct InspectReport {
     pub failure_category: Option<FailureCategory>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_cost_source: Option<CostSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -184,6 +193,7 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_instance_report(
     sweep: &Path,
     instance_id: &str,
@@ -220,6 +230,10 @@ fn build_instance_report(
                 outcome: None,
                 failure_category: None,
                 total_cost_usd: None,
+                actual_cost_usd: None,
+                actual_cost_source: None,
+                baseline_cost_usd: None,
+                baseline_cost_model: None,
                 prompt_tokens: None,
                 input_tokens: None,
                 cache_read_tokens: None,
@@ -265,6 +279,10 @@ fn build_instance_report(
         outcome: traj.info.outcome,
         failure_category: traj.info.failure_category,
         total_cost_usd: traj.info.total_cost_usd,
+        actual_cost_usd: traj.info.actual_cost_usd,
+        actual_cost_source: traj.info.actual_cost_source,
+        baseline_cost_usd: traj.info.baseline_cost_usd,
+        baseline_cost_model: traj.info.baseline_cost_model,
         prompt_tokens: token_usage.map(TokenUsage::total_prompt_tokens),
         input_tokens: token_usage.map(|t| t.prompt_tokens),
         cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
@@ -409,6 +427,7 @@ fn render_summary_text(report: &SummaryReport) -> String {
     s
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_instance_text(report: &InspectReport) -> String {
     let mut s = String::new();
     let color = std::io::stdout().is_terminal();
@@ -440,6 +459,31 @@ fn render_instance_text(report: &InspectReport) -> String {
             .total_cost_usd
             .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
     );
+    if report.actual_cost_usd.is_some() || report.actual_cost_source.is_some() {
+        let source = report
+            .actual_cost_source
+            .map_or_else(|| "unknown".to_owned(), |source| source.to_string());
+        let _ = writeln!(
+            s,
+            "actual_cost_usd:  {} ({source})",
+            report
+                .actual_cost_usd
+                .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
+        );
+    }
+    if report.baseline_cost_usd.is_some() || report.baseline_cost_model.is_some() {
+        let model = report
+            .baseline_cost_model
+            .as_deref()
+            .unwrap_or("claude-3-5-sonnet");
+        let _ = writeln!(
+            s,
+            "baseline_cost_usd: {} ({model})",
+            report
+                .baseline_cost_usd
+                .map_or_else(|| "?".into(), |v| format!("{v:.6}"))
+        );
+    }
     let _ = writeln!(
         s,
         "tokens:           {}",
