@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 
 use super::{FallbackAttemptRecord, Message, Model, ModelResponse, QueryOpts};
-use crate::error::ModelError;
+use crate::error::{FailedAttempt, ModelError};
 
 pub struct FallbackModel {
     /// Ordered chain: index 0 is primary, the rest are fallback candidates.
@@ -43,7 +43,7 @@ fn coarse_reason(e: &ModelError) -> String {
         ModelError::Malformed(_) => "malformed_response".into(),
         ModelError::Refused(_) => "refused".into(),
         ModelError::MissingCredentials(_) => "missing_credentials".into(),
-        ModelError::AllCandidatesFailed(_) => "all_candidates_failed".into(),
+        ModelError::AllCandidatesFailed(_, _) => "all_candidates_failed".into(),
     }
 }
 
@@ -85,13 +85,21 @@ impl Model for FallbackModel {
             }
         }
 
-        // Every candidate exhausted via transient failures.
+        // Every candidate exhausted via transient failures. Preserve structured
+        // attempt records so DefaultAgent can write telemetry even on all-fail.
+        let error_attempts: Vec<FailedAttempt> = failed_attempts
+            .iter()
+            .map(|a| FailedAttempt {
+                model: a.model.clone(),
+                reason: a.failure_reason.clone(),
+            })
+            .collect();
         let summary = failed_attempts
             .iter()
             .map(|a| format!("{}: {}", a.model, a.failure_reason))
             .collect::<Vec<_>>()
             .join("; ");
-        Err(ModelError::AllCandidatesFailed(summary))
+        Err(ModelError::AllCandidatesFailed(summary, error_attempts))
     }
 }
 
@@ -167,10 +175,16 @@ mod tests {
             Box::new(AlwaysFail("m2".into(), true)),
         ]);
         let err = f.query(&[], &QueryOpts::default()).await.unwrap_err();
-        assert!(matches!(err, ModelError::AllCandidatesFailed(_)));
-        let msg = err.to_string();
+        let ModelError::AllCandidatesFailed(ref msg, ref attempts) = err else {
+            panic!("expected AllCandidatesFailed, got {err:?}");
+        };
         assert!(msg.contains("m1"));
         assert!(msg.contains("m2"));
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].model, "m1");
+        assert_eq!(attempts[0].reason, "rate_limited");
+        assert_eq!(attempts[1].model, "m2");
+        assert_eq!(attempts[1].reason, "rate_limited");
     }
 
     #[test]

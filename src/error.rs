@@ -49,8 +49,18 @@ pub enum ModelError {
 
     /// All models in the fallback chain failed with transient errors.
     /// The message names every attempted model and its coarse failure reason.
+    /// The structured attempt records are preserved for trajectory telemetry.
     #[error("all fallback candidates failed: {0}")]
-    AllCandidatesFailed(String),
+    AllCandidatesFailed(String, Vec<FailedAttempt>),
+}
+
+/// A single failed attempt record carried inside `AllCandidatesFailed`.
+/// Mirrors `model::FallbackAttemptRecord` without creating a cross-layer
+/// import cycle between `error` and `model`.
+#[derive(Debug, Clone)]
+pub struct FailedAttempt {
+    pub model: String,
+    pub reason: String,
 }
 
 impl ModelError {

@@ -12,7 +12,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::error::ModelError;
+use rust_swe_agent::error::{FailedAttempt, ModelError};
 use rust_swe_agent::model::{FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts};
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
 use rust_swe_agent::trajectory::{FallbackSummary, Trajectory, TrajectoryInfo, outcome};
@@ -76,7 +76,7 @@ impl Model for ErrModel {
             ModelError::Request(s) => Err(ModelError::Request(s.clone())),
             ModelError::Malformed(s) => Err(ModelError::Malformed(s.clone())),
             ModelError::Refused(s) => Err(ModelError::Refused(s.clone())),
-            ModelError::AllCandidatesFailed(s) => Err(ModelError::AllCandidatesFailed(s.clone())),
+            ModelError::AllCandidatesFailed(s, _) => Err(ModelError::AllCandidatesFailed(s.clone(), Vec::new())),
         }
     }
 }
@@ -110,7 +110,7 @@ fn missing_credentials_is_not_transient() {
 
 #[test]
 fn all_candidates_failed_is_not_transient() {
-    assert!(!ModelError::AllCandidatesFailed("all failed".into()).is_transient());
+    assert!(!ModelError::AllCandidatesFailed("all failed".into(), Vec::new()).is_transient());
 }
 
 // ── FallbackModel: AC1 - primary success, zero fallback ──────────────────────
@@ -179,14 +179,16 @@ async fn all_candidates_failed_returns_compound_error() {
     let fallback = FallbackModel::new(models);
 
     let err = fallback.query(&[], &QueryOpts::default()).await.unwrap_err();
-    assert!(
-        matches!(err, ModelError::AllCandidatesFailed(_)),
-        "expected AllCandidatesFailed, got: {err:?}"
-    );
+    let ModelError::AllCandidatesFailed(ref msg, ref attempts) = err else {
+        panic!("expected AllCandidatesFailed, got: {err:?}");
+    };
     // Error message must mention both models.
-    let msg = err.to_string();
     assert!(msg.contains("primary-model"), "error should mention primary: {msg}");
     assert!(msg.contains("secondary-model"), "error should mention secondary: {msg}");
+    // Structured attempts must be preserved for telemetry.
+    assert_eq!(attempts.len(), 2, "both failed attempts should be preserved");
+    let _ = attempts[0].model.as_str(); // FailedAttempt::model
+    let _ = attempts[0].reason.as_str(); // FailedAttempt::reason
 }
 
 // ── FallbackModel: AC1 - single model config cannot silently fallback ─────────

@@ -1034,10 +1034,9 @@ fn build_model_mix_summary(
         .collect();
     let mut by_model: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
     for (id, r) in results {
-        let model = r
-            .final_model
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned());
+        let Some(model) = r.final_model.clone() else {
+            continue;
+        };
         let (n, res, cost) = by_model.entry(model).or_default();
         *n += 1;
         if resolved_by_id.get(id.as_str()).copied().unwrap_or(false) {

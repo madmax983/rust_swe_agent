@@ -19,13 +19,12 @@ use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
-use crate::error::Error;
-use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
+use crate::error::{Error, ModelError};
+use crate::model::{CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
-use crate::model::FallbackAttemptRecord;
 use crate::trajectory::{
     FailureCategory, FallbackSummary, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
     detect_test_command, effective_test_command_patterns, exit_reason, outcome,
@@ -389,14 +388,25 @@ impl Agent for DefaultAgent {
             max_tokens: Some(self.config.root.model.max_tokens),
             extra: serde_json::Map::new(),
         };
-        let Some(resp) = query_model_until_cancelled(
+        let query_result = query_model_until_cancelled(
             self.model.as_ref(),
             &self.history,
             &opts,
             self.cancellation.clone(),
         )
-        .await?
-        else {
+        .await;
+        // When every model in a fallback chain fails transiently the error
+        // carries the structured attempt records. Capture them before
+        // propagating so finalize_run_metadata can still emit a summary.
+        if let Err(ModelError::AllCandidatesFailed(_, ref attempts)) = query_result {
+            self.fallback_failed_attempts.extend(
+                attempts.iter().map(|a| FallbackAttemptRecord {
+                    model: a.model.clone(),
+                    failure_reason: a.reason.clone(),
+                }),
+            );
+        }
+        let Some(resp) = query_result? else {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         };
