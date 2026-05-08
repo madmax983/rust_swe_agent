@@ -174,7 +174,7 @@ impl Model for LitellmBackend {
     }
 }
 
-/// ⚡ Bolt Optimization: Avoids intermediate Vec allocation for zero-cost string concatenation.
+/// Extracts and concatenates all text parts from a model response choice.
 fn extract_text_content(choice: &litellm_rs::Choice) -> String {
     use litellm_rs::core::types::content::ContentPart;
     use litellm_rs::core::types::message::MessageContent;
