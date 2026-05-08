@@ -2837,6 +2837,15 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
             .is_some_and(|r| is_resolved_instance_result(&r.result));
         aggregate.tests_run_before_submit = rows.iter().any(|r| r.result.tests_run_before_submit);
         aggregate.last_tests_passed = rows.iter().rev().find_map(|r| r.result.last_tests_passed);
+        // Sum fallback counts across all runs; final_model from the first run
+        // (pass@1 representative). This gives accurate total_fallbacks for
+        // pass@k sweeps where later runs also hit fallbacks.
+        aggregate.fallback_count = Some(
+            rows.iter()
+                .filter_map(|r| r.result.fallback_count)
+                .fold(0u32, u32::saturating_add),
+        );
+        aggregate.final_model.clone_from(&first.final_model);
         out.push(aggregate);
     }
     out

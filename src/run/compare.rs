@@ -898,6 +898,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     }
 
     let out = scan_trajectory_instances(dir, None)?;
+    let (total_fallbacks, model_mix) = fallback_totals_from_instances(&out);
     Ok(LoadedSweep {
         instances: out,
         manifest: None,
@@ -905,13 +906,33 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         rate_limit_events: None,
         artifact: None,
         artifact_warnings: Vec::new(),
-        total_fallbacks: 0,
-        model_mix: std::collections::BTreeMap::new(),
+        total_fallbacks,
+        model_mix,
     })
 }
 
 fn manifest_indicates_resume(manifest: &ProvenanceManifest) -> bool {
     manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|arg| arg == "--resume")
+}
+
+/// Compute `total_fallbacks` and `model_mix` from a set of `InstanceResult`s
+/// when no pre-aggregated `SweepResults` is available (scan-only path).
+fn fallback_totals_from_instances(
+    instances: &HashMap<String, InstanceResult>,
+) -> (u64, std::collections::BTreeMap<String, usize>) {
+    let total_fallbacks: u64 = instances
+        .values()
+        .filter_map(|r| r.fallback_count)
+        .map(u64::from)
+        .sum();
+    let mut model_mix: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for r in instances.values() {
+        if let Some(model) = r.final_model.as_deref() {
+            *model_mix.entry(model.to_owned()).or_insert(0) += 1;
+        }
+    }
+    (total_fallbacks, model_mix)
 }
 
 fn scan_trajectory_instances(
