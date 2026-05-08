@@ -1334,6 +1334,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::env::LocalEnvironment;
+    use crate::model::fallback::FallbackModel;
     use crate::model::{DeterministicModel, ModelResponse, ModelUsage, QueryOpts};
     use crate::trajectory::FailureCategory;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1929,6 +1930,41 @@ mod tests {
             !has_budget_block,
             "budget block should not appear when no per-task budget is set"
         );
+    }
+
+    #[tokio::test]
+    async fn submit_via_fallback_model_records_no_fallback_summary() {
+        // When the primary model succeeds, finalize_run_metadata should record
+        // a fallback_summary with fallback_happened=false so operators can confirm
+        // which model was used even when no fallback occurred.
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let inner = Box::new(DeterministicModel::new(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+        ]));
+        let model = Arc::new(FallbackModel::new(vec![inner]));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap();
+        let _ = agent.run().await.unwrap();
+        let summary = agent
+            .trajectory
+            .info
+            .fallback_summary
+            .as_ref()
+            .expect("fallback_summary should be set when FallbackModel is used");
+        assert!(!summary.fallback_happened);
+        assert_eq!(summary.fallback_count, 0);
+        assert!(summary.failed_attempts.is_empty());
+        assert!(!summary.all_failed);
     }
 
     #[tokio::test]

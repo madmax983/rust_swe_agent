@@ -282,4 +282,36 @@ mod tests {
         ]);
         assert_eq!(f.name(), "primary");
     }
+
+    #[test]
+    fn supports_explicit_cache_delegates_to_primary() {
+        let f = FallbackModel::new(vec![Box::new(AlwaysOk("m1".into()))]);
+        // DeterministicModel returns false; FallbackModel must delegate.
+        assert!(!f.supports_explicit_cache());
+    }
+
+    struct AlwaysFailRequest(String);
+
+    #[async_trait]
+    impl Model for AlwaysFailRequest {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
+            Err(ModelError::Request("network error".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_request_error_triggers_fallback() {
+        // Request errors are transient and should trigger fallback to secondary.
+        let f = FallbackModel::new(vec![
+            Box::new(AlwaysFailRequest("m1".into())),
+            Box::new(AlwaysOk("m2".into())),
+        ]);
+        let resp = f.query(&[], &QueryOpts::default()).await.unwrap();
+        assert_eq!(resp.responding_model.as_deref(), Some("m2"));
+        assert_eq!(resp.fallback_attempts.len(), 1);
+        assert_eq!(resp.fallback_attempts[0].failure_reason, "request_failed");
+    }
 }
