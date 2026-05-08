@@ -1,0 +1,158 @@
+# 100+ benign SWE-bench-like commands for policy engine corpus testing
+# Format: one command per line, blank lines and # comments ignored
+
+# --- Version control ---
+git status
+git diff
+git diff HEAD
+git diff HEAD~1
+git log --oneline -10
+git log -p
+git show HEAD
+git branch
+git branch -a
+git stash list
+git add -p
+git add src/
+git commit -m "fix: correct off-by-one in parser"
+git checkout -b feature-branch
+git fetch origin
+git pull origin main
+
+# --- File inspection ---
+ls -la
+ls -la src/
+find . -name "*.py" -type f
+find . -name "*.rs" -type f
+find . -name "*.toml" -type f
+cat README.md
+cat Cargo.toml
+cat pyproject.toml
+cat requirements.txt
+cat setup.py
+head -50 src/main.rs
+tail -50 src/main.rs
+wc -l src/lib.rs
+file src/main.rs
+
+# --- Rust development ---
+cargo build
+cargo check
+cargo test
+cargo test -- --nocapture
+cargo test test_name
+cargo clippy
+cargo fmt
+cargo fmt --check
+cargo run -- --help
+cargo doc --open
+rustc --version
+cargo --version
+
+# --- Python development ---
+python --version
+python3 --version
+python -m pytest
+python -m pytest tests/
+python -m pytest -v
+python -m pytest -k "test_name"
+python -m pytest --tb=short
+python -m unittest discover
+pytest
+pytest tests/
+pytest -v
+pytest -x
+tox
+pip install -r requirements.txt
+pip install -e .
+pip list
+pip show requests
+
+# --- JavaScript/Node development ---
+npm install
+npm test
+npm run test
+npm run build
+npm run lint
+npm ci
+yarn install
+yarn test
+node --version
+npm --version
+
+# --- Java/Maven/Gradle ---
+mvn test
+mvn compile
+mvn package -DskipTests
+gradle test
+gradle build
+./gradlew test
+./gradlew build
+
+# --- Go development ---
+go test ./...
+go build ./...
+go vet ./...
+go mod tidy
+go mod download
+
+# --- System inspection (read-only) ---
+ps aux
+ps -ef
+top -bn1
+df -h
+du -sh .
+free -h
+uname -a
+whoami
+id
+pwd
+env | grep PATH
+which python
+which python3
+which cargo
+which rustc
+
+# --- Text processing ---
+grep -r "TODO" src/
+grep -rn "fixme" .
+grep -n "error" src/main.rs
+sed -n '1,20p' README.md
+awk '{print $1}' requirements.txt
+sort requirements.txt
+uniq -c requirements.txt
+
+# --- Build and test pipelines ---
+make test
+make check
+make build
+make clean
+make install
+
+# --- Process/environment inspection ---
+echo $PATH
+echo $HOME
+echo $USER
+printenv
+locale
+date
+uptime
+hostname
+
+# --- Package management (install, non-destructive) ---
+apt-get install -y --dry-run python3
+brew info python
+pip download requests
+
+# --- Network (read-only diagnostics) ---
+curl --version
+wget --version
+curl -I https://example.com
+
+# --- Misc safe ops ---
+true
+false
+echo "hello world"
+printf "test\n"
+sleep 1
+timeout 5 echo "ok"
