@@ -45,6 +45,8 @@ Header fields:
 * `outcome`
 * `failure_category`
 * `total_cost_usd`
+* `actual_cost_usd` and `actual_cost_source` when available
+* `baseline_cost_usd` and `baseline_cost_model` when available
 * token totals (`prompt`, `completion`)
 * `resolved` when `evaluation.json` exists
 

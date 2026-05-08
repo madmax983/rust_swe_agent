@@ -79,7 +79,7 @@ jobs:
             --model "${SWE_BENCH_MODEL}" \
             --config "${GITHUB_WORKSPACE}/runs-input/config.toml" \
             --parallel 1 \
-            --step-limit 8 \
+            --step-limit 100
             --task-timeout-secs 300 \
             --max-retries 0 \
             --skip-preflight

@@ -24,8 +24,11 @@ use tokio::sync::{mpsc, watch};
 
 use crate::artifact::ArtifactKind;
 use crate::config::Config;
+pub use crate::cost::{
+    ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL,
+    CostSource, SONNET_INPUT_USD_PER_MTOK, SONNET_OUTPUT_USD_PER_MTOK, estimate_cost_usd,
+};
 use crate::error::Error;
-use crate::model::litellm::is_anthropic_model;
 use crate::model::{Model, ModelUsage};
 use crate::redaction::{Redactor, surface};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
@@ -40,14 +43,6 @@ pub const SWEEP_STATUS_CANCELLING: &str = "cancelling";
 pub const SWEEP_STATUS_CANCELLED: &str = "cancelled";
 pub const CANCEL_EXIT_CODE_GRACEFUL: i32 = 130;
 pub const CANCEL_EXIT_CODE_ESCALATED: i32 = 137;
-
-/// Standard `claude-3-5-sonnet` USD pricing per 1M tokens. Used for the
-/// summary's cost estimate; per-instance trajectories carry only token
-/// counts so downstream tooling can re-price as needed.
-pub const SONNET_INPUT_USD_PER_MTOK: f64 = 3.0;
-pub const SONNET_OUTPUT_USD_PER_MTOK: f64 = 15.0;
-pub const ANTHROPIC_CACHE_READ_MULTIPLIER: f64 = 0.10;
-pub const ANTHROPIC_CACHE_CREATION_MULTIPLIER: f64 = 1.25;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenBreakdown {
@@ -86,38 +81,6 @@ impl TokenBreakdown {
             self.cache_read_tokens as f64 / total_prompt as f64
         }
     }
-}
-
-#[must_use]
-pub fn estimate_cost_usd(
-    prompt_tokens: u64,
-    cache_read_tokens: u64,
-    cache_creation_tokens: u64,
-    completion_tokens: u64,
-    model: &str,
-) -> f64 {
-    let (cache_read_multiplier, cache_creation_multiplier) = if is_anthropic_model(model) {
-        (
-            ANTHROPIC_CACHE_READ_MULTIPLIER,
-            ANTHROPIC_CACHE_CREATION_MULTIPLIER,
-        )
-    } else {
-        (1.0, 1.0)
-    };
-    #[allow(clippy::cast_precision_loss)]
-    let p = prompt_tokens as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let cr = cache_read_tokens as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let cc = cache_creation_tokens as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let c = completion_tokens as f64;
-    let input_cost = p / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK;
-    let cache_read_cost = cr / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_read_multiplier;
-    let cache_creation_cost =
-        cc / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * cache_creation_multiplier;
-    let completion_cost = c / 1_000_000.0 * SONNET_OUTPUT_USD_PER_MTOK;
-    input_cost + cache_read_cost + cache_creation_cost + completion_cost
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -286,6 +249,14 @@ pub struct SweepResults {
     pub total_completion_tokens: u64,
     #[serde(default, rename = "total_cost_usd", alias = "estimated_cost_usd")]
     pub estimated_cost_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_cost_source: Option<CostSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_cost_model: Option<String>,
     #[serde(default)]
     pub cache_hit_rate: f64,
     /// Total retry attempts executed across all instances.
@@ -488,6 +459,25 @@ impl InstanceResult {
     }
 
     #[must_use]
+    pub fn actual_cost_usd(&self) -> Option<f64> {
+        self.cost_usd
+    }
+
+    #[must_use]
+    pub fn baseline_cost_usd(&self, baseline_model: &str) -> Option<f64> {
+        let tokens = self.token_breakdown();
+        tokens.has_billable_tokens().then(|| {
+            estimate_cost_usd(
+                tokens.input_tokens,
+                tokens.cache_read_tokens,
+                tokens.cache_creation_tokens,
+                tokens.completion_tokens,
+                baseline_model,
+            )
+        })
+    }
+
+    #[must_use]
     pub fn effective_cost_usd(&self, model: Option<&str>) -> Option<f64> {
         let tokens = self.token_breakdown();
         if let Some(cost) = self.cost_usd {
@@ -516,6 +506,33 @@ impl SweepResults {
             cache_creation_tokens: self.total_cache_creation_tokens,
             completion_tokens: self.total_completion_tokens,
         }
+    }
+
+    #[must_use]
+    pub fn actual_cost_total_usd(&self) -> Option<f64> {
+        self.actual_cost_usd.or_else(|| {
+            let costs = self
+                .instances
+                .iter()
+                .filter_map(InstanceResult::actual_cost_usd);
+            sum_f64(costs)
+        })
+    }
+
+    #[must_use]
+    pub fn baseline_cost_total_usd(&self) -> f64 {
+        self.baseline_cost_usd.unwrap_or_else(|| {
+            let tokens = self.token_breakdown();
+            estimate_cost_usd(
+                tokens.input_tokens,
+                tokens.cache_read_tokens,
+                tokens.cache_creation_tokens,
+                tokens.completion_tokens,
+                self.baseline_cost_model
+                    .as_deref()
+                    .unwrap_or(BASELINE_COST_MODEL),
+            )
+        })
     }
 
     /// Render the post-sweep summary table. A flat plain-text block so it
@@ -601,10 +618,21 @@ impl SweepResults {
             tokens.cache_hit_rate() * 100.0
         );
         let _ = writeln!(s, "Total tokens:       {total_tokens}");
+        let actual_cost = self
+            .actual_cost_total_usd()
+            .unwrap_or(self.estimated_cost_usd);
+        let actual_source = self
+            .actual_cost_source
+            .map_or(CostSource::Unknown, std::convert::identity);
+        let baseline_cost = self.baseline_cost_total_usd();
+        let baseline_model = self
+            .baseline_cost_model
+            .as_deref()
+            .unwrap_or(BASELINE_COST_MODEL);
+        let _ = writeln!(s, "Actual cost:        ${actual_cost:.4} ({actual_source})");
         let _ = writeln!(
             s,
-            "Total cost:         ${:.4} (claude-3-5-sonnet @ ${SONNET_INPUT_USD_PER_MTOK}/MTok in, ${SONNET_OUTPUT_USD_PER_MTOK}/MTok out)",
-            self.estimated_cost_usd
+            "Baseline cost:      ${baseline_cost:.4} ({baseline_model})"
         );
         if let Some(limit) = self.cost_limit_usd {
             let _ = writeln!(s, "Sweep cost limit:   ${limit:.4}");
@@ -612,7 +640,7 @@ impl SweepResults {
                 let _ = writeln!(
                     s,
                     "BUDGET HALT at ${:.4} of ${:.4} — {} task(s) never started",
-                    self.estimated_cost_usd, limit, self.budget_halted
+                    actual_cost, limit, self.budget_halted
                 );
             }
         }
@@ -723,17 +751,17 @@ fn has_submitted_sample(row: &InstanceResult) -> bool {
 fn write_spend_stats_by_resolution(
     s: &mut String,
     instances: &[InstanceResult],
-    model: Option<&str>,
+    _model: Option<&str>,
 ) {
     let mut resolved: Vec<f64> = instances
         .iter()
         .filter(|r| r.resolved_count > 0)
-        .filter_map(|r| r.effective_cost_usd(model))
+        .filter_map(InstanceResult::actual_cost_usd)
         .collect();
     let mut unresolved: Vec<f64> = instances
         .iter()
         .filter(|r| r.resolved_count == 0)
-        .filter_map(|r| r.effective_cost_usd(model))
+        .filter_map(InstanceResult::actual_cost_usd)
         .collect();
     write_spend_stat_line(s, "Spend/resolved  ", &mut resolved);
     write_spend_stat_line(s, "Spend/unresolved", &mut unresolved);
@@ -1100,6 +1128,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: Some(0.0),
+            actual_cost_source: Some(CostSource::Unknown),
+            baseline_cost_usd: Some(0.0),
+            baseline_cost_model: Some(BASELINE_COST_MODEL.to_owned()),
             cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
@@ -1174,6 +1206,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_cache_creation_tokens: 0,
         total_completion_tokens: 0,
         estimated_cost_usd: 0.0,
+        actual_cost_usd: Some(0.0),
+        actual_cost_source: Some(CostSource::Unknown),
+        baseline_cost_usd: Some(0.0),
+        baseline_cost_model: Some(BASELINE_COST_MODEL.to_owned()),
         cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,
@@ -1263,7 +1299,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &prior_results,
                         );
                         bump_cost(
-                            prior.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            budget_accounting_cost_usd(&prior, &model_name),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -1304,7 +1340,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             .await;
                         }
                         bump_cost(
-                            r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            budget_accounting_cost_usd(&r, &model_name),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -1453,10 +1489,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         // Sweep-level budget bookkeeping. Tasks that completed
                         // (whether submitted or errored) consumed real API budget
                         // and count toward the cap.
-                        let cost = r
-                            .result
-                            .effective_cost_usd(Some(&model_name))
-                            .unwrap_or(0.0);
+                        let cost = budget_accounting_cost_usd(&r.result, &model_name);
                         let was_halted = halted;
                         bump_cost(cost, &mut cumulative_cost, &mut halted);
                         if halted && !was_halted {
@@ -1640,20 +1673,19 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     }
 
     let token_breakdown = accounting.tokens;
-    let total_cost_usd = sum_f64(
+    let actual_cost_usd = sum_f64(
         instance_results
             .iter()
-            .filter_map(|result| result.effective_cost_usd(Some(&model_name))),
-    )
-    .unwrap_or_else(|| {
-        estimate_cost_usd(
-            token_breakdown.input_tokens,
-            token_breakdown.cache_read_tokens,
-            token_breakdown.cache_creation_tokens,
-            token_breakdown.completion_tokens,
-            &model_name,
-        )
-    });
+            .filter_map(InstanceResult::actual_cost_usd),
+    );
+    let baseline_cost_usd = estimate_cost_usd(
+        token_breakdown.input_tokens,
+        token_breakdown.cache_read_tokens,
+        token_breakdown.cache_creation_tokens,
+        token_breakdown.completion_tokens,
+        BASELINE_COST_MODEL,
+    );
+    let total_cost_usd = baseline_cost_usd;
 
     let patch_empty = failures_by_category
         .get(&FailureCategory::PatchEmpty)
@@ -1688,6 +1720,13 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_cache_creation_tokens: token_breakdown.cache_creation_tokens,
         total_completion_tokens: token_breakdown.completion_tokens,
         estimated_cost_usd: total_cost_usd,
+        actual_cost_usd,
+        actual_cost_source: Some(actual_cost_source_for_instances(
+            &instance_results,
+            &model_name,
+        )),
+        baseline_cost_usd: Some(baseline_cost_usd),
+        baseline_cost_model: Some(BASELINE_COST_MODEL.to_owned()),
         cache_hit_rate: token_breakdown.cache_hit_rate(),
         retries: accounting.total_retries,
         retried_instances: accounting.retried_instances,
@@ -2710,6 +2749,33 @@ fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
     seen.then_some(total)
 }
 
+fn budget_accounting_cost_usd(row: &InstanceResult, model_name: &str) -> f64 {
+    let tokens = row.token_breakdown();
+    if let Some(cost) = row.cost_usd {
+        if cost != 0.0
+            || !tokens.has_billable_tokens()
+            || crate::cost::is_free_tier_model(model_name)
+        {
+            return cost;
+        }
+    }
+    row.effective_cost_usd(Some(model_name)).unwrap_or(0.0)
+}
+
+fn actual_cost_source_for_instances(instances: &[InstanceResult], model_name: &str) -> CostSource {
+    if instances.is_empty() || instances.iter().any(|row| row.cost_usd.is_none()) {
+        return CostSource::Unknown;
+    }
+    if crate::cost::is_free_tier_model(model_name)
+        && instances
+            .iter()
+            .all(|row| row.cost_usd.is_some_and(|cost| cost == 0.0))
+    {
+        return CostSource::FreeTierInferred;
+    }
+    CostSource::RateCardEstimate
+}
+
 fn pass_at_k(instances: &[InstanceResult]) -> f64 {
     if instances.is_empty() {
         return 0.0;
@@ -2930,7 +2996,7 @@ fn skipped_result_from_info(
         outcome: info.outcome.clone(),
         failure_category: info.failure_category,
         steps: info.steps,
-        cost_usd: info.total_cost_usd,
+        cost_usd: info.actual_cost_usd.or(info.total_cost_usd),
         prompt_tokens,
         cache_read_tokens,
         cache_creation_tokens,
@@ -3305,14 +3371,12 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         total_cache_creation_tokens =
             total_cache_creation_tokens.saturating_add(cache_creation_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
-        let attempt_recorded_cost = info.as_ref().and_then(|i| i.total_cost_usd);
-        let has_token_usage = prompt_tokens > 0
-            || cache_read_tokens > 0
-            || cache_creation_tokens > 0
-            || completion_tokens > 0;
+        let attempt_recorded_cost = info
+            .as_ref()
+            .and_then(|i| i.actual_cost_usd.or(i.total_cost_usd));
         let attempt_effective_cost = match attempt_recorded_cost {
-            Some(cost) if cost != 0.0 || !has_token_usage => cost,
-            Some(_) | None => estimate_cost_usd(
+            Some(cost) => cost,
+            None => estimate_cost_usd(
                 prompt_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
@@ -4139,7 +4203,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_stored_cost_falls_back_to_token_pricing() {
+    fn legacy_effective_cost_still_reprices_zero_for_budget_compatibility() {
         let row = InstanceResult {
             instance_id: "zero-cost".into(),
             exit_reason: "submitted".into(),
@@ -4169,6 +4233,43 @@ mod tests {
             (row.effective_cost_usd(Some("openai/gpt-4o-mini"))
                 .unwrap_or_default()
                 - expected)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn actual_zero_cost_stays_separate_from_baseline_cost() {
+        let row = InstanceResult {
+            instance_id: "free-tier".into(),
+            exit_reason: "submitted".into(),
+            outcome: Some(outcome::SUBMITTED.into()),
+            failure_category: None,
+            steps: None,
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(100_000),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(100_000),
+            duration_secs: None,
+            error: None,
+            github_pr_error: None,
+            patch_present: false,
+            non_empty_patch: false,
+            attempts: 1,
+            retry_reasons: Vec::new(),
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+        };
+
+        assert_eq!(row.actual_cost_usd(), Some(0.0));
+        assert!(
+            (row.baseline_cost_usd(crate::cost::BASELINE_COST_MODEL)
+                .unwrap_or_default()
+                - 1.8)
                 .abs()
                 < 1e-9
         );
@@ -4206,6 +4307,10 @@ mod tests {
                 50_000,
                 "claude-3-5-sonnet",
             ),
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -4242,13 +4347,67 @@ mod tests {
         assert!(t.contains("Completion tokens:  50000"));
         assert!(t.contains("Cache hit rate:     80.00%"));
         assert!(t.contains("Total tokens:       2550000"));
-        assert!(t.contains("Total cost:         $3.0375"));
+        assert!(t.contains("Actual cost:        $3.0375"), "{t}");
+        assert!(t.contains("Baseline cost:      $3.0375"), "{t}");
         // Without a configured limit, the summary should not advertise one.
         assert!(
             !t.contains("Sweep cost limit:"),
             "limit row leaked in unconstrained sweep: {t}"
         );
         assert!(!t.contains("BUDGET HALT"));
+    }
+
+    #[test]
+    fn summary_table_reports_actual_and_baseline_costs_separately() {
+        let mut row = test_instance_result("free-tier", true, false);
+        row.cost_usd = Some(0.0);
+        row.prompt_tokens = Some(100_000);
+        row.completion_tokens = Some(100_000);
+        let s = SweepResults {
+            total: 1,
+            sweep_status: crate::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
+            submitted: 1,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 1,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 100_000,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 100_000,
+            estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 1.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            cache_hit_rate: 0.0,
+            instances: vec![row],
+            rate_limit_events: None,
+        };
+
+        let t = s.summary_table();
+        assert!(t.contains("Actual cost:        $0.0000"), "{t}");
+        assert!(
+            t.contains("Baseline cost:      $1.8000 (claude-3-5-sonnet)"),
+            "{t}"
+        );
     }
 
     #[test]
@@ -4281,6 +4440,10 @@ mod tests {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -4351,6 +4514,10 @@ mod tests {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -4403,6 +4570,10 @@ mod tests {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 1.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.5,
@@ -4472,6 +4643,10 @@ mod tests {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -4520,6 +4695,10 @@ mod tests {
             total_cache_creation_tokens: 0,
             total_completion_tokens: 100_000,
             estimated_cost_usd: 1.5,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             retries: 0,
             retried_instances: 0,
             pass_at_k: 0.0,
@@ -5371,7 +5550,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 0})
+            serde_json::json!({"major": 1, "minor": 1})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());
@@ -5477,6 +5656,10 @@ instance = "inst"
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
@@ -5796,6 +5979,10 @@ instance = "inst"
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,
@@ -5865,6 +6052,10 @@ instance = "inst"
             total_cache_creation_tokens: 0,
             total_completion_tokens: 0,
             estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
             cache_hit_rate: 0.0,
             retries: 0,
             retried_instances: 0,

@@ -26,7 +26,8 @@ Each snapshot reports:
 
 * `completed`, `in_flight`, `pending`, `total`
 * `failure_counts`, keyed by `failure_category`
-* `cumulative_cost_usd`
+* `cumulative_cost_usd` for actual run spend
+* `baseline_cumulative_cost_usd` for the configured baseline model counterfactual
 * `burn_rate_usd_per_min` over the last five minutes
 * `eta_seconds`, or `null` until a useful completion rate exists
 * `budget_cap_usd` and `pct_of_cap_used` when a cap is configured
@@ -49,7 +50,7 @@ It exits non-zero after printing a one-line reason to stderr when it detects:
 
 * `budget_halted > 0`
 * a fatal/abort/error status in `results.json`
-* cumulative cost at or above the configured cap before all work is accounted
+* actual cumulative cost at or above the configured cap before all work is accounted
   for
 
 ## Partial Files

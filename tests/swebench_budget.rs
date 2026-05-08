@@ -355,6 +355,163 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
 }
 
 #[tokio::test]
+async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["unknown-a", "unknown-b"]);
+
+    let model_name = "openrouter/vendor/paid-missing-price";
+    let per_task_cost = estimate_cost_usd(100_000, 0, 0, 100_000, model_name);
+    let usage = ModelUsage {
+        input_tokens: 100_000,
+        output_tokens: 100_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: None,
+    };
+
+    let cfg = config_with_workdir_and_model(&repo, model_name);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: Some(per_task_cost),
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses_for(2)),
+        deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 1, "results: {results:?}");
+    assert_eq!(results.budget_halted, 1, "results: {results:?}");
+    assert_eq!(
+        results.actual_cost_usd,
+        Some(0.0),
+        "unknown actual telemetry remains zero on artifacts"
+    );
+    assert_eq!(
+        results.actual_cost_source,
+        Some(rust_swe_agent::cost::CostSource::Unknown)
+    );
+    assert!(
+        results.instances[0]
+            .effective_cost_usd(Some(model_name))
+            .unwrap_or_default()
+            > 0.0,
+        "budget accounting should fall back from unknown zero actual cost"
+    );
+}
+
+#[tokio::test]
+async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let dataset = work.path().join("dataset.jsonl");
+    let output = work.path().join("runs");
+    std::fs::create_dir_all(&output).unwrap();
+
+    write_dataset(&dataset, &["free-a", "free-b"]);
+
+    let model_name = "openrouter/vendor/free-model:free";
+    let per_task_baseline = estimate_cost_usd(100_000, 0, 0, 100_000, model_name);
+    let usage = ModelUsage {
+        input_tokens: 100_000,
+        output_tokens: 100_000,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        cost_usd: None,
+    };
+
+    let cfg = config_with_workdir_and_model(&repo, model_name);
+    let results = run(SwebenchArgs {
+        dataset_path: dataset,
+        output_dir: output,
+        parallel: 1,
+        reruns: 1,
+        config: cfg,
+        resume: false,
+        cost_limit_usd: Some(per_task_baseline),
+        task_timeout_secs: None,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 0,
+        retry_backoff_cap_s: 0,
+        retry_on_resume: false,
+        deterministic_responses: Some(submit_only_responses_for(2)),
+        deterministic_usage_per_call: Some(usage),
+        config_overlay_paths: Vec::new(),
+        dry_run: false,
+        skip_preflight: true,
+        preflight_format: "text".into(),
+        skip_model_probe: true,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "test".into(),
+        skip_patch_validation: true,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: false,
+        cancellation_signals: None,
+        github_pr: None,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(results.submitted, 2, "results: {results:?}");
+    assert_eq!(results.budget_halted, 0, "results: {results:?}");
+    assert_eq!(results.actual_cost_usd, Some(0.0));
+    assert_eq!(
+        results.actual_cost_source,
+        Some(rust_swe_agent::cost::CostSource::FreeTierInferred)
+    );
+}
+
+#[tokio::test]
 async fn sweep_without_limit_runs_all_tasks() {
     // Sanity: when `cost_limit_usd` is `None`, behavior is unchanged —
     // every task runs even when per-call usage would have crossed any
@@ -690,6 +847,10 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         total_cache_creation_tokens: 0,
         total_completion_tokens: 8_000,
         estimated_cost_usd: estimate_cost_usd(0, 0, 0, 8_000, "claude-3-5-sonnet"),
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
         cache_hit_rate: 0.0,
         retries: 1,
         retried_instances: 1,
@@ -846,6 +1007,10 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         total_cache_creation_tokens: 0,
         total_completion_tokens: 10_000,
         estimated_cost_usd: estimate_cost_usd(0, 0, 0, 10_000, "claude-3-5-sonnet"),
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
         cache_hit_rate: 0.0,
         retries: 2,
         retried_instances: 1,
@@ -973,6 +1138,10 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         total_cache_creation_tokens: 0,
         total_completion_tokens: 10_000,
         estimated_cost_usd: estimate_cost_usd(0, 0, 0, 10_000, "claude-3-5-sonnet"),
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
         cache_hit_rate: 0.0,
         retries: 2,
         retried_instances: 1,

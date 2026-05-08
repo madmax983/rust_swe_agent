@@ -21,10 +21,18 @@ mod support;
 use support::binary_path;
 
 #[test]
+fn artifact_schema_current_minor_bumped_for_dual_cost_fields() {
+    assert_eq!(
+        ArtifactSchemaVersion::CURRENT,
+        ArtifactSchemaVersion::new(1, 1)
+    );
+}
+
+#[test]
 fn artifact_classifier_marks_exact_current_version_supported_current() {
     let payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 0},
+        "schema_version": {"major": 1, "minor": 1},
         "total": 0,
         "instances": []
     });
@@ -84,7 +92,7 @@ fn artifact_classifier_rejects_unsupported_future_major_versions() {
 fn artifact_classifier_rejects_kind_mismatch() {
     let payload = serde_json::json!({
         "artifact_kind": "evaluation_results",
-        "schema_version": {"major": 1, "minor": 0},
+        "schema_version": {"major": 1, "minor": 1},
         "instances": []
     });
 
@@ -114,6 +122,19 @@ fn artifact_writer_pretty_matches_string_serializer() {
 }
 
 #[test]
+fn sweep_results_serialization_includes_dual_cost_metadata() {
+    let json =
+        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &fixture_results())
+            .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["actual_cost_usd"], 0.03);
+    assert_eq!(value["actual_cost_source"], "rate_card_estimate");
+    assert_eq!(value["baseline_cost_usd"], 0.00135);
+    assert_eq!(value["baseline_cost_model"], "claude-3-5-sonnet");
+}
+
+#[test]
 fn trajectory_serialization_includes_artifact_header() {
     let json = Trajectory::new().to_json_pretty().unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -121,7 +142,7 @@ fn trajectory_serialization_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "trajectory");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
 }
 
@@ -149,7 +170,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(results["artifact_kind"], "sweep_results");
     assert_eq!(
         results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
 
     let predictions = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
@@ -173,7 +194,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(metadata["artifact_kind"], "swebench_predictions_metadata");
     assert_eq!(
         metadata["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
     assert_eq!(metadata["predictions_file"], "all_preds.jsonl");
     assert_eq!(metadata["row_count"], 1);
@@ -216,7 +237,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
     assert_eq!(eval["artifact_kind"], "evaluation_results");
     assert_eq!(
         eval["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
 }
 
@@ -231,7 +252,7 @@ fn forecast_json_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "forecast_report");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
 }
 
@@ -266,7 +287,7 @@ async fn forecast_run_keeps_calibration_results_versioned_after_manifest_mark() 
     assert_eq!(calibration_results["artifact_kind"], "sweep_results");
     assert_eq!(
         calibration_results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 0})
+        serde_json::json!({"major": 1, "minor": 1})
     );
 }
 
@@ -514,7 +535,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
 
     let preflight = serde_json::json!({
         "artifact_kind": "preflight_report",
-        "schema_version": {"major": 1, "minor": 0},
+        "schema_version": {"major": 1, "minor": 1},
         "mode": "doctor",
         "checks": [{
             "status": "ok",
@@ -820,6 +841,10 @@ fn fixture_results() -> SweepResults {
         total_cache_creation_tokens: 0,
         total_completion_tokens: 30,
         estimated_cost_usd: 0.03,
+        actual_cost_usd: Some(0.03),
+        actual_cost_source: Some(rust_swe_agent::cost::CostSource::RateCardEstimate),
+        baseline_cost_usd: Some(0.00135),
+        baseline_cost_model: Some("claude-3-5-sonnet".into()),
         cache_hit_rate: 0.0,
         retries: 0,
         retried_instances: 0,

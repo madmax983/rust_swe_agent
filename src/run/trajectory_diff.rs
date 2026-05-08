@@ -398,8 +398,16 @@ fn build_header(
             .into(),
         baseline_attempts: attempts(&baseline.trajectory),
         candidate_attempts: attempts(&candidate.trajectory),
-        baseline_cost_usd: baseline.trajectory.info.total_cost_usd,
-        candidate_cost_usd: candidate.trajectory.info.total_cost_usd,
+        baseline_cost_usd: baseline
+            .trajectory
+            .info
+            .actual_cost_usd
+            .or(baseline.trajectory.info.total_cost_usd),
+        candidate_cost_usd: candidate
+            .trajectory
+            .info
+            .actual_cost_usd
+            .or(candidate.trajectory.info.total_cost_usd),
         baseline_prompt_tokens: baseline_tokens.map(TokenUsage::total_prompt_tokens),
         candidate_prompt_tokens: candidate_tokens.map(TokenUsage::total_prompt_tokens),
         baseline_input_tokens: baseline_tokens.map(|usage| usage.prompt_tokens),
