@@ -1886,6 +1886,45 @@ fn safe_blocks_sudo_with_absolute_shell_path() {
     }
 }
 
+// ── Quoted sensitive-file redirect false positive (Codex P2) ────────────────
+
+#[test]
+fn safe_does_not_block_quoted_sensitive_file_redirect_examples() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // The dangerous `> /etc/passwd` is INSIDE a quoted string, not a
+        // real redirect.  The OUTER redirect is to a docs/log file.
+        "printf 'echo x > /etc/passwd\\n' > docs/policy.md",
+        "echo 'do not run: echo x > /etc/passwd' > warnings.txt",
+        "printf \"safe text > /etc/shadow\" > log.txt",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "quoted redirect example should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_still_blocks_real_redirect_to_sensitive_file_with_quoted_args() {
+    // The `>` must still match when it's a REAL redirect, even if the
+    // command has quoted arguments before it.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "echo x > /etc/passwd",
+        "cat 'src.txt' > /etc/passwd",
+        "echo \"safe content\" > /etc/shadow",
+        "printf 'header\\n' > /etc/passwd",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "real redirect to sensitive file must still be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
