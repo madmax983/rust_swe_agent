@@ -2437,6 +2437,27 @@ fn safe_blocks_inplace_edit_of_sensitive_files() {
     }
 }
 
+// ── Repeated trailing slashes (Codex P1) ────────────────────────────────────
+
+#[test]
+fn safe_blocks_protected_dirs_with_repeated_trailing_slashes() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf /etc//",
+        "sudo rm -rf /home//",
+        "rm -rf /var///",
+        "rm -rf /etc////",
+        // Combined with .. normalization
+        "rm -rf /tmp/..//etc//",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "repeated trailing slashes must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
