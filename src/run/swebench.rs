@@ -3723,7 +3723,8 @@ fn classify_error(err: &Error) -> FailureCategory {
         // the last attempt's coarse reason so classification matches the terminal
         // error type rather than always falling through to ModelApi.
         Error::Model(crate::error::ModelError::AllCandidatesFailed(_, attempts)) => {
-            if attempts.last().map(|a| a.reason.as_str()) == Some("model_parse") {
+            // `coarse_reason(Malformed)` in fallback.rs returns "malformed_response".
+            if attempts.last().map(|a| a.reason.as_str()) == Some("malformed_response") {
                 FailureCategory::ModelParse
             } else {
                 FailureCategory::ModelApi
@@ -6436,5 +6437,60 @@ instance = "inst"
             RateLimitGovernor::new(Some(600), Some(0), 4).is_some(),
             "non-zero RPM with zero TPM should still create a governor"
         );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_malformed_terminal_is_model_parse() {
+        use crate::error::{FailedAttempt, ModelError};
+        // Transient attempt followed by a Malformed terminal: the terminal
+        // coarse_reason is "malformed_response" → ModelParse.
+        let attempts = vec![
+            FailedAttempt { model: "m1".into(), reason: "rate_limited".into() },
+            FailedAttempt { model: "m2".into(), reason: "malformed_response".into() },
+        ];
+        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), attempts));
+        assert_eq!(
+            classify_error(&err),
+            FailureCategory::ModelParse,
+            "malformed_response terminal should classify as ModelParse"
+        );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_transient_terminal_is_model_api() {
+        use crate::error::{FailedAttempt, ModelError};
+        // All transient failures: terminal reason is "rate_limited" → ModelApi.
+        let attempts = vec![
+            FailedAttempt { model: "m1".into(), reason: "rate_limited".into() },
+            FailedAttempt { model: "m2".into(), reason: "rate_limited".into() },
+        ];
+        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), attempts));
+        assert_eq!(
+            classify_error(&err),
+            FailureCategory::ModelApi,
+            "rate_limited terminal should classify as ModelApi"
+        );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_empty_attempts_is_model_api() {
+        use crate::error::ModelError;
+        // Edge case: no attempts recorded → fallback to ModelApi.
+        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), vec![]));
+        assert_eq!(classify_error(&err), FailureCategory::ModelApi);
+    }
+
+    #[test]
+    fn classify_error_plain_malformed_is_model_parse() {
+        use crate::error::ModelError;
+        let err = Error::Model(ModelError::Malformed("bad json".into()));
+        assert_eq!(classify_error(&err), FailureCategory::ModelParse);
+    }
+
+    #[test]
+    fn classify_error_rate_limited_is_model_api() {
+        use crate::error::ModelError;
+        let err = Error::Model(ModelError::RateLimited("429".into()));
+        assert_eq!(classify_error(&err), FailureCategory::ModelApi);
     }
 }

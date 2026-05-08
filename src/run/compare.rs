@@ -3984,4 +3984,57 @@ mod tests {
         assert_eq!(ev.throttled_calls, 3);
         assert_eq!(ev.configured_max_rpm, Some(600));
     }
+
+    fn slot(instance_id: &str, run_index: u32, final_model: Option<&str>, fallback_count: Option<u32>) -> LoadedRunSlot {
+        let mut r = submitted(instance_id);
+        r.final_model = final_model.map(str::to_owned);
+        r.fallback_count = fallback_count;
+        LoadedRunSlot { instance_id: instance_id.into(), run_index, result: r }
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_empty_returns_zeros() {
+        let (total, mix) = fallback_totals_from_slots(&[]);
+        assert_eq!(total, 0);
+        assert!(mix.is_empty());
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_sums_fallback_counts_across_reruns() {
+        let slots = vec![
+            slot("a", 0, Some("model-x"), Some(1)),
+            slot("a", 1, Some("model-y"), Some(2)),
+            slot("b", 0, Some("model-x"), None),
+        ];
+        let (total, mix) = fallback_totals_from_slots(&slots);
+        assert_eq!(total, 3, "should sum fallback counts from all slots");
+        assert_eq!(mix["model-x"], 2, "model-x appears in slot a/0 and b/0");
+        assert_eq!(mix["model-y"], 1, "model-y appears in slot a/1 only");
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_counts_each_rerun_slot_model_independently() {
+        // When reruns use different models, model_mix must include all of them,
+        // not just the first (winning) slot per instance.
+        let slots = vec![
+            slot("task-1", 0, Some("primary"), Some(0)),
+            slot("task-1", 1, Some("secondary"), Some(1)),
+        ];
+        let (_, mix) = fallback_totals_from_slots(&slots);
+        assert!(mix.contains_key("primary"), "primary should be counted");
+        assert!(mix.contains_key("secondary"), "secondary should be counted");
+        assert_eq!(mix["primary"] + mix["secondary"], 2);
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_slot_with_no_final_model_is_skipped_in_mix() {
+        let slots = vec![
+            slot("a", 0, None, Some(1)),
+            slot("b", 0, Some("model-z"), Some(0)),
+        ];
+        let (total, mix) = fallback_totals_from_slots(&slots);
+        assert_eq!(total, 1);
+        assert_eq!(mix.len(), 1);
+        assert_eq!(mix["model-z"], 1);
+    }
 }
