@@ -541,27 +541,46 @@ fn extract_redirect_target(intro_line: &str) -> Option<String> {
 /// - bare execution at command position: `; /tmp/x`, `&& ./x`, `\n/tmp/x`
 ///   (covers the common `chmod +x FILE; FILE` pattern)
 ///
+/// Path-variant handling: a relative target like `script.sh` is
+/// commonly executed as `./script.sh` (and vice versa), so both forms
+/// are checked.  Absolute paths are matched verbatim.
+///
 /// Note: `chmod +x FILE` alone is intentionally NOT a trigger — making
 /// a file executable is data, not execution.  The actual unsafe case
 /// `chmod +x FILE; FILE` is caught by the bare-path check below.  This
 /// keeps benign `cat > fixture.sh <<'EOF' ... EOF; chmod +x fixture.sh`
 /// workflows allowed.
 fn interpreter_invokes_file(region: &str, file: &str) -> bool {
-    let escaped = regex::escape(file);
+    // Generate the path forms to check.  An absolute path stands alone;
+    // a bare basename and `./basename` are interchangeable in shell.
+    let candidates: Vec<String> = if file.starts_with('/') {
+        vec![file.to_owned()]
+    } else if let Some(stripped) = file.strip_prefix("./") {
+        vec![file.to_owned(), stripped.to_owned()]
+    } else {
+        vec![file.to_owned(), format!("./{file}")]
+    };
 
-    // Direct interpreter invocation: bash FILE, sh FILE, source FILE, . FILE
-    let interp_pat = format!(
-        r"(?:^|[\s/;&|`(])(?:bash|sh|zsh|ksh|dash|fish|python[23]?|perl|ruby|node|php|tclsh|source|\.)\s+(?:-\S+\s+)*{escaped}\b"
-    );
-    if Regex::new(&interp_pat).is_ok_and(|re| re.is_match(region)) {
-        return true;
+    for candidate in candidates {
+        let escaped = regex::escape(&candidate);
+
+        // Direct interpreter invocation: bash FILE, sh FILE, source FILE, . FILE
+        let interp_pat = format!(
+            r"(?:^|[\s/;&|`(])(?:bash|sh|zsh|ksh|dash|fish|python[23]?|perl|ruby|node|php|tclsh|source|\.)\s+(?:-\S+\s+)*{escaped}\b"
+        );
+        if Regex::new(&interp_pat).is_ok_and(|re| re.is_match(region)) {
+            return true;
+        }
+
+        // Bare path execution at command position: `; /tmp/x`, `&& ./x`,
+        // `\n/tmp/x`.  The path appears as the first token of a new command.
+        let bare_pat =
+            format!(r#"(?:^|\n\s*|;\s*|&&\s*|\|\|\s*|\|\s*)['"]?{escaped}(?:\s|$|[;&|)`'"])"#);
+        if Regex::new(&bare_pat).is_ok_and(|re| re.is_match(region)) {
+            return true;
+        }
     }
-
-    // Bare path execution at command position: `; /tmp/x`, `&& ./x`,
-    // `\n/tmp/x`.  The path appears as the first token of a new command.
-    let bare_pat =
-        format!(r#"(?:^|\n\s*|;\s*|&&\s*|\|\|\s*|\|\s*)['"]?{escaped}(?:\s|$|[;&|)`'"])"#);
-    Regex::new(&bare_pat).is_ok_and(|re| re.is_match(region))
+    false
 }
 
 /// Remove the bodies of NON-EXECUTABLE here-documents from a command.

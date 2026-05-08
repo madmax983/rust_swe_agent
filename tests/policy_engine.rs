@@ -1593,6 +1593,29 @@ fn safe_does_not_block_heredoc_fixture_with_chmod_only_no_execution() {
     }
 }
 
+// ── Heredoc-write then ./relative execution (Codex P1) ──────────────────────
+
+#[test]
+fn safe_blocks_heredoc_then_dot_slash_execution() {
+    // Redirect target is a bare basename but the later command uses
+    // `./FILE`.  Both forms refer to the same file in shell.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // bare → ./bare
+        "cat > script.sh <<'EOF'\nrm -rf /\nEOF\nchmod +x script.sh\n./script.sh",
+        "cat > script.sh <<'EOF'\nrm -rf /\nEOF\n./script.sh",
+        "cat > x.sh <<'EOF'\n#!/bin/sh\nrm -rf /etc\nEOF\nchmod 755 x.sh && ./x.sh",
+        // Reverse: target with ./, exec without
+        "cat > ./script.sh <<'EOF'\nrm -rf /\nEOF\nchmod +x script.sh\nbash script.sh",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc-write then ./relative exec must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
