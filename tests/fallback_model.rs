@@ -10,9 +10,9 @@
 //! through `TrajectoryInfo`, `InstanceResult` fallback fields, `SweepResults`
 //! model-mix totals, and `CompareReport` model-mix warnings.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rust_swe_agent::error::{FailedAttempt, ModelError};
+use rust_swe_agent::error::ModelError;
 use rust_swe_agent::model::{
     FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,
 };
@@ -300,8 +300,10 @@ fn fallback_summary_round_trips_through_trajectory_info() {
         all_failed: false,
     };
 
-    let mut info = TrajectoryInfo::default();
-    info.fallback_summary = Some(summary.clone());
+    let info = TrajectoryInfo {
+        fallback_summary: Some(summary.clone()),
+        ..Default::default()
+    };
 
     let json = serde_json::to_string_pretty(&info).unwrap();
     // Verify key fields are present in the JSON.
@@ -412,8 +414,10 @@ fn sweep_results_model_mix_defaults_empty() {
 
 #[test]
 fn sweep_results_model_mix_serializes_and_deserializes() {
-    let mut s = SweepResults::default();
-    s.total_fallbacks = 3;
+    let mut s = SweepResults {
+        total_fallbacks: 3,
+        ..Default::default()
+    };
     s.model_mix.insert("gpt-4".into(), 7);
     s.model_mix.insert("claude-sonnet-4-6".into(), 3);
 

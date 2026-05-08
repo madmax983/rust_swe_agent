@@ -82,8 +82,30 @@ impl Model for FallbackModel {
                     // Continue to the next candidate.
                 }
                 Err(e) => {
-                    // Non-transient: surface immediately, do not attempt fallback.
-                    return Err(e);
+                    if failed_attempts.is_empty() {
+                        // No prior transient attempts: surface the non-transient error directly.
+                        return Err(e);
+                    }
+                    // Prior transient attempts exist: include this terminal failure in the
+                    // structured record so DefaultAgent can write complete telemetry
+                    // (including any swallowed 429s) even for mixed-failure chains.
+                    failed_attempts.push(FallbackAttemptRecord {
+                        model: model.name().to_owned(),
+                        failure_reason: coarse_reason(&e),
+                    });
+                    let error_attempts: Vec<FailedAttempt> = failed_attempts
+                        .iter()
+                        .map(|a| FailedAttempt {
+                            model: a.model.clone(),
+                            reason: a.failure_reason.clone(),
+                        })
+                        .collect();
+                    let summary = failed_attempts
+                        .iter()
+                        .map(|a| format!("{}: {}", a.model, a.failure_reason))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Err(ModelError::AllCandidatesFailed(summary, error_attempts));
                 }
             }
         }
@@ -107,6 +129,7 @@ impl Model for FallbackModel {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::model::ModelUsage;
@@ -192,6 +215,27 @@ mod tests {
         assert_eq!(attempts[0].reason, "rate_limited");
         assert_eq!(attempts[1].model, "m2");
         assert_eq!(attempts[1].reason, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn transient_then_non_transient_preserves_attempts() {
+        // Primary: transient (429). Secondary: non-transient (auth failure).
+        // The 429 must not be silently dropped — AllCandidatesFailed should
+        // carry both attempts so DefaultAgent can write complete telemetry.
+        let f = FallbackModel::new(vec![
+            Box::new(AlwaysFail("m1".into(), true)),
+            Box::new(AlwaysFail("m2".into(), false)),
+        ]);
+        let err = f.query(&[], &QueryOpts::default()).await.unwrap_err();
+        let ModelError::AllCandidatesFailed(ref msg, ref attempts) = err else {
+            panic!("expected AllCandidatesFailed, got {err:?}");
+        };
+        assert!(msg.contains("m1"), "summary must mention primary: {msg}");
+        assert!(msg.contains("m2"), "summary must mention secondary: {msg}");
+        assert_eq!(attempts.len(), 2, "both attempts must be preserved");
+        assert_eq!(attempts[0].model, "m1");
+        assert_eq!(attempts[0].reason, "rate_limited");
+        assert_eq!(attempts[1].model, "m2");
     }
 
     #[test]

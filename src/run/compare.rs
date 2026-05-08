@@ -3469,6 +3469,7 @@ mod tests {
         assert_eq!(r.steps, Some(3));
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn incomplete_results_json_falls_back_to_trajectory_scan() {
         use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
@@ -3632,6 +3633,7 @@ mod tests {
         assert!(loaded.filter_spec.is_none());
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn incomplete_results_json_ignores_stale_trajectories_before_started_at() {
         use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
