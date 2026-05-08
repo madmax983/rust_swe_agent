@@ -22,59 +22,99 @@ const DIFF_FIELD_ORDER: [&str; 6] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Format for outputting trajectory differences.
 pub enum TrajectoryDiffFormat {
+    /// Human-readable text format.
     Text,
+    /// Machine-readable JSON format.
     Json,
+    /// Unified diff format.
     Unified,
 }
 
 #[derive(Debug, Clone)]
+/// Arguments for performing a trajectory diff.
 pub struct TrajectoryDiffArgs {
+    /// Path to the baseline trajectory.
     pub baseline: PathBuf,
+    /// Path to the candidate trajectory.
     pub candidate: PathBuf,
+    /// Whether to include identical noisy steps (e.g. system messages).
     pub show_noise: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A comprehensive report of differences between two trajectories.
 pub struct TrajectoryDiffReport {
+    /// The instance ID these trajectories correspond to.
     pub instance_id: String,
+    /// Metadata about the comparison.
     pub header: TrajectoryDiffHeader,
+    /// Detailed step-by-step diff.
     pub steps: Vec<TrajectoryDiffStep>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Header metadata for a trajectory diff report.
 pub struct TrajectoryDiffHeader {
+    /// Path to the baseline file.
     pub baseline_path: PathBuf,
+    /// Path to the candidate file.
     pub candidate_path: PathBuf,
+    /// Failure category of baseline.
     pub baseline_failure_category: String,
+    /// Failure category of candidate.
     pub candidate_failure_category: String,
+    /// Number of attempts in baseline.
     pub baseline_attempts: u64,
+    /// Number of attempts in candidate.
     pub candidate_attempts: u64,
+    /// Total cost of baseline.
     pub baseline_cost_usd: Option<f64>,
+    /// Total cost of candidate.
     pub candidate_cost_usd: Option<f64>,
+    /// Total prompt tokens for baseline.
     pub baseline_prompt_tokens: Option<u64>,
+    /// Total prompt tokens for candidate.
     pub candidate_prompt_tokens: Option<u64>,
+    /// Total input tokens for baseline.
     pub baseline_input_tokens: Option<u64>,
+    /// Total input tokens for candidate.
     pub candidate_input_tokens: Option<u64>,
+    /// Cached read tokens for baseline.
     pub baseline_cache_read_tokens: Option<u64>,
+    /// Cached read tokens for candidate.
     pub candidate_cache_read_tokens: Option<u64>,
+    /// Cache creation tokens for baseline.
     pub baseline_cache_creation_tokens: Option<u64>,
+    /// Cache creation tokens for candidate.
     pub candidate_cache_creation_tokens: Option<u64>,
+    /// Completion tokens for baseline.
     pub baseline_completion_tokens: Option<u64>,
+    /// Completion tokens for candidate.
     pub candidate_completion_tokens: Option<u64>,
+    /// Number of steps in baseline.
     pub baseline_total_steps: usize,
+    /// Number of steps in candidate.
     pub candidate_total_steps: usize,
+    /// Step index where trajectories first diverged.
     pub first_divergent_step_index: Option<usize>,
+    /// Role of the first divergent step.
     pub first_divergent_step_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Status of a specific step comparison.
 pub enum TrajectoryDiffStatus {
     #[serde(rename = "match")]
+    /// Steps match perfectly.
     Match,
+    /// Steps exist in both but differ.
     Diverge,
+    /// Step exists only in baseline.
     BaselineOnly,
+    /// Step exists only in candidate.
     CandidateOnly,
 }
 
@@ -90,30 +130,44 @@ impl TrajectoryDiffStatus {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+/// Parsed contents of a single message step.
 pub struct SemanticStep {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// The prompt content (system or user).
     pub prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// The raw assistant content.
     pub assistant_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Extracted bash command, if any.
     pub bash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Tool execution exit code.
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Tool execution stdout.
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Tool execution stderr.
     pub stderr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Represents a single matched or divergent step.
 pub struct TrajectoryDiffStep {
+    /// The step index.
     pub index: usize,
+    /// The role involved in the step.
     pub role: String,
+    /// The diff status.
     pub status: TrajectoryDiffStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Baseline step contents.
     pub baseline: Option<SemanticStep>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Candidate step contents.
     pub candidate: Option<SemanticStep>,
+    /// Specific fields that differ (e.g., "bash", "stdout").
     pub diff_fields: Vec<String>,
 }
 
@@ -135,6 +189,7 @@ struct KeyedSemanticStep {
     step: SemanticStep,
 }
 
+/// Computes a diff between two specific trajectory files.
 pub fn diff_paths(args: &TrajectoryDiffArgs) -> Result<TrajectoryDiffReport, Error> {
     let baseline = load_named_trajectory(&args.baseline)?;
     let candidate = load_named_trajectory(&args.candidate)?;
@@ -147,6 +202,7 @@ pub fn diff_paths(args: &TrajectoryDiffArgs) -> Result<TrajectoryDiffReport, Err
     Ok(diff_trajectories(&baseline, &candidate, args.show_noise))
 }
 
+/// Computes a diff between trajectories from two sweeps for a specific instance.
 pub fn diff_sweep_instance(
     baseline_sweep: &Path,
     candidate_sweep: &Path,
@@ -172,6 +228,7 @@ pub fn diff_sweep_instance(
     })
 }
 
+/// Finds a trajectory file for a specific instance within a sweep directory.
 pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
     let nested = sweep.join(instance_id).join("trajectory.json");
     if nested.exists() {
@@ -185,6 +242,7 @@ pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBu
     flat.exists().then_some(flat)
 }
 
+/// Renders a diff report in a human-readable text format.
 pub fn render_text(report: &TrajectoryDiffReport) -> String {
     let mut s = String::new();
     let width = terminal_width();
@@ -278,6 +336,7 @@ pub fn render_text(report: &TrajectoryDiffReport) -> String {
     s
 }
 
+/// Renders a diff report in a unified diff format.
 pub fn render_unified(report: &TrajectoryDiffReport) -> String {
     let baseline = canonical_side_lines(report, true);
     let candidate = canonical_side_lines(report, false);

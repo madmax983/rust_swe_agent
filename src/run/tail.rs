@@ -15,8 +15,11 @@ use crate::trajectory::{FailureCategory, Trajectory};
 const DEFAULT_PARALLELISM: usize = 4;
 
 #[derive(Debug, Clone)]
+/// Options for generating a snapshot.
 pub struct SnapshotOptions {
+    /// The current time.
     pub now: DateTime<Utc>,
+    /// The window size for calculating burn rate.
     pub burn_rate_window: Duration,
 }
 
@@ -30,24 +33,43 @@ impl Default for SnapshotOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A point-in-time snapshot of a sweep's progress.
 pub struct TailSnapshot {
+    /// The path to the sweep directory.
     pub sweep_dir: PathBuf,
+    /// The current status of the sweep.
     pub status: String,
+    /// Seconds remaining until forced cancellation.
     pub cancelling_seconds_left: Option<i64>,
+    /// The number of completed runs.
     pub completed: usize,
+    /// The number of runs currently executing.
     pub in_flight: usize,
+    /// The number of runs yet to start.
     pub pending: usize,
+    /// The total number of runs in the sweep.
     pub total: usize,
+    /// Counts of different failure categories.
     pub failure_counts: BTreeMap<FailureCategory, usize>,
+    /// Total cost incurred so far.
     pub cumulative_cost_usd: f64,
+    /// Current burn rate in USD per minute.
     pub burn_rate_usd_per_min: f64,
+    /// Estimated time of arrival in seconds.
     pub eta_seconds: Option<i64>,
+    /// The maximum budget cap in USD.
     pub budget_cap_usd: Option<f64>,
+    /// The percentage of the budget cap used.
     pub pct_of_cap_used: Option<f64>,
+    /// When the sweep started.
     pub started_at: Option<String>,
+    /// When the most recent event occurred.
     pub last_event_at: Option<String>,
+    /// Whether the sweep is fully complete.
     pub is_complete: bool,
+    /// Why the sweep was aborted, if applicable.
     pub abort_reason: Option<String>,
+    /// Any warnings encountered during the sweep.
     pub warnings: Vec<String>,
 }
 
@@ -145,6 +167,7 @@ impl TerminalRecord {
 }
 
 #[allow(clippy::too_many_lines)]
+/// Generates a snapshot of a sweep's progress from its directory.
 pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnapshot, Error> {
     if !sweep_dir.exists() {
         return Err(Error::Trajectory(format!(
@@ -670,6 +693,7 @@ fn eta_seconds(
     Some((remaining_i64 * elapsed + completed_i64 - 1) / completed_i64)
 }
 
+/// Renders a snapshot into a human-readable text block.
 pub fn render_text(snapshot: &TailSnapshot) -> String {
     let mut out = String::new();
     out.push_str("\n=== bench tail ===\n");

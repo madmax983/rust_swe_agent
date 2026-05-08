@@ -12,6 +12,14 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// Jinja2-style template rendering via `minijinja`.
+///
+/// ## Examples
+///
+/// ```
+/// use rust_swe_agent::template::Renderer;
+/// let renderer = Renderer::new();
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +31,7 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer`.
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +52,7 @@ impl Renderer {
             .map_err(|e| Error::Template(e.to_string()))
     }
 
+    /// Render a template string against a minijinja `Value` context.
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env
             .render_str(tmpl, ctx)

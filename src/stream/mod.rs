@@ -34,52 +34,80 @@ pub enum StreamEvent {
     /// Emitted once at agent start, after the system + instance prompts
     /// are recorded.
     RunStarted {
+        /// The task being executed.
         task: String,
+        /// The model being used.
         model: String,
+        /// The time the run started.
         started_at: String,
     },
     /// LLM produced a response (before action parsing).
     AssistantMessage {
+        /// The current step number.
         step: u32,
+        /// The content of the event.
         content: String,
+        /// The cost in USD, if applicable.
         cost_usd: Option<f64>,
+        /// The timestamp of the event.
         timestamp: String,
     },
     /// About to execute a bash command.
     BashStart {
+        /// The current step number.
         step: u32,
+        /// The bash command to execute.
         command: String,
+        /// The timestamp of the event.
         timestamp: String,
     },
     /// Bash command finished.
     BashResult {
+        /// The current step number.
         step: u32,
+        /// The exit code of the command.
         exit_code: i32,
+        /// Standard output of the command.
         stdout: String,
+        /// Standard error of the command.
         stderr: String,
+        /// Whether the command timed out.
         timed_out: bool,
+        /// The timestamp of the event.
         timestamp: String,
     },
     /// Observation message recorded into the trajectory after a bash run.
     Observation {
+        /// The current step number.
         step: u32,
+        /// The content of the event.
         content: String,
+        /// The timestamp of the event.
         timestamp: String,
     },
     /// Model output was malformed; format-error template was sent back.
     FormatError {
+        /// The current step number.
         step: u32,
+        /// The content of the event.
         content: String,
+        /// The timestamp of the event.
         timestamp: String,
     },
     /// Agent loop ended.
     RunEnded {
+        /// The reason the run ended.
         exit_reason: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        /// The category of failure, if applicable.
         failure_category: Option<crate::trajectory::FailureCategory>,
+        /// The final output, if submitted.
         final_output: Option<String>,
+        /// Total number of steps taken.
         steps: u32,
+        /// Total cost of the run.
         total_cost_usd: f64,
+        /// The time the run ended.
         ended_at: String,
     },
 }
@@ -103,6 +131,7 @@ impl StreamEvent {
 /// MUST NOT fail visibly to the agent — disconnect handling is the
 /// sink's job.
 pub trait StreamSink: Send + Sync {
+    /// Emits a stream event to the sink.
     fn emit(&self, event: StreamEvent);
 }
 

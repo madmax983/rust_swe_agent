@@ -17,11 +17,20 @@ use super::{StreamEvent, StreamSink};
 pub const DEFAULT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone)]
+/// A `StreamSink` backed by `tokio::sync::broadcast`.
+///
+/// ## Examples
+///
+/// ```
+/// use rust_swe_agent::stream::BroadcastSink;
+/// let sink = BroadcastSink::new(10);
+/// ```
 pub struct BroadcastSink {
     tx: broadcast::Sender<StreamEvent>,
 }
 
 impl BroadcastSink {
+    /// Creates a new `BroadcastSink` with the specified channel capacity.
     pub fn new(capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(capacity.max(1));
         Self { tx }
@@ -33,6 +42,7 @@ impl BroadcastSink {
         self.tx.receiver_count()
     }
 
+    /// Subscribes to the broadcast channel, returning a new `Receiver`.
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.tx.subscribe()
     }

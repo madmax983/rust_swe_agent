@@ -107,14 +107,28 @@ fn ceil_char_boundary(input: &str, idx: usize) -> usize {
     i
 }
 
+/// The default, measure-first implementation of `Agent`.
+///
+/// Manages the loop of querying the LLM, executing bash commands, and recording trajectories.
 pub struct DefaultAgent {
+    /// The run configuration.
+    /// Configuration properties.
     pub config: Config,
+    /// The LLM interface.
+    /// The language model.
     pub model: Arc<dyn Model>,
+    /// The execution environment (e.g., local, Docker).
+    /// The execution environment.
     pub env: Box<dyn Environment>,
+    /// Shared template renderer.
     pub renderer: Arc<Renderer>,
+    /// The running conversation history sent to the model.
     pub history: Vec<Message>,
+    /// The full trajectory of the run.
     pub trajectory: Trajectory,
+    /// The number of steps executed so far.
     pub steps: u32,
+    /// The total cost in USD incurred.
     pub total_cost_usd: f64,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
@@ -128,24 +142,38 @@ pub struct DefaultAgent {
     pub completion_tokens: u64,
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
+    /// The event stream sink.
     pub stream: Arc<dyn StreamSink>,
+    /// Text redaction settings.
     pub redactor: Redactor,
     pub cancellation: Option<CancellationToken>,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
 }
 
+/// Builder for creating a `DefaultAgent`.
 pub struct DefaultAgentBuilder {
+    /// The run configuration.
+    /// Configuration properties.
     pub config: Config,
+    /// The LLM interface.
+    /// The language model.
     pub model: Arc<dyn Model>,
+    /// The execution environment (e.g., local, Docker).
+    /// The execution environment.
     pub env: Box<dyn Environment>,
+    /// The original task text provided to the agent.
+    /// The task description.
     pub task: String,
+    /// Optional extra context appended to the prompt.
     pub extra_context: Option<String>,
     pub renderer: Option<Arc<Renderer>>,
+    /// Optional stream sink override.
     pub stream: Option<Arc<dyn StreamSink>>,
 }
 
 impl DefaultAgentBuilder {
+    /// Consumes the builder and constructs the `DefaultAgent`.
     pub fn build(self) -> Result<DefaultAgent, Error> {
         let renderer = self.renderer.unwrap_or_else(|| Arc::new(Renderer::new()));
 
