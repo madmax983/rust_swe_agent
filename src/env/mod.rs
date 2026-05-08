@@ -143,3 +143,50 @@ mod humantime_serde_compat {
         Ok(Duration::from_secs(secs))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_combined_output() {
+        struct TestCase {
+            stdout: &'static str,
+            stderr: &'static str,
+            expected: &'static str,
+        }
+
+        let cases = vec![
+            TestCase {
+                stdout: "",
+                stderr: "",
+                expected: "",
+            },
+            TestCase {
+                stdout: "hello",
+                stderr: "",
+                expected: "hello",
+            },
+            TestCase {
+                stdout: "",
+                stderr: "world",
+                expected: "world",
+            },
+            TestCase {
+                stdout: "hello",
+                stderr: "world",
+                expected: "hello\nworld",
+            },
+        ];
+
+        for case in cases {
+            let result = RunResult {
+                stdout: case.stdout.to_string(),
+                stderr: case.stderr.to_string(),
+                exit_code: 0,
+                timed_out: false,
+            };
+            assert_eq!(result.combined_output(), case.expected);
+        }
+    }
+}
