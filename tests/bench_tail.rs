@@ -8,7 +8,9 @@ use std::process::Command;
 
 use chrono::{TimeZone, Utc};
 use rust_swe_agent::run::tail::{SnapshotOptions, render_text, snapshot};
-use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
+use rust_swe_agent::trajectory::{
+    FailureCategory, FallbackAttemptRecord, FallbackSummary, TokenUsage, Trajectory, outcome,
+};
 
 mod support;
 use support::binary_path;
@@ -529,5 +531,80 @@ fn cli_once_budget_abort_exits_nonzero_with_reason() {
     assert_eq!(
         v["abort_reason"],
         "budget cap hit: 1 instance(s) never started"
+    );
+}
+
+fn write_fallback_traj(dir: &Path, filename: &str, final_model: &str, fallback_count: u32) {
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some(outcome::SUBMITTED.into());
+    traj.info.exit_reason = Some(outcome::SUBMITTED.into());
+    traj.info.total_cost_usd = Some(0.01);
+    traj.info.fallback_summary = Some(FallbackSummary {
+        primary_model: "primary".into(),
+        final_model: final_model.into(),
+        fallback_happened: fallback_count > 0,
+        fallback_count,
+        attempted_models: vec!["primary".into(), final_model.into()],
+        failed_attempts: (0..fallback_count)
+            .map(|_| FallbackAttemptRecord {
+                model: "primary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: None,
+            })
+            .collect(),
+        all_failed: false,
+    });
+    std::fs::write(
+        dir.join(filename),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn model_mix_counts_all_rerun_slots_not_just_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+
+    // Instance "task-a" ran twice: slot 0 used "secondary", slot 1 used "primary".
+    // After merge, final_model is "secondary" (first non-None). Without the fix,
+    // only "secondary" would appear in model_mix; with the fix, both appear.
+    let task_dir = dir.path().join("task-a");
+    std::fs::create_dir_all(&task_dir).unwrap();
+    write_fallback_traj(&task_dir, "run-0.traj.json", "secondary", 1);
+    write_fallback_traj(&task_dir, "run-1.traj.json", "primary", 0);
+
+    let snap = snapshot(dir.path(), &opts_at(now)).unwrap();
+    assert!(
+        snap.model_mix.contains_key("primary"),
+        "primary should appear in model_mix: {:?}",
+        snap.model_mix
+    );
+    assert!(
+        snap.model_mix.contains_key("secondary"),
+        "secondary should appear in model_mix: {:?}",
+        snap.model_mix
+    );
+    assert_eq!(
+        snap.model_mix["primary"] + snap.model_mix["secondary"],
+        2,
+        "total slot count should be 2"
+    );
+}
+
+#[test]
+fn fallback_count_is_summed_across_rerun_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+
+    let task_dir = dir.path().join("task-b");
+    std::fs::create_dir_all(&task_dir).unwrap();
+    write_fallback_traj(&task_dir, "run-0.traj.json", "secondary", 2);
+    write_fallback_traj(&task_dir, "run-1.traj.json", "secondary", 1);
+
+    let snap = snapshot(dir.path(), &opts_at(now)).unwrap();
+    assert_eq!(
+        snap.total_fallbacks, 3,
+        "fallback_count should be summed across slots"
     );
 }

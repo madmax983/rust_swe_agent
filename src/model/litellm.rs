@@ -215,8 +215,21 @@ fn split_prompt_usage(prompt_tokens: u64, cached_tokens: u64) -> (u64, u64) {
 /// Non-transient → `MissingCredentials`, `Malformed`, or `Refused`.
 fn classify_litellm_error(e: LiteLLMError) -> ModelError {
     match e {
-        // Explicit rate-limit → always transient.
-        LiteLLMError::RateLimit { message, .. } => ModelError::RateLimited(message),
+        // Explicit rate-limit → always transient. Embed the structured
+        // Retry-After seconds into the message text so that
+        // `ModelError::retry_after_secs()` can recover it later (e.g.
+        // when a fallback succeeds and the governor needs to set the floor).
+        LiteLLMError::RateLimit {
+            message,
+            retry_after,
+            ..
+        } => {
+            if let Some(secs) = retry_after {
+                ModelError::RateLimited(format!("{message} retry-after: {secs}"))
+            } else {
+                ModelError::RateLimited(message)
+            }
+        }
         // Network / connectivity / service-unavailable / provider 5xx → transient.
         // Internal is used by litellm-rs for provider 5xx via api_error(500, …).
         LiteLLMError::Network(msg)
@@ -431,5 +444,45 @@ mod tests {
             matches!(api_429, ModelError::RateLimited(_)),
             "ProviderError::ApiError(429) should map to RateLimited, got {api_429:?}"
         );
+    }
+
+    #[test]
+    fn rate_limit_with_structured_retry_after_embeds_value_in_message() {
+        let e = classify_litellm_error(LiteLLMError::RateLimit {
+            message: "too many requests".into(),
+            retry_after: Some(45),
+            rpm_limit: None,
+            tpm_limit: None,
+        });
+        match e {
+            crate::error::ModelError::RateLimited(msg) => {
+                assert!(
+                    msg.contains("retry-after: 45"),
+                    "structured retry_after should be embedded in message: {msg}"
+                );
+                assert_eq!(
+                    crate::error::ModelError::RateLimited(msg).retry_after_secs(),
+                    Some(45),
+                    "retry_after_secs should parse back the embedded value"
+                );
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_limit_without_retry_after_preserves_original_message() {
+        let e = classify_litellm_error(LiteLLMError::RateLimit {
+            message: "quota exceeded".into(),
+            retry_after: None,
+            rpm_limit: None,
+            tpm_limit: None,
+        });
+        match e {
+            crate::error::ModelError::RateLimited(msg) => {
+                assert_eq!(msg, "quota exceeded");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 }
