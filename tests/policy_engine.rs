@@ -1541,6 +1541,58 @@ fn safe_does_not_block_xargs_rm_specific_safe_uses() {
     }
 }
 
+// ── sudo with arg-taking options (Codex P1) ─────────────────────────────────
+
+#[test]
+fn safe_blocks_sudo_with_arg_taking_option_before_dangerous_cmd() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // -u user variants
+        "sudo -u root rm -rf /",
+        "sudo -u nobody rm -rf /etc",
+        "sudo -u root dd if=/dev/zero of=/dev/sda",
+        // -g group, -D dir, -h host, -p prompt, -r role, -t type, -T timeout
+        "sudo -g wheel rm -rf /",
+        "sudo -D /tmp rm -rf /etc",
+        // Long arg-taking options
+        "sudo --user root rm -rf /",
+        "sudo --group wheel rm -rf /etc",
+        // Mixed: arg-taking + flag
+        "sudo -n -u root rm -rf /",
+        "sudo -E -u nobody rm -rf /home",
+        // Sudo + arg-taking + shell spawn
+        "sudo -u root bash",
+        "sudo --user root sh",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "sudo with arg-taking option must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── chmod-only on heredoc fixture should not retain body (Codex P2) ─────────
+
+#[test]
+fn safe_does_not_block_heredoc_fixture_with_chmod_only_no_execution() {
+    // Writing an executable fixture and chmod-ing it without ever running
+    // it is a normal SWE workflow.  The body should still be stripped
+    // because the file is never invoked.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > tests/fixture.sh <<'EOF'\nrm -rf /\nEOF\nchmod +x tests/fixture.sh",
+        "cat > /tmp/fixture.sh <<'EOF'\n#!/bin/sh\nrm -rf /\nEOF\nchmod 755 /tmp/fixture.sh",
+        "cat > script.sh <<'EOF'\nrm -rf /\nEOF\nchmod +x script.sh && echo done",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc fixture with chmod but no execution should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

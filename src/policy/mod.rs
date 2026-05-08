@@ -215,15 +215,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `/./`, `///./`, etc.  Linux resolves all of these to `/`.
         PolicyRule::deny_static(
             "catastrophic-delete-root",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/*)*['"]?(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/*)*['"]?(?:$|[\s;&|)`'"])"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-root-glob",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*\*"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*\*"#,
         ),
         PolicyRule::deny_static(
             "catastrophic-delete-no-preserve-root",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*--no-preserve-root\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*--no-preserve-root\b"#,
         ),
         // Note: quoted `~` does NOT undergo tilde expansion in bash, so
         // `rm -rf '~'` removes a file literally named `~`, not the home dir.
@@ -235,7 +235,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `${HOME}`; and `"$HOME"` / `"${HOME}"` — but NOT `'$HOME'`.
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+(?:~(?:/\*?)?|"?\$\{?HOME\}?"?)(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+(?:~(?:/\*?)?|"?\$\{?HOME\}?"?)(?:$|[\s;&|)`'"])"#,
         ),
         // Match `/etc`, `/etc/`, and any path under a system dir that contains
         // a glob `*` (e.g. `/etc/*`, `/etc/*.conf`, `/etc/passwd*`,
@@ -243,7 +243,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `/home/user/project/target`) are NOT blocked.
         PolicyRule::deny_static(
             "catastrophic-delete-system-dir",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/(?:[^\s;&|)`'"]*\*[^\s;&|)`'"]*)?)?['"]?(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*rm\b[^|;\n]*\s+['"]?/+(?:\.+/+)*(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/(?:[^\s;&|)`'"]*\*[^\s;&|)`'"]*)?)?['"]?(?:$|[\s;&|)`'"])"#,
         ),
         // `find` actions (-delete / -exec rm) targeting bare `/` or any
         // protected system directory.  Optional surrounding quotes are
@@ -309,19 +309,28 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // multiple option groups separated by spaces.
         PolicyRule::deny_static(
             "sudo-shell-spawn",
-            r"sudo\s+(?:-\S+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
         ),
         PolicyRule::deny_static(
             "sudo-interactive-root",
-            r"sudo\s+(?:-\S+\s+)*-[a-zA-Z]*i[a-zA-Z]*\b",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*-[a-zA-Z]*i[a-zA-Z]*\b",
         ),
         // `-s` (short) and `--shell` (long) both spawn the user's shell.
-        PolicyRule::deny_static("sudo-spawn-shell-s", r"sudo\s+(?:-\S+\s+)*(?:-s|--shell)\b"),
-        PolicyRule::deny_static("sudo-passwd-change", r"sudo\s+(?:-\S+\s+)*passwd\b"),
-        PolicyRule::deny_static("sudo-visudo", r"sudo\s+(?:-\S+\s+)*visudo\b"),
+        PolicyRule::deny_static(
+            "sudo-spawn-shell-s",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*(?:-s|--shell)\b",
+        ),
+        PolicyRule::deny_static(
+            "sudo-passwd-change",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*passwd\b",
+        ),
+        PolicyRule::deny_static(
+            "sudo-visudo",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*visudo\b",
+        ),
         PolicyRule::deny_static(
             "sudo-run-as-user-shell",
-            r"sudo\s+(?:-\S+\s+)*-u\s+\S+\s+(?:-\S+\s+)*(?:bash|sh|zsh|fish|dash|su)\b",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*-u\s+\S+\s+(?:-\S+\s+)*(?:bash|sh|zsh|fish|dash|su)\b",
         ),
         PolicyRule::deny_static(
             "su-root",
@@ -329,51 +338,51 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         ),
         PolicyRule::deny_static(
             "chmod-sensitive-files",
-            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
+            r"(?:sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
         ),
         // `-R` (short) and `--recursive` (long) are equivalent for chmod /
         // chown.  Accept both, plus other intermixed flag groups.
         PolicyRule::deny_static(
             "chmod-777-system",
-            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*777\s+/",
+            r"(?:sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*)?chmod\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*777\s+/",
         ),
         PolicyRule::deny_static(
             "chown-system-root",
-            r#"(?:sudo\s+(?:-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:$|[\s;&|)`'"])"#,
+            r#"(?:sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:$|[\s;&|)`'"])"#,
         ),
         PolicyRule::deny_static(
             "chown-system-dirs",
-            r"(?:sudo\s+(?:-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
+            r"(?:sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
         ),
         // --- Raw disk / device writes ---
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
         PolicyRule::deny_static(
             "dd-device-write",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*dd\b[^|;\n]*of=['"]?/dev/(?:sd[a-z]|hd[a-z]|nvme\d|xvd[a-z]|vd[a-z]|disk[\d/]|mapper/|dm-|md\d|loop\d|ram\d)"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*dd\b[^|;\n]*of=['"]?/dev/(?:sd[a-z]|hd[a-z]|nvme\d|xvd[a-z]|vd[a-z]|disk[\d/]|mapper/|dm-|md\d|loop\d|ram\d)"#,
         ),
         PolicyRule::deny_static(
             "mkfs-on-device",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*['"]?/dev/[a-zA-Z]"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*mkfs(?:\.[a-z0-9]+)?\s+[^|;\n]*['"]?/dev/[a-zA-Z]"#,
         ),
         PolicyRule::deny_static(
             "shred-device",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*shred\b[^|;\n]*['"]?/dev/[a-zA-Z]"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*shred\b[^|;\n]*['"]?/dev/[a-zA-Z]"#,
         ),
         PolicyRule::deny_static(
             "badblocks-write",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*badblocks\s+-[a-zA-Z]*w[a-zA-Z]*\s"#,
         ),
         PolicyRule::deny_static(
             "hdparm-erase",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*hdparm\s+--security-erase\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*hdparm\s+--security-erase\b"#,
         ),
         PolicyRule::deny_static(
             "fdisk-device",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*fdisk\s+['"]?/dev/[a-zA-Z]"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*fdisk\s+['"]?/dev/[a-zA-Z]"#,
         ),
         PolicyRule::deny_static(
             "parted-device",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*parted\s+['"]?/dev/[a-zA-Z]"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*parted\s+['"]?/dev/[a-zA-Z]"#,
         ),
         // --- Credential file reads ---
         PolicyRule::deny_static(
@@ -525,13 +534,18 @@ fn extract_redirect_target(intro_line: &str) -> Option<String> {
 }
 
 /// Does `region` invoke a known interpreter on the given file path, OR
-/// make the file executable so the body could run via shebang?
+/// directly execute the file via bare-path invocation?
 ///
 /// Matches:
 /// - `bash /tmp/x`, `sh ./script`, `/bin/bash file`, `source FILE`, `. FILE`
-/// - `chmod +x FILE`, `chmod 755 FILE` (file becomes executable; if any
-///   later reference to FILE invokes it via shebang, body executes)
-/// - bare execution after a path-position separator: `; /tmp/x`, `&& ./x`
+/// - bare execution at command position: `; /tmp/x`, `&& ./x`, `\n/tmp/x`
+///   (covers the common `chmod +x FILE; FILE` pattern)
+///
+/// Note: `chmod +x FILE` alone is intentionally NOT a trigger — making
+/// a file executable is data, not execution.  The actual unsafe case
+/// `chmod +x FILE; FILE` is caught by the bare-path check below.  This
+/// keeps benign `cat > fixture.sh <<'EOF' ... EOF; chmod +x fixture.sh`
+/// workflows allowed.
 fn interpreter_invokes_file(region: &str, file: &str) -> bool {
     let escaped = regex::escape(file);
 
@@ -543,16 +557,7 @@ fn interpreter_invokes_file(region: &str, file: &str) -> bool {
         return true;
     }
 
-    // chmod making the file executable.  Once the body is potentially
-    // executed via a shebang, retain it for scanning.
-    let chmod_pat = format!(
-        r#"chmod\s+(?:-\S+\s+)*(?:[+]x|\d*[1357]\d*\b|--reference=\S+)\s+['"]?{escaped}\b"#
-    );
-    if Regex::new(&chmod_pat).is_ok_and(|re| re.is_match(region)) {
-        return true;
-    }
-
-    // Bare path execution after a command separator: `; /tmp/x`, `&& ./x`,
+    // Bare path execution at command position: `; /tmp/x`, `&& ./x`,
     // `\n/tmp/x`.  The path appears as the first token of a new command.
     let bare_pat =
         format!(r#"(?:^|\n\s*|;\s*|&&\s*|\|\|\s*|\|\s*)['"]?{escaped}(?:\s|$|[;&|)`'"])"#);
