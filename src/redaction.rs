@@ -227,40 +227,39 @@ impl Redactor {
         }
     }
 
-    pub fn redact_json_value(&self, value: &mut serde_json::Value, surface: &str) -> bool {
+    pub fn redact_json_value(&self, root: &mut serde_json::Value, surface: &str) -> bool {
         if !self.inner.enabled {
             return false;
         }
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut redacted = false;
-                for (key, child) in map.iter_mut() {
-                    if let Some(kind) = sensitive_key_kind(key) {
-                        redacted |= self.redact_sensitive_value(child, surface, kind);
-                    } else {
-                        redacted |= self.redact_json_value(child, surface);
+        let mut redacted = false;
+        let mut stack = vec![root];
+        while let Some(value) = stack.pop() {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map.iter_mut() {
+                        if let Some(kind) = sensitive_key_kind(key) {
+                            redacted |= self.redact_sensitive_value(child, surface, kind);
+                        } else {
+                            stack.push(child);
+                        }
                     }
                 }
-                redacted
-            }
-            serde_json::Value::Array(values) => {
-                let mut redacted = false;
-                for child in values {
-                    redacted |= self.redact_json_value(child, surface);
+                serde_json::Value::Array(values) => {
+                    for child in values.iter_mut() {
+                        stack.push(child);
+                    }
                 }
-                redacted
-            }
-            serde_json::Value::String(text) => {
-                let outcome = self.redact_text(text, surface);
-                if outcome.redacted {
-                    *text = outcome.text;
-                    true
-                } else {
-                    false
+                serde_json::Value::String(text) => {
+                    let outcome = self.redact_text(text, surface);
+                    if outcome.redacted {
+                        *text = outcome.text;
+                        redacted = true;
+                    }
                 }
+                _ => {}
             }
-            _ => false,
         }
+        redacted
     }
 
     #[must_use]
@@ -389,36 +388,36 @@ impl Redactor {
 
     fn redact_sensitive_value(
         &self,
-        value: &mut serde_json::Value,
+        root: &mut serde_json::Value,
         surface: &str,
         kind: &str,
     ) -> bool {
-        match value {
-            serde_json::Value::String(text) => {
-                if text.is_empty() {
-                    return false;
+        let mut redacted = false;
+        let mut stack = vec![root];
+        while let Some(value) = stack.pop() {
+            match value {
+                serde_json::Value::String(text) => {
+                    if !text.is_empty() {
+                        let marker = self.marker_for(text, kind);
+                        *text = marker;
+                        self.increment(surface, kind);
+                        redacted = true;
+                    }
                 }
-                let marker = self.marker_for(text, kind);
-                *text = marker;
-                self.increment(surface, kind);
-                true
-            }
-            serde_json::Value::Array(values) => {
-                let mut redacted = false;
-                for child in values {
-                    redacted |= self.redact_sensitive_value(child, surface, kind);
+                serde_json::Value::Array(values) => {
+                    for child in values.iter_mut() {
+                        stack.push(child);
+                    }
                 }
-                redacted
-            }
-            serde_json::Value::Object(map) => {
-                let mut redacted = false;
-                for child in map.values_mut() {
-                    redacted |= self.redact_sensitive_value(child, surface, kind);
+                serde_json::Value::Object(map) => {
+                    for child in map.values_mut() {
+                        stack.push(child);
+                    }
                 }
-                redacted
+                _ => {}
             }
-            _ => false,
         }
+        redacted
     }
 }
 
@@ -696,6 +695,16 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn fuzz_json_depth() {
+        let mut value = serde_json::Value::Null;
+        for _ in 0..10000 {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        let redactor = Redactor::default_enabled();
+        redactor.redact_json_value(&mut value, surface::TRAJECTORY);
+    }
 
     #[test]
     fn same_value_gets_same_marker() {
