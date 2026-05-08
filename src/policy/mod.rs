@@ -265,6 +265,24 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "delete-sensitive-system-file",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
         ),
+        // --- Overwriting sensitive system files ---
+        // `cp`, `mv`, and `install` can clobber the same critical files
+        // covered by the delete rule above.  Match when the destination
+        // path is one of those files.
+        PolicyRule::deny_static(
+            "overwrite-sensitive-system-file",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*(?:cp|mv|install)\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
+        ),
+        // `>`/`>>` redirect to a sensitive system file.
+        PolicyRule::deny_static(
+            "redirect-to-sensitive-file",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)[^|;\n]*?>>?\s*['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?"#,
+        ),
+        // `tee` to a sensitive system file (with or without sudo / -a).
+        PolicyRule::deny_static(
+            "tee-to-sensitive-file",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*tee\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
+        ),
         // --- Redirection-to-block-device (`>`/`>>`/`tee`) ---
         // Bash opens the device for writing when stdout/`tee` targets a
         // raw block device, bypassing the dd/mkfs/etc. tool list.
@@ -467,19 +485,19 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
 /// Extract a write-target file from the heredoc-introducing line, if any.
 ///
 /// Recognizes both shell redirection (`>`/`>>`) and `tee [-a] FILE`
-/// pipelines.  Surrounding quotes are trimmed.  Returns `None` when the
-/// line writes to no file (or only to non-file targets like `/dev/null`).
+/// pipelines.  The redirect can appear before OR after the `<<` operator
+/// (`cat > FILE <<'EOF'` and `cat <<'EOF' > FILE` are both supported).
+/// Surrounding quotes are trimmed.  Returns `None` when the line writes
+/// to no file.
 fn extract_redirect_target(intro_line: &str) -> Option<String> {
-    // Strip from `<<` onwards so we don't accidentally interpret it.
-    let upto_heredoc = intro_line
-        .find("<<")
-        .map_or(intro_line, |i| &intro_line[..i]);
-    // Try `>`/`>>` redirect first.
+    // Try `>`/`>>` redirect.  We scan the whole intro line — the redirect
+    // can legitimately follow the heredoc operator (`cat <<'EOF' > FILE`)
+    // and the regex `>>?` won't match the heredoc operator `<<`.
     let Ok(redirect_re) = Regex::new(r#">>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
         return None;
     };
     if let Some(target) = redirect_re
-        .captures_iter(upto_heredoc)
+        .captures_iter(intro_line)
         .last()
         .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
     {
@@ -492,21 +510,44 @@ fn extract_redirect_target(intro_line: &str) -> Option<String> {
         return None;
     };
     tee_re
-        .captures_iter(upto_heredoc)
+        .captures_iter(intro_line)
         .last()
         .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
 }
 
-/// Does `region` invoke a known interpreter on the given file path?
+/// Does `region` invoke a known interpreter on the given file path, OR
+/// make the file executable so the body could run via shebang?
 ///
-/// Matches patterns like `bash /tmp/x`, `sh ./script`, `/bin/bash file`,
-/// `source FILE`, `. FILE`.
+/// Matches:
+/// - `bash /tmp/x`, `sh ./script`, `/bin/bash file`, `source FILE`, `. FILE`
+/// - `chmod +x FILE`, `chmod 755 FILE` (file becomes executable; if any
+///   later reference to FILE invokes it via shebang, body executes)
+/// - bare execution after a path-position separator: `; /tmp/x`, `&& ./x`
 fn interpreter_invokes_file(region: &str, file: &str) -> bool {
     let escaped = regex::escape(file);
-    let pattern = format!(
+
+    // Direct interpreter invocation: bash FILE, sh FILE, source FILE, . FILE
+    let interp_pat = format!(
         r"(?:^|[\s/;&|`(])(?:bash|sh|zsh|ksh|dash|fish|python[23]?|perl|ruby|node|php|tclsh|source|\.)\s+(?:-\S+\s+)*{escaped}\b"
     );
-    Regex::new(&pattern).is_ok_and(|re| re.is_match(region))
+    if Regex::new(&interp_pat).is_ok_and(|re| re.is_match(region)) {
+        return true;
+    }
+
+    // chmod making the file executable.  Once the body is potentially
+    // executed via a shebang, retain it for scanning.
+    let chmod_pat = format!(
+        r#"chmod\s+(?:-\S+\s+)*(?:[+]x|\d*[1357]\d*\b|--reference=\S+)\s+['"]?{escaped}\b"#
+    );
+    if Regex::new(&chmod_pat).is_ok_and(|re| re.is_match(region)) {
+        return true;
+    }
+
+    // Bare path execution after a command separator: `; /tmp/x`, `&& ./x`,
+    // `\n/tmp/x`.  The path appears as the first token of a new command.
+    let bare_pat =
+        format!(r#"(?:^|\n\s*|;\s*|&&\s*|\|\|\s*|\|\s*)['"]?{escaped}(?:\s|$|[;&|)`'"])"#);
+    Regex::new(&bare_pat).is_ok_and(|re| re.is_match(region))
 }
 
 /// Remove the bodies of NON-EXECUTABLE here-documents from a command.

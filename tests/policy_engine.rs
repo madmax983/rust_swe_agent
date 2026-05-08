@@ -1429,6 +1429,71 @@ fn safe_blocks_chmod_chown_long_recursive_options() {
     }
 }
 
+// ── Sensitive-file writes (Codex P1) ─────────────────────────────────────────
+
+#[test]
+fn safe_blocks_writes_to_sensitive_system_files() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // tee
+        "printf x | sudo tee /etc/passwd",
+        "printf x | tee /etc/shadow",
+        "echo new | sudo tee -a /etc/sudoers",
+        // cp / mv / install
+        "cp new_passwd /etc/passwd",
+        "sudo cp new_sudoers /etc/sudoers",
+        "mv hosts /etc/hosts",
+        "sudo install -m 644 new /etc/resolv.conf",
+        // > / >> redirects
+        "echo evil > /etc/passwd",
+        "cat new >> /etc/sudoers",
+        "sudo bash -c 'echo evil > /etc/shadow'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "write to sensitive system file must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── chmod +x then bare execution (Codex P1) ─────────────────────────────────
+
+#[test]
+fn safe_blocks_heredoc_chmod_then_direct_execution() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > /tmp/x <<'EOF'\n#!/bin/sh\nrm -rf /\nEOF\nchmod +x /tmp/x\n/tmp/x",
+        "cat > /tmp/x <<'EOF'\n#!/bin/sh\nrm -rf /\nEOF\nchmod 755 /tmp/x\n/tmp/x",
+        "cat > /tmp/x <<'EOF'\n#!/bin/sh\nrm -rf /\nEOF\n/tmp/x",
+        "cat > ./script.sh <<'EOF'\n#!/bin/sh\nrm -rf /\nEOF\nchmod +x ./script.sh && ./script.sh",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "chmod-then-execute must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Heredoc with redirect AFTER << operator (Codex P1) ──────────────────────
+
+#[test]
+fn safe_blocks_heredoc_with_redirect_after_operator() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat <<'EOF' > /tmp/x\nrm -rf /\nEOF\nbash /tmp/x",
+        "cat <<'EOF' > /tmp/x\n#!/bin/sh\nrm -rf /\nEOF\nchmod +x /tmp/x\n/tmp/x",
+        "sudo cat <<'EOF' > /tmp/x\nrm -rf /\nEOF\nsource /tmp/x",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "post-<< redirect with later exec must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
