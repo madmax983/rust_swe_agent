@@ -129,7 +129,7 @@ pub struct ModelUsage {
 }
 
 /// Record of a single failed model attempt within a fallback chain.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FallbackAttemptRecord {
     /// Name of the model that was attempted.
     pub model: String,

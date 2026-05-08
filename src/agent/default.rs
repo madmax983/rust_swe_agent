@@ -425,7 +425,8 @@ impl Agent for DefaultAgent {
         // Accumulate fallback telemetry from this response.
         self.fallback_failed_attempts
             .extend(resp.fallback_attempts.iter().cloned());
-        self.last_responding_model = resp.responding_model.clone();
+        self.last_responding_model
+            .clone_from(&resp.responding_model);
 
         if self.cancellation_requested() {
             self.finalize_cancelled();
@@ -883,8 +884,7 @@ impl DefaultAgent {
             if all_failed {
                 self.fallback_failed_attempts
                     .last()
-                    .map(|a| a.model.clone())
-                    .unwrap_or_else(|| primary.clone())
+                    .map_or_else(|| primary.clone(), |a| a.model.clone())
             } else {
                 primary.clone()
             }

@@ -709,9 +709,6 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
     }
 }
 
-/// Load all `InstanceResult`s from a sweep output directory.
-///
-/// Tries `results.json` first (the canonical end-of-sweep summary). Falls
 // ── Model-mix warning helpers (issue #91) ────────────────────────────────────
 
 /// Snapshot of model-mix data extracted from a `SweepResults` for comparison.
@@ -809,6 +806,7 @@ pub(crate) struct LoadedRunSlot {
     pub result: InstanceResult,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     let results_path = dir.join("results.json");
     if results_path.exists() {
@@ -852,7 +850,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             // instances and re-derive fallback totals from them so model-mix
             // warnings are based on actual trajectory data, not the stale snapshot.
             let (effective_fallbacks, effective_mix) = if scanned.is_empty() {
-                (total_fallbacks, model_mix.clone())
+                (total_fallbacks, model_mix)
             } else {
                 fallback_totals_from_instances(&scanned)
             };

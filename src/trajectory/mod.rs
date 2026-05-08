@@ -21,7 +21,7 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 ///
 /// Present only when `model.fallback_models` was configured; absent for
 /// single-model runs so legacy artifact consumers see no change.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FallbackSummary {
     /// The model name from `config.model.name` (requested primary).
     pub primary_model: String,
@@ -43,6 +43,7 @@ pub struct FallbackSummary {
     pub all_failed: bool,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !b
 }

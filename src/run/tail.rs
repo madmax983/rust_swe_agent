@@ -439,7 +439,10 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .filter_map(|(k, v)| v.as_u64().map(|n| (k.clone(), n as usize)))
+                    .filter_map(|(k, v)| {
+                        v.as_u64()
+                            .map(|n| (k.clone(), usize::try_from(n).unwrap_or(usize::MAX)))
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -498,7 +501,8 @@ fn record_from_result_value(
         ended_at: get_str(value, "ended_at")
             .or_else(|| get_str(value, "finished_at"))
             .and_then(parse_ts),
-        fallback_count: get_u64(value, "fallback_count").map(|v| v as u32),
+        fallback_count: get_u64(value, "fallback_count")
+            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
         final_model: get_str(value, "final_model").map(ToOwned::to_owned),
     })
 }
