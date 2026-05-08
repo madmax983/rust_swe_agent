@@ -1195,6 +1195,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: std::collections::BTreeMap::new(),
         }
     }
 

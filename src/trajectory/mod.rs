@@ -13,7 +13,40 @@ use std::path::Path;
 use crate::cost::CostSource;
 use crate::model::{Message, MessageExtra};
 
+pub use crate::model::FallbackAttemptRecord;
+
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
+
+/// Trajectory-level summary of fallback behavior for a single agent run.
+///
+/// Present only when `model.fallback_models` was configured; absent for
+/// single-model runs so legacy artifact consumers see no change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FallbackSummary {
+    /// The model name from `config.model.name` (requested primary).
+    pub primary_model: String,
+    /// The model that produced the last successful response, or the last
+    /// attempted model when all candidates failed (`all_failed = true`).
+    pub final_model: String,
+    /// `true` when at least one fallback attempt was made.
+    pub fallback_happened: bool,
+    /// Number of failed transient attempts before the final success.
+    pub fallback_count: u32,
+    /// All model names tried in order (primary first).
+    pub attempted_models: Vec<String>,
+    /// Per-attempt failure records for the failed attempts.
+    pub failed_attempts: Vec<FallbackAttemptRecord>,
+    /// `true` when every model in the chain failed transiently and no
+    /// model produced a response. `final_model` is the last attempted
+    /// model in that case — not a responding model.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_failed: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !b
+}
 
 /// Coarse run outcome. Exactly one of three values, suitable for computing
 /// pass@1-style metrics from trajectory files alone:
@@ -322,6 +355,10 @@ pub struct TrajectoryInfo {
     /// Command-policy telemetry: counts of allowed/asked/blocked/yolo commands.
     #[serde(default, skip_serializing_if = "crate::policy::PolicyCounts::is_empty")]
     pub policy_counts: crate::policy::PolicyCounts,
+    /// Fallback telemetry for runs that used `model.fallback_models`. `None`
+    /// for single-model runs (preserves legacy artifact shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_summary: Option<FallbackSummary>,
     #[serde(flatten, default)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }

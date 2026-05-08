@@ -113,6 +113,8 @@ impl Model for DeterministicModel {
             content,
             usage: self.usage_per_call.clone(),
             raw: serde_json::json!({"deterministic": true}),
+            responding_model: None,
+            fallback_attempts: Vec::new(),
         })
     }
 }

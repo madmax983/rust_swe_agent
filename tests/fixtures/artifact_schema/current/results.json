@@ -28,6 +28,7 @@
   "cache_hit_rate": 0.0,
   "retries": 0,
   "retried_instances": 0,
+  "total_fallbacks": 0,
   "pass_at_k": 1.0,
   "filter_spec": {
     "original_count": 1,

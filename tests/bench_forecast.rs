@@ -133,6 +133,10 @@ fn instance(
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -221,6 +225,10 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         cost_limit_usd: None,
         instances,
         rate_limit_events: None,
+
+        total_fallbacks: 0,
+
+        model_mix: std::collections::BTreeMap::new(),
     }
 }
 
@@ -333,6 +341,10 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         pass_at_1: true,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }];
     results.total = 1;
     results.submitted = 1;

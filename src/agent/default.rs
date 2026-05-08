@@ -19,14 +19,16 @@ use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
-use crate::error::Error;
-use crate::model::{CacheHint, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
+use crate::error::{Error, ModelError};
+use crate::model::{
+    CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role,
+};
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::trajectory::{
-    FailureCategory, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
+    FailureCategory, FallbackSummary, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
     detect_test_command, effective_test_command_patterns, exit_reason, outcome,
 };
 
@@ -137,6 +139,14 @@ pub struct DefaultAgent {
     pub policy_engine: PolicyEngine,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
+    /// Accumulated fallback failure records across every model call in this run.
+    fallback_failed_attempts: Vec<FallbackAttemptRecord>,
+    /// The model name that produced the most recent successful response.
+    last_responding_model: Option<String>,
+    /// All model names that produced a successful response across every step.
+    /// Used to build a complete `attempted_models` list even in multi-step runs
+    /// where the responding model changes between steps.
+    all_step_responders: Vec<String>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -233,6 +243,9 @@ impl DefaultAgentBuilder {
             policy_engine,
             raw_task: self.task,
             test_command_patterns,
+            fallback_failed_attempts: Vec::new(),
+            last_responding_model: None,
+            all_step_responders: Vec::new(),
         })
     }
 }
@@ -382,14 +395,25 @@ impl Agent for DefaultAgent {
             max_tokens: Some(self.config.root.model.max_tokens),
             extra: serde_json::Map::new(),
         };
-        let Some(resp) = query_model_until_cancelled(
+        let query_result = query_model_until_cancelled(
             self.model.as_ref(),
             &self.history,
             &opts,
             self.cancellation.clone(),
         )
-        .await?
-        else {
+        .await;
+        // When every model in a fallback chain fails transiently the error
+        // carries the structured attempt records. Capture them before
+        // propagating so finalize_run_metadata can still emit a summary.
+        if let Err(ModelError::AllCandidatesFailed(_, ref attempts)) = query_result {
+            self.fallback_failed_attempts
+                .extend(attempts.iter().map(|a| FallbackAttemptRecord {
+                    model: a.model.clone(),
+                    failure_reason: a.reason.clone(),
+                    retry_after_secs: a.retry_after_secs,
+                }));
+        }
+        let Some(resp) = query_result? else {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         };
@@ -404,6 +428,14 @@ impl Agent for DefaultAgent {
         self.completion_tokens = self
             .completion_tokens
             .saturating_add(resp.usage.output_tokens);
+        // Accumulate fallback telemetry from this response.
+        self.fallback_failed_attempts
+            .extend(resp.fallback_attempts.iter().cloned());
+        self.last_responding_model
+            .clone_from(&resp.responding_model);
+        if let Some(m) = &resp.responding_model {
+            self.all_step_responders.push(m.clone());
+        }
 
         if self.cancellation_requested() {
             self.finalize_cancelled();
@@ -851,6 +883,60 @@ impl DefaultAgent {
         self.trajectory.info.duration_secs = Some(self.started_at_instant.elapsed().as_secs_f64());
         self.trajectory.info.redaction = Some(self.redactor.summary());
         self.refresh_test_metadata();
+        // Populate fallback summary only when fallback was configured and used.
+        let primary = self.model.name().to_owned();
+        // When every model failed transiently, last_responding_model is None.
+        // Avoid fabricating primary as final_model — use the last attempted.
+        let all_failed =
+            !self.fallback_failed_attempts.is_empty() && self.last_responding_model.is_none();
+        let final_model = self.last_responding_model.clone().unwrap_or_else(|| {
+            if all_failed {
+                self.fallback_failed_attempts
+                    .last()
+                    .map_or_else(|| primary.clone(), |a| a.model.clone())
+            } else {
+                primary.clone()
+            }
+        });
+        if !self.fallback_failed_attempts.is_empty() {
+            // Build attempted_models from all models that were tried (failed or
+            // responded) across every step, deduped while preserving order.
+            let mut seen = std::collections::HashSet::new();
+            let mut attempted_models: Vec<String> = Vec::new();
+            for m in self
+                .fallback_failed_attempts
+                .iter()
+                .map(|a| &a.model)
+                .chain(self.all_step_responders.iter())
+            {
+                if seen.insert(m.as_str()) {
+                    attempted_models.push(m.clone());
+                }
+            }
+            let fallback_count =
+                u32::try_from(self.fallback_failed_attempts.len()).unwrap_or(u32::MAX);
+            self.trajectory.info.fallback_summary = Some(FallbackSummary {
+                primary_model: primary,
+                final_model,
+                fallback_happened: true,
+                fallback_count,
+                attempted_models,
+                failed_attempts: self.fallback_failed_attempts.clone(),
+                all_failed,
+            });
+        } else if self.last_responding_model.is_some() {
+            // FallbackModel succeeded on primary — record a "no fallback" summary
+            // so operators can confirm the primary model was used.
+            self.trajectory.info.fallback_summary = Some(FallbackSummary {
+                primary_model: primary.clone(),
+                final_model,
+                fallback_happened: false,
+                fallback_count: 0,
+                attempted_models: vec![primary],
+                failed_attempts: Vec::new(),
+                all_failed: false,
+            });
+        }
     }
 
     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
@@ -1248,6 +1334,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::env::LocalEnvironment;
+    use crate::model::fallback::FallbackModel;
     use crate::model::{DeterministicModel, ModelResponse, ModelUsage, QueryOpts};
     use crate::trajectory::FailureCategory;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1291,6 +1378,8 @@ mod tests {
                     cost_usd: Some(0.02),
                 },
                 raw: serde_json::json!({"cancelled_during_query": true}),
+                responding_model: None,
+                fallback_attempts: Vec::new(),
             })
         }
     }
@@ -1324,6 +1413,8 @@ mod tests {
                     cost_usd: Some(0.02),
                 },
                 raw: serde_json::json!({"slow_model": true}),
+                responding_model: None,
+                fallback_attempts: Vec::new(),
             })
         }
     }
@@ -1839,6 +1930,36 @@ mod tests {
             !has_budget_block,
             "budget block should not appear when no per-task budget is set"
         );
+    }
+
+    #[tokio::test]
+    async fn submit_via_fallback_model_records_no_fallback_summary() {
+        // When the primary model succeeds, finalize_run_metadata should record
+        // a fallback_summary with fallback_happened=false so operators can confirm
+        // which model was used even when no fallback occurred.
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let inner = Box::new(DeterministicModel::new(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+        ]));
+        let model = Arc::new(FallbackModel::new(vec![inner]));
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model,
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap();
+        let _ = agent.run().await.unwrap();
+        let summary = agent.trajectory.info.fallback_summary.as_ref().unwrap();
+        assert!(!summary.fallback_happened);
+        assert_eq!(summary.fallback_count, 0);
+        assert!(summary.failed_attempts.is_empty());
+        assert!(!summary.all_failed);
     }
 
     #[tokio::test]

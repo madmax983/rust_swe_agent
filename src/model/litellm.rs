@@ -24,7 +24,10 @@
 use async_trait::async_trait;
 
 use litellm_rs::core::cost::{UsageTokens, generic_cost_per_token};
-use litellm_rs::{CompletionOptions, assistant_message, completion, system_message, user_message};
+use litellm_rs::{
+    CompletionOptions, LiteLLMError, ProviderError, assistant_message, completion, system_message,
+    user_message,
+};
 
 use super::{Message, Model, ModelResponse, ModelUsage, QueryOpts, Role, cap_breakpoints};
 use crate::error::ModelError;
@@ -116,7 +119,7 @@ impl Model for LitellmBackend {
 
         let resp = completion(&self.model, lite_msgs, Some(lite_opts))
             .await
-            .map_err(|e| ModelError::Request(e.to_string()))?;
+            .map_err(classify_litellm_error)?;
 
         let choice = resp
             .choices
@@ -170,6 +173,8 @@ impl Model for LitellmBackend {
                 cost_usd,
             },
             raw,
+            responding_model: None,
+            fallback_attempts: Vec::new(),
         })
     }
 }
@@ -200,6 +205,65 @@ fn split_prompt_usage(prompt_tokens: u64, cached_tokens: u64) -> (u64, u64) {
         (prompt_tokens - cached_tokens, cached_tokens)
     } else {
         (prompt_tokens, cached_tokens)
+    }
+}
+
+/// Map a `LiteLLMError` (= `GatewayError`) to the coarser `ModelError`
+/// taxonomy so `FallbackModel` can apply the right retry policy.
+///
+/// Transient → `RateLimited` or `Request`.
+/// Non-transient → `MissingCredentials`, `Malformed`, or `Refused`.
+fn classify_litellm_error(e: LiteLLMError) -> ModelError {
+    match e {
+        // Explicit rate-limit → always transient. Embed the structured
+        // Retry-After seconds into the message text so that
+        // `ModelError::retry_after_secs()` can recover it later (e.g.
+        // when a fallback succeeds and the governor needs to set the floor).
+        LiteLLMError::RateLimit {
+            message,
+            retry_after,
+            ..
+        } => {
+            if let Some(secs) = retry_after {
+                ModelError::RateLimited(format!("{message} retry-after: {secs}"))
+            } else {
+                ModelError::RateLimited(message)
+            }
+        }
+        // Network / connectivity / service-unavailable / provider 5xx → transient.
+        // Internal is used by litellm-rs for provider 5xx via api_error(500, …).
+        LiteLLMError::Network(msg)
+        | LiteLLMError::Unavailable(msg)
+        | LiteLLMError::Timeout(msg)
+        | LiteLLMError::Internal(msg) => ModelError::Request(msg),
+        LiteLLMError::HttpClient(e) => ModelError::Request(e.to_string()),
+        // Auth/credentials → non-transient; trying a different key won't help.
+        LiteLLMError::Auth(msg) | LiteLLMError::Forbidden(msg) => {
+            ModelError::MissingCredentials(msg)
+        }
+        // Bad request / bad model name → non-transient; retrying won't fix it.
+        LiteLLMError::BadRequest(msg)
+        | LiteLLMError::Validation(msg)
+        | LiteLLMError::NotFound(msg) => ModelError::Malformed(msg),
+        // Provider-level errors: delegate to litellm's own retryability judgment.
+        LiteLLMError::Provider(ref e) => classify_provider_error(e, &format!("{e}")),
+        // Everything else (Config, Serialization, …): treat as non-transient.
+        _ => ModelError::Malformed(e.to_string()),
+    }
+}
+
+fn classify_provider_error(e: &ProviderError, msg: &str) -> ModelError {
+    // Provider-native 429s (RateLimit variant or ApiError{status:429}) must map
+    // to RateLimited so the sweep governor tracks them even when a fallback
+    // succeeds and swallows the error before it bubbles up.
+    if e.http_status() == 429 {
+        ModelError::RateLimited(msg.to_owned())
+    } else if e.is_retryable() {
+        ModelError::Request(msg.to_owned())
+    } else {
+        // Non-retryable provider errors: auth failures, content policy,
+        // context-length overflow, bad model config, etc.
+        ModelError::Malformed(msg.to_owned())
     }
 }
 
@@ -265,5 +329,160 @@ mod tests {
         let (input_tokens, cache_read_tokens) = split_prompt_usage(100, 800);
         assert_eq!(input_tokens, 100);
         assert_eq!(cache_read_tokens, 800);
+    }
+
+    #[test]
+    fn rate_limit_error_maps_to_rate_limited() {
+        let e = LiteLLMError::RateLimit {
+            message: "429".into(),
+            retry_after: None,
+            rpm_limit: None,
+            tpm_limit: None,
+        };
+        assert!(matches!(
+            classify_litellm_error(e),
+            ModelError::RateLimited(_)
+        ));
+    }
+
+    #[test]
+    fn auth_error_maps_to_missing_credentials() {
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Auth("401".into())),
+            ModelError::MissingCredentials(_)
+        ));
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Forbidden("403".into())),
+            ModelError::MissingCredentials(_)
+        ));
+    }
+
+    #[test]
+    fn bad_request_maps_to_malformed() {
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::BadRequest("bad model".into())),
+            ModelError::Malformed(_)
+        ));
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::NotFound("no such model".into())),
+            ModelError::Malformed(_)
+        ));
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Validation("invalid param".into())),
+            ModelError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn network_and_unavailable_map_to_request() {
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Network("timeout".into())),
+            ModelError::Request(_)
+        ));
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Unavailable("5xx".into())),
+            ModelError::Request(_)
+        ));
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Timeout("deadline".into())),
+            ModelError::Request(_)
+        ));
+    }
+
+    #[test]
+    fn auth_and_bad_request_are_not_transient() {
+        let auth = classify_litellm_error(LiteLLMError::Auth("bad key".into()));
+        assert!(!auth.is_transient(), "auth errors must not be transient");
+        let bad_req = classify_litellm_error(LiteLLMError::BadRequest("400".into()));
+        assert!(!bad_req.is_transient(), "bad request must not be transient");
+    }
+
+    #[test]
+    fn rate_limit_and_network_are_transient() {
+        let rl = classify_litellm_error(LiteLLMError::RateLimit {
+            message: "429".into(),
+            retry_after: None,
+            rpm_limit: None,
+            tpm_limit: None,
+        });
+        assert!(rl.is_transient(), "rate limit must be transient");
+        let net = classify_litellm_error(LiteLLMError::Network("conn refused".into()));
+        assert!(net.is_transient(), "network errors must be transient");
+    }
+
+    #[test]
+    fn internal_gateway_error_is_transient() {
+        // GatewayError::Internal is used by litellm-rs for provider 5xx via api_error(500, …).
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Internal("provider 500".into())),
+            ModelError::Request(_)
+        ));
+    }
+
+    #[test]
+    fn provider_rate_limit_maps_to_rate_limited_not_request() {
+        // ProviderError::RateLimit and ApiError{429} must reach the governor as
+        // RateLimited, not as a generic transient Request.
+        let rl = classify_provider_error(
+            &ProviderError::rate_limit("test-provider", None),
+            "429 from provider",
+        );
+        assert!(
+            matches!(rl, ModelError::RateLimited(_)),
+            "ProviderError::RateLimit should map to RateLimited, got {rl:?}"
+        );
+
+        let api_429 = classify_provider_error(
+            &ProviderError::ApiError {
+                provider: "test-provider",
+                status: 429,
+                message: "rate limited".into(),
+            },
+            "api 429",
+        );
+        assert!(
+            matches!(api_429, ModelError::RateLimited(_)),
+            "ProviderError::ApiError(429) should map to RateLimited, got {api_429:?}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_with_structured_retry_after_embeds_value_in_message() {
+        let e = classify_litellm_error(LiteLLMError::RateLimit {
+            message: "too many requests".into(),
+            retry_after: Some(45),
+            rpm_limit: None,
+            tpm_limit: None,
+        });
+        match e {
+            crate::error::ModelError::RateLimited(msg) => {
+                assert!(
+                    msg.contains("retry-after: 45"),
+                    "structured retry_after should be embedded in message: {msg}"
+                );
+                assert_eq!(
+                    crate::error::ModelError::RateLimited(msg).retry_after_secs(),
+                    Some(45),
+                    "retry_after_secs should parse back the embedded value"
+                );
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_limit_without_retry_after_preserves_original_message() {
+        let e = classify_litellm_error(LiteLLMError::RateLimit {
+            message: "quota exceeded".into(),
+            retry_after: None,
+            rpm_limit: None,
+            tpm_limit: None,
+        });
+        match e {
+            crate::error::ModelError::RateLimited(msg) => {
+                assert_eq!(msg, "quota exceeded");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 }

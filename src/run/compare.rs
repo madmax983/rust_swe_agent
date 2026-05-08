@@ -196,6 +196,10 @@ pub struct CompareReport {
     pub cost_per_resolved_delta_usd: Option<f64>,
     /// Pareto-dominance verdict on the (resolved_rate, cost_per_resolved_usd) plane.
     pub pareto_verdict: ParetoVerdict,
+    /// Warnings when the baseline and candidate used different model mixes
+    /// (fallback chains differ). Empty when both sides used the same model(s).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_mix_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -286,6 +290,9 @@ impl CompareReport {
         write_patch_stats_delta_lines(&mut s, self);
         write_compare_cost_and_token_section(&mut s, self);
         write_rate_limit_events_section(&mut s, self);
+        for w in &self.model_mix_warnings {
+            let _ = writeln!(s, "WARNING: {w}");
+        }
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -702,9 +709,81 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
     }
 }
 
-/// Load all `InstanceResult`s from a sweep output directory.
+// ── Model-mix warning helpers (issue #91) ────────────────────────────────────
+
+/// Snapshot of model-mix data extracted from a `SweepResults` for comparison.
+#[derive(Debug, Clone)]
+pub struct ModelMixSnapshot {
+    /// Count of instances by final responding model name.
+    pub model_mix: std::collections::BTreeMap<String, usize>,
+    /// Total fallback attempts in the sweep.
+    pub total_fallbacks: u64,
+}
+
+/// Build human-readable warnings when a `bench compare` pair has mismatched
+/// model mixes or different fallback rates. Called before resolved-rate deltas
+/// are reported so operators can see the contamination signal first.
 ///
-/// Tries `results.json` first (the canonical end-of-sweep summary). Falls
+/// Returns an empty `Vec` when both sides are identical (no fallbacks, same
+/// model distribution) — no noise for normal same-model comparisons.
+#[must_use]
+pub fn build_model_mix_warnings(
+    baseline: &ModelMixSnapshot,
+    candidate: &ModelMixSnapshot,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let baseline_has_fallback = baseline.total_fallbacks > 0 || baseline.model_mix.len() > 1;
+    let candidate_has_fallback = candidate.total_fallbacks > 0 || candidate.model_mix.len() > 1;
+
+    match (baseline_has_fallback, candidate_has_fallback) {
+        (false, true) => warnings.push(
+            "Model-mix warning: candidate sweep used model fallback but baseline did not;              resolved-rate delta may reflect model differences, not prompt/harness changes."
+                .to_owned(),
+        ),
+        (true, false) => warnings.push(
+            "Model-mix warning: baseline sweep used model fallback but candidate did not;              resolved-rate delta may reflect model differences, not prompt/harness changes."
+                .to_owned(),
+        ),
+        (true, true) => {
+            if baseline.model_mix != candidate.model_mix {
+                let b_summary: Vec<String> = baseline
+                    .model_mix
+                    .iter()
+                    .map(|(m, n)| format!("{m}:{n}"))
+                    .collect();
+                let c_summary: Vec<String> = candidate
+                    .model_mix
+                    .iter()
+                    .map(|(m, n)| format!("{m}:{n}"))
+                    .collect();
+                warnings.push(format!(
+                    "Model-mix warning: baseline and candidate have different final model                      distributions (baseline=[{}], candidate=[{}]); compare deltas may be                      confounded by model differences.",
+                    b_summary.join(", "),
+                    c_summary.join(", "),
+                ));
+            }
+            // Same model distribution but different fallback *rates*: one sweep
+            // hit many more transient primary failures than the other, which can
+            // still confound resolved-rate deltas even when both ended up on the
+            // same final model.
+            if baseline.total_fallbacks != candidate.total_fallbacks {
+                warnings.push(format!(
+                    "Model-mix warning: baseline and candidate have different fallback attempt \
+                     counts (baseline={}, candidate={}); a large rate difference may reflect \
+                     different primary-model reliability rather than harness or prompt changes.",
+                    baseline.total_fallbacks, candidate.total_fallbacks,
+                ));
+            }
+        }
+        (false, false) => {}
+    }
+
+    warnings
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// back to scanning per-instance `*.traj.json` files when no `results.json`
 /// exists, reconstructing minimal `InstanceResult`s. Tolerant of missing
 /// newer fields: defaults flow through serde.
@@ -720,6 +799,8 @@ pub struct LoadedSweep {
     pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
     pub artifact: Option<ArtifactCompatibility>,
     pub artifact_warnings: Vec<String>,
+    pub total_fallbacks: u64,
+    pub model_mix: std::collections::BTreeMap<String, usize>,
 }
 
 struct DiffContext<'a> {
@@ -737,6 +818,7 @@ pub(crate) struct LoadedRunSlot {
     pub result: InstanceResult,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
     let results_path = dir.join("results.json");
     if results_path.exists() {
@@ -752,6 +834,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         let filter_spec_present = value.get("filter_spec").is_some();
         let sweep: SweepResults = serde_json::from_value(value)?;
         let rate_limit_events = sweep.rate_limit_events.clone();
+        let total_fallbacks = sweep.total_fallbacks;
+        let model_mix = sweep.model_mix.clone();
         let partial_incomplete = sweep
             .manifest
             .as_ref()
@@ -772,8 +856,18 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                     })
                     .map(std::convert::Into::into)
             };
-            let scanned = scan_trajectory_instances(dir, min_mtime)?;
+            let scanned_slots = scan_trajectory_run_slots(dir, min_mtime)?;
+            let (slot_fallbacks, slot_mix) = fallback_totals_from_slots(&scanned_slots);
+            let scanned = aggregate_scanned_results(scanned_slots);
             let manifest = sweep.manifest;
+            // When trajectory files are fresher than results.json, use scanned
+            // instances and re-derive fallback totals from per-run-slot data so
+            // model-mix warnings count all reruns, not just the winning slot.
+            let (effective_fallbacks, effective_mix) = if scanned.is_empty() {
+                (total_fallbacks, model_mix)
+            } else {
+                (slot_fallbacks, slot_mix)
+            };
             return Ok(LoadedSweep {
                 instances: if scanned.is_empty() {
                     sweep
@@ -793,6 +887,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 rate_limit_events,
                 artifact: Some(artifact),
                 artifact_warnings,
+                total_fallbacks: effective_fallbacks,
+                model_mix: effective_mix,
             });
         }
         return Ok(LoadedSweep {
@@ -810,6 +906,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             rate_limit_events,
             artifact: Some(artifact),
             artifact_warnings,
+            total_fallbacks,
+            model_mix,
         });
     }
     if !dir.exists() {
@@ -819,7 +917,9 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         )));
     }
 
-    let out = scan_trajectory_instances(dir, None)?;
+    let slots = scan_trajectory_run_slots(dir, None)?;
+    let (total_fallbacks, model_mix) = fallback_totals_from_slots(&slots);
+    let out = aggregate_scanned_results(slots);
     Ok(LoadedSweep {
         instances: out,
         manifest: None,
@@ -827,6 +927,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         rate_limit_events: None,
         artifact: None,
         artifact_warnings: Vec::new(),
+        total_fallbacks,
+        model_mix,
     })
 }
 
@@ -834,13 +936,24 @@ fn manifest_indicates_resume(manifest: &ProvenanceManifest) -> bool {
     manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|arg| arg == "--resume")
 }
 
-fn scan_trajectory_instances(
-    dir: &Path,
-    min_mtime: Option<SystemTime>,
-) -> Result<HashMap<String, InstanceResult>, Error> {
-    Ok(aggregate_scanned_results(scan_trajectory_run_slots(
-        dir, min_mtime,
-    )?))
+/// Compute `total_fallbacks` and `model_mix` from per-run-slot data before
+/// aggregation, so that reruns with different responding models are all counted.
+fn fallback_totals_from_slots(
+    slots: &[LoadedRunSlot],
+) -> (u64, std::collections::BTreeMap<String, usize>) {
+    let total_fallbacks: u64 = slots
+        .iter()
+        .filter_map(|s| s.result.fallback_count)
+        .map(u64::from)
+        .sum();
+    let mut model_mix: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for s in slots {
+        if let Some(model) = s.result.final_model.as_deref() {
+            *model_mix.entry(model.to_owned()).or_insert(0) += 1;
+        }
+    }
+    (total_fallbacks, model_mix)
 }
 
 fn scan_trajectory_run_slots(
@@ -1005,6 +1118,16 @@ fn instance_result_from_trajectory(
         pass_at_1: resolved,
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        // Exclude all-failed runs from model_mix — final_model is only the
+        // last attempted model when all_failed=true, not a responding model.
+        final_model: info.fallback_summary.as_ref().and_then(|s| {
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
+        }),
     }))
 }
 
@@ -1080,6 +1203,14 @@ fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, Ins
             .rev()
             .find_map(|(_, result)| result.last_tests_passed);
         aggregate.cost_usd = optional_sum(rows.iter().filter_map(|(_, result)| result.cost_usd));
+        // Sum fallback counts across all run slots; keep final_model from the
+        // first (pass@1 representative) run.
+        aggregate.fallback_count = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.fallback_count)
+                .fold(0u32, u32::saturating_add),
+        );
+        aggregate.final_model.clone_from(&first.final_model);
         aggregate.prompt_tokens = Some(
             rows.iter()
                 .filter_map(|(_, result)| result.prompt_tokens)
@@ -1197,6 +1328,16 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             candidate_model_name,
         },
     )?;
+    report.model_mix_warnings = build_model_mix_warnings(
+        &ModelMixSnapshot {
+            model_mix: baseline.model_mix.clone(),
+            total_fallbacks: baseline.total_fallbacks,
+        },
+        &ModelMixSnapshot {
+            model_mix: candidate.model_mix.clone(),
+            total_fallbacks: candidate.total_fallbacks,
+        },
+    );
     Ok(report)
 }
 
@@ -1451,6 +1592,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_cost_per_resolved_usd,
         cost_per_resolved_delta_usd,
         pareto_verdict,
+        model_mix_warnings: Vec::new(),
     }
 }
 
@@ -2499,6 +2641,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2526,6 +2672,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2555,6 +2705,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2611,6 +2765,10 @@ mod tests {
             cost_limit_usd: None,
             instances,
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.join("results.json"),
@@ -2752,6 +2910,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -2826,6 +2988,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -2850,6 +3016,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -3103,6 +3273,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a")],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -3132,6 +3306,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -3149,6 +3324,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
 
         std::fs::write(
@@ -3202,6 +3378,7 @@ mod tests {
             behavioral: crate::run::evaluate::BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),
@@ -3298,6 +3475,7 @@ mod tests {
         assert_eq!(r.steps, Some(3));
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn incomplete_results_json_falls_back_to_trajectory_scan() {
         use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
@@ -3377,6 +3555,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3441,6 +3623,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a")],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -3453,6 +3639,7 @@ mod tests {
         assert!(loaded.filter_spec.is_none());
     }
 
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn incomplete_results_json_ignores_stale_trajectories_before_started_at() {
         use crate::trajectory::{FORMAT_VERSION, TrajectoryInfo};
@@ -3547,6 +3734,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3654,6 +3845,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3788,6 +3983,8 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![],
             rate_limit_events: Some(events),
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3798,5 +3995,138 @@ mod tests {
         let ev = loaded.rate_limit_events.unwrap();
         assert_eq!(ev.throttled_calls, 3);
         assert_eq!(ev.configured_max_rpm, Some(600));
+    }
+
+    fn slot(
+        instance_id: &str,
+        run_index: u32,
+        final_model: Option<&str>,
+        fallback_count: Option<u32>,
+    ) -> LoadedRunSlot {
+        let mut r = submitted(instance_id);
+        r.final_model = final_model.map(str::to_owned);
+        r.fallback_count = fallback_count;
+        LoadedRunSlot {
+            instance_id: instance_id.into(),
+            run_index,
+            result: r,
+        }
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_empty_returns_zeros() {
+        let (total, mix) = fallback_totals_from_slots(&[]);
+        assert_eq!(total, 0);
+        assert!(mix.is_empty());
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_sums_fallback_counts_across_reruns() {
+        let slots = vec![
+            slot("a", 0, Some("model-x"), Some(1)),
+            slot("a", 1, Some("model-y"), Some(2)),
+            slot("b", 0, Some("model-x"), None),
+        ];
+        let (total, mix) = fallback_totals_from_slots(&slots);
+        assert_eq!(total, 3, "should sum fallback counts from all slots");
+        assert_eq!(mix["model-x"], 2, "model-x appears in slot a/0 and b/0");
+        assert_eq!(mix["model-y"], 1, "model-y appears in slot a/1 only");
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_counts_each_rerun_slot_model_independently() {
+        // When reruns use different models, model_mix must include all of them,
+        // not just the first (winning) slot per instance.
+        let slots = vec![
+            slot("task-1", 0, Some("primary"), Some(0)),
+            slot("task-1", 1, Some("secondary"), Some(1)),
+        ];
+        let (_, mix) = fallback_totals_from_slots(&slots);
+        assert!(mix.contains_key("primary"), "primary should be counted");
+        assert!(mix.contains_key("secondary"), "secondary should be counted");
+        assert_eq!(mix["primary"] + mix["secondary"], 2);
+    }
+
+    #[test]
+    fn fallback_totals_from_slots_slot_with_no_final_model_is_skipped_in_mix() {
+        let slots = vec![
+            slot("a", 0, None, Some(1)),
+            slot("b", 0, Some("model-z"), Some(0)),
+        ];
+        let (total, mix) = fallback_totals_from_slots(&slots);
+        assert_eq!(total, 1);
+        assert_eq!(mix.len(), 1);
+        assert_eq!(mix["model-z"], 1);
+    }
+
+    fn snapshot_one_model(model: &str, n: usize, total_fallbacks: u64) -> ModelMixSnapshot {
+        let mut mix = std::collections::BTreeMap::new();
+        mix.insert(model.to_owned(), n);
+        ModelMixSnapshot {
+            model_mix: mix,
+            total_fallbacks,
+        }
+    }
+
+    #[test]
+    fn build_model_mix_warnings_no_fallback_on_either_side_is_silent() {
+        let b = ModelMixSnapshot {
+            model_mix: std::collections::BTreeMap::new(),
+            total_fallbacks: 0,
+        };
+        assert!(build_model_mix_warnings(&b, &b).is_empty());
+    }
+
+    #[test]
+    fn build_model_mix_warnings_candidate_only_fallback_warns() {
+        let base = ModelMixSnapshot {
+            model_mix: std::collections::BTreeMap::new(),
+            total_fallbacks: 0,
+        };
+        let cand = snapshot_one_model("secondary", 5, 5);
+        let w = build_model_mix_warnings(&base, &cand);
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("candidate sweep used model fallback"),
+            "{}",
+            w[0]
+        );
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_same_mix_same_rate_is_silent() {
+        let snap = snapshot_one_model("secondary", 5, 10);
+        assert!(build_model_mix_warnings(&snap, &snap).is_empty());
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_different_rate_warns() {
+        let b = snapshot_one_model("secondary", 5, 1);
+        let c = snapshot_one_model("secondary", 5, 100);
+        let w = build_model_mix_warnings(&b, &c);
+        assert_eq!(
+            w.len(),
+            1,
+            "expected exactly one warning for rate diff: {w:?}"
+        );
+        assert!(
+            w[0].contains("different fallback attempt counts"),
+            "warning should mention count diff: {}",
+            w[0]
+        );
+        assert!(w[0].contains("baseline=1"), "{}", w[0]);
+        assert!(w[0].contains("candidate=100"), "{}", w[0]);
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_different_mix_and_rate_warns_twice() {
+        let b = snapshot_one_model("primary", 8, 2);
+        let c = snapshot_one_model("secondary", 8, 50);
+        let w = build_model_mix_warnings(&b, &c);
+        assert_eq!(
+            w.len(),
+            2,
+            "expected warnings for both mix diff and rate diff: {w:?}"
+        );
     }
 }

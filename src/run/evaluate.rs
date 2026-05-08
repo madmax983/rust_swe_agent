@@ -126,6 +126,8 @@ pub struct EvaluationResults {
     pub breakdown: Vec<BreakdownBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cost_attribution: Vec<CostAttributionBucket>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_mix_summary: Vec<ModelMixBucket>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -181,6 +183,16 @@ pub struct CostAttributionBucket {
     pub total_usd: f64,
     pub mean_usd: f64,
     pub share_pct: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelMixBucket {
+    pub model: String,
+    pub n: usize,
+    pub resolved: usize,
+    pub resolved_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -255,8 +267,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         &args.breakdown,
         model_name.as_deref(),
     );
+    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     if args.cost_attribution {
-        let run_slots = load_run_slots(&args.sweep_dir, &results)?;
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
             &run_output.resolved_by_run,
@@ -264,6 +276,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         )
         .rows;
     }
+    eval.model_mix_summary =
+        build_model_mix_summary_from_slots(&run_slots, &run_output.resolved_by_run);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -526,6 +540,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -878,6 +893,7 @@ fn merge_with_results(
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -985,6 +1001,7 @@ fn merge_rerun_reports_with_results(
         behavioral: BehavioralMetrics::default(),
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
+        model_mix_summary: Vec::new(),
     }
 }
 
@@ -1006,6 +1023,57 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
         eval_log_path: None,
         patch_stats: None,
     }
+}
+
+/// Build the model-mix summary from per-run-slot data so that reruns using
+/// different fallback models are all counted. Each slot's `final_model` is
+/// counted independently; its resolution comes from the per-slot key in
+/// `resolved_by_run` (falls back to `false` when no evaluation result exists).
+fn build_model_mix_summary_from_slots(
+    slots: &[crate::run::compare::LoadedRunSlot],
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+) -> Vec<ModelMixBucket> {
+    let mut by_model: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
+    for slot in slots {
+        let Some(model) = slot.result.final_model.as_deref() else {
+            continue;
+        };
+        let resolved = resolved_by_run
+            .get(&RunSlotKey::new(&slot.instance_id, slot.run_index))
+            .copied()
+            .unwrap_or(false);
+        let (n, res, cost) = by_model.entry(model.to_owned()).or_default();
+        *n += 1;
+        if resolved {
+            *res += 1;
+        }
+        *cost += slot.result.cost_usd.unwrap_or(0.0);
+    }
+    if by_model.is_empty() {
+        return Vec::new();
+    }
+    by_model
+        .into_iter()
+        .map(|(model, (n, resolved, total_cost))| {
+            #[allow(clippy::cast_precision_loss)]
+            let resolved_rate = if n == 0 {
+                0.0
+            } else {
+                resolved as f64 / n as f64
+            };
+            ModelMixBucket {
+                model,
+                n,
+                resolved,
+                resolved_rate,
+                total_cost_usd: if total_cost > 0.0 {
+                    Some(total_cost)
+                } else {
+                    None
+                },
+            }
+        })
+        .collect()
 }
 
 fn build_breakdown(
@@ -1400,6 +1468,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -1427,6 +1499,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -1486,6 +1562,7 @@ mod tests {
             ],
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -1666,6 +1743,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: vec![],
             cost_attribution: vec![],
+            model_mix_summary: vec![],
         };
         let summary = summarize_with_model(&eval, &results, None);
         assert_eq!(summary.budget_exhausted_excluded, 1);
@@ -1787,6 +1865,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -1836,6 +1915,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1867,6 +1947,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -1887,6 +1968,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1914,6 +1996,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -1939,6 +2022,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);
@@ -1950,5 +2034,68 @@ mod tests {
             rendered.contains("4.0000"),
             "cost_per_resolved_usd should be 4.0000 (1 resolved at $4); got:\n{rendered}"
         );
+    }
+
+    fn make_slot(
+        instance_id: &str,
+        run_index: u32,
+        final_model: Option<&str>,
+        cost_usd: Option<f64>,
+    ) -> crate::run::compare::LoadedRunSlot {
+        let mut r = submitted(instance_id);
+        r.final_model = final_model.map(str::to_owned);
+        r.cost_usd = cost_usd;
+        crate::run::compare::LoadedRunSlot {
+            instance_id: instance_id.into(),
+            run_index,
+            result: r,
+        }
+    }
+
+    #[test]
+    fn model_mix_from_slots_empty_returns_empty() {
+        let buckets = build_model_mix_summary_from_slots(&[], &HashMap::new());
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn model_mix_from_slots_skips_slots_with_no_final_model() {
+        let slots = vec![make_slot("a", 0, None, None)];
+        let buckets = build_model_mix_summary_from_slots(&slots, &HashMap::new());
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn model_mix_from_slots_counts_all_rerun_slots() {
+        // Two slots for same instance using different models — both must appear.
+        let slots = vec![
+            make_slot("a", 0, Some("primary"), Some(1.0)),
+            make_slot("a", 1, Some("secondary"), Some(0.5)),
+        ];
+        let buckets = build_model_mix_summary_from_slots(&slots, &HashMap::new());
+        assert_eq!(buckets.len(), 2);
+        let models: Vec<&str> = buckets.iter().map(|b| b.model.as_str()).collect();
+        assert!(models.contains(&"primary"), "primary missing: {models:?}");
+        assert!(
+            models.contains(&"secondary"),
+            "secondary missing: {models:?}"
+        );
+    }
+
+    #[test]
+    fn model_mix_from_slots_uses_per_slot_resolution() {
+        let slots = vec![
+            make_slot("a", 0, Some("model-x"), None),
+            make_slot("b", 0, Some("model-x"), None),
+        ];
+        let mut resolved_by_run = HashMap::new();
+        resolved_by_run.insert(RunSlotKey::new("a", 0), true);
+        // b/0 not in map → false
+        let buckets = build_model_mix_summary_from_slots(&slots, &resolved_by_run);
+        assert_eq!(buckets.len(), 1);
+        let bucket = &buckets[0];
+        assert_eq!(bucket.model, "model-x");
+        assert_eq!(bucket.n, 2);
+        assert_eq!(bucket.resolved, 1);
     }
 }

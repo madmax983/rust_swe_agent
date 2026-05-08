@@ -50,6 +50,8 @@ pub struct TailSnapshot {
     pub is_complete: bool,
     pub abort_reason: Option<String>,
     pub warnings: Vec<String>,
+    pub total_fallbacks: u64,
+    pub model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +73,8 @@ struct SweepMeta {
     finished_at: Option<DateTime<Utc>>,
     parallelism: Option<usize>,
     failure_counts: BTreeMap<FailureCategory, usize>,
+    total_fallbacks: u64,
+    model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +93,8 @@ struct TerminalRecord {
     completion_tokens: Option<u64>,
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
+    fallback_count: Option<u32>,
+    final_model: Option<String>,
 }
 
 impl TerminalRecord {
@@ -130,6 +136,13 @@ impl TerminalRecord {
         }
         if self.ended_at.is_none() {
             self.ended_at = other.ended_at;
+        }
+        self.fallback_count = match (self.fallback_count, other.fallback_count) {
+            (None, v) | (v, None) => v,
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+        };
+        if self.final_model.is_none() {
+            self.final_model.clone_from(&other.final_model);
         }
     }
 
@@ -179,7 +192,11 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         }
     }
 
-    for record in scan_trajectories(sweep_dir, &mut warnings)? {
+    let scanned_slots = scan_trajectories(sweep_dir, &mut warnings)?;
+    // Compute fallback totals from raw per-slot records before merging so that
+    // reruns using different fallback models are all counted in the model_mix.
+    let (scanned_fallbacks, scanned_mix) = fallback_totals_from_records(scanned_slots.iter());
+    for record in scanned_slots {
         records
             .entry(record.instance_id.clone())
             .and_modify(|existing| existing.merge_trajectory(&record))
@@ -292,6 +309,16 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         None
     };
 
+    // During an in-progress sweep results.json hasn't been written yet, so
+    // meta.total_fallbacks and meta.model_mix are zero/empty. Derive live
+    // totals from the scanned trajectory records instead.
+    let (total_fallbacks, model_mix) =
+        if meta.total_fallbacks == 0 && meta.model_mix.is_empty() && !records.is_empty() {
+            (scanned_fallbacks, scanned_mix)
+        } else {
+            (meta.total_fallbacks, std::mem::take(&mut meta.model_mix))
+        };
+
     Ok(TailSnapshot {
         sweep_dir: sweep_dir.to_path_buf(),
         status,
@@ -312,6 +339,8 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         is_complete,
         abort_reason,
         warnings,
+        total_fallbacks,
+        model_mix,
     })
 }
 
@@ -409,6 +438,19 @@ fn parse_sweep_meta(value: &serde_json::Value) -> SweepMeta {
         finished_at,
         parallelism,
         failure_counts: parse_failure_counts(value),
+        total_fallbacks: get_u64(value, "total_fallbacks").unwrap_or(0),
+        model_mix: value
+            .get("model_mix")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        v.as_u64()
+                            .map(|n| (k.clone(), usize::try_from(n).unwrap_or(usize::MAX)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -464,6 +506,9 @@ fn record_from_result_value(
         ended_at: get_str(value, "ended_at")
             .or_else(|| get_str(value, "finished_at"))
             .and_then(parse_ts),
+        fallback_count: get_u64(value, "fallback_count")
+            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+        final_model: get_str(value, "final_model").map(ToOwned::to_owned),
     })
 }
 
@@ -588,7 +633,33 @@ fn terminal_record_from_trajectory(
         completion_tokens,
         started_at: info.started_at.as_deref().and_then(parse_ts),
         ended_at: info.ended_at.as_deref().and_then(parse_ts),
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        // Exclude all-failed runs: no model produced a response, so they
+        // should not appear in model_mix.
+        final_model: info.fallback_summary.as_ref().and_then(|s| {
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
+        }),
     }))
+}
+
+fn fallback_totals_from_records<'a>(
+    records: impl Iterator<Item = &'a TerminalRecord>,
+) -> (u64, BTreeMap<String, usize>) {
+    let mut total_fallbacks: u64 = 0;
+    let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
+    for record in records {
+        if let Some(count) = record.fallback_count {
+            total_fallbacks = total_fallbacks.saturating_add(u64::from(count));
+        }
+        if let Some(ref model) = record.final_model {
+            *model_mix.entry(model.clone()).or_insert(0) += 1;
+        }
+    }
+    (total_fallbacks, model_mix)
 }
 
 fn failure_counts_from_records<'a>(
@@ -768,6 +839,15 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         out.push_str("Status:      completed\n");
     } else {
         out.push_str("Status:      running\n");
+    }
+    if snapshot.total_fallbacks > 0 || !snapshot.model_mix.is_empty() {
+        out.push_str("Model mix:\n");
+        for (model, count) in &snapshot.model_mix {
+            let _ = writeln!(out, "  - {model}: {count}");
+        }
+        if snapshot.total_fallbacks > 0 {
+            let _ = writeln!(out, "Fallbacks:   {}", snapshot.total_fallbacks);
+        }
     }
     for warning in &snapshot.warnings {
         let _ = writeln!(out, "Warning:     {warning}");

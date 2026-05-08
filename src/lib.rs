@@ -25,8 +25,8 @@ pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
 pub use error::{ConfigError, EnvError, Error, ModelError};
 pub use model::{
-    AnthropicBackend, CacheHint, DeterministicModel, LitellmBackend, Message, MessageExtra, Model,
-    ModelResponse, ModelUsage, QueryOpts, Role,
+    AnthropicBackend, CacheHint, DeterministicModel, FallbackAttemptRecord, FallbackModel,
+    LitellmBackend, Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, Role,
 };
 pub use policy::{
     PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
@@ -35,6 +35,6 @@ pub use policy::{
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
-    FORMAT_VERSION, FailureCategory, MessageRecord, TestInvocation, TokenUsage, Trajectory,
-    TrajectoryInfo,
+    FORMAT_VERSION, FailureCategory, FallbackSummary, MessageRecord, TestInvocation, TokenUsage,
+    Trajectory, TrajectoryInfo,
 };

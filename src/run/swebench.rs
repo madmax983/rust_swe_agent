@@ -189,6 +189,14 @@ pub struct InstanceResult {
     /// Pass/fail value of the most recent recognized pre-submit test command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    /// Number of fallback attempts for this instance. `None` means no
+    /// fallback telemetry was recorded (single-model run or legacy artifact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_count: Option<u32>,
+    /// The model that produced the final response. Matches `model_name` when
+    /// no fallback occurred. `None` for single-model runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +293,14 @@ pub struct SweepResults {
     /// set. `None` when neither flag was provided (opt-in, no behavior change).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
+    /// Total fallback attempts across all instances in this sweep. Zero for
+    /// single-model sweeps.
+    #[serde(default)]
+    pub total_fallbacks: u64,
+    /// Count of instances by final responding model name. Empty when no
+    /// fallback telemetry was recorded (single-model sweep or legacy artifact).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -497,6 +513,51 @@ impl InstanceResult {
     }
 }
 
+impl Default for SweepResults {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            sweep_status: SWEEP_STATUS_COMPLETED.to_owned(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
+            submitted: 0,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: Vec::new(),
+            rate_limit_events: None,
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
+        }
+    }
+}
+
 impl SweepResults {
     #[must_use]
     pub fn token_breakdown(&self) -> TokenBreakdown {
@@ -667,6 +728,15 @@ impl SweepResults {
         let model_name = self.manifest.as_ref().map(|m| m.model.name.as_str());
         write_spend_stats_by_resolution(&mut s, &self.instances, model_name);
         write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
+        if self.total_fallbacks > 0 || !self.model_mix.is_empty() {
+            s.push_str("Model mix (by final model):\n");
+            for (model, count) in &self.model_mix {
+                let _ = writeln!(s, "  - {model}: {count}");
+            }
+            if self.total_fallbacks > 0 {
+                let _ = writeln!(s, "Total fallbacks:    {}", self.total_fallbacks);
+            }
+        }
         s
     }
 
@@ -1141,6 +1211,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             cost_limit_usd: args.cost_limit_usd,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1219,6 +1293,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         cost_limit_usd: args.cost_limit_usd,
         instances: Vec::new(),
         rate_limit_events: None,
+
+        total_fallbacks: 0,
+
+        model_mix: BTreeMap::new(),
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1530,6 +1608,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 pass_at_1: false,
                                 tests_run_before_submit: false,
                                 last_tests_passed: None,
+
+                                fallback_count: None,
+
+                                final_model: None,
                             },
                         ));
                     }
@@ -1696,6 +1778,19 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         .copied()
         .unwrap_or(0);
 
+    let total_fallbacks: u64 = instance_results
+        .iter()
+        .filter_map(|r| r.fallback_count)
+        .map(u64::from)
+        .sum();
+    // Count from per-run slots so that pass@k sweeps with --reruns>1 correctly
+    // attribute each slot's model, not just the first (pass@1) slot's model.
+    let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &results {
+        if let Some(model) = r.result.final_model.as_deref() {
+            *model_mix.entry(model.to_owned()).or_insert(0) += 1;
+        }
+    }
     let mut sweep = SweepResults {
         total,
         sweep_status: SWEEP_STATUS_COMPLETED.into(),
@@ -1746,6 +1841,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             Some(g) => Some(g.events().await),
             None => None,
         },
+        total_fallbacks,
+        model_mix,
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -2357,6 +2454,10 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -2402,6 +2503,10 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -2734,6 +2839,15 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
             .is_some_and(|r| is_resolved_instance_result(&r.result));
         aggregate.tests_run_before_submit = rows.iter().any(|r| r.result.tests_run_before_submit);
         aggregate.last_tests_passed = rows.iter().rev().find_map(|r| r.result.last_tests_passed);
+        // Sum fallback counts across all runs; final_model from the first run
+        // (pass@1 representative). This gives accurate total_fallbacks for
+        // pass@k sweeps where later runs also hit fallbacks.
+        let fb_total: u32 = rows
+            .iter()
+            .filter_map(|r| r.result.fallback_count)
+            .fold(0u32, u32::saturating_add);
+        aggregate.fallback_count = if fb_total > 0 { Some(fb_total) } else { None };
+        aggregate.final_model.clone_from(&first.final_model);
         out.push(aggregate);
     }
     out
@@ -3016,6 +3130,17 @@ fn skipped_result_from_info(
             && info.failure_category.is_none(),
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        // When all candidates failed no model produced a response — leave None
+        // so the instance is excluded from model_mix rather than attributed to primary.
+        final_model: info.fallback_summary.as_ref().and_then(|s| {
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
+        }),
     }
 }
 
@@ -3286,6 +3411,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
     let mut total_completion_tokens = 0u64;
     let model_name = cfg.root.model.name.clone();
     let mut total_recorded_cost_usd = 0.0f64;
+    let mut total_fallback_count: u32 = 0;
     let mut terminal: Option<InstanceResult> = None;
 
     while attempts <= retry_policy.max_retries {
@@ -3371,6 +3497,50 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         total_cache_creation_tokens =
             total_cache_creation_tokens.saturating_add(cache_creation_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
+
+        // Accumulate fallback count across retry attempts (mirrors token accumulation).
+        let attempt_fallback_count = info
+            .as_ref()
+            .and_then(|i| i.fallback_summary.as_ref())
+            .map_or(0, |s| s.fallback_count);
+        total_fallback_count = total_fallback_count.saturating_add(attempt_fallback_count);
+
+        // Report rate-limited primary attempts to the governor even when a
+        // fallback model succeeded and mini::run returned Ok. Without this,
+        // swallowed 429s never update the Retry-After floor and all workers
+        // keep hammering the exhausted primary.
+        //
+        // Filter to the primary model only: a 429 from a secondary/tertiary
+        // provider should not stall healthy primary-model workers since the
+        // governor applies a global floor across all future tasks.
+        if let Some(g) = &governor {
+            let primary_rate_limited = info
+                .as_ref()
+                .and_then(|i| i.fallback_summary.as_ref())
+                .is_some_and(|s| {
+                    s.failed_attempts
+                        .iter()
+                        .any(|a| a.model == s.primary_model && a.failure_reason == "rate_limited")
+                });
+            if primary_rate_limited {
+                // Forward the max Retry-After from the primary's swallowed 429s
+                // so the governor floor is set even when a fallback succeeded.
+                let retry_after = info
+                    .as_ref()
+                    .and_then(|i| i.fallback_summary.as_ref())
+                    .and_then(|s| {
+                        s.failed_attempts
+                            .iter()
+                            .filter(|a| {
+                                a.model == s.primary_model && a.failure_reason == "rate_limited"
+                            })
+                            .filter_map(|a| a.retry_after_secs)
+                            .max()
+                    });
+                g.report_429(retry_after).await;
+            }
+        }
+
         let attempt_recorded_cost = info
             .as_ref()
             .and_then(|i| i.actual_cost_usd.or(i.total_cost_usd));
@@ -3432,6 +3602,24 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
+
+            // Use the accumulated count across all retry attempts, not just
+            // the final trajectory's count.
+            fallback_count: if total_fallback_count > 0 {
+                Some(total_fallback_count)
+            } else {
+                None
+            },
+            final_model: info
+                .as_ref()
+                .and_then(|i| i.fallback_summary.as_ref())
+                .and_then(|s| {
+                    if s.all_failed {
+                        None
+                    } else {
+                        Some(s.final_model.clone())
+                    }
+                }),
         };
         let current = publish_github_pr_for_result(
             current,
@@ -3548,6 +3736,18 @@ fn classify_error(err: &Error) -> FailureCategory {
         Error::Env(_) => FailureCategory::EnvSetup,
         // Model transport/auth/rate-limit/5xx style failures.
         Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        // When transient failures precede a terminal non-transient one, the error
+        // is wrapped in AllCandidatesFailed to preserve attempt telemetry. Peek at
+        // the last attempt's coarse reason so classification matches the terminal
+        // error type rather than always falling through to ModelApi.
+        Error::Model(crate::error::ModelError::AllCandidatesFailed(_, attempts)) => {
+            // `coarse_reason(Malformed)` in fallback.rs returns "malformed_response".
+            if attempts.last().map(|a| a.reason.as_str()) == Some("malformed_response") {
+                FailureCategory::ModelParse
+            } else {
+                FailureCategory::ModelApi
+            }
+        }
         Error::Model(_) => FailureCategory::ModelApi,
         // Any remaining typed error in the runner/agent.
         _ => FailureCategory::AgentInternal,
@@ -3909,6 +4109,10 @@ mod tests {
             pass_at_1: submitted,
             tests_run_before_submit: tests_run,
             last_tests_passed: tests_run.then_some(true),
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -4227,6 +4431,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -4263,6 +4471,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
@@ -4324,6 +4536,10 @@ mod tests {
             cache_hit_rate: 0.8,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -4400,6 +4616,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![row],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4453,6 +4673,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![with_tests, skipped_tests, error_without_submit],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4527,6 +4751,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(
@@ -4588,6 +4816,10 @@ mod tests {
                 unresolved_2,
             ],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4656,6 +4888,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![no_cost],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4712,6 +4948,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -4991,26 +5231,29 @@ instance = "inst"
             .current_dir(p)
             .output()
             .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "tester"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "tester@example.com"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["add", "a.txt"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
+        for args in &[
+            &["config", "user.name", "tester"][..],
+            &["config", "user.email", "tester@example.com"],
+            // Disable GPG signing so the commit works in environments where
+            // commit.gpgsign=true is set globally (e.g. some CI runners).
+            &["config", "commit.gpgsign", "false"],
+            &["add", "a.txt"],
+        ] {
+            Command::new("git")
+                .args(*args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        let commit_out = Command::new("git")
             .args(["commit", "-m", "init"])
             .current_dir(p)
             .output()
             .unwrap();
+        if !commit_out.status.success() {
+            // If we still can't commit (missing git identity, etc.) skip rather than fail.
+            return;
+        }
         std::fs::write(p.join("a.txt"), "dirty\n").unwrap();
         let m = resolve_harness_manifest_for_dir(Some(p));
         assert_eq!(m.git_resolution, "ok");
@@ -5672,6 +5915,10 @@ instance = "inst"
             patch_apply_invalid: 0,
             github_pr_failures: 0,
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -5998,6 +6245,8 @@ instance = "inst"
                 configured_max_rpm: Some(4000),
                 configured_max_input_tpm: Some(400_000),
             }),
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(
@@ -6065,6 +6314,10 @@ instance = "inst"
             cost_limit_usd: None,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(
@@ -6201,6 +6454,147 @@ instance = "inst"
         assert!(
             RateLimitGovernor::new(Some(600), Some(0), 4).is_some(),
             "non-zero RPM with zero TPM should still create a governor"
+        );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_malformed_terminal_is_model_parse() {
+        use crate::error::{FailedAttempt, ModelError};
+        // Transient attempt followed by a Malformed terminal: the terminal
+        // coarse_reason is "malformed_response" → ModelParse.
+        let attempts = vec![
+            FailedAttempt {
+                model: "m1".into(),
+                reason: "rate_limited".into(),
+                retry_after_secs: None,
+            },
+            FailedAttempt {
+                model: "m2".into(),
+                reason: "malformed_response".into(),
+                retry_after_secs: None,
+            },
+        ];
+        let err = Error::Model(ModelError::AllCandidatesFailed(
+            "all failed".into(),
+            attempts,
+        ));
+        assert_eq!(
+            classify_error(&err),
+            FailureCategory::ModelParse,
+            "malformed_response terminal should classify as ModelParse"
+        );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_transient_terminal_is_model_api() {
+        use crate::error::{FailedAttempt, ModelError};
+        // All transient failures: terminal reason is "rate_limited" → ModelApi.
+        let attempts = vec![
+            FailedAttempt {
+                model: "m1".into(),
+                reason: "rate_limited".into(),
+                retry_after_secs: None,
+            },
+            FailedAttempt {
+                model: "m2".into(),
+                reason: "rate_limited".into(),
+                retry_after_secs: None,
+            },
+        ];
+        let err = Error::Model(ModelError::AllCandidatesFailed(
+            "all failed".into(),
+            attempts,
+        ));
+        assert_eq!(
+            classify_error(&err),
+            FailureCategory::ModelApi,
+            "rate_limited terminal should classify as ModelApi"
+        );
+    }
+
+    #[test]
+    fn classify_error_all_candidates_failed_empty_attempts_is_model_api() {
+        use crate::error::ModelError;
+        // Edge case: no attempts recorded → fallback to ModelApi.
+        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), vec![]));
+        assert_eq!(classify_error(&err), FailureCategory::ModelApi);
+    }
+
+    #[test]
+    fn classify_error_plain_malformed_is_model_parse() {
+        use crate::error::ModelError;
+        let err = Error::Model(ModelError::Malformed("bad json".into()));
+        assert_eq!(classify_error(&err), FailureCategory::ModelParse);
+    }
+
+    #[test]
+    fn classify_error_rate_limited_is_model_api() {
+        use crate::error::ModelError;
+        let err = Error::Model(ModelError::RateLimited("429".into()));
+        assert_eq!(classify_error(&err), FailureCategory::ModelApi);
+    }
+
+    /// Verify the filtering predicate used by the governor reporting block:
+    /// only a 429 on the *primary* model should trigger `report_429`; a 429
+    /// from a fallback candidate alone must not stall primary-model workers.
+    #[test]
+    fn governor_reporting_filters_to_primary_model_only() {
+        use crate::model::FallbackAttemptRecord;
+        use crate::trajectory::FallbackSummary;
+
+        // Case 1: secondary model 429, primary succeeded → must NOT report.
+        let summary_secondary_only = FallbackSummary {
+            primary_model: "primary".into(),
+            final_model: "secondary".into(),
+            fallback_happened: true,
+            fallback_count: 1,
+            attempted_models: vec!["primary".into(), "secondary".into()],
+            failed_attempts: vec![FallbackAttemptRecord {
+                model: "secondary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: Some(30),
+            }],
+            all_failed: false,
+        };
+        let primary_rate_limited = summary_secondary_only.failed_attempts.iter().any(|a| {
+            a.model == summary_secondary_only.primary_model && a.failure_reason == "rate_limited"
+        });
+        assert!(
+            !primary_rate_limited,
+            "secondary 429 must not trigger governor"
+        );
+
+        // Case 2: primary model 429, fallback succeeded → MUST report.
+        let summary_primary_429 = FallbackSummary {
+            primary_model: "primary".into(),
+            final_model: "secondary".into(),
+            fallback_happened: true,
+            fallback_count: 1,
+            attempted_models: vec!["primary".into(), "secondary".into()],
+            failed_attempts: vec![FallbackAttemptRecord {
+                model: "primary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: Some(45),
+            }],
+            all_failed: false,
+        };
+        let primary_rate_limited = summary_primary_429.failed_attempts.iter().any(|a| {
+            a.model == summary_primary_429.primary_model && a.failure_reason == "rate_limited"
+        });
+        assert!(primary_rate_limited, "primary 429 must trigger governor");
+
+        let max_retry_after = summary_primary_429
+            .failed_attempts
+            .iter()
+            .filter(|a| {
+                a.model == summary_primary_429.primary_model && a.failure_reason == "rate_limited"
+            })
+            .filter_map(|a| a.retry_after_secs)
+            .max();
+        assert_eq!(
+            max_retry_after,
+            Some(45),
+            "primary retry-after must be forwarded"
         );
     }
 }
