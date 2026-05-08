@@ -53,15 +53,23 @@ fn is_false(b: &bool) -> bool {
 /// `"submitted"` | `"step_limit_reached"` | `"error"`.
 pub mod export;
 
+/// High-level run outcomes, used for computing pass/fail metrics.
 pub mod outcome {
+    /// The agent successfully submitted a solution.
     pub const SUBMITTED: &str = "submitted";
+    /// The agent reached the maximum allowed steps before submitting.
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
+    /// The agent encountered a fatal error during the run.
     pub const ERROR: &str = "error";
+    /// The agent exceeded the maximum allowed cost budget.
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
 }
 
+/// Reasons an agent run might exit unexpectedly before submitting.
 pub mod exit_reason {
+    /// The run was manually cancelled by the user.
     pub const CANCELLED: &str = "cancelled";
+    /// The run exceeded the maximum allowed wallclock time.
     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 
@@ -69,15 +77,22 @@ pub mod exit_reason {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCategory {
+    /// Failure during initial environment setup or repository cloning.
     EnvSetup,
+    /// Repeated errors calling the model API.
     ModelApi,
+    /// Repeated failures to parse the model's response format.
     ModelParse,
+    /// The maximum number of agent loop iterations was reached.
     StepLimit,
+    /// The maximum USD cost budget was reached.
     CostLimit,
     /// Per-task USD ceiling was reached mid-loop. The harness terminated the
     /// agent; any patch accumulated before the cap fired is preserved.
     BudgetExhausted,
+    /// The maximum real-time execution duration was reached.
     WallclockTimeout,
+    /// An internal logic error within the agent harness.
     AgentInternal,
     /// Patch was captured but `git apply --check` rejected it at capture time.
     PatchApplyInvalid,
@@ -85,6 +100,7 @@ pub enum FailureCategory {
     PatchEmpty,
     /// A configured secret literal was found in a submission artifact.
     SecretLeakDetected,
+    /// An unknown or unclassified failure occurred.
     Unknown,
 }
 
@@ -282,17 +298,31 @@ fn is_command_boundary(ch: char) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Token consumption metrics for an agent run.
 pub struct TokenUsage {
+    /// The number of tokens used in the prompt.
     pub prompt_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
+    /// The number of tokens read from the prompt cache.
     pub cache_read_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
+    /// The number of tokens used to create the prompt cache.
     pub cache_creation_tokens: u64,
+    /// The number of tokens generated in the completion.
     pub completion_tokens: u64,
 }
 
 impl TokenUsage {
     #[must_use]
+    /// Calculates the total number of prompt tokens, including cached ones.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::TokenUsage;
+    /// let usage = TokenUsage { prompt_tokens: 10, cache_read_tokens: 5, cache_creation_tokens: 2, completion_tokens: 20 };
+    /// assert_eq!(usage.total_prompt_tokens(), 17);
+    /// ```
     pub fn total_prompt_tokens(&self) -> u64 {
         self.prompt_tokens
             .saturating_add(self.cache_read_tokens)
@@ -300,6 +330,15 @@ impl TokenUsage {
     }
 
     #[must_use]
+    /// Checks if any prompt tokens were cached.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::TokenUsage;
+    /// let usage = TokenUsage { prompt_tokens: 10, cache_read_tokens: 5, cache_creation_tokens: 0, completion_tokens: 20 };
+    /// assert!(usage.has_cached_prompt_tokens());
+    /// ```
     pub fn has_cached_prompt_tokens(&self) -> bool {
         self.cache_read_tokens > 0 || self.cache_creation_tokens > 0
     }
@@ -311,46 +350,67 @@ const fn is_zero_u64(value: &u64) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Detailed information and metrics about the trajectory run.
 pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The task or issue description the agent was trying to solve.
     pub task: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The name of the primary model used for the run.
     pub model_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The reason the agent loop exited (e.g., cancelled, wallclock timeout).
     pub exit_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The category of failure, if the run did not succeed.
     pub failure_category: Option<FailureCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The high-level outcome of the run (e.g., submitted, error).
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The final output or submission from the agent.
     pub final_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The total cost of the run in USD, combining actual and baseline costs.
     pub total_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The actual cost incurred during the run in USD.
     pub actual_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The source or method used to calculate the actual cost.
     pub actual_cost_source: Option<CostSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The baseline or estimated cost in USD, typically without caching.
     pub baseline_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The model used to calculate the baseline cost.
     pub baseline_cost_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Aggregated token usage statistics for the entire run.
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The total duration of the run in seconds.
     pub duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Summary of any secret redactions performed during the run.
     pub redaction: Option<crate::redaction::RedactionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The number of steps the agent took.
     pub steps: Option<u32>,
     #[serde(default)]
+    /// A list of test commands invoked during the run and their results.
     pub test_invocations: Vec<TestInvocation>,
     #[serde(default)]
+    /// Indicates whether tests were run before the agent submitted the solution.
     pub tests_run_before_submit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Indicates whether the last executed test suite passed.
     pub last_tests_passed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The ISO 8601 formatted timestamp when the run started.
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The ISO 8601 formatted timestamp when the run ended.
     pub ended_at: Option<String>,
     /// Command-policy telemetry: counts of allowed/asked/blocked/yolo commands.
     #[serde(default, skip_serializing_if = "crate::policy::PolicyCounts::is_empty")]
@@ -360,14 +420,19 @@ pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_summary: Option<FallbackSummary>,
     #[serde(flatten, default)]
+    /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single message record in the trajectory, capturing the interaction between the agent and the environment/model.
 pub struct MessageRecord {
+    /// The role of the message sender (e.g., "user", "assistant", "system").
     pub role: String,
+    /// The text content of the message.
     pub content: String,
     #[serde(default, skip_serializing_if = "extra_is_empty")]
+    /// Additional metadata associated with the message, such as tool calls or costs.
     pub extra: MessageExtra,
 }
 
@@ -380,9 +445,16 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// The complete record of an agent's execution, including metadata, telemetry, and all messages.
+///
+/// This struct is serializeable to the `mini-swe-agent-1.1` JSON format and is the primary artifact
+/// generated at the end of a run.
 pub struct Trajectory {
+    /// The format version of the trajectory schema.
     pub trajectory_format: String,
+    /// Detailed information and metrics about the run.
     pub info: TrajectoryInfo,
+    /// The sequence of messages exchanged during the run.
     pub messages: Vec<MessageRecord>,
 }
 
@@ -415,10 +487,30 @@ impl Default for Trajectory {
 }
 
 impl Trajectory {
+    /// Creates a new, empty trajectory with default settings.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// let traj = Trajectory::new();
+    /// assert_eq!(traj.messages.len(), 0);
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Records a new message in the trajectory.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use rust_swe_agent::model::Message;
+    /// let mut traj = Trajectory::new();
+    /// traj.record_message(&Message::user("Hello"));
+    /// assert_eq!(traj.messages.len(), 1);
+    /// ```
     pub fn record_message(&mut self, m: &Message) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -427,6 +519,17 @@ impl Trajectory {
         });
     }
 
+    /// Records a new message in the trajectory, along with explicit extra metadata.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use rust_swe_agent::model::{Message, MessageExtra};
+    /// let mut traj = Trajectory::new();
+    /// traj.record_with_extra(&Message::user("Hello"), MessageExtra::default());
+    /// assert_eq!(traj.messages.len(), 1);
+    /// ```
     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -435,12 +538,32 @@ impl Trajectory {
         });
     }
 
+    /// Saves the trajectory to a file in a human-readable JSON format.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust,no_run
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use std::path::Path;
+    /// let traj = Trajectory::new();
+    /// traj.save_pretty(Path::new("run.traj.json")).unwrap();
+    /// ```
     pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
         let s = serde_json::to_string_pretty(self)?;
         std::fs::write(path, s)?;
         Ok(())
     }
 
+    /// Serializes the trajectory to a pretty-printed JSON string.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// let traj = Trajectory::new();
+    /// let json = traj.to_json_pretty().unwrap();
+    /// assert!(json.contains("mini-swe-agent-1.1"));
+    /// ```
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
