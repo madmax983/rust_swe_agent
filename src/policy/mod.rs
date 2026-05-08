@@ -316,7 +316,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // multiple option groups separated by spaces.
         PolicyRule::deny_static(
             "sudo-shell-spawn",
-            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*(?:su|bash|sh|zsh|fish|dash)\b",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*(?:\S*/)?(?:su|bash|sh|zsh|fish|dash)\b",
         ),
         PolicyRule::deny_static(
             "sudo-interactive-root",
@@ -337,7 +337,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         ),
         PolicyRule::deny_static(
             "sudo-run-as-user-shell",
-            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*-u\s+\S+\s+(?:-\S+\s+)*(?:bash|sh|zsh|fish|dash|su)\b",
+            r"sudo\s+(?:-[uUgGDhprtT]\s+\S+\s+|--(?:user|group|chdir|host|prompt|role|type)\s+\S+\s+|-\S+\s+)*-u\s+\S+\s+(?:-\S+\s+)*(?:\S*/)?(?:bash|sh|zsh|fish|dash|su)\b",
         ),
         PolicyRule::deny_static(
             "su-root",

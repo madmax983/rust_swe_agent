@@ -1860,6 +1860,32 @@ fn safe_blocks_credential_input_redirect_without_space() {
     }
 }
 
+// ── sudo with absolute shell path (Codex P1) ────────────────────────────────
+
+#[test]
+fn safe_blocks_sudo_with_absolute_shell_path() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "sudo /bin/bash",
+        "sudo /usr/bin/bash",
+        "sudo /usr/bin/sh",
+        "sudo /usr/local/bin/zsh",
+        "sudo /bin/dash",
+        // With sudo flags
+        "sudo -E /bin/bash",
+        "sudo --non-interactive /bin/bash",
+        // Run-as-user variants
+        "sudo -u root /bin/bash",
+        "sudo --user root /bin/sh",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "sudo with absolute shell path must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
