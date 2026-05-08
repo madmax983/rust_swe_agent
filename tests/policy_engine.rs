@@ -2220,6 +2220,30 @@ fn safe_blocks_process_substitution_with_absolute_shell_path() {
     }
 }
 
+// ── Root-level globs that expand to protected dirs (Codex P1) ───────────────
+
+#[test]
+fn safe_blocks_root_level_globs_expanding_to_protected_dirs() {
+    // `rm -rf /etc*` expands to `/etc` (and any other `/etc.bak` etc.)
+    // before rm runs — same effect as `rm -rf /etc`.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf /etc*",
+        "rm -rf /home*",
+        "rm -rf /var*",
+        "rm -rf /etc*.bak",
+        "rm -rf /home*.old",
+        // sudo + variant
+        "sudo rm -rf /etc*",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "/dirname* glob must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
