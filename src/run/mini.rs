@@ -107,6 +107,147 @@ pub struct MiniArgs {
     pub patch_capture: Option<PatchCaptureSpec>,
 }
 
+enum HandlePatchCaptureFlow {
+    Continue(Option<crate::agent::ExitReason>),
+    ReturnEarly,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_patch_capture(
+    agent: &mut DefaultAgent,
+    spec: &PatchCaptureSpec,
+    trajectory_name: &str,
+    cancellation: Option<MiniCancellation>,
+    server: &mut Option<SseServer>,
+    traj_path: &std::path::Path,
+    patch_written: &mut bool,
+) -> Result<HandlePatchCaptureFlow, Error> {
+    match capture_patch(agent.env.as_ref(), spec, cancellation.clone()).await {
+        Ok(diff) => {
+            if finalize_cancelled_if_requested(agent, cancellation.as_ref()) {
+                agent.trajectory.save_pretty(traj_path)?;
+                tracing::info!(?traj_path, patch_written = false, "trajectory written");
+                if let Some(server) = server.take() {
+                    server.shutdown().await;
+                }
+                return Ok(HandlePatchCaptureFlow::ReturnEarly);
+            }
+            // Always write the patch file — operators need to inspect
+            // failed patches too.
+            let redacted_patch = agent.redactor.redact_text(&diff, surface::PATCH_SUBMISSION);
+            let detected_configured_literal = agent.redactor.configured_literal_leak(&diff);
+            if (detected_configured_literal.is_some() || redacted_patch.redacted)
+                && !agent.redactor.unsafe_allow_secret_leaks()
+            {
+                std::fs::write(&spec.patch_path, redacted_patch.text)?;
+                *patch_written = true;
+                tracing::warn!(
+                    instance = %trajectory_name,
+                    "secret leak detected in submitted patch; downgrading outcome to error"
+                );
+                agent.trajectory.info.exit_reason = Some("error".into());
+                agent.trajectory.info.failure_category = Some(FailureCategory::SecretLeakDetected);
+                let leak_kind = detected_configured_literal
+                    .map_or_else(|| "structured_secret".to_owned(), |leak| leak.kind);
+                agent.trajectory.info.other.insert(
+                    "secret_leak_detected".into(),
+                    serde_json::json!({
+                        "surface": surface::PATCH_SUBMISSION,
+                        "kind": leak_kind,
+                    }),
+                );
+                agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                agent.trajectory.save_pretty(traj_path)?;
+                tracing::info!(?traj_path, patch_written = true, "trajectory written");
+                if let Some(server) = server.take() {
+                    server.shutdown().await;
+                }
+                return Ok(HandlePatchCaptureFlow::ReturnEarly);
+            }
+            let patch_text = if agent.redactor.unsafe_allow_secret_leaks() {
+                diff.clone()
+            } else {
+                redacted_patch.text
+            };
+            std::fs::write(&spec.patch_path, patch_text)?;
+            *patch_written = true;
+
+            match check_patch_validity(agent.env.as_ref(), spec, &diff, cancellation.clone()).await
+            {
+                Ok(()) => Ok(HandlePatchCaptureFlow::Continue(None)),
+                Err(PatchValidationFailure::Empty) => {
+                    if finalize_cancelled_if_requested(agent, cancellation.as_ref()) {
+                        Ok(HandlePatchCaptureFlow::Continue(Some(
+                            crate::agent::ExitReason::UserInterrupt,
+                        )))
+                    } else {
+                        tracing::warn!(
+                            instance = %trajectory_name,
+                            "agent submitted but produced an empty diff; downgrading to error"
+                        );
+                        agent.trajectory.info.exit_reason = Some("error".into());
+                        agent.trajectory.info.failure_category = Some(FailureCategory::PatchEmpty);
+                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        Ok(HandlePatchCaptureFlow::Continue(None))
+                    }
+                }
+                Err(PatchValidationFailure::ApplyFailed(reason)) => {
+                    if finalize_cancelled_if_requested(agent, cancellation.as_ref()) {
+                        Ok(HandlePatchCaptureFlow::Continue(Some(
+                            crate::agent::ExitReason::UserInterrupt,
+                        )))
+                    } else {
+                        let reason = agent
+                            .redactor
+                            .redact_text(&reason, surface::TRAJECTORY)
+                            .text;
+                        tracing::warn!(
+                            instance = %trajectory_name,
+                            error = %reason,
+                            "patch apply check failed; downgrading outcome to error"
+                        );
+                        agent.trajectory.info.exit_reason = Some("error".into());
+                        agent.trajectory.info.failure_category =
+                            Some(FailureCategory::PatchApplyInvalid);
+                        agent.trajectory.info.other.insert(
+                            "patch_apply_error".into(),
+                            serde_json::Value::String(reason),
+                        );
+                        agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                        Ok(HandlePatchCaptureFlow::Continue(None))
+                    }
+                }
+            }
+        }
+        Err(reason) => {
+            if finalize_cancelled_if_requested(agent, cancellation.as_ref()) {
+                Ok(HandlePatchCaptureFlow::Continue(Some(
+                    crate::agent::ExitReason::UserInterrupt,
+                )))
+            } else {
+                let reason = agent
+                    .redactor
+                    .redact_text(&reason, surface::TRAJECTORY)
+                    .text;
+                tracing::warn!(
+                    instance = %trajectory_name,
+                    error = %reason,
+                    "patch capture failed; downgrading outcome to error"
+                );
+                agent.trajectory.info.exit_reason = Some("error".into());
+                agent.trajectory.info.failure_category = Some(FailureCategory::EnvSetup);
+                agent
+                    .trajectory
+                    .info
+                    .other
+                    .insert("patch_error".into(), serde_json::Value::String(reason));
+                agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                Ok(HandlePatchCaptureFlow::Continue(None))
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
@@ -121,7 +262,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
     // emits below.
-    let (sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) = match args.stream_addr {
+    let (sink, mut server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) = match args
+        .stream_addr
+    {
         Some(addr) => {
             let bcast = Arc::new(BroadcastSink::default());
             let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
@@ -169,128 +312,22 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if let (Ok(crate::agent::ExitReason::Submitted { .. }), Some(spec)) =
         (run_result.as_ref(), args.patch_capture.as_ref())
     {
-        match capture_patch(agent.env.as_ref(), spec, args.cancellation.clone()).await {
-            Ok(diff) => {
-                if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
-                    agent.trajectory.save_pretty(&traj_path)?;
-                    tracing::info!(?traj_path, patch_written, "trajectory written");
-                    if let Some(server) = server {
-                        server.shutdown().await;
-                    }
-                    return Ok(());
-                }
-                // Always write the patch file — operators need to inspect
-                // failed patches too.
-                let redacted_patch = agent.redactor.redact_text(&diff, surface::PATCH_SUBMISSION);
-                let detected_configured_literal = agent.redactor.configured_literal_leak(&diff);
-                if (detected_configured_literal.is_some() || redacted_patch.redacted)
-                    && !agent.redactor.unsafe_allow_secret_leaks()
-                {
-                    std::fs::write(&spec.patch_path, redacted_patch.text)?;
-                    patch_written = true;
-                    tracing::warn!(
-                        instance = %args.trajectory_name,
-                        "secret leak detected in submitted patch; downgrading outcome to error"
-                    );
-                    agent.trajectory.info.exit_reason = Some("error".into());
-                    agent.trajectory.info.failure_category =
-                        Some(FailureCategory::SecretLeakDetected);
-                    let leak_kind = detected_configured_literal
-                        .map_or_else(|| "structured_secret".to_owned(), |leak| leak.kind);
-                    agent.trajectory.info.other.insert(
-                        "secret_leak_detected".into(),
-                        serde_json::json!({
-                            "surface": surface::PATCH_SUBMISSION,
-                            "kind": leak_kind,
-                        }),
-                    );
-                    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-                    agent.trajectory.save_pretty(&traj_path)?;
-                    tracing::info!(?traj_path, patch_written, "trajectory written");
-                    if let Some(server) = server {
-                        server.shutdown().await;
-                    }
-                    return Ok(());
-                }
-                let patch_text = if agent.redactor.unsafe_allow_secret_leaks() {
-                    diff.clone()
-                } else {
-                    redacted_patch.text
-                };
-                std::fs::write(&spec.patch_path, patch_text)?;
-                patch_written = true;
-
-                match check_patch_validity(
-                    agent.env.as_ref(),
-                    spec,
-                    &diff,
-                    args.cancellation.clone(),
-                )
-                .await
-                {
-                    Ok(()) => {}
-                    Err(PatchValidationFailure::Empty) => {
-                        if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
-                            run_result = Ok(crate::agent::ExitReason::UserInterrupt);
-                        } else {
-                            tracing::warn!(
-                                instance = %args.trajectory_name,
-                                "agent submitted but produced an empty diff; downgrading to error"
-                            );
-                            agent.trajectory.info.exit_reason = Some("error".into());
-                            agent.trajectory.info.failure_category =
-                                Some(FailureCategory::PatchEmpty);
-                            agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-                        }
-                    }
-                    Err(PatchValidationFailure::ApplyFailed(reason)) => {
-                        if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
-                            run_result = Ok(crate::agent::ExitReason::UserInterrupt);
-                        } else {
-                            let reason = agent
-                                .redactor
-                                .redact_text(&reason, surface::TRAJECTORY)
-                                .text;
-                            tracing::warn!(
-                                instance = %args.trajectory_name,
-                                error = %reason,
-                                "patch apply check failed; downgrading outcome to error"
-                            );
-                            agent.trajectory.info.exit_reason = Some("error".into());
-                            agent.trajectory.info.failure_category =
-                                Some(FailureCategory::PatchApplyInvalid);
-                            agent.trajectory.info.other.insert(
-                                "patch_apply_error".into(),
-                                serde_json::Value::String(reason),
-                            );
-                            agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-                        }
-                    }
-                }
+        match handle_patch_capture(
+            &mut agent,
+            spec,
+            &args.trajectory_name,
+            args.cancellation.clone(),
+            &mut server,
+            &traj_path,
+            &mut patch_written,
+        )
+        .await?
+        {
+            HandlePatchCaptureFlow::ReturnEarly => return Ok(()),
+            HandlePatchCaptureFlow::Continue(Some(reason)) => {
+                run_result = Ok(reason);
             }
-            Err(reason) => {
-                if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
-                    run_result = Ok(crate::agent::ExitReason::UserInterrupt);
-                } else {
-                    let reason = agent
-                        .redactor
-                        .redact_text(&reason, surface::TRAJECTORY)
-                        .text;
-                    tracing::warn!(
-                        instance = %args.trajectory_name,
-                        error = %reason,
-                        "patch capture failed; downgrading outcome to error"
-                    );
-                    agent.trajectory.info.exit_reason = Some("error".into());
-                    agent.trajectory.info.failure_category = Some(FailureCategory::EnvSetup);
-                    agent
-                        .trajectory
-                        .info
-                        .other
-                        .insert("patch_error".into(), serde_json::Value::String(reason));
-                    agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-                }
-            }
+            HandlePatchCaptureFlow::Continue(None) => {}
         }
     }
 
