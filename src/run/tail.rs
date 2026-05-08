@@ -628,7 +628,11 @@ fn terminal_record_from_trajectory(
         // Exclude all-failed runs: no model produced a response, so they
         // should not appear in model_mix.
         final_model: info.fallback_summary.as_ref().and_then(|s| {
-            if s.all_failed { None } else { Some(s.final_model.clone()) }
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
         }),
     }))
 }

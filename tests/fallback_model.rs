@@ -13,7 +13,9 @@
 #![allow(clippy::unwrap_used)]
 
 use rust_swe_agent::error::{FailedAttempt, ModelError};
-use rust_swe_agent::model::{FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts};
+use rust_swe_agent::model::{
+    FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,
+};
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
 use rust_swe_agent::trajectory::{FallbackSummary, Trajectory, TrajectoryInfo, outcome};
 
@@ -26,13 +28,18 @@ struct OkModel {
 
 impl OkModel {
     fn new(name: &str, content: &str) -> Self {
-        Self { name: name.into(), content: content.into() }
+        Self {
+            name: name.into(),
+            content: content.into(),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl Model for OkModel {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
         Ok(ModelResponse {
             content: self.content.clone(),
@@ -67,7 +74,9 @@ impl ErrModel {
 
 #[async_trait::async_trait]
 impl Model for ErrModel {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
         // Clone the error by rebuilding it from the Display string.
         match &self.error {
@@ -76,7 +85,9 @@ impl Model for ErrModel {
             ModelError::Request(s) => Err(ModelError::Request(s.clone())),
             ModelError::Malformed(s) => Err(ModelError::Malformed(s.clone())),
             ModelError::Refused(s) => Err(ModelError::Refused(s.clone())),
-            ModelError::AllCandidatesFailed(s, _) => Err(ModelError::AllCandidatesFailed(s.clone(), Vec::new())),
+            ModelError::AllCandidatesFailed(s, _) => {
+                Err(ModelError::AllCandidatesFailed(s.clone(), Vec::new()))
+            }
         }
     }
 }
@@ -123,7 +134,10 @@ async fn primary_success_zero_fallback_recorded() {
     let resp = fallback.query(&[], &opts).await.unwrap();
     assert_eq!(resp.content, "hello");
     // No fallback happened: fallback_attempts must be empty.
-    assert!(resp.fallback_attempts.is_empty(), "expected no fallback attempts");
+    assert!(
+        resp.fallback_attempts.is_empty(),
+        "expected no fallback attempts"
+    );
     // AC1: primary model name reported.
     assert_eq!(resp.responding_model.as_deref(), Some("primary-model"));
 }
@@ -160,7 +174,10 @@ async fn non_transient_primary_failure_no_fallback() {
     ];
     let fallback = FallbackModel::new(models);
 
-    let err = fallback.query(&[], &QueryOpts::default()).await.unwrap_err();
+    let err = fallback
+        .query(&[], &QueryOpts::default())
+        .await
+        .unwrap_err();
     // Must be the original non-transient error type, not AllCandidatesFailed.
     assert!(
         matches!(err, ModelError::MissingCredentials(_)),
@@ -178,15 +195,28 @@ async fn all_candidates_failed_returns_compound_error() {
     ];
     let fallback = FallbackModel::new(models);
 
-    let err = fallback.query(&[], &QueryOpts::default()).await.unwrap_err();
+    let err = fallback
+        .query(&[], &QueryOpts::default())
+        .await
+        .unwrap_err();
     let ModelError::AllCandidatesFailed(ref msg, ref attempts) = err else {
         panic!("expected AllCandidatesFailed, got: {err:?}");
     };
     // Error message must mention both models.
-    assert!(msg.contains("primary-model"), "error should mention primary: {msg}");
-    assert!(msg.contains("secondary-model"), "error should mention secondary: {msg}");
+    assert!(
+        msg.contains("primary-model"),
+        "error should mention primary: {msg}"
+    );
+    assert!(
+        msg.contains("secondary-model"),
+        "error should mention secondary: {msg}"
+    );
     // Structured attempts must be preserved for telemetry.
-    assert_eq!(attempts.len(), 2, "both failed attempts should be preserved");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "both failed attempts should be preserved"
+    );
     let _ = attempts[0].model.as_str(); // FailedAttempt::model
     let _ = attempts[0].reason.as_str(); // FailedAttempt::reason
 }
@@ -205,14 +235,23 @@ fn fallback_summary_all_failed_excludes_from_model_mix() {
         fallback_count: 2,
         attempted_models: vec!["gpt-4".into(), "claude-sonnet-4-6".into()],
         failed_attempts: vec![
-            FallbackAttemptRecord { model: "gpt-4".into(), failure_reason: "rate_limited".into() },
-            FallbackAttemptRecord { model: "claude-sonnet-4-6".into(), failure_reason: "rate_limited".into() },
+            FallbackAttemptRecord {
+                model: "gpt-4".into(),
+                failure_reason: "rate_limited".into(),
+            },
+            FallbackAttemptRecord {
+                model: "claude-sonnet-4-6".into(),
+                failure_reason: "rate_limited".into(),
+            },
         ],
         all_failed: true,
     };
     // all_failed=true → skip_serializing_if should omit when false, include when true
     let json = serde_json::to_string(&summary).unwrap();
-    assert!(json.contains("\"all_failed\":true"), "all_failed should appear when true: {json}");
+    assert!(
+        json.contains("\"all_failed\":true"),
+        "all_failed should appear when true: {json}"
+    );
 
     // Legacy trajectory without all_failed deserializes cleanly with all_failed=false.
     let json_without = r#"{"primary_model":"gpt-4","final_model":"gpt-4","fallback_happened":false,"fallback_count":0,"attempted_models":["gpt-4"],"failed_attempts":[]}"#;
@@ -238,7 +277,10 @@ fallback_models = ["claude-sonnet-4-6", "gpt-3.5-turbo"]
 "#,
     )
     .unwrap();
-    assert_eq!(cfg.fallback_models, vec!["claude-sonnet-4-6", "gpt-3.5-turbo"]);
+    assert_eq!(
+        cfg.fallback_models,
+        vec!["claude-sonnet-4-6", "gpt-3.5-turbo"]
+    );
 }
 
 // ── FallbackSummary round-trips through TrajectoryInfo JSON ──────────────────
@@ -263,12 +305,23 @@ fn fallback_summary_round_trips_through_trajectory_info() {
 
     let json = serde_json::to_string_pretty(&info).unwrap();
     // Verify key fields are present in the JSON.
-    assert!(json.contains("fallback_summary"), "expected fallback_summary key: {json}");
-    assert!(json.contains("fallback_happened"), "expected fallback_happened: {json}");
-    assert!(json.contains("fallback-model"), "expected final_model value: {json}");
+    assert!(
+        json.contains("fallback_summary"),
+        "expected fallback_summary key: {json}"
+    );
+    assert!(
+        json.contains("fallback_happened"),
+        "expected fallback_happened: {json}"
+    );
+    assert!(
+        json.contains("fallback-model"),
+        "expected final_model value: {json}"
+    );
 
     let back: TrajectoryInfo = serde_json::from_str(&json).unwrap();
-    let back_summary = back.fallback_summary.expect("fallback_summary should round-trip");
+    let back_summary = back
+        .fallback_summary
+        .expect("fallback_summary should round-trip");
     assert_eq!(back_summary, summary);
 }
 
@@ -276,7 +329,10 @@ fn fallback_summary_round_trips_through_trajectory_info() {
 fn fallback_summary_omitted_when_none() {
     let info = TrajectoryInfo::default();
     let json = serde_json::to_string_pretty(&info).unwrap();
-    assert!(!json.contains("fallback_summary"), "should be omitted when None: {json}");
+    assert!(
+        !json.contains("fallback_summary"),
+        "should be omitted when None: {json}"
+    );
 }
 
 // ── Trajectory full round-trip with fallback info ────────────────────────────
@@ -311,7 +367,10 @@ fn trajectory_fallback_summary_survives_full_roundtrip() {
 #[test]
 fn instance_result_fallback_fields_default_none() {
     let r = instance_result_stub("task-1");
-    assert!(r.fallback_count.is_none(), "fallback_count defaults to None");
+    assert!(
+        r.fallback_count.is_none(),
+        "fallback_count defaults to None"
+    );
     assert!(r.final_model.is_none(), "final_model defaults to None");
 }
 
@@ -322,7 +381,10 @@ fn instance_result_fallback_fields_serialize_and_deserialize() {
     r.final_model = Some("claude-sonnet-4-6".into());
 
     let json = serde_json::to_string_pretty(&r).unwrap();
-    assert!(json.contains("fallback_count"), "expected fallback_count in JSON");
+    assert!(
+        json.contains("fallback_count"),
+        "expected fallback_count in JSON"
+    );
     assert!(json.contains("final_model"), "expected final_model in JSON");
 
     let back: InstanceResult = serde_json::from_str(&json).unwrap();
@@ -356,7 +418,10 @@ fn sweep_results_model_mix_serializes_and_deserializes() {
     s.model_mix.insert("claude-sonnet-4-6".into(), 3);
 
     let json = serde_json::to_string_pretty(&s).unwrap();
-    assert!(json.contains("total_fallbacks"), "expected total_fallbacks: {json}");
+    assert!(
+        json.contains("total_fallbacks"),
+        "expected total_fallbacks: {json}"
+    );
     assert!(json.contains("model_mix"), "expected model_mix: {json}");
 
     let back: SweepResults = serde_json::from_str(&json).unwrap();
@@ -370,14 +435,17 @@ fn sweep_results_model_mix_omitted_when_empty() {
     let s = SweepResults::default();
     let json = serde_json::to_string_pretty(&s).unwrap();
     // model_mix should be omitted entirely when empty to keep legacy artifacts clean.
-    assert!(!json.contains("\"model_mix\""), "model_mix should be omitted when empty: {json}");
+    assert!(
+        !json.contains("\"model_mix\""),
+        "model_mix should be omitted when empty: {json}"
+    );
 }
 
 // ── bench compare: model_mix warnings ────────────────────────────────────────
 
 #[test]
 fn compare_warns_when_candidate_has_fallbacks_and_baseline_does_not() {
-    use rust_swe_agent::run::compare::{build_model_mix_warnings, ModelMixSnapshot};
+    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let baseline = ModelMixSnapshot {
         model_mix: std::collections::BTreeMap::new(),
         total_fallbacks: 0,
@@ -391,17 +459,21 @@ fn compare_warns_when_candidate_has_fallbacks_and_baseline_does_not() {
     };
 
     let warnings = build_model_mix_warnings(&baseline, &candidate);
-    assert!(!warnings.is_empty(), "should warn when candidate has fallbacks and baseline does not");
+    assert!(
+        !warnings.is_empty(),
+        "should warn when candidate has fallbacks and baseline does not"
+    );
     let combined = warnings.join(" ");
     assert!(
-        combined.to_ascii_lowercase().contains("fallback") || combined.to_ascii_lowercase().contains("model"),
+        combined.to_ascii_lowercase().contains("fallback")
+            || combined.to_ascii_lowercase().contains("model"),
         "warning should mention fallback or model: {combined}"
     );
 }
 
 #[test]
 fn compare_warns_when_model_mixes_differ() {
-    use rust_swe_agent::run::compare::{build_model_mix_warnings, ModelMixSnapshot};
+    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let mut baseline_mix = std::collections::BTreeMap::new();
     baseline_mix.insert("gpt-4".to_string(), 10);
     let baseline = ModelMixSnapshot {
@@ -423,13 +495,16 @@ fn compare_warns_when_model_mixes_differ() {
 
 #[test]
 fn compare_no_warning_when_same_model_no_fallbacks() {
-    use rust_swe_agent::run::compare::{build_model_mix_warnings, ModelMixSnapshot};
+    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let snapshot = ModelMixSnapshot {
         model_mix: std::collections::BTreeMap::new(),
         total_fallbacks: 0,
     };
     let warnings = build_model_mix_warnings(&snapshot, &snapshot);
-    assert!(warnings.is_empty(), "no warning when both have no fallbacks: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "no warning when both have no fallbacks: {warnings:?}"
+    );
 }
 
 // ── bench evaluate: model-mix summary present ────────────────────────────────

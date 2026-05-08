@@ -20,7 +20,9 @@ use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
 use crate::error::{Error, ModelError};
-use crate::model::{CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role};
+use crate::model::{
+    CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role,
+};
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
@@ -399,12 +401,11 @@ impl Agent for DefaultAgent {
         // carries the structured attempt records. Capture them before
         // propagating so finalize_run_metadata can still emit a summary.
         if let Err(ModelError::AllCandidatesFailed(_, ref attempts)) = query_result {
-            self.fallback_failed_attempts.extend(
-                attempts.iter().map(|a| FallbackAttemptRecord {
+            self.fallback_failed_attempts
+                .extend(attempts.iter().map(|a| FallbackAttemptRecord {
                     model: a.model.clone(),
                     failure_reason: a.reason.clone(),
-                }),
-            );
+                }));
         }
         let Some(resp) = query_result? else {
             self.finalize_cancelled();
@@ -876,8 +877,8 @@ impl DefaultAgent {
         let primary = self.model.name().to_owned();
         // When every model failed transiently, last_responding_model is None.
         // Avoid fabricating primary as final_model — use the last attempted.
-        let all_failed = !self.fallback_failed_attempts.is_empty()
-            && self.last_responding_model.is_none();
+        let all_failed =
+            !self.fallback_failed_attempts.is_empty() && self.last_responding_model.is_none();
         let final_model = self.last_responding_model.clone().unwrap_or_else(|| {
             if all_failed {
                 self.fallback_failed_attempts

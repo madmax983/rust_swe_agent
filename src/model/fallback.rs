@@ -28,7 +28,10 @@ impl FallbackModel {
     /// # Panics
     /// Panics if `models` is empty.
     pub fn new(models: Vec<Box<dyn Model>>) -> Self {
-        assert!(!models.is_empty(), "FallbackModel requires at least one model");
+        assert!(
+            !models.is_empty(),
+            "FallbackModel requires at least one model"
+        );
         Self { models }
     }
 }
@@ -113,7 +116,9 @@ mod tests {
 
     #[async_trait]
     impl Model for AlwaysOk {
-        fn name(&self) -> &str { &self.0 }
+        fn name(&self) -> &str {
+            &self.0
+        }
         async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
             Ok(ModelResponse {
                 content: format!("ok-from-{}", self.0),
@@ -127,7 +132,9 @@ mod tests {
 
     #[async_trait]
     impl Model for AlwaysFail {
-        fn name(&self) -> &str { &self.0 }
+        fn name(&self) -> &str {
+            &self.0
+        }
         async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
             if self.1 {
                 Err(ModelError::RateLimited("429".into()))

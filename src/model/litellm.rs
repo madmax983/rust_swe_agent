@@ -321,7 +321,10 @@ mod tests {
             rpm_limit: None,
             tpm_limit: None,
         };
-        assert!(matches!(classify_litellm_error(e), ModelError::RateLimited(_)));
+        assert!(matches!(
+            classify_litellm_error(e),
+            ModelError::RateLimited(_)
+        ));
     }
 
     #[test]

@@ -1118,7 +1118,11 @@ fn instance_result_from_trajectory(
         // Exclude all-failed runs from model_mix — final_model is only the
         // last attempted model when all_failed=true, not a responding model.
         final_model: info.fallback_summary.as_ref().and_then(|s| {
-            if s.all_failed { None } else { Some(s.final_model.clone()) }
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
         }),
     }))
 }

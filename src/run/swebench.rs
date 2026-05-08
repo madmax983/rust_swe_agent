@@ -3133,7 +3133,11 @@ fn skipped_result_from_info(
         // When all candidates failed no model produced a response — leave None
         // so the instance is excluded from model_mix rather than attributed to primary.
         final_model: info.fallback_summary.as_ref().and_then(|s| {
-            if s.all_failed { None } else { Some(s.final_model.clone()) }
+            if s.all_failed {
+                None
+            } else {
+                Some(s.final_model.clone())
+            }
         }),
     }
 }
@@ -3559,7 +3563,13 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             final_model: info
                 .as_ref()
                 .and_then(|i| i.fallback_summary.as_ref())
-                .and_then(|s| if s.all_failed { None } else { Some(s.final_model.clone()) }),
+                .and_then(|s| {
+                    if s.all_failed {
+                        None
+                    } else {
+                        Some(s.final_model.clone())
+                    }
+                }),
         };
         let current = publish_github_pr_for_result(
             current,

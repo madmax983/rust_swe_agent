@@ -1051,7 +1051,11 @@ fn build_model_mix_summary(
         .into_iter()
         .map(|(model, (n, resolved, total_cost))| {
             #[allow(clippy::cast_precision_loss)]
-            let resolved_rate = if n == 0 { 0.0 } else { resolved as f64 / n as f64 };
+            let resolved_rate = if n == 0 {
+                0.0
+            } else {
+                resolved as f64 / n as f64
+            };
             ModelMixBucket {
                 model,
                 n,
@@ -1553,7 +1557,7 @@ mod tests {
             ],
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -1856,7 +1860,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -1906,7 +1910,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1938,7 +1942,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -1959,7 +1963,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1987,7 +1991,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -2013,7 +2017,7 @@ mod tests {
             behavioral: BehavioralMetrics::default(),
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
+            model_mix_summary: Vec::new(),
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);
