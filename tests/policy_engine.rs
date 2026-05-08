@@ -2044,6 +2044,34 @@ fn safe_does_not_block_find_exec_rm_on_benign_targets() {
     }
 }
 
+// ── Absolute-path commands (Codex P1) ───────────────────────────────────────
+
+#[test]
+fn safe_blocks_dangerous_commands_with_absolute_paths() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // /bin/rm
+        "/bin/rm -rf /",
+        "/bin/rm -rf /etc",
+        "/usr/bin/rm -rf /etc/passwd",
+        "sudo /bin/rm -rf /",
+        "sudo /usr/bin/rm -rf /home",
+        // /bin/dd
+        "/bin/dd if=/dev/zero of=/dev/sda",
+        "sudo /usr/bin/dd if=/dev/zero of=/etc/passwd",
+        // /usr/bin/shred
+        "sudo /usr/bin/shred -v /dev/sda",
+        // tee with absolute path
+        "echo evil | sudo /usr/bin/tee /etc/passwd",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "absolute-path dangerous command must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
