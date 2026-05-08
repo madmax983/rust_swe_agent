@@ -1682,6 +1682,34 @@ fn safe_still_blocks_real_credential_reads_after_anchor_change() {
     }
 }
 
+// ── $HOME with trailing slash variants (Codex P1) ───────────────────────────
+
+#[test]
+fn safe_blocks_dollar_home_with_trailing_slash_variants() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // bare with trailing slash
+        "rm -rf $HOME/",
+        "rm -rf ${HOME}/",
+        // double-quoted with trailing slash inside or outside
+        "rm -rf \"$HOME/\"",
+        "rm -rf \"${HOME}/\"",
+        // glob form
+        "rm -rf $HOME/*",
+        "rm -rf ${HOME}/*",
+        "rm -rf \"$HOME/*\"",
+        // sudo + variants
+        "sudo rm -rf \"$HOME/\"",
+        "sudo rm -rf $HOME/",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "$HOME with trailing slash must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
