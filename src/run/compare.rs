@@ -844,15 +844,17 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                     })
                     .map(std::convert::Into::into)
             };
-            let scanned = scan_trajectory_instances(dir, min_mtime)?;
+            let scanned_slots = scan_trajectory_run_slots(dir, min_mtime)?;
+            let (slot_fallbacks, slot_mix) = fallback_totals_from_slots(&scanned_slots);
+            let scanned = aggregate_scanned_results(scanned_slots);
             let manifest = sweep.manifest;
             // When trajectory files are fresher than results.json, use scanned
-            // instances and re-derive fallback totals from them so model-mix
-            // warnings are based on actual trajectory data, not the stale snapshot.
+            // instances and re-derive fallback totals from per-run-slot data so
+            // model-mix warnings count all reruns, not just the winning slot.
             let (effective_fallbacks, effective_mix) = if scanned.is_empty() {
                 (total_fallbacks, model_mix)
             } else {
-                fallback_totals_from_instances(&scanned)
+                (slot_fallbacks, slot_mix)
             };
             return Ok(LoadedSweep {
                 instances: if scanned.is_empty() {
@@ -903,8 +905,9 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         )));
     }
 
-    let out = scan_trajectory_instances(dir, None)?;
-    let (total_fallbacks, model_mix) = fallback_totals_from_instances(&out);
+    let slots = scan_trajectory_run_slots(dir, None)?;
+    let (total_fallbacks, model_mix) = fallback_totals_from_slots(&slots);
+    let out = aggregate_scanned_results(slots);
     Ok(LoadedSweep {
         instances: out,
         manifest: None,
@@ -921,33 +924,24 @@ fn manifest_indicates_resume(manifest: &ProvenanceManifest) -> bool {
     manifest.runtime.resume_mode || manifest.cli.argv.iter().any(|arg| arg == "--resume")
 }
 
-/// Compute `total_fallbacks` and `model_mix` from a set of `InstanceResult`s
-/// when no pre-aggregated `SweepResults` is available (scan-only path).
-fn fallback_totals_from_instances(
-    instances: &HashMap<String, InstanceResult>,
+/// Compute `total_fallbacks` and `model_mix` from per-run-slot data before
+/// aggregation, so that reruns with different responding models are all counted.
+fn fallback_totals_from_slots(
+    slots: &[LoadedRunSlot],
 ) -> (u64, std::collections::BTreeMap<String, usize>) {
-    let total_fallbacks: u64 = instances
-        .values()
-        .filter_map(|r| r.fallback_count)
+    let total_fallbacks: u64 = slots
+        .iter()
+        .filter_map(|s| s.result.fallback_count)
         .map(u64::from)
         .sum();
     let mut model_mix: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
-    for r in instances.values() {
-        if let Some(model) = r.final_model.as_deref() {
+    for s in slots {
+        if let Some(model) = s.result.final_model.as_deref() {
             *model_mix.entry(model.to_owned()).or_insert(0) += 1;
         }
     }
     (total_fallbacks, model_mix)
-}
-
-fn scan_trajectory_instances(
-    dir: &Path,
-    min_mtime: Option<SystemTime>,
-) -> Result<HashMap<String, InstanceResult>, Error> {
-    Ok(aggregate_scanned_results(scan_trajectory_run_slots(
-        dir, min_mtime,
-    )?))
 }
 
 fn scan_trajectory_run_slots(

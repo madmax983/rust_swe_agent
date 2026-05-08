@@ -3718,6 +3718,17 @@ fn classify_error(err: &Error) -> FailureCategory {
         Error::Env(_) => FailureCategory::EnvSetup,
         // Model transport/auth/rate-limit/5xx style failures.
         Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        // When transient failures precede a terminal non-transient one, the error
+        // is wrapped in AllCandidatesFailed to preserve attempt telemetry. Peek at
+        // the last attempt's coarse reason so classification matches the terminal
+        // error type rather than always falling through to ModelApi.
+        Error::Model(crate::error::ModelError::AllCandidatesFailed(_, attempts)) => {
+            if attempts.last().map(|a| a.reason.as_str()) == Some("model_parse") {
+                FailureCategory::ModelParse
+            } else {
+                FailureCategory::ModelApi
+            }
+        }
         Error::Model(_) => FailureCategory::ModelApi,
         // Any remaining typed error in the runner/agent.
         _ => FailureCategory::AgentInternal,
