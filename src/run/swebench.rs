@@ -1783,9 +1783,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         .filter_map(|r| r.fallback_count)
         .map(u64::from)
         .sum();
+    // Count from per-run slots so that pass@k sweeps with --reruns>1 correctly
+    // attribute each slot's model, not just the first (pass@1) slot's model.
     let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
-    for r in &instance_results {
-        if let Some(model) = r.final_model.as_deref() {
+    for r in &results {
+        if let Some(model) = r.result.final_model.as_deref() {
             *model_mix.entry(model.to_owned()).or_insert(0) += 1;
         }
     }
@@ -2840,11 +2842,11 @@ fn aggregate_run_results(results: &[RunSlotResult], requested_runs: u32) -> Vec<
         // Sum fallback counts across all runs; final_model from the first run
         // (pass@1 representative). This gives accurate total_fallbacks for
         // pass@k sweeps where later runs also hit fallbacks.
-        aggregate.fallback_count = Some(
-            rows.iter()
-                .filter_map(|r| r.result.fallback_count)
-                .fold(0u32, u32::saturating_add),
-        );
+        let fb_total: u32 = rows
+            .iter()
+            .filter_map(|r| r.result.fallback_count)
+            .fold(0u32, u32::saturating_add);
+        aggregate.fallback_count = if fb_total > 0 { Some(fb_total) } else { None };
         aggregate.final_model.clone_from(&first.final_model);
         out.push(aggregate);
     }
@@ -5199,26 +5201,29 @@ instance = "inst"
             .current_dir(p)
             .output()
             .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "tester"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "tester@example.com"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["add", "a.txt"])
-            .current_dir(p)
-            .output()
-            .unwrap();
-        Command::new("git")
+        for args in &[
+            &["config", "user.name", "tester"][..],
+            &["config", "user.email", "tester@example.com"],
+            // Disable GPG signing so the commit works in environments where
+            // commit.gpgsign=true is set globally (e.g. some CI runners).
+            &["config", "commit.gpgsign", "false"],
+            &["add", "a.txt"],
+        ] {
+            Command::new("git")
+                .args(*args)
+                .current_dir(p)
+                .output()
+                .unwrap();
+        }
+        let commit_out = Command::new("git")
             .args(["commit", "-m", "init"])
             .current_dir(p)
             .output()
             .unwrap();
+        if !commit_out.status.success() {
+            // If we still can't commit (missing git identity, etc.) skip rather than fail.
+            return;
+        }
         std::fs::write(p.join("a.txt"), "dirty\n").unwrap();
         let m = resolve_harness_manifest_for_dir(Some(p));
         assert_eq!(m.git_resolution, "ok");

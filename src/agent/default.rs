@@ -143,6 +143,10 @@ pub struct DefaultAgent {
     fallback_failed_attempts: Vec<FallbackAttemptRecord>,
     /// The model name that produced the most recent successful response.
     last_responding_model: Option<String>,
+    /// All model names that produced a successful response across every step.
+    /// Used to build a complete `attempted_models` list even in multi-step runs
+    /// where the responding model changes between steps.
+    all_step_responders: Vec<String>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -241,6 +245,7 @@ impl DefaultAgentBuilder {
             test_command_patterns,
             fallback_failed_attempts: Vec::new(),
             last_responding_model: None,
+            all_step_responders: Vec::new(),
         })
     }
 }
@@ -427,6 +432,9 @@ impl Agent for DefaultAgent {
             .extend(resp.fallback_attempts.iter().cloned());
         self.last_responding_model
             .clone_from(&resp.responding_model);
+        if let Some(m) = &resp.responding_model {
+            self.all_step_responders.push(m.clone());
+        }
 
         if self.cancellation_requested() {
             self.finalize_cancelled();
@@ -890,15 +898,19 @@ impl DefaultAgent {
             }
         });
         if !self.fallback_failed_attempts.is_empty() {
-            let mut attempted_models: Vec<String> = self
+            // Build attempted_models from all models that were tried (failed or
+            // responded) across every step, deduped while preserving order.
+            let mut seen = std::collections::HashSet::new();
+            let mut attempted_models: Vec<String> = Vec::new();
+            for m in self
                 .fallback_failed_attempts
                 .iter()
-                .map(|a| a.model.clone())
-                .collect();
-            // When all candidates failed, every model is already in failed_attempts —
-            // don't push final_model again and create a duplicate.
-            if !all_failed {
-                attempted_models.push(final_model.clone());
+                .map(|a| &a.model)
+                .chain(self.all_step_responders.iter())
+            {
+                if seen.insert(m.as_str()) {
+                    attempted_models.push(m.clone());
+                }
             }
             let fallback_count =
                 u32::try_from(self.fallback_failed_attempts.len()).unwrap_or(u32::MAX);
