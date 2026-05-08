@@ -256,6 +256,14 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "find-exec-rm-all",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*find\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)?(?:/[^\s'"|;]*)?['"]?\s+[^|;\n]*-exec\s+rm\b"#,
         ),
+        // `find . -exec rm -rf /etc \;` runs `rm` against the protected
+        // path even though find's own search root is benign.  Block when
+        // the rm target inside -exec is itself a protected path or a
+        // sensitive system file.
+        PolicyRule::deny_static(
+            "find-exec-rm-protected-target",
+            r#"find\b[^|;\n]*-exec\s+(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-\S+)*\s+)*rm\b[^|;\n]*\s+['"]?(?:/(?:etc|var|usr|home|root|boot|lib|bin|sbin)(?:/[^\s'"|;]*)?|/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg|~|\$HOME|\$\{HOME\})['"]?(?:\s|\\;|;|$)"#,
+        ),
         // `cd` to root or a protected system dir followed by `rm` makes
         // any relative target (e.g. `etc`) point at the protected dir.
         // Conservative: any `cd /protected ... ; rm` or `cd / ... && rm`.

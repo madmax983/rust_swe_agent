@@ -2004,6 +2004,46 @@ fn safe_blocks_env_split_string_with_dd_or_other_sensitive_writes() {
     }
 }
 
+// ── find -exec rm with protected target (Codex P1) ──────────────────────────
+
+#[test]
+fn safe_blocks_find_exec_rm_with_protected_target() {
+    // Search root is benign but the rm target inside -exec points at a
+    // protected system path.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "find . -exec rm -rf /etc \\;",
+        "find ./build -exec rm -rf /home \\;",
+        "find /tmp -exec rm -rf /var \\;",
+        "find . -name '*.tmp' -exec rm /etc/passwd \\;",
+        "find /tmp -exec rm -rf ~ \\;",
+        "sudo find . -exec rm -rf /etc \\;",
+        "find . -exec sudo rm -rf /var \\;",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "find -exec with protected target must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_find_exec_rm_on_benign_targets() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "find . -name '*.pyc' -exec rm {} \\;",
+        "find ./build -type f -exec rm -f {} +",
+        "find /tmp/scratch -type d -empty -exec rm -rf {} +",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "find -exec on benign target should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
