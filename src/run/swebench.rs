@@ -1299,7 +1299,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             &prior_results,
                         );
                         bump_cost(
-                            prior.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            budget_accounting_cost_usd(&prior, &model_name),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -1340,7 +1340,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             .await;
                         }
                         bump_cost(
-                            r.effective_cost_usd(Some(&model_name)).unwrap_or(0.0),
+                            budget_accounting_cost_usd(&r, &model_name),
                             &mut cumulative_cost,
                             &mut halted,
                         );
@@ -1489,10 +1489,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         // Sweep-level budget bookkeeping. Tasks that completed
                         // (whether submitted or errored) consumed real API budget
                         // and count toward the cap.
-                        let cost = r
-                            .result
-                            .effective_cost_usd(Some(&model_name))
-                            .unwrap_or(0.0);
+                        let cost = budget_accounting_cost_usd(&r.result, &model_name);
                         let was_halted = halted;
                         bump_cost(cost, &mut cumulative_cost, &mut halted);
                         if halted && !was_halted {
@@ -2750,6 +2747,19 @@ fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
         total += value;
     }
     seen.then_some(total)
+}
+
+fn budget_accounting_cost_usd(row: &InstanceResult, model_name: &str) -> f64 {
+    let tokens = row.token_breakdown();
+    if let Some(cost) = row.cost_usd {
+        if cost != 0.0
+            || !tokens.has_billable_tokens()
+            || crate::cost::is_free_tier_model(model_name)
+        {
+            return cost;
+        }
+    }
+    row.effective_cost_usd(Some(model_name)).unwrap_or(0.0)
 }
 
 fn actual_cost_source_for_instances(instances: &[InstanceResult], model_name: &str) -> CostSource {
