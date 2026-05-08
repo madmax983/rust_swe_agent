@@ -2318,6 +2318,27 @@ fn safe_blocks_shell_negated_dangerous_commands() {
     }
 }
 
+// ── Heredoc with mixed stdout+stderr redirects (Codex P1) ───────────────────
+
+#[test]
+fn safe_blocks_heredoc_then_exec_with_mixed_redirects() {
+    // The introducing line has BOTH `>` (stdout) and `2>` (stderr).
+    // Picking the last redirect would pick `/tmp/log` (stderr) instead
+    // of `/tmp/x` (the file receiving heredoc body).
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat > /tmp/x <<'EOF' 2>/tmp/log\nrm -rf /\nEOF\nbash /tmp/x",
+        "cat 2>/tmp/log > /tmp/x <<'EOF'\nrm -rf /\nEOF\nbash /tmp/x",
+        "cat > /tmp/x <<'EOF' 2>>/tmp/log\nrm -rf /\nEOF\nbash /tmp/x",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "heredoc with mixed redirects + later exec must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

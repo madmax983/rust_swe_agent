@@ -565,7 +565,12 @@ fn extract_redirect_target(intro_line: &str) -> Option<String> {
     // Try `>`/`>>` redirect.  We scan the whole intro line — the redirect
     // can legitimately follow the heredoc operator (`cat <<'EOF' > FILE`)
     // and the regex `>>?` won't match the heredoc operator `<<`.
-    let Ok(redirect_re) = Regex::new(r#">>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
+    // Require the `>` to be preceded by start-of-string or a non-digit
+    // so we skip stderr redirects like `2>` (group 0 is the redirect
+    // operator's stdin/stdout, group 2 is for stderr — the heredoc body
+    // doesn't go through stderr).  Without this, `cat > /tmp/x <<'EOF'
+    // 2>/tmp/log` would pick `/tmp/log` as the target via `.last()`.
+    let Ok(redirect_re) = Regex::new(r#"(?:^|[^0-9>])>>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
         return None;
     };
     if let Some(target) = redirect_re
