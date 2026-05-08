@@ -312,6 +312,12 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "tee-to-sensitive-file",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:\S*/)?tee\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
         ),
+        // `truncate -s SIZE FILE` shrinks (or extends) files; dropping the
+        // size of a sensitive system file deletes its contents.
+        PolicyRule::deny_static(
+            "truncate-sensitive-file",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:\S*/)?truncate\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
+        ),
         // --- Redirection-to-block-device (`>`/`>>`/`tee`) ---
         // Bash opens the device for writing when stdout/`tee` targets a
         // raw block device, bypassing the dd/mkfs/etc. tool list.
@@ -463,7 +469,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // match.
         PolicyRule::deny_static(
             "script-from-network-pipe-shell",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+)*(?:\S*/)?(?:ba)?sh\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+)*(?:\S*/)?(?:bash|sh|zsh|ksh|dash|fish)\b"#,
         ),
         PolicyRule::deny_static(
             "script-from-network-pipe-python",
