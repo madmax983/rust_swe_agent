@@ -2072,6 +2072,33 @@ fn safe_blocks_dangerous_commands_with_absolute_paths() {
     }
 }
 
+// ── Option-bearing env -S payloads (Codex P1) ───────────────────────────────
+
+#[test]
+fn safe_blocks_env_s_with_options_inside_payload() {
+    // Payload starts with env-style flags BEFORE the dangerous command.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "env -S '-u PATH rm -rf /'",
+        "env -S '-u PATH rm -rf /etc'",
+        "env -S '-C /tmp rm -rf /etc'",
+        "env -S '-i rm -rf /'",
+        "env -S '-u FOO -C /tmp rm -rf /'",
+        // Combination with double-quoted form
+        "env -S \"-u PATH rm -rf /etc\"",
+        // Long form
+        "env --split-string '-u PATH rm -rf /'",
+        // sudo + option-bearing payload
+        "sudo env -S '-u root rm -rf /'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "option-bearing env -S payload must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

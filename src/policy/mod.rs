@@ -659,21 +659,22 @@ fn interpreter_invokes_file(region: &str, file: &str) -> bool {
 /// Both single- and double-quoted forms are unwrapped.  Other surrounding
 /// shell structure (sudo, `&&`, `;`, etc.) is preserved.
 fn unwrap_env_split_string_payloads(command: &str) -> String {
-    // Only unwrap payloads whose first non-space char is NOT `-`.  When the
-    // payload starts with `-` it acts as additional flags to env (e.g.
-    // `-S '-i'` is just `-i`); the original env-wrapper alternations
-    // already consume that case and we shouldn't lose the trailing
-    // command after the closing quote.
+    // Unwrap env -S/-c/--split-string by re-injecting `env <preserved_flags>
+    // <payload>`.  This lets the existing env-wrapper alternations consume
+    // any flags (including leading-dash payloads like `env -S '-u PATH cmd'`
+    // where the payload itself starts with a flag), while also exposing
+    // the embedded command to the deny corpus.  Capture group 1 captures
+    // any flags between `env` and `-S`; group 2 is the payload contents.
     let patterns = [
-        r#"env(?:\s+\S+)*?\s+-S\s+'(\s*[^-'][^']*)'"#,
-        r#"env(?:\s+\S+)*?\s+-S\s+"(\s*[^-"$`][^"$`]*)""#,
-        r#"env(?:\s+\S+)*?\s+--split-string(?:\s+|=)'(\s*[^-'][^']*)'"#,
-        r#"env(?:\s+\S+)*?\s+--split-string(?:\s+|=)"(\s*[^-"$`][^"$`]*)""#,
+        r#"env((?:\s+\S+)*?)\s+-S\s+'([^']*)'"#,
+        r#"env((?:\s+\S+)*?)\s+-S\s+"([^"$`]*)""#,
+        r#"env((?:\s+\S+)*?)\s+--split-string(?:\s+|=)'([^']*)'"#,
+        r#"env((?:\s+\S+)*?)\s+--split-string(?:\s+|=)"([^"$`]*)""#,
     ];
     let mut out = command.to_owned();
     for pat in patterns {
         let Ok(re) = Regex::new(pat) else { continue };
-        out = re.replace_all(&out, "$1").into_owned();
+        out = re.replace_all(&out, "env$1 $2").into_owned();
     }
     out
 }
