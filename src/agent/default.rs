@@ -1960,7 +1960,7 @@ mod tests {
             .info
             .fallback_summary
             .as_ref()
-            .expect("fallback_summary should be set when FallbackModel is used");
+            .unwrap();
         assert!(!summary.fallback_happened);
         assert_eq!(summary.fallback_count, 0);
         assert!(summary.failed_attempts.is_empty());
