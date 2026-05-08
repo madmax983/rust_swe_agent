@@ -238,10 +238,12 @@ fn fallback_summary_all_failed_excludes_from_model_mix() {
             FallbackAttemptRecord {
                 model: "gpt-4".into(),
                 failure_reason: "rate_limited".into(),
+                retry_after_secs: None,
             },
             FallbackAttemptRecord {
                 model: "claude-sonnet-4-6".into(),
                 failure_reason: "rate_limited".into(),
+                retry_after_secs: None,
             },
         ],
         all_failed: true,
@@ -296,6 +298,7 @@ fn fallback_summary_round_trips_through_trajectory_info() {
         failed_attempts: vec![FallbackAttemptRecord {
             model: "primary-model".into(),
             failure_reason: "rate_limited".into(),
+            retry_after_secs: None,
         }],
         all_failed: false,
     };
@@ -351,6 +354,7 @@ fn trajectory_fallback_summary_survives_full_roundtrip() {
         failed_attempts: vec![FallbackAttemptRecord {
             model: "gpt-4".into(),
             failure_reason: "rate_limited".into(),
+            retry_after_secs: None,
         }],
         all_failed: false,
     });
@@ -551,6 +555,7 @@ fn fallback_attempt_record_carrying_cost_attributes_to_final_model() {
         fallback_attempts: vec![FallbackAttemptRecord {
             model: "gpt-4".into(),
             failure_reason: "rate_limited".into(),
+            retry_after_secs: None,
         }],
     };
     // Cost belongs to the responding model.

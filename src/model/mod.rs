@@ -135,6 +135,9 @@ pub struct FallbackAttemptRecord {
     pub model: String,
     /// Coarse failure reason, safe for logs and artifacts.
     pub failure_reason: String,
+    /// Retry-After seconds parsed from the rate-limit error, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

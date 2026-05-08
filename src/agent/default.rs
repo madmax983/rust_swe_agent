@@ -410,6 +410,7 @@ impl Agent for DefaultAgent {
                 .extend(attempts.iter().map(|a| FallbackAttemptRecord {
                     model: a.model.clone(),
                     failure_reason: a.reason.clone(),
+                    retry_after_secs: None,
                 }));
         }
         let Some(resp) = query_result? else {

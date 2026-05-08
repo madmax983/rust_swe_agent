@@ -192,7 +192,11 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         }
     }
 
-    for record in scan_trajectories(sweep_dir, &mut warnings)? {
+    let scanned_slots = scan_trajectories(sweep_dir, &mut warnings)?;
+    // Compute fallback totals from raw per-slot records before merging so that
+    // reruns using different fallback models are all counted in the model_mix.
+    let (scanned_fallbacks, scanned_mix) = fallback_totals_from_records(scanned_slots.iter());
+    for record in scanned_slots {
         records
             .entry(record.instance_id.clone())
             .and_modify(|existing| existing.merge_trajectory(&record))
@@ -310,7 +314,7 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
     // totals from the scanned trajectory records instead.
     let (total_fallbacks, model_mix) =
         if meta.total_fallbacks == 0 && meta.model_mix.is_empty() && !records.is_empty() {
-            fallback_totals_from_records(records.values())
+            (scanned_fallbacks, scanned_mix)
         } else {
             (meta.total_fallbacks, std::mem::take(&mut meta.model_mix))
         };

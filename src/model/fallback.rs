@@ -78,6 +78,7 @@ impl Model for FallbackModel {
                     failed_attempts.push(FallbackAttemptRecord {
                         model: model.name().to_owned(),
                         failure_reason: coarse_reason(&e),
+                        retry_after_secs: e.retry_after_secs(),
                     });
                     // Continue to the next candidate.
                 }
@@ -92,6 +93,7 @@ impl Model for FallbackModel {
                     failed_attempts.push(FallbackAttemptRecord {
                         model: model.name().to_owned(),
                         failure_reason: coarse_reason(&e),
+                        retry_after_secs: e.retry_after_secs(),
                     });
                     let error_attempts: Vec<FailedAttempt> = failed_attempts
                         .iter()

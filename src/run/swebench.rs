@@ -3510,7 +3510,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         // swallowed 429s never update the Retry-After floor and all workers
         // keep hammering the exhausted primary.
         if let Some(g) = &governor {
-            let had_rate_limited_attempt = info
+            let fallback_rate_limited = info
                 .as_ref()
                 .and_then(|i| i.fallback_summary.as_ref())
                 .is_some_and(|s| {
@@ -3518,8 +3518,20 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                         .iter()
                         .any(|a| a.failure_reason == "rate_limited")
                 });
-            if had_rate_limited_attempt {
-                g.report_429(None).await;
+            if fallback_rate_limited {
+                // Forward the max Retry-After from swallowed 429s so the governor
+                // floor is set even when a fallback candidate succeeded.
+                let retry_after = info
+                    .as_ref()
+                    .and_then(|i| i.fallback_summary.as_ref())
+                    .and_then(|s| {
+                        s.failed_attempts
+                            .iter()
+                            .filter(|a| a.failure_reason == "rate_limited")
+                            .filter_map(|a| a.retry_after_secs)
+                            .max()
+                    });
+                g.report_429(retry_after).await;
             }
         }
 
