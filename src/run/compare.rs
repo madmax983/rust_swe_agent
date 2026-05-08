@@ -763,6 +763,18 @@ pub fn build_model_mix_warnings(
                     c_summary.join(", "),
                 ));
             }
+            // Same model distribution but different fallback *rates*: one sweep
+            // hit many more transient primary failures than the other, which can
+            // still confound resolved-rate deltas even when both ended up on the
+            // same final model.
+            if baseline.total_fallbacks != candidate.total_fallbacks {
+                warnings.push(format!(
+                    "Model-mix warning: baseline and candidate have different fallback attempt \
+                     counts (baseline={}, candidate={}); a large rate difference may reflect \
+                     different primary-model reliability rather than harness or prompt changes.",
+                    baseline.total_fallbacks, candidate.total_fallbacks,
+                ));
+            }
         }
         (false, false) => {}
     }
@@ -4045,5 +4057,76 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(mix.len(), 1);
         assert_eq!(mix["model-z"], 1);
+    }
+
+    fn snapshot_one_model(model: &str, n: usize, total_fallbacks: u64) -> ModelMixSnapshot {
+        let mut mix = std::collections::BTreeMap::new();
+        mix.insert(model.to_owned(), n);
+        ModelMixSnapshot {
+            model_mix: mix,
+            total_fallbacks,
+        }
+    }
+
+    #[test]
+    fn build_model_mix_warnings_no_fallback_on_either_side_is_silent() {
+        let b = ModelMixSnapshot {
+            model_mix: std::collections::BTreeMap::new(),
+            total_fallbacks: 0,
+        };
+        assert!(build_model_mix_warnings(&b, &b).is_empty());
+    }
+
+    #[test]
+    fn build_model_mix_warnings_candidate_only_fallback_warns() {
+        let base = ModelMixSnapshot {
+            model_mix: std::collections::BTreeMap::new(),
+            total_fallbacks: 0,
+        };
+        let cand = snapshot_one_model("secondary", 5, 5);
+        let w = build_model_mix_warnings(&base, &cand);
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("candidate sweep used model fallback"),
+            "{}",
+            w[0]
+        );
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_same_mix_same_rate_is_silent() {
+        let snap = snapshot_one_model("secondary", 5, 10);
+        assert!(build_model_mix_warnings(&snap, &snap).is_empty());
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_different_rate_warns() {
+        let b = snapshot_one_model("secondary", 5, 1);
+        let c = snapshot_one_model("secondary", 5, 100);
+        let w = build_model_mix_warnings(&b, &c);
+        assert_eq!(
+            w.len(),
+            1,
+            "expected exactly one warning for rate diff: {w:?}"
+        );
+        assert!(
+            w[0].contains("different fallback attempt counts"),
+            "warning should mention count diff: {}",
+            w[0]
+        );
+        assert!(w[0].contains("baseline=1"), "{}", w[0]);
+        assert!(w[0].contains("candidate=100"), "{}", w[0]);
+    }
+
+    #[test]
+    fn build_model_mix_warnings_both_fallback_different_mix_and_rate_warns_twice() {
+        let b = snapshot_one_model("primary", 8, 2);
+        let c = snapshot_one_model("secondary", 8, 50);
+        let w = build_model_mix_warnings(&b, &c);
+        assert_eq!(
+            w.len(),
+            2,
+            "expected warnings for both mix diff and rate diff: {w:?}"
+        );
     }
 }
