@@ -2339,6 +2339,27 @@ fn safe_blocks_heredoc_then_exec_with_mixed_redirects() {
     }
 }
 
+// ── tee heredoc with stdout redirect (Codex P1) ─────────────────────────────
+
+#[test]
+fn safe_blocks_tee_heredoc_with_stdout_redirect_to_other_file() {
+    // The heredoc body goes to `/tmp/x` via tee, even though tee's stdout
+    // is redirected to /dev/null.  Picking the `>` target would miss the
+    // real script destination.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "cat <<'EOF' | tee /tmp/x >/dev/null\nrm -rf /\nEOF\nbash /tmp/x",
+        "cat <<'EOF' | tee /tmp/x > /dev/null\nrm -rf /\nEOF\nsh /tmp/x",
+        "cat <<'EOF' | sudo tee /tmp/x >/dev/null\nrm -rf /\nEOF\nbash /tmp/x",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "tee heredoc with stdout redirect must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

@@ -562,31 +562,29 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
 /// Surrounding quotes are trimmed.  Returns `None` when the line writes
 /// to no file.
 fn extract_redirect_target(intro_line: &str) -> Option<String> {
-    // Try `>`/`>>` redirect.  We scan the whole intro line — the redirect
-    // can legitimately follow the heredoc operator (`cat <<'EOF' > FILE`)
-    // and the regex `>>?` won't match the heredoc operator `<<`.
-    // Require the `>` to be preceded by start-of-string or a non-digit
-    // so we skip stderr redirects like `2>` (group 0 is the redirect
-    // operator's stdin/stdout, group 2 is for stderr — the heredoc body
-    // doesn't go through stderr).  Without this, `cat > /tmp/x <<'EOF'
-    // 2>/tmp/log` would pick `/tmp/log` as the target via `.last()`.
-    let Ok(redirect_re) = Regex::new(r#"(?:^|[^0-9>])>>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
+    // `tee FILE` is checked FIRST: when the line has both
+    // `| tee /tmp/x` and `> /dev/null`, the heredoc body goes to
+    // `/tmp/x` (tee duplicates stdin to FILE) — picking the redirect
+    // would route us to /dev/null and miss the real script file.
+    let Ok(tee_re) = Regex::new(r#"\btee\b(?:\s+-\S+)*\s+['"]?([^\s'"<>|;&]+)['"]?"#) else {
         return None;
     };
-    if let Some(target) = redirect_re
+    if let Some(target) = tee_re
         .captures_iter(intro_line)
         .last()
         .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
     {
         return Some(target);
     }
-    // Then `tee FILE` / `tee -a FILE` / `sudo tee FILE` etc. — `tee`
-    // duplicates stdin to a file as well as stdout, so the heredoc body
-    // ends up in FILE.
-    let Ok(tee_re) = Regex::new(r#"\btee\b(?:\s+-\S+)*\s+['"]?([^\s'"<>|;&]+)['"]?"#) else {
+    // Otherwise look for a `>`/`>>` stdout redirect.  Skip stderr
+    // redirects like `2>` and `2>>` (preceded by a digit).  The
+    // operator can legitimately appear before OR after the `<<`
+    // operator (`cat > FILE <<'EOF'` and `cat <<'EOF' > FILE` are both
+    // supported); we scan the whole intro line.
+    let Ok(redirect_re) = Regex::new(r#"(?:^|[^0-9>])>>?\s*['"]?([^\s'"<>|;&]+)['"]?"#) else {
         return None;
     };
-    tee_re
+    redirect_re
         .captures_iter(intro_line)
         .last()
         .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()))
