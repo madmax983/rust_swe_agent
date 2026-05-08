@@ -235,7 +235,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `${HOME}`; and `"$HOME"` / `"${HOME}"` — but NOT `'$HOME'`.
         PolicyRule::deny_static(
             "catastrophic-delete-home",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|!\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:\S*/)?rm\b[^|;\n]*\s+(?:~(?:/\*?)?|"?\$\{?HOME\}?(?:/\*?)?"?)(?:$|[\s;&|)`'"])"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|!\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+\S+)*?\s+-S\s+['"]?|env(?:\s+\S+)*?\s+--split-string(?:\s+|=)['"]?|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:\S*/)?rm\b[^|;\n]*\s+(?:~[a-zA-Z0-9_-]*(?:/\*?)?|"?\$\{?HOME\}?(?:/\*?)?"?)(?:$|[\s;&|)`'"])"#,
         ),
         // Match `/etc`, `/etc/`, and any path under a system dir that contains
         // a glob `*` (e.g. `/etc/*`, `/etc/*.conf`, `/etc/passwd*`,
@@ -691,6 +691,34 @@ fn interpreter_invokes_file(region: &str, file: &str) -> bool {
 /// text.  Doesn't follow symlinks, doesn't resolve `..` past variable
 /// expansions, and doesn't apply inside shell strings (which heredoc
 /// stripping and env-S unwrapping already handle).
+/// Expand simple bash brace expansions in absolute paths so the existing
+/// catastrophic-delete patterns can fire on each branch.
+///
+/// Bash expands `rm -rf /{etc,home}` to `rm -rf /etc /home` before
+/// invoking rm, but the policy gate sees the literal source.  Without
+/// expansion, the system-dir rule's protected-name list doesn't see
+/// any of the branches and the destructive command slips through.
+///
+/// Limitation: only `/{...}` (rooted at `/`) is expanded.  Nested
+/// braces and sequence expansions like `{1..5}` are not handled.
+fn expand_simple_brace_expansions(command: &str) -> String {
+    let Ok(re) = Regex::new(r"/\{([^{}]+)\}") else {
+        return command.to_owned();
+    };
+    re.replace_all(command, |caps: &regex::Captures| {
+        let Some(inner) = caps.get(1) else {
+            return String::new();
+        };
+        inner
+            .as_str()
+            .split(',')
+            .map(|p| format!("/{}", p.trim()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+    .into_owned()
+}
+
 fn collapse_parent_components(command: &str) -> String {
     // Capture the trailing terminator so we can put it back: a `..` at
     // path position is followed by `/`, whitespace, or a separator.
@@ -971,6 +999,7 @@ impl PolicyEngine {
         let normalized = strip_heredoc_bodies(&normalized);
         let normalized = unwrap_env_split_string_payloads(&normalized);
         let normalized = collapse_parent_components(&normalized);
+        let normalized = expand_simple_brace_expansions(&normalized);
 
         for rule in &self.rules {
             if rule.matches(&normalized) {

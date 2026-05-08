@@ -2360,6 +2360,53 @@ fn safe_blocks_tee_heredoc_with_stdout_redirect_to_other_file() {
     }
 }
 
+// ── ~user expansion (Codex P1) ──────────────────────────────────────────────
+
+#[test]
+fn safe_blocks_tilde_user_home_deletes() {
+    // Bash expands `~root` to `/root` (root's home dir) before rm.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf ~root",
+        "rm -rf ~root/",
+        "rm -rf ~user1",
+        "sudo rm -rf ~root",
+        "rm -rf ~daemon/*",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "tilde-user home delete must be blocked: {cmd:?}"
+        );
+    }
+}
+
+// ── Brace expansion of protected dirs (Codex P1) ────────────────────────────
+
+#[test]
+fn safe_blocks_brace_expansion_of_protected_dirs() {
+    // Bash expands `/{etc,home}` to `/etc /home` before rm.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "rm -rf /{etc,home}",
+        "sudo rm -rf /{root,etc}",
+        "rm -rf /{etc,var,usr}",
+        // Whitespace inside braces
+        "rm -rf /{etc, home}",
+        // Trailing slash in branch
+        "rm -rf /{etc/,home/}",
+        // Mixed safe + dangerous in same brace (the dangerous branch
+        // expands to a protected dir)
+        "rm -rf /{tmp,etc}",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "brace expansion to protected dir must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
