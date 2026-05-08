@@ -1401,6 +1401,34 @@ fn safe_does_not_block_tee_heredoc_pure_data_write() {
     }
 }
 
+// ── chmod / chown long --recursive option (Codex P1) ─────────────────────────
+
+#[test]
+fn safe_blocks_chmod_chown_long_recursive_options() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // chmod 777 root
+        "chmod --recursive 777 /",
+        "sudo chmod --recursive 777 /",
+        // chown root
+        "chown --recursive root:root /",
+        "sudo chown --recursive root:root /",
+        // chown system dirs
+        "chown --recursive root:root /etc",
+        "sudo chown --recursive nobody /home",
+        "chown --recursive root /var",
+        // Mixed with other flags
+        "sudo chmod -v --recursive 777 /",
+        "sudo chown -v --recursive root:root /etc",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "long --recursive form must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

@@ -304,17 +304,19 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "chmod-sensitive-files",
             r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+[^|;\n]*(?:/etc/(?:shadow|passwd|sudoers)|/etc\b)",
         ),
+        // `-R` (short) and `--recursive` (long) are equivalent for chmod /
+        // chown.  Accept both, plus other intermixed flag groups.
         PolicyRule::deny_static(
             "chmod-777-system",
-            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+-R\s+777\s+/",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chmod\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*777\s+/",
         ),
         PolicyRule::deny_static(
             "chown-system-root",
-            r#"(?:sudo\s+(?:-\S+\s+)*)?chown\s+-R\s+\S+\s+/(?:$|[\s;&|)`'"])"#,
+            r#"(?:sudo\s+(?:-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:$|[\s;&|)`'"])"#,
         ),
         PolicyRule::deny_static(
             "chown-system-dirs",
-            r"(?:sudo\s+(?:-\S+\s+)*)?chown\s+-R\s+\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
+            r"(?:sudo\s+(?:-\S+\s+)*)?chown\s+(?:-\S+\s+)*(?:-R|--recursive)\s+(?:-\S+\s+)*\S+\s+/(?:etc|var|usr|bin|sbin|lib|boot|home|root)\b",
         ),
         // --- Raw disk / device writes ---
         // Match dd writes to real block devices (sd*, hd*, nvme*, xvd*, vd*, disk*)
