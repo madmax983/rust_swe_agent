@@ -867,4 +867,53 @@ mod tests {
         assert!(!rendered.contains("ghp_0123456789ABCDEF0123456789ABCDEF0123"));
         assert!(!rendered.contains("quoted-secret-value"));
     }
+    #[test]
+    fn env_secret_kind_handles_various_formats() {
+        let cases = vec![
+            ("MY_TOKEN", "env_token"),
+            ("github_token", "env_token"),
+            ("api_secret", "env_secret"),
+            ("SECRET_KEY", "env_secret"),
+            ("USER_PASSWORD", "env_password"),
+            ("password123", "env_password"),
+            ("AWS_CREDENTIAL", "env_credential"),
+            ("credential_file", "env_credential"),
+            ("API_KEY", "env_key"),
+            ("random_key", "env_key"),
+            ("something_else", "env_key"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                env_secret_kind(input),
+                expected,
+                "Failed for input: {input}",
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_key_kind_handles_various_formats() {
+        let cases = vec![
+            ("auth_token", Some("env_token")),
+            ("TOKEN", Some("env_token")),
+            ("client_secret", Some("env_secret")),
+            ("db_password", Some("env_password")),
+            ("aws_credential", Some("env_credential")),
+            ("api_key", Some("env_key")),
+            ("API-KEY", Some("env_key")),
+            ("custom_patterns", Some(KIND_CUSTOM_PATTERN)),
+            ("field_literal", Some(KIND_SECRET_FIELD)),
+            ("benign_value", None),
+            ("keyboard_layout", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                sensitive_key_kind(input),
+                expected,
+                "Failed for input: {input}",
+            );
+        }
+    }
 }
