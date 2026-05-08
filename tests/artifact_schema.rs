@@ -812,6 +812,10 @@ fn instance(id: &str, input_tokens: u64, output_tokens: u64, cost_usd: f64) -> I
         pass_at_1: true,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -854,6 +858,10 @@ fn fixture_results() -> SweepResults {
         cost_limit_usd: None,
         instances,
         rate_limit_events: None,
+
+        total_fallbacks: 0,
+
+        model_mix: std::collections::BTreeMap::new(),
     }
 }
 

@@ -705,6 +705,69 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
 /// Load all `InstanceResult`s from a sweep output directory.
 ///
 /// Tries `results.json` first (the canonical end-of-sweep summary). Falls
+// ── Model-mix warning helpers (issue #91) ────────────────────────────────────
+
+/// Snapshot of model-mix data extracted from a `SweepResults` for comparison.
+#[derive(Debug, Clone)]
+pub struct ModelMixSnapshot {
+    /// Count of instances by final responding model name.
+    pub model_mix: std::collections::BTreeMap<String, usize>,
+    /// Total fallback attempts in the sweep.
+    pub total_fallbacks: u64,
+}
+
+/// Build human-readable warnings when a `bench compare` pair has mismatched
+/// model mixes or different fallback rates. Called before resolved-rate deltas
+/// are reported so operators can see the contamination signal first.
+///
+/// Returns an empty `Vec` when both sides are identical (no fallbacks, same
+/// model distribution) — no noise for normal same-model comparisons.
+#[must_use]
+pub fn build_model_mix_warnings(
+    baseline: &ModelMixSnapshot,
+    candidate: &ModelMixSnapshot,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let baseline_has_fallback = baseline.total_fallbacks > 0 || baseline.model_mix.len() > 1;
+    let candidate_has_fallback = candidate.total_fallbacks > 0 || candidate.model_mix.len() > 1;
+
+    match (baseline_has_fallback, candidate_has_fallback) {
+        (false, true) => warnings.push(
+            "Model-mix warning: candidate sweep used model fallback but baseline did not;              resolved-rate delta may reflect model differences, not prompt/harness changes."
+                .to_owned(),
+        ),
+        (true, false) => warnings.push(
+            "Model-mix warning: baseline sweep used model fallback but candidate did not;              resolved-rate delta may reflect model differences, not prompt/harness changes."
+                .to_owned(),
+        ),
+        (true, true) => {
+            if baseline.model_mix != candidate.model_mix {
+                let b_summary: Vec<String> = baseline
+                    .model_mix
+                    .iter()
+                    .map(|(m, n)| format!("{m}:{n}"))
+                    .collect();
+                let c_summary: Vec<String> = candidate
+                    .model_mix
+                    .iter()
+                    .map(|(m, n)| format!("{m}:{n}"))
+                    .collect();
+                warnings.push(format!(
+                    "Model-mix warning: baseline and candidate have different final model                      distributions (baseline=[{}], candidate=[{}]); compare deltas may be                      confounded by model differences.",
+                    b_summary.join(", "),
+                    c_summary.join(", "),
+                ));
+            }
+        }
+        (false, false) => {}
+    }
+
+    warnings
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// back to scanning per-instance `*.traj.json` files when no `results.json`
 /// exists, reconstructing minimal `InstanceResult`s. Tolerant of missing
 /// newer fields: defaults flow through serde.
@@ -1005,6 +1068,8 @@ fn instance_result_from_trajectory(
         pass_at_1: resolved,
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        final_model: info.fallback_summary.as_ref().map(|s| s.final_model.clone()),
     }))
 }
 
@@ -2499,6 +2564,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2526,6 +2595,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2555,6 +2628,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -2611,6 +2688,10 @@ mod tests {
             cost_limit_usd: None,
             instances,
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.join("results.json"),
@@ -2752,6 +2833,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -2826,6 +2911,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -2850,6 +2939,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -3103,6 +3196,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a")],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -3377,6 +3474,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3441,6 +3542,10 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![submitted("a")],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -3547,6 +3652,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3654,6 +3763,10 @@ mod tests {
             cost_limit_usd: None,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3788,6 +3901,8 @@ mod tests {
             cost_limit_usd: None,
             instances: vec![],
             rate_limit_events: Some(events),
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
         };
         std::fs::write(
             dir.path().join("results.json"),

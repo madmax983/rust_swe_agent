@@ -14,9 +14,11 @@ use std::collections::BTreeMap;
 use crate::error::ModelError;
 
 pub mod deterministic;
+pub mod fallback;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
+pub use fallback::FallbackModel;
 pub use litellm::{AnthropicBackend, LitellmBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -126,11 +128,28 @@ pub struct ModelUsage {
     pub cost_usd: Option<f64>,
 }
 
+/// Record of a single failed model attempt within a fallback chain.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FallbackAttemptRecord {
+    /// Name of the model that was attempted.
+    pub model: String,
+    /// Coarse failure reason, safe for logs and artifacts.
+    pub failure_reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponse {
     pub content: String,
     pub usage: ModelUsage,
     pub raw: serde_json::Value,
+    /// The model that actually produced this response. `None` when the
+    /// primary model responded normally (single-model path, no fallback).
+    /// `FallbackModel` always populates this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responding_model: Option<String>,
+    /// Failed attempts before this response. Empty when no fallback occurred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_attempts: Vec<FallbackAttemptRecord>,
 }
 
 #[derive(Debug, Clone, Default)]

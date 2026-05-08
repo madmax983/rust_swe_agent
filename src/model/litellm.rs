@@ -170,6 +170,8 @@ impl Model for LitellmBackend {
                 cost_usd,
             },
             raw,
+            responding_model: None,
+            fallback_attempts: Vec::new(),
         })
     }
 }

@@ -1291,6 +1291,8 @@ mod tests {
                     cost_usd: Some(0.02),
                 },
                 raw: serde_json::json!({"cancelled_during_query": true}),
+                responding_model: None,
+                fallback_attempts: Vec::new(),
             })
         }
     }
@@ -1324,6 +1326,8 @@ mod tests {
                     cost_usd: Some(0.02),
                 },
                 raw: serde_json::json!({"slow_model": true}),
+                responding_model: None,
+                fallback_attempts: Vec::new(),
             })
         }
     }

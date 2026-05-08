@@ -1400,6 +1400,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -1427,6 +1431,10 @@ mod tests {
             pass_at_1: false,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 

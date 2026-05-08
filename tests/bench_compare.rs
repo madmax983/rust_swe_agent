@@ -44,6 +44,10 @@ fn submitted(id: &str) -> InstanceResult {
         pass_at_1: true,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -71,6 +75,10 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -208,6 +216,10 @@ fn write_results_with_filter_spec_and_model(
         cost_limit_usd: None,
         instances,
         rate_limit_events: None,
+
+        total_fallbacks: 0,
+
+        model_mix: std::collections::BTreeMap::new(),
     };
     std::fs::write(
         dir.join("results.json"),

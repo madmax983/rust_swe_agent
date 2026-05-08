@@ -189,6 +189,14 @@ pub struct InstanceResult {
     /// Pass/fail value of the most recent recognized pre-submit test command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_tests_passed: Option<bool>,
+    /// Number of fallback attempts for this instance. `None` means no
+    /// fallback telemetry was recorded (single-model run or legacy artifact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_count: Option<u32>,
+    /// The model that produced the final response. Matches `model_name` when
+    /// no fallback occurred. `None` for single-model runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +293,14 @@ pub struct SweepResults {
     /// set. `None` when neither flag was provided (opt-in, no behavior change).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit_events: Option<crate::run::rate_limit::RateLimitEvents>,
+    /// Total fallback attempts across all instances in this sweep. Zero for
+    /// single-model sweeps.
+    #[serde(default)]
+    pub total_fallbacks: u64,
+    /// Count of instances by final responding model name. Empty when no
+    /// fallback telemetry was recorded (single-model sweep or legacy artifact).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_mix: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -494,6 +510,51 @@ impl InstanceResult {
                 model.unwrap_or(""),
             )
         })
+    }
+}
+
+impl Default for SweepResults {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            sweep_status: SWEEP_STATUS_COMPLETED.to_owned(),
+            cancelled_at: None,
+            cancel_deadline_at: None,
+            cancel_exit_code: None,
+            completed: 0,
+            in_flight_at_cancel: 0,
+            not_started: 0,
+            submitted: 0,
+            submitted_with_tests: 0,
+            skipped: 0,
+            errored: 0,
+            failures_by_category: BTreeMap::new(),
+            budget_halted: 0,
+            with_patch: 0,
+            patch_empty: 0,
+            patch_apply_invalid: 0,
+            github_pr_failures: 0,
+            total_prompt_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_completion_tokens: 0,
+            estimated_cost_usd: 0.0,
+            actual_cost_usd: None,
+            actual_cost_source: None,
+            baseline_cost_usd: None,
+            baseline_cost_model: None,
+            cache_hit_rate: 0.0,
+            retries: 0,
+            retried_instances: 0,
+            pass_at_k: 0.0,
+            filter_spec: FilterSpec::default(),
+            manifest: None,
+            cost_limit_usd: None,
+            instances: Vec::new(),
+            rate_limit_events: None,
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
+        }
     }
 }
 
@@ -1141,6 +1202,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             cost_limit_usd: args.cost_limit_usd,
             instances: Vec::new(),
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1219,6 +1284,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         cost_limit_usd: args.cost_limit_usd,
         instances: Vec::new(),
         rate_limit_events: None,
+
+        total_fallbacks: 0,
+
+        model_mix: BTreeMap::new(),
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1530,6 +1599,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 pass_at_1: false,
                                 tests_run_before_submit: false,
                                 last_tests_passed: None,
+
+                                fallback_count: None,
+
+                                final_model: None,
                             },
                         ));
                     }
@@ -1746,6 +1819,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             Some(g) => Some(g.events().await),
             None => None,
         },
+        total_fallbacks: 0,
+        model_mix: BTreeMap::new(),
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -2357,6 +2432,10 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -2402,6 +2481,10 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         pass_at_1: false,
         tests_run_before_submit: false,
         last_tests_passed: None,
+
+        fallback_count: None,
+
+        final_model: None,
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -3016,6 +3099,10 @@ fn skipped_result_from_info(
             && info.failure_category.is_none(),
         tests_run_before_submit: info.tests_run_before_submit,
         last_tests_passed: info.last_tests_passed,
+
+        fallback_count: None,
+
+        final_model: None,
     }
 }
 
@@ -3432,6 +3519,10 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             pass_at_1: outcome_str == outcome::SUBMITTED && failure_category.is_none(),
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
+
+            fallback_count: None,
+
+            final_model: None,
         };
         let current = publish_github_pr_for_result(
             current,
@@ -3909,6 +4000,10 @@ mod tests {
             pass_at_1: submitted,
             tests_run_before_submit: tests_run,
             last_tests_passed: tests_run.then_some(true),
+
+            fallback_count: None,
+
+            final_model: None,
         }
     }
 
@@ -4227,6 +4322,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -4263,6 +4362,10 @@ mod tests {
             pass_at_1: true,
             tests_run_before_submit: false,
             last_tests_passed: None,
+
+            fallback_count: None,
+
+            final_model: None,
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
@@ -4324,6 +4427,10 @@ mod tests {
             cache_hit_rate: 0.8,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -4400,6 +4507,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![row],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4453,6 +4564,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![with_tests, skipped_tests, error_without_submit],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4527,6 +4642,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(
@@ -4588,6 +4707,10 @@ mod tests {
                 unresolved_2,
             ],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4656,6 +4779,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![no_cost],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
 
         let t = s.summary_table();
@@ -4712,6 +4839,10 @@ mod tests {
             cache_hit_rate: 0.0,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -5672,6 +5803,10 @@ instance = "inst"
             patch_apply_invalid: 0,
             github_pr_failures: 0,
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -5998,6 +6133,8 @@ instance = "inst"
                 configured_max_rpm: Some(4000),
                 configured_max_input_tpm: Some(400_000),
             }),
+            total_fallbacks: 0,
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(
@@ -6065,6 +6202,10 @@ instance = "inst"
             cost_limit_usd: None,
             instances: vec![],
             rate_limit_events: None,
+
+            total_fallbacks: 0,
+
+            model_mix: BTreeMap::new(),
         };
         let t = s.summary_table();
         assert!(

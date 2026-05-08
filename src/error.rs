@@ -46,6 +46,23 @@ pub enum ModelError {
 
     #[error("rate limited: {0}")]
     RateLimited(String),
+
+    /// All models in the fallback chain failed with transient errors.
+    /// The message names every attempted model and its coarse failure reason.
+    #[error("all fallback candidates failed: {0}")]
+    AllCandidatesFailed(String),
+}
+
+impl ModelError {
+    /// Returns `true` for errors that are worth retrying with a fallback model.
+    ///
+    /// Transient: rate limits, network/timeout failures, provider 5xx.
+    /// Non-transient: bad credentials, bad model name, malformed request,
+    /// context-window overflow, content policy, all-candidates-failed.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::RateLimited(_) | Self::Request(_))
+    }
 }
 
 #[derive(Debug, Error)]

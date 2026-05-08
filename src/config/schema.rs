@@ -113,6 +113,11 @@ pub struct ModelCfg {
     pub temperature: Option<f32>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    /// Ordered list of fallback model names tried on transient provider
+    /// failures. Empty by default — a run without this field cannot
+    /// silently introduce a secondary model.
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
 }
 
 fn default_max_tokens() -> u32 {
