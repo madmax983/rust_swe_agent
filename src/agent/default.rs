@@ -1955,12 +1955,7 @@ mod tests {
         .build()
         .unwrap();
         let _ = agent.run().await.unwrap();
-        let summary = agent
-            .trajectory
-            .info
-            .fallback_summary
-            .as_ref()
-            .unwrap();
+        let summary = agent.trajectory.info.fallback_summary.as_ref().unwrap();
         assert!(!summary.fallback_happened);
         assert_eq!(summary.fallback_count, 0);
         assert!(summary.failed_attempts.is_empty());
