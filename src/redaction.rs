@@ -201,15 +201,7 @@ impl Redactor {
                 .then_with(|| a.kind.cmp(&b.kind))
         });
 
-        let mut filtered = Vec::new();
-        let mut next_available = 0usize;
-        for candidate in matches {
-            if candidate.start < next_available {
-                continue;
-            }
-            next_available = candidate.end;
-            filtered.push(candidate);
-        }
+        let filtered = Self::filter_overlapping_matches(matches);
 
         let mut out = String::with_capacity(input.len());
         let mut last = 0usize;
@@ -225,6 +217,19 @@ impl Redactor {
             text: out,
             redacted: true,
         }
+    }
+
+    fn filter_overlapping_matches(matches: Vec<RedactionMatch>) -> Vec<RedactionMatch> {
+        let mut filtered = Vec::new();
+        let mut next_available = 0usize;
+        for candidate in matches {
+            if candidate.start < next_available {
+                continue;
+            }
+            next_available = candidate.end;
+            filtered.push(candidate);
+        }
+        filtered
     }
 
     pub fn redact_json_value(&self, value: &mut serde_json::Value, surface: &str) -> bool {
@@ -319,36 +324,10 @@ impl Redactor {
                     regex,
                     capture_group,
                 } => {
-                    for captures in regex.captures_iter(input) {
-                        let matched = capture_group
-                            .and_then(|idx| captures.get(idx))
-                            .or_else(|| captures.get(0));
-                        if let Some(matched) = matched {
-                            if matched.start() < matched.end() {
-                                out.push(RedactionMatch {
-                                    start: matched.start(),
-                                    end: matched.end(),
-                                    kind: rule.kind.clone(),
-                                    raw: matched.as_str().to_owned(),
-                                });
-                            }
-                        }
-                    }
+                    collect_regex_matches(input, regex, *capture_group, &rule.kind, &mut out);
                 }
                 RuleMatcher::EnvAssignment { regex } => {
-                    for captures in regex.captures_iter(input) {
-                        let (Some(name), Some(value)) = (captures.get(1), captures.get(2)) else {
-                            continue;
-                        };
-                        if env_name_is_sensitive(name.as_str()) && value.start() < value.end() {
-                            out.push(RedactionMatch {
-                                start: value.start(),
-                                end: value.end(),
-                                kind: rule.kind.clone(),
-                                raw: value.as_str().to_owned(),
-                            });
-                        }
-                    }
+                    collect_env_assignment_matches(input, regex, &rule.kind, &mut out);
                 }
             }
         }
@@ -688,6 +667,51 @@ fn sensitive_key_kind(key: &str) -> Option<&'static str> {
         Some(KIND_SECRET_FIELD)
     } else {
         None
+    }
+}
+
+fn collect_regex_matches(
+    input: &str,
+    regex: &Regex,
+    capture_group: Option<usize>,
+    kind: &str,
+    out: &mut Vec<RedactionMatch>,
+) {
+    for captures in regex.captures_iter(input) {
+        let matched = capture_group
+            .and_then(|idx| captures.get(idx))
+            .or_else(|| captures.get(0));
+        if let Some(matched) = matched {
+            if matched.start() < matched.end() {
+                out.push(RedactionMatch {
+                    start: matched.start(),
+                    end: matched.end(),
+                    kind: kind.to_owned(),
+                    raw: matched.as_str().to_owned(),
+                });
+            }
+        }
+    }
+}
+
+fn collect_env_assignment_matches(
+    input: &str,
+    regex: &Regex,
+    kind: &str,
+    out: &mut Vec<RedactionMatch>,
+) {
+    for captures in regex.captures_iter(input) {
+        let (Some(name), Some(value)) = (captures.get(1), captures.get(2)) else {
+            continue;
+        };
+        if env_name_is_sensitive(name.as_str()) && value.start() < value.end() {
+            out.push(RedactionMatch {
+                start: value.start(),
+                end: value.end(),
+                kind: kind.to_owned(),
+                raw: value.as_str().to_owned(),
+            });
+        }
     }
 }
 
