@@ -848,6 +848,14 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             };
             let scanned = scan_trajectory_instances(dir, min_mtime)?;
             let manifest = sweep.manifest;
+            // When trajectory files are fresher than results.json, use scanned
+            // instances and re-derive fallback totals from them so model-mix
+            // warnings are based on actual trajectory data, not the stale snapshot.
+            let (effective_fallbacks, effective_mix) = if scanned.is_empty() {
+                (total_fallbacks, model_mix.clone())
+            } else {
+                fallback_totals_from_instances(&scanned)
+            };
             return Ok(LoadedSweep {
                 instances: if scanned.is_empty() {
                     sweep
@@ -867,8 +875,8 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
                 rate_limit_events,
                 artifact: Some(artifact),
                 artifact_warnings,
-                total_fallbacks,
-                model_mix: model_mix.clone(),
+                total_fallbacks: effective_fallbacks,
+                model_mix: effective_mix,
             });
         }
         return Ok(LoadedSweep {
@@ -1183,6 +1191,14 @@ fn aggregate_scanned_results(scanned: Vec<LoadedRunSlot>) -> HashMap<String, Ins
             .rev()
             .find_map(|(_, result)| result.last_tests_passed);
         aggregate.cost_usd = optional_sum(rows.iter().filter_map(|(_, result)| result.cost_usd));
+        // Sum fallback counts across all run slots; keep final_model from the
+        // first (pass@1 representative) run.
+        aggregate.fallback_count = Some(
+            rows.iter()
+                .filter_map(|(_, result)| result.fallback_count)
+                .fold(0u32, u32::saturating_add),
+        );
+        aggregate.final_model.clone_from(&first.final_model);
         aggregate.prompt_tokens = Some(
             rows.iter()
                 .filter_map(|(_, result)| result.prompt_tokens)
