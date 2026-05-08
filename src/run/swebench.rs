@@ -3409,6 +3409,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
     let mut total_completion_tokens = 0u64;
     let model_name = cfg.root.model.name.clone();
     let mut total_recorded_cost_usd = 0.0f64;
+    let mut total_fallback_count: u32 = 0;
     let mut terminal: Option<InstanceResult> = None;
 
     while attempts <= retry_policy.max_retries {
@@ -3494,6 +3495,32 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         total_cache_creation_tokens =
             total_cache_creation_tokens.saturating_add(cache_creation_tokens);
         total_completion_tokens = total_completion_tokens.saturating_add(completion_tokens);
+
+        // Accumulate fallback count across retry attempts (mirrors token accumulation).
+        let attempt_fallback_count = info
+            .as_ref()
+            .and_then(|i| i.fallback_summary.as_ref())
+            .map_or(0, |s| s.fallback_count);
+        total_fallback_count = total_fallback_count.saturating_add(attempt_fallback_count);
+
+        // Report rate-limited primary attempts to the governor even when a
+        // fallback model succeeded and mini::run returned Ok. Without this,
+        // swallowed 429s never update the Retry-After floor and all workers
+        // keep hammering the exhausted primary.
+        if let Some(g) = &governor {
+            let had_rate_limited_attempt = info
+                .as_ref()
+                .and_then(|i| i.fallback_summary.as_ref())
+                .is_some_and(|s| {
+                    s.failed_attempts
+                        .iter()
+                        .any(|a| a.failure_reason == "rate_limited")
+                });
+            if had_rate_limited_attempt {
+                g.report_429(None).await;
+            }
+        }
+
         let attempt_recorded_cost = info
             .as_ref()
             .and_then(|i| i.actual_cost_usd.or(i.total_cost_usd));
@@ -3556,10 +3583,13 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             tests_run_before_submit: info.as_ref().is_some_and(|i| i.tests_run_before_submit),
             last_tests_passed: info.as_ref().and_then(|i| i.last_tests_passed),
 
-            fallback_count: info
-                .as_ref()
-                .and_then(|i| i.fallback_summary.as_ref())
-                .map(|s| s.fallback_count),
+            // Use the accumulated count across all retry attempts, not just
+            // the final trajectory's count.
+            fallback_count: if total_fallback_count > 0 {
+                Some(total_fallback_count)
+            } else {
+                None
+            },
             final_model: info
                 .as_ref()
                 .and_then(|i| i.fallback_summary.as_ref())
