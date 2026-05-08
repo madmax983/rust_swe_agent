@@ -14,7 +14,7 @@ use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment, RunRequest};
 use crate::error::Error;
 use crate::model::litellm::LitellmBackend;
-use crate::model::{DeterministicModel, Model, ModelUsage};
+use crate::model::{DeterministicModel, FallbackModel, Model, ModelUsage};
 use crate::redaction::surface;
 use crate::stream::{BroadcastSink, SseServer, StreamSink};
 use crate::trajectory::FailureCategory;
@@ -610,9 +610,23 @@ fn build_model(
     // `LitellmBackend` dispatches by model prefix; credentials come from
     // the usual provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
     // …) the way Python LiteLLM expects.
-    let backend =
+    let primary =
         LitellmBackend::new(cfg.root.model.name.clone()).with_max_tokens(cfg.root.model.max_tokens);
-    Arc::new(backend)
+
+    if cfg.root.model.fallback_models.is_empty() {
+        return Arc::new(primary);
+    }
+
+    // Build a fallback chain: primary first, then each configured fallback.
+    // Fallback candidates inherit max_tokens from the model config so all
+    // candidates operate under the same budget constraint.
+    let mut models: Vec<Box<dyn Model>> = vec![Box::new(primary)];
+    for name in &cfg.root.model.fallback_models {
+        models.push(Box::new(
+            LitellmBackend::new(name.clone()).with_max_tokens(cfg.root.model.max_tokens),
+        ));
+    }
+    Arc::new(FallbackModel::new(models))
 }
 
 async fn build_env(cfg: &Config) -> Result<Box<dyn Environment>, Error> {
