@@ -93,6 +93,8 @@ struct TerminalRecord {
     completion_tokens: Option<u64>,
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
+    fallback_count: Option<u32>,
+    final_model: Option<String>,
 }
 
 impl TerminalRecord {
@@ -134,6 +136,12 @@ impl TerminalRecord {
         }
         if self.ended_at.is_none() {
             self.ended_at = other.ended_at;
+        }
+        if self.fallback_count.is_none() {
+            self.fallback_count = other.fallback_count;
+        }
+        if self.final_model.is_none() {
+            self.final_model.clone_from(&other.final_model);
         }
     }
 
@@ -296,6 +304,16 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         None
     };
 
+    // During an in-progress sweep results.json hasn't been written yet, so
+    // meta.total_fallbacks and meta.model_mix are zero/empty. Derive live
+    // totals from the scanned trajectory records instead.
+    let (total_fallbacks, model_mix) =
+        if meta.total_fallbacks == 0 && meta.model_mix.is_empty() && !records.is_empty() {
+            fallback_totals_from_records(records.values())
+        } else {
+            (meta.total_fallbacks, std::mem::take(&mut meta.model_mix))
+        };
+
     Ok(TailSnapshot {
         sweep_dir: sweep_dir.to_path_buf(),
         status,
@@ -316,8 +334,8 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         is_complete,
         abort_reason,
         warnings,
-        total_fallbacks: meta.total_fallbacks,
-        model_mix: meta.model_mix,
+        total_fallbacks,
+        model_mix,
     })
 }
 
@@ -480,6 +498,8 @@ fn record_from_result_value(
         ended_at: get_str(value, "ended_at")
             .or_else(|| get_str(value, "finished_at"))
             .and_then(parse_ts),
+        fallback_count: get_u64(value, "fallback_count").map(|v| v as u32),
+        final_model: get_str(value, "final_model").map(ToOwned::to_owned),
     })
 }
 
@@ -604,7 +624,29 @@ fn terminal_record_from_trajectory(
         completion_tokens,
         started_at: info.started_at.as_deref().and_then(parse_ts),
         ended_at: info.ended_at.as_deref().and_then(parse_ts),
+        fallback_count: info.fallback_summary.as_ref().map(|s| s.fallback_count),
+        // Exclude all-failed runs: no model produced a response, so they
+        // should not appear in model_mix.
+        final_model: info.fallback_summary.as_ref().and_then(|s| {
+            if s.all_failed { None } else { Some(s.final_model.clone()) }
+        }),
     }))
+}
+
+fn fallback_totals_from_records<'a>(
+    records: impl Iterator<Item = &'a TerminalRecord>,
+) -> (u64, BTreeMap<String, usize>) {
+    let mut total_fallbacks: u64 = 0;
+    let mut model_mix: BTreeMap<String, usize> = BTreeMap::new();
+    for record in records {
+        if let Some(count) = record.fallback_count {
+            total_fallbacks = total_fallbacks.saturating_add(u64::from(count));
+        }
+        if let Some(ref model) = record.final_model {
+            *model_mix.entry(model.clone()).or_insert(0) += 1;
+        }
+    }
+    (total_fallbacks, model_mix)
 }
 
 fn failure_counts_from_records<'a>(

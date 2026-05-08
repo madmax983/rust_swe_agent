@@ -191,6 +191,35 @@ async fn all_candidates_failed_returns_compound_error() {
     let _ = attempts[0].reason.as_str(); // FailedAttempt::reason
 }
 
+// ── FallbackSummary: all_failed is not fabricated as primary ──────────────────
+
+#[test]
+fn fallback_summary_all_failed_excludes_from_model_mix() {
+    // When all candidates fail, all_failed=true and final_model is the last
+    // attempted model (not fabricated as primary). The summary should have
+    // all_failed=true so swebench.rs leaves InstanceResult.final_model as None.
+    let summary = FallbackSummary {
+        primary_model: "gpt-4".into(),
+        final_model: "claude-sonnet-4-6".into(), // last attempted
+        fallback_happened: true,
+        fallback_count: 2,
+        attempted_models: vec!["gpt-4".into(), "claude-sonnet-4-6".into()],
+        failed_attempts: vec![
+            FallbackAttemptRecord { model: "gpt-4".into(), failure_reason: "rate_limited".into() },
+            FallbackAttemptRecord { model: "claude-sonnet-4-6".into(), failure_reason: "rate_limited".into() },
+        ],
+        all_failed: true,
+    };
+    // all_failed=true → skip_serializing_if should omit when false, include when true
+    let json = serde_json::to_string(&summary).unwrap();
+    assert!(json.contains("\"all_failed\":true"), "all_failed should appear when true: {json}");
+
+    // Legacy trajectory without all_failed deserializes cleanly with all_failed=false.
+    let json_without = r#"{"primary_model":"gpt-4","final_model":"gpt-4","fallback_happened":false,"fallback_count":0,"attempted_models":["gpt-4"],"failed_attempts":[]}"#;
+    let back: FallbackSummary = serde_json::from_str(json_without).unwrap();
+    assert!(!back.all_failed, "missing all_failed defaults to false");
+}
+
 // ── FallbackModel: AC1 - single model config cannot silently fallback ─────────
 
 #[test]
@@ -226,6 +255,7 @@ fn fallback_summary_round_trips_through_trajectory_info() {
             model: "primary-model".into(),
             failure_reason: "rate_limited".into(),
         }],
+        all_failed: false,
     };
 
     let mut info = TrajectoryInfo::default();
@@ -264,6 +294,7 @@ fn trajectory_fallback_summary_survives_full_roundtrip() {
             model: "gpt-4".into(),
             failure_reason: "rate_limited".into(),
         }],
+        all_failed: false,
     });
 
     let json = traj.to_json_pretty().unwrap();

@@ -25,7 +25,8 @@ pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 pub struct FallbackSummary {
     /// The model name from `config.model.name` (requested primary).
     pub primary_model: String,
-    /// The model that produced the last successful response.
+    /// The model that produced the last successful response, or the last
+    /// attempted model when all candidates failed (`all_failed = true`).
     pub final_model: String,
     /// `true` when at least one fallback attempt was made.
     pub fallback_happened: bool,
@@ -35,6 +36,15 @@ pub struct FallbackSummary {
     pub attempted_models: Vec<String>,
     /// Per-attempt failure records for the failed attempts.
     pub failed_attempts: Vec<FallbackAttemptRecord>,
+    /// `true` when every model in the chain failed transiently and no
+    /// model produced a response. `final_model` is the last attempted
+    /// model in that case — not a responding model.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_failed: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// Coarse run outcome. Exactly one of three values, suitable for computing

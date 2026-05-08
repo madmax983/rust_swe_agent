@@ -874,17 +874,31 @@ impl DefaultAgent {
         self.refresh_test_metadata();
         // Populate fallback summary only when fallback was configured and used.
         let primary = self.model.name().to_owned();
-        let final_model = self
-            .last_responding_model
-            .clone()
-            .unwrap_or_else(|| primary.clone());
+        // When every model failed transiently, last_responding_model is None.
+        // Avoid fabricating primary as final_model — use the last attempted.
+        let all_failed = !self.fallback_failed_attempts.is_empty()
+            && self.last_responding_model.is_none();
+        let final_model = self.last_responding_model.clone().unwrap_or_else(|| {
+            if all_failed {
+                self.fallback_failed_attempts
+                    .last()
+                    .map(|a| a.model.clone())
+                    .unwrap_or_else(|| primary.clone())
+            } else {
+                primary.clone()
+            }
+        });
         if !self.fallback_failed_attempts.is_empty() {
             let mut attempted_models: Vec<String> = self
                 .fallback_failed_attempts
                 .iter()
                 .map(|a| a.model.clone())
                 .collect();
-            attempted_models.push(final_model.clone());
+            // When all candidates failed, every model is already in failed_attempts —
+            // don't push final_model again and create a duplicate.
+            if !all_failed {
+                attempted_models.push(final_model.clone());
+            }
             let fallback_count =
                 u32::try_from(self.fallback_failed_attempts.len()).unwrap_or(u32::MAX);
             self.trajectory.info.fallback_summary = Some(FallbackSummary {
@@ -894,6 +908,7 @@ impl DefaultAgent {
                 fallback_count,
                 attempted_models,
                 failed_attempts: self.fallback_failed_attempts.clone(),
+                all_failed,
             });
         } else if self.last_responding_model.is_some() {
             // FallbackModel succeeded on primary — record a "no fallback" summary
@@ -905,6 +920,7 @@ impl DefaultAgent {
                 fallback_count: 0,
                 attempted_models: vec![primary],
                 failed_attempts: Vec::new(),
+                all_failed: false,
             });
         }
     }
