@@ -6460,10 +6460,12 @@ instance = "inst"
             FailedAttempt {
                 model: "m1".into(),
                 reason: "rate_limited".into(),
+                retry_after_secs: None,
             },
             FailedAttempt {
                 model: "m2".into(),
                 reason: "malformed_response".into(),
+                retry_after_secs: None,
             },
         ];
         let err = Error::Model(ModelError::AllCandidatesFailed(
@@ -6485,10 +6487,12 @@ instance = "inst"
             FailedAttempt {
                 model: "m1".into(),
                 reason: "rate_limited".into(),
+                retry_after_secs: None,
             },
             FailedAttempt {
                 model: "m2".into(),
                 reason: "rate_limited".into(),
+                retry_after_secs: None,
             },
         ];
         let err = Error::Model(ModelError::AllCandidatesFailed(

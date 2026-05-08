@@ -61,6 +61,7 @@ pub enum ModelError {
 pub struct FailedAttempt {
     pub model: String,
     pub reason: String,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl ModelError {
@@ -124,6 +125,12 @@ mod tests {
     fn retry_after_secs_handles_underscore_variant() {
         let e = ModelError::RateLimited("retry_after: 60".into());
         assert_eq!(e.retry_after_secs(), Some(60));
+    }
+
+    #[test]
+    fn retry_after_secs_handles_space_variant() {
+        let e = ModelError::RateLimited("retry after: 90".into());
+        assert_eq!(e.retry_after_secs(), Some(90));
     }
 }
 

@@ -608,3 +608,52 @@ fn fallback_count_is_summed_across_rerun_slots() {
         "fallback_count should be summed across slots"
     );
 }
+
+fn write_all_failed_traj(dir: &Path, filename: &str) {
+    let mut traj = Trajectory::new();
+    traj.info.outcome = Some("error".into());
+    traj.info.exit_reason = Some("error".into());
+    traj.info.total_cost_usd = Some(0.0);
+    traj.info.fallback_summary = Some(FallbackSummary {
+        primary_model: "primary".into(),
+        final_model: "secondary".into(),
+        fallback_happened: true,
+        fallback_count: 2,
+        attempted_models: vec!["primary".into(), "secondary".into()],
+        failed_attempts: vec![
+            FallbackAttemptRecord {
+                model: "primary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: None,
+            },
+            FallbackAttemptRecord {
+                model: "secondary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: None,
+            },
+        ],
+        all_failed: true,
+    });
+    std::fs::write(
+        dir.join(filename),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn all_failed_trajectory_excluded_from_model_mix() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+
+    let task_dir = dir.path().join("task-c");
+    std::fs::create_dir_all(&task_dir).unwrap();
+    write_all_failed_traj(&task_dir, "run-0.traj.json");
+
+    let snap = snapshot(dir.path(), &opts_at(now)).unwrap();
+    assert!(
+        snap.model_mix.is_empty(),
+        "all_failed trajectories should not appear in model_mix: {:?}",
+        snap.model_mix
+    );
+}

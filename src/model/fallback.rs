@@ -100,6 +100,7 @@ impl Model for FallbackModel {
                         .map(|a| FailedAttempt {
                             model: a.model.clone(),
                             reason: a.failure_reason.clone(),
+                            retry_after_secs: a.retry_after_secs,
                         })
                         .collect();
                     let summary = failed_attempts
@@ -119,6 +120,7 @@ impl Model for FallbackModel {
             .map(|a| FailedAttempt {
                 model: a.model.clone(),
                 reason: a.failure_reason.clone(),
+                retry_after_secs: a.retry_after_secs,
             })
             .collect();
         let summary = failed_attempts
@@ -138,6 +140,9 @@ mod tests {
 
     struct AlwaysOk(String);
     struct AlwaysFail(String, bool);
+    /// Model that rate-limits with an explicit retry-after value embedded in
+    /// the error message, used to verify that `retry_after_secs` is preserved.
+    struct RateLimitWithRetryAfter(String, u64);
 
     #[async_trait]
     impl Model for AlwaysOk {
@@ -166,6 +171,19 @@ mod tests {
             } else {
                 Err(ModelError::MissingCredentials("invalid key".into()))
             }
+        }
+    }
+
+    #[async_trait]
+    impl Model for RateLimitWithRetryAfter {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        async fn query(&self, _: &[Message], _: &QueryOpts) -> Result<ModelResponse, ModelError> {
+            Err(ModelError::RateLimited(format!(
+                "rate limited retry-after: {}",
+                self.1
+            )))
         }
     }
 
@@ -238,6 +256,22 @@ mod tests {
         assert_eq!(attempts[0].model, "m1");
         assert_eq!(attempts[0].reason, "rate_limited");
         assert_eq!(attempts[1].model, "m2");
+    }
+
+    #[tokio::test]
+    async fn retry_after_secs_propagates_through_all_candidates_failed() {
+        // Primary fails with an embedded retry-after value; verify that the
+        // FailedAttempt inside AllCandidatesFailed carries retry_after_secs.
+        let f = FallbackModel::new(vec![
+            Box::new(RateLimitWithRetryAfter("m1".into(), 45)),
+            Box::new(RateLimitWithRetryAfter("m2".into(), 30)),
+        ]);
+        let err = f.query(&[], &QueryOpts::default()).await.unwrap_err();
+        let ModelError::AllCandidatesFailed(_, ref attempts) = err else {
+            panic!("expected AllCandidatesFailed, got {err:?}");
+        };
+        assert_eq!(attempts[0].retry_after_secs, Some(45));
+        assert_eq!(attempts[1].retry_after_secs, Some(30));
     }
 
     #[test]

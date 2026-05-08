@@ -267,8 +267,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         &args.breakdown,
         model_name.as_deref(),
     );
+    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     if args.cost_attribution {
-        let run_slots = load_run_slots(&args.sweep_dir, &results)?;
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
             &run_output.resolved_by_run,
@@ -276,7 +276,8 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         )
         .rows;
     }
-    eval.model_mix_summary = build_model_mix_summary(&eval.instances, &results);
+    eval.model_mix_summary =
+        build_model_mix_summary_from_slots(&run_slots, &run_output.resolved_by_run);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -1024,25 +1025,29 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
     }
 }
 
-fn build_model_mix_summary(
-    evals: &[InstanceEvaluation],
-    results: &HashMap<String, InstanceResult>,
+/// Build the model-mix summary from per-run-slot data so that reruns using
+/// different fallback models are all counted. Each slot's `final_model` is
+/// counted independently; its resolution comes from the per-slot key in
+/// `resolved_by_run` (falls back to `false` when no evaluation result exists).
+fn build_model_mix_summary_from_slots(
+    slots: &[crate::run::compare::LoadedRunSlot],
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
 ) -> Vec<ModelMixBucket> {
-    let resolved_by_id: HashMap<&str, bool> = evals
-        .iter()
-        .map(|row| (row.instance_id.as_str(), row.resolved))
-        .collect();
     let mut by_model: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
-    for (id, r) in results {
-        let Some(model) = r.final_model.clone() else {
+    for slot in slots {
+        let Some(model) = slot.result.final_model.as_deref() else {
             continue;
         };
-        let (n, res, cost) = by_model.entry(model).or_default();
+        let resolved = resolved_by_run
+            .get(&RunSlotKey::new(&slot.instance_id, slot.run_index))
+            .copied()
+            .unwrap_or(false);
+        let (n, res, cost) = by_model.entry(model.to_owned()).or_default();
         *n += 1;
-        if resolved_by_id.get(id.as_str()).copied().unwrap_or(false) {
+        if resolved {
             *res += 1;
         }
-        *cost += r.cost_usd.unwrap_or(0.0);
+        *cost += slot.result.cost_usd.unwrap_or(0.0);
     }
     if by_model.is_empty() {
         return Vec::new();
@@ -2029,5 +2034,68 @@ mod tests {
             rendered.contains("4.0000"),
             "cost_per_resolved_usd should be 4.0000 (1 resolved at $4); got:\n{rendered}"
         );
+    }
+
+    fn make_slot(
+        instance_id: &str,
+        run_index: u32,
+        final_model: Option<&str>,
+        cost_usd: Option<f64>,
+    ) -> crate::run::compare::LoadedRunSlot {
+        let mut r = submitted(instance_id);
+        r.final_model = final_model.map(str::to_owned);
+        r.cost_usd = cost_usd;
+        crate::run::compare::LoadedRunSlot {
+            instance_id: instance_id.into(),
+            run_index,
+            result: r,
+        }
+    }
+
+    #[test]
+    fn model_mix_from_slots_empty_returns_empty() {
+        let buckets = build_model_mix_summary_from_slots(&[], &HashMap::new());
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn model_mix_from_slots_skips_slots_with_no_final_model() {
+        let slots = vec![make_slot("a", 0, None, None)];
+        let buckets = build_model_mix_summary_from_slots(&slots, &HashMap::new());
+        assert!(buckets.is_empty());
+    }
+
+    #[test]
+    fn model_mix_from_slots_counts_all_rerun_slots() {
+        // Two slots for same instance using different models — both must appear.
+        let slots = vec![
+            make_slot("a", 0, Some("primary"), Some(1.0)),
+            make_slot("a", 1, Some("secondary"), Some(0.5)),
+        ];
+        let buckets = build_model_mix_summary_from_slots(&slots, &HashMap::new());
+        assert_eq!(buckets.len(), 2);
+        let models: Vec<&str> = buckets.iter().map(|b| b.model.as_str()).collect();
+        assert!(models.contains(&"primary"), "primary missing: {models:?}");
+        assert!(
+            models.contains(&"secondary"),
+            "secondary missing: {models:?}"
+        );
+    }
+
+    #[test]
+    fn model_mix_from_slots_uses_per_slot_resolution() {
+        let slots = vec![
+            make_slot("a", 0, Some("model-x"), None),
+            make_slot("b", 0, Some("model-x"), None),
+        ];
+        let mut resolved_by_run = HashMap::new();
+        resolved_by_run.insert(RunSlotKey::new("a", 0), true);
+        // b/0 not in map → false
+        let buckets = build_model_mix_summary_from_slots(&slots, &resolved_by_run);
+        assert_eq!(buckets.len(), 1);
+        let bucket = &buckets[0];
+        assert_eq!(bucket.model, "model-x");
+        assert_eq!(bucket.n, 2);
+        assert_eq!(bucket.resolved, 1);
     }
 }
