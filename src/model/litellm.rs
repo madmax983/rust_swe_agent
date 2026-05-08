@@ -217,10 +217,12 @@ fn classify_litellm_error(e: LiteLLMError) -> ModelError {
     match e {
         // Explicit rate-limit → always transient.
         LiteLLMError::RateLimit { message, .. } => ModelError::RateLimited(message),
-        // Network / connectivity / service-unavailable → transient.
+        // Network / connectivity / service-unavailable / provider 5xx → transient.
+        // Internal is used by litellm-rs for provider 5xx via api_error(500, …).
         LiteLLMError::Network(msg)
         | LiteLLMError::Unavailable(msg)
-        | LiteLLMError::Timeout(msg) => ModelError::Request(msg),
+        | LiteLLMError::Timeout(msg)
+        | LiteLLMError::Internal(msg) => ModelError::Request(msg),
         LiteLLMError::HttpClient(e) => ModelError::Request(e.to_string()),
         // Auth/credentials → non-transient; trying a different key won't help.
         LiteLLMError::Auth(msg) | LiteLLMError::Forbidden(msg) => {
@@ -232,9 +234,7 @@ fn classify_litellm_error(e: LiteLLMError) -> ModelError {
         | LiteLLMError::NotFound(msg) => ModelError::Malformed(msg),
         // Provider-level errors: delegate to litellm's own retryability judgment.
         LiteLLMError::Provider(ref e) => classify_provider_error(e, &format!("{e}")),
-        // Everything else (Internal, Config, Serialization, …): treat as
-        // non-transient request failures because they indicate configuration
-        // or parsing problems, not transient outages.
+        // Everything else (Config, Serialization, …): treat as non-transient.
         _ => ModelError::Malformed(e.to_string()),
     }
 }
@@ -390,5 +390,14 @@ mod tests {
         assert!(rl.is_transient(), "rate limit must be transient");
         let net = classify_litellm_error(LiteLLMError::Network("conn refused".into()));
         assert!(net.is_transient(), "network errors must be transient");
+    }
+
+    #[test]
+    fn internal_gateway_error_is_transient() {
+        // GatewayError::Internal is used by litellm-rs for provider 5xx via api_error(500, …).
+        assert!(matches!(
+            classify_litellm_error(LiteLLMError::Internal("provider 500".into())),
+            ModelError::Request(_)
+        ));
     }
 }

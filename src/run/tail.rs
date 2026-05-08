@@ -137,9 +137,10 @@ impl TerminalRecord {
         if self.ended_at.is_none() {
             self.ended_at = other.ended_at;
         }
-        if self.fallback_count.is_none() {
-            self.fallback_count = other.fallback_count;
-        }
+        self.fallback_count = match (self.fallback_count, other.fallback_count) {
+            (None, v) | (v, None) => v,
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+        };
         if self.final_model.is_none() {
             self.final_model.clone_from(&other.final_model);
         }
