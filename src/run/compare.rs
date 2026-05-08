@@ -3985,11 +3985,20 @@ mod tests {
         assert_eq!(ev.configured_max_rpm, Some(600));
     }
 
-    fn slot(instance_id: &str, run_index: u32, final_model: Option<&str>, fallback_count: Option<u32>) -> LoadedRunSlot {
+    fn slot(
+        instance_id: &str,
+        run_index: u32,
+        final_model: Option<&str>,
+        fallback_count: Option<u32>,
+    ) -> LoadedRunSlot {
         let mut r = submitted(instance_id);
         r.final_model = final_model.map(str::to_owned);
         r.fallback_count = fallback_count;
-        LoadedRunSlot { instance_id: instance_id.into(), run_index, result: r }
+        LoadedRunSlot {
+            instance_id: instance_id.into(),
+            run_index,
+            result: r,
+        }
     }
 
     #[test]

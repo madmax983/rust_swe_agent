@@ -6445,10 +6445,19 @@ instance = "inst"
         // Transient attempt followed by a Malformed terminal: the terminal
         // coarse_reason is "malformed_response" → ModelParse.
         let attempts = vec![
-            FailedAttempt { model: "m1".into(), reason: "rate_limited".into() },
-            FailedAttempt { model: "m2".into(), reason: "malformed_response".into() },
+            FailedAttempt {
+                model: "m1".into(),
+                reason: "rate_limited".into(),
+            },
+            FailedAttempt {
+                model: "m2".into(),
+                reason: "malformed_response".into(),
+            },
         ];
-        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), attempts));
+        let err = Error::Model(ModelError::AllCandidatesFailed(
+            "all failed".into(),
+            attempts,
+        ));
         assert_eq!(
             classify_error(&err),
             FailureCategory::ModelParse,
@@ -6461,10 +6470,19 @@ instance = "inst"
         use crate::error::{FailedAttempt, ModelError};
         // All transient failures: terminal reason is "rate_limited" → ModelApi.
         let attempts = vec![
-            FailedAttempt { model: "m1".into(), reason: "rate_limited".into() },
-            FailedAttempt { model: "m2".into(), reason: "rate_limited".into() },
+            FailedAttempt {
+                model: "m1".into(),
+                reason: "rate_limited".into(),
+            },
+            FailedAttempt {
+                model: "m2".into(),
+                reason: "rate_limited".into(),
+            },
         ];
-        let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), attempts));
+        let err = Error::Model(ModelError::AllCandidatesFailed(
+            "all failed".into(),
+            attempts,
+        ));
         assert_eq!(
             classify_error(&err),
             FailureCategory::ModelApi,
