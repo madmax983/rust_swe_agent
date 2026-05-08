@@ -3509,25 +3509,31 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         // fallback model succeeded and mini::run returned Ok. Without this,
         // swallowed 429s never update the Retry-After floor and all workers
         // keep hammering the exhausted primary.
+        //
+        // Filter to the primary model only: a 429 from a secondary/tertiary
+        // provider should not stall healthy primary-model workers since the
+        // governor applies a global floor across all future tasks.
         if let Some(g) = &governor {
-            let fallback_rate_limited = info
+            let primary_rate_limited = info
                 .as_ref()
                 .and_then(|i| i.fallback_summary.as_ref())
                 .is_some_and(|s| {
                     s.failed_attempts
                         .iter()
-                        .any(|a| a.failure_reason == "rate_limited")
+                        .any(|a| a.model == s.primary_model && a.failure_reason == "rate_limited")
                 });
-            if fallback_rate_limited {
-                // Forward the max Retry-After from swallowed 429s so the governor
-                // floor is set even when a fallback candidate succeeded.
+            if primary_rate_limited {
+                // Forward the max Retry-After from the primary's swallowed 429s
+                // so the governor floor is set even when a fallback succeeded.
                 let retry_after = info
                     .as_ref()
                     .and_then(|i| i.fallback_summary.as_ref())
                     .and_then(|s| {
                         s.failed_attempts
                             .iter()
-                            .filter(|a| a.failure_reason == "rate_limited")
+                            .filter(|a| {
+                                a.model == s.primary_model && a.failure_reason == "rate_limited"
+                            })
                             .filter_map(|a| a.retry_after_secs)
                             .max()
                     });
@@ -6526,5 +6532,69 @@ instance = "inst"
         use crate::error::ModelError;
         let err = Error::Model(ModelError::RateLimited("429".into()));
         assert_eq!(classify_error(&err), FailureCategory::ModelApi);
+    }
+
+    /// Verify the filtering predicate used by the governor reporting block:
+    /// only a 429 on the *primary* model should trigger `report_429`; a 429
+    /// from a fallback candidate alone must not stall primary-model workers.
+    #[test]
+    fn governor_reporting_filters_to_primary_model_only() {
+        use crate::model::FallbackAttemptRecord;
+        use crate::trajectory::FallbackSummary;
+
+        // Case 1: secondary model 429, primary succeeded → must NOT report.
+        let summary_secondary_only = FallbackSummary {
+            primary_model: "primary".into(),
+            final_model: "secondary".into(),
+            fallback_happened: true,
+            fallback_count: 1,
+            attempted_models: vec!["primary".into(), "secondary".into()],
+            failed_attempts: vec![FallbackAttemptRecord {
+                model: "secondary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: Some(30),
+            }],
+            all_failed: false,
+        };
+        let primary_rate_limited = summary_secondary_only.failed_attempts.iter().any(|a| {
+            a.model == summary_secondary_only.primary_model && a.failure_reason == "rate_limited"
+        });
+        assert!(
+            !primary_rate_limited,
+            "secondary 429 must not trigger governor"
+        );
+
+        // Case 2: primary model 429, fallback succeeded → MUST report.
+        let summary_primary_429 = FallbackSummary {
+            primary_model: "primary".into(),
+            final_model: "secondary".into(),
+            fallback_happened: true,
+            fallback_count: 1,
+            attempted_models: vec!["primary".into(), "secondary".into()],
+            failed_attempts: vec![FallbackAttemptRecord {
+                model: "primary".into(),
+                failure_reason: "rate_limited".into(),
+                retry_after_secs: Some(45),
+            }],
+            all_failed: false,
+        };
+        let primary_rate_limited = summary_primary_429.failed_attempts.iter().any(|a| {
+            a.model == summary_primary_429.primary_model && a.failure_reason == "rate_limited"
+        });
+        assert!(primary_rate_limited, "primary 429 must trigger governor");
+
+        let max_retry_after = summary_primary_429
+            .failed_attempts
+            .iter()
+            .filter(|a| {
+                a.model == summary_primary_429.primary_model && a.failure_reason == "rate_limited"
+            })
+            .filter_map(|a| a.retry_after_secs)
+            .max();
+        assert_eq!(
+            max_retry_after,
+            Some(45),
+            "primary retry-after must be forwarded"
+        );
     }
 }
