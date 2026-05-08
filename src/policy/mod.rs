@@ -318,6 +318,13 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "truncate-sensitive-file",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|!\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:\S*/)?truncate\b[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
         ),
+        // In-place editors (`sed -i`, `perl -i`, `gawk -i inplace`) mutate
+        // the file directly.  When the target is a sensitive system file
+        // this corrupts /etc/passwd etc. just like cp/mv/redirect/tee/dd.
+        PolicyRule::deny_static(
+            "inplace-edit-sensitive-file",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|[\s;]then\s+|[\s;]do\s+|[\s;]else\s+)(?:[A-Za-z_]\w*=\S*\s+|!\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:\S*/)?(?:sed|perl|gawk|awk|ruby)\b[^|;\n]*(?:-i\b|--in-place\b)[^|;\n]*\s+['"]?(?:/etc/(?:passwd|shadow|gshadow|sudoers|group|hosts|fstab|resolv\.conf)|/boot/grub/grub\.cfg|/boot/grub2/grub\.cfg)['"]?(?:$|[\s;&|)`'"])"#,
+        ),
         // --- Redirection-to-block-device (`>`/`>>`/`tee`) ---
         // Bash opens the device for writing when stdout/`tee` targets a
         // raw block device, bypassing the dd/mkfs/etc. tool list.

@@ -2407,6 +2407,36 @@ fn safe_blocks_brace_expansion_of_protected_dirs() {
     }
 }
 
+// ── In-place editors on sensitive files (Codex P1) ──────────────────────────
+
+#[test]
+fn safe_blocks_inplace_edit_of_sensitive_files() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // sed
+        "sudo sed -i 's/root/x/' /etc/passwd",
+        "sed -i.bak 's/old/new/' /etc/sudoers",
+        "sed --in-place 's/x/y/' /etc/shadow",
+        // perl
+        "sudo perl -i -pe 's/foo/bar/' /etc/passwd",
+        "perl -i.bak -pe 's/foo/bar/' /etc/shadow",
+        // gawk inplace
+        "gawk -i inplace '{print}' /etc/passwd",
+        // ruby
+        "sudo ruby -i -pe 'foo' /etc/sudoers",
+        // Quoted target
+        "sudo sed -i 's/x/y/' \"/etc/passwd\"",
+        // Absolute path to sed
+        "sudo /usr/bin/sed -i 's/x/y/' /etc/passwd",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "in-place edit of sensitive file must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
