@@ -552,7 +552,11 @@ async fn capture_patch(
 }
 
 fn validate_git_rev(rev: &str) -> Result<&str, String> {
-    let valid = !rev.is_empty() && rev.chars().all(|ch| !ch.is_control());
+    let valid = !rev.is_empty()
+        && !rev.starts_with('-')
+        && rev.chars().all(|ch| {
+            !ch.is_control() && ![';', '|', '$', '`', '<', '>', '(', ')', '#', '!'].contains(&ch)
+        });
     if valid {
         Ok(rev)
     } else {
@@ -695,6 +699,10 @@ mod tests {
         );
         assert!(validate_git_rev("HEAD\nmain").is_err());
         assert!(validate_git_rev("").is_err());
+        assert!(validate_git_rev("- HEAD").is_err());
+        assert!(validate_git_rev("HEAD; touch /tmp/pwn").is_err());
+        assert!(validate_git_rev("$(touch /tmp/pwn)").is_err());
+        assert!(validate_git_rev("`touch /tmp/pwn`").is_err());
     }
 
     #[tokio::test]
