@@ -1978,6 +1978,32 @@ fn safe_blocks_dd_write_to_sensitive_files() {
     }
 }
 
+// ── env -S delivering dangerous payloads of every kind (Codex P1) ───────────
+
+#[test]
+fn safe_blocks_env_split_string_with_dd_or_other_sensitive_writes() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // dd to sensitive files via env -S
+        "env -S 'dd if=/dev/zero of=/etc/passwd'",
+        "env -S \"dd if=/dev/zero of=/etc/shadow\"",
+        "sudo env -S 'dd if=/dev/zero of=/etc/passwd'",
+        "env -i -S 'dd of=/etc/sudoers if=/dev/zero'",
+        // tee to sensitive file via env -S
+        "env -S 'echo evil | tee /etc/passwd'",
+        // cp to sensitive file via env -S
+        "env -S 'cp evil /etc/sudoers'",
+        // redirect to sensitive file via env -S
+        "env -S 'echo evil > /etc/passwd'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "env -S delivering sensitive write must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
