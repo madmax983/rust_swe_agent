@@ -1925,6 +1925,59 @@ fn safe_still_blocks_real_redirect_to_sensitive_file_with_quoted_args() {
     }
 }
 
+// ── env -S payload (Codex P1) ───────────────────────────────────────────────
+
+#[test]
+fn safe_blocks_env_split_string_payload() {
+    // `env -S 'cmd'` splits the string into args and runs it as the
+    // command.  The payload must be inspected, not consumed as opaque
+    // option-arg.
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "env -S 'rm -rf /'",
+        "env -S \"rm -rf /etc\"",
+        "env -S 'dd if=/dev/zero of=/dev/sda'",
+        // Long form
+        "env --split-string 'rm -rf /'",
+        "env --split-string='rm -rf /'",
+        // Mixed flags before -S
+        "env -i -S 'rm -rf /'",
+        "env -u PATH -S 'rm -rf /'",
+        // sudo + env -S
+        "sudo env -S 'rm -rf /'",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "env -S payload must be inspected: {cmd:?}"
+        );
+    }
+}
+
+// ── dd to sensitive system files (Codex P1) ─────────────────────────────────
+
+#[test]
+fn safe_blocks_dd_write_to_sensitive_files() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        "sudo dd if=/dev/zero of=/etc/passwd",
+        "dd if=/dev/zero of=/etc/shadow",
+        "dd if=/dev/random of=/etc/sudoers",
+        "sudo dd of=/etc/passwd if=/dev/zero",
+        // Quoted target
+        "dd if=/dev/zero of=\"/etc/passwd\"",
+        "dd if=/dev/zero of='/etc/shadow'",
+        // /boot variants
+        "sudo dd if=/dev/zero of=/boot/grub/grub.cfg",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "dd write to sensitive file must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
