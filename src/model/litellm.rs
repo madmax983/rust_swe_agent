@@ -240,7 +240,12 @@ fn classify_litellm_error(e: LiteLLMError) -> ModelError {
 }
 
 fn classify_provider_error(e: &ProviderError, msg: &str) -> ModelError {
-    if e.is_retryable() {
+    // Provider-native 429s (RateLimit variant or ApiError{status:429}) must map
+    // to RateLimited so the sweep governor tracks them even when a fallback
+    // succeeds and swallows the error before it bubbles up.
+    if e.http_status() == 429 {
+        ModelError::RateLimited(msg.to_owned())
+    } else if e.is_retryable() {
         ModelError::Request(msg.to_owned())
     } else {
         // Non-retryable provider errors: auth failures, content policy,
@@ -399,5 +404,32 @@ mod tests {
             classify_litellm_error(LiteLLMError::Internal("provider 500".into())),
             ModelError::Request(_)
         ));
+    }
+
+    #[test]
+    fn provider_rate_limit_maps_to_rate_limited_not_request() {
+        // ProviderError::RateLimit and ApiError{429} must reach the governor as
+        // RateLimited, not as a generic transient Request.
+        let rl = classify_provider_error(
+            &ProviderError::rate_limit("test-provider", None),
+            "429 from provider",
+        );
+        assert!(
+            matches!(rl, ModelError::RateLimited(_)),
+            "ProviderError::RateLimit should map to RateLimited, got {rl:?}"
+        );
+
+        let api_429 = classify_provider_error(
+            &ProviderError::ApiError {
+                provider: "test-provider",
+                status: 429,
+                message: "rate limited".into(),
+            },
+            "api 429",
+        );
+        assert!(
+            matches!(api_429, ModelError::RateLimited(_)),
+            "ProviderError::ApiError(429) should map to RateLimited, got {api_429:?}"
+        );
     }
 }
