@@ -256,6 +256,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "find-exec-rm-all",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*find\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)?(?:/[^\s'"|;]*)?['"]?\s+[^|;\n]*-exec\s+rm\b"#,
         ),
+        // --- xargs feeding rm with recursive/force flags ---
+        // `printf '/etc\n' | xargs rm -rf` runs `rm -rf` on whatever stdin
+        // delivers, so the dangerous target may not be visible in the
+        // command text.  Block any `xargs ... rm ... (-rf|-fr|--recursive
+        // |--force)` form regardless of upstream arguments.
+        PolicyRule::deny_static(
+            "xargs-rm-recursive-force",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*xargs\b[^|;\n]*\brm\b[^|;\n]*(?:-[a-zA-Z]*[rRfF][a-zA-Z]*|--(?:recursive|force))"#,
+        ),
         // --- Sensitive system files (deletes / overwrites) ---
         // Specific high-impact files that the broader system-dir rule
         // intentionally exempts (it only blocks `/etc`, `/etc/`, `/etc/*`,

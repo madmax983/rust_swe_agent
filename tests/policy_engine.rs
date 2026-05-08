@@ -1494,6 +1494,53 @@ fn safe_blocks_heredoc_with_redirect_after_operator() {
     }
 }
 
+// ── xargs rm bypass (Codex P1) ───────────────────────────────────────────────
+
+#[test]
+fn safe_blocks_xargs_rm_recursive_force() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Codex's example
+        "printf '/etc\\n' | xargs rm -rf",
+        // Other flag orderings
+        "echo /etc | xargs rm -fr",
+        "echo /etc | xargs rm -Rf",
+        // Long options
+        "echo /home | xargs rm --recursive",
+        "echo /etc | xargs rm --force",
+        // xargs with its own flags
+        "find . -type f | xargs -I{} rm -rf {}",
+        "ls /tmp | xargs -P 4 rm -f",
+        // sudo + xargs
+        "echo /etc | sudo xargs rm -rf",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "xargs rm with recursive/force flag must be blocked: {cmd:?}"
+        );
+    }
+}
+
+#[test]
+fn safe_does_not_block_xargs_rm_specific_safe_uses() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // No -r/-R/-f/-F flag
+        "echo file.txt | xargs rm",
+        // -i for interactive single-file (no recursive)
+        "ls /tmp | xargs rm -i",
+        // xargs with non-rm command
+        "find . -type f | xargs ls",
+    ];
+    for cmd in cases {
+        assert!(
+            !matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "non-rf xargs rm or non-rm xargs should NOT be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]
