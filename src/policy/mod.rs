@@ -385,45 +385,50 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*parted\s+['"]?/dev/[a-zA-Z]"#,
         ),
         // --- Credential file reads ---
+        // Anchored at command position with the standard prefix so `printf
+        // 'cat /etc/passwd' > docs.md` (a quoted string, not an actual
+        // read) does not falsely match.  The reader command (cat, head,
+        // etc.) must follow a command boundary or a normal prefix
+        // (assignments, sudo, wrappers).
         PolicyRule::deny_static(
             "read-ssh-private-key",
-            r"(?:cat|head|tail|less|more|strings|xxd|hexdump)\s+[^|;\n]*~?/?\.?ssh/id_(?:rsa|ecdsa|ed25519|dsa)\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings|xxd|hexdump)\s+[^|;\n]*~?/?\.?ssh/id_(?:rsa|ecdsa|ed25519|dsa)\b"#,
         ),
         PolicyRule::deny_static(
             "read-aws-credentials",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.aws/(?:credentials|config)\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.aws/(?:credentials|config)\b"#,
         ),
         PolicyRule::deny_static(
             "read-shadow",
-            r"(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/(?:shadow|gshadow)\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/(?:shadow|gshadow)\b"#,
         ),
         PolicyRule::deny_static(
             "read-etc-passwd",
-            r"(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/passwd\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/passwd\b"#,
         ),
         PolicyRule::deny_static(
             "read-proc-keys",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*/proc/(?:keys|key-users|kmsg|version)\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*/proc/(?:keys|key-users|kmsg|version)\b"#,
         ),
         PolicyRule::deny_static(
             "read-netrc",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.netrc\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.netrc\b"#,
         ),
         PolicyRule::deny_static(
             "read-git-credentials",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.git-credentials\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.git-credentials\b"#,
         ),
         PolicyRule::deny_static(
             "read-pgpass",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.pgpass\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.pgpass\b"#,
         ),
         PolicyRule::deny_static(
             "read-gcloud-credentials",
-            r"(?:cat|head|tail|less|more)\s+[^|;\n]*(?:application_default_credentials\.json|gcloud/credentials)",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*(?:application_default_credentials\.json|gcloud/credentials)"#,
         ),
         PolicyRule::deny_static(
             "find-read-private-keys",
-            r"find\s+[^|;\n]*-name\s+[^|;\n]*-exec\s+cat\b",
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|(?:command|env|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*find\s+[^|;\n]*-name\s+[^|;\n]*-exec\s+cat\b"#,
         ),
         // --- Shell-script-from-network ---
         PolicyRule::deny_static(
@@ -846,7 +851,13 @@ impl PolicyEngine {
         // to execute.  Strip them before applying boundary-based rules so a
         // model writing a fixture or test file that contains `rm -rf /` text
         // is not incorrectly blocked.
-        let normalized = strip_heredoc_bodies(command);
+        // Bash removes `\<newline>` line continuations before parsing, so
+        // `dd if=/dev/zero \\\n of=/dev/sda` is one logical command.  Do
+        // the same here before pattern matching, otherwise the deny
+        // patterns' `[^|;\n]*` segment stops at the embedded newline and
+        // the second half is missed.
+        let normalized = command.replace("\\\n", "");
+        let normalized = strip_heredoc_bodies(&normalized);
 
         for rule in &self.rules {
             if rule.matches(&normalized) {
