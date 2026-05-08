@@ -1,4 +1,4 @@
-use rust_swe_agent::redaction::Redactor;
+use rust_swe_agent::redaction::{Redactor, surface};
 
 #[test]
 fn test_json_depth() {
@@ -7,5 +7,5 @@ fn test_json_depth() {
         value = serde_json::Value::Array(vec![value]);
     }
     let redactor = Redactor::default_enabled();
-    redactor.redact_json_value(&mut value, "trajectory");
+    redactor.redact_json_value(&mut value, surface::TRAJECTORY);
 }

@@ -245,9 +245,7 @@ impl Redactor {
                     }
                 }
                 serde_json::Value::Array(values) => {
-                    for child in values.iter_mut() {
-                        stack.push(child);
-                    }
+                    stack.extend(values.iter_mut());
                 }
                 serde_json::Value::String(text) => {
                     let outcome = self.redact_text(text, surface);
@@ -405,14 +403,10 @@ impl Redactor {
                     }
                 }
                 serde_json::Value::Array(values) => {
-                    for child in values.iter_mut() {
-                        stack.push(child);
-                    }
+                    stack.extend(values.iter_mut());
                 }
                 serde_json::Value::Object(map) => {
-                    for child in map.values_mut() {
-                        stack.push(child);
-                    }
+                    stack.extend(map.values_mut());
                 }
                 _ => {}
             }
@@ -696,15 +690,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn fuzz_json_depth() {
-        let mut value = serde_json::Value::Null;
-        for _ in 0..10000 {
-            value = serde_json::Value::Array(vec![value]);
-        }
-        let redactor = Redactor::default_enabled();
-        redactor.redact_json_value(&mut value, surface::TRAJECTORY);
-    }
 
     #[test]
     fn same_value_gets_same_marker() {
