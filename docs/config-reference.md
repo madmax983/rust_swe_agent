@@ -29,7 +29,7 @@ layer, arrays are replaced wholesale (not appended).
 
 **Example 1 — model name:** The built-in default is
 `model.name = "claude-opus-4-7"`. If your config file sets
-`[model]\nname = "claude-sonnet-4-6"`, the CLI flag `--model claude-haiku-4-5`
+`model.name = "claude-sonnet-4-6"`, the CLI flag `--model claude-haiku-4-5`
 wins over both. Final model used: `claude-haiku-4-5`.
 
 **Example 2 — step limit:** Built-in default is `agent.step_limit = 50`. A

@@ -19,9 +19,7 @@ const README_PATH: &str = "README.md";
 
 fn read_config_reference() -> String {
     std::fs::read_to_string(CONFIG_REFERENCE_PATH).unwrap_or_else(|_| {
-        panic!(
-            "{CONFIG_REFERENCE_PATH} must exist — create it to pass this test (issue #92)"
-        )
+        panic!("{CONFIG_REFERENCE_PATH} must exist — create it to pass this test (issue #92)")
     })
 }
 
@@ -29,24 +27,24 @@ fn read_config_reference() -> String {
 /// `<!-- config-example:<marker> -->` comment in the reference doc.
 fn extract_toml_example(doc: &str, marker: &str) -> String {
     let marker_text = format!("<!-- config-example:{marker} -->");
-    let after_marker = doc
-        .split_once(&marker_text)
-        .map(|(_, rest)| rest)
-        .unwrap_or_else(|| {
+    let after_marker = doc.split_once(&marker_text).map_or_else(
+        || {
             panic!(
                 "{CONFIG_REFERENCE_PATH} is missing marker `{marker_text}`; \
                  add it before the ```toml block for the '{marker}' example"
             )
-        });
-    let after_fence = after_marker
-        .split_once("```toml")
-        .map(|(_, rest)| rest)
-        .unwrap_or_else(|| {
+        },
+        |(_, rest)| rest,
+    );
+    let after_fence = after_marker.split_once("```toml").map_or_else(
+        || {
             panic!(
                 "Marker `{marker_text}` in {CONFIG_REFERENCE_PATH} must be \
                  followed by a ```toml block"
             )
-        });
+        },
+        |(_, rest)| rest,
+    );
     let (block, _) = after_fence.split_once("```").unwrap_or_else(|| {
         panic!(
             "TOML block after `{marker_text}` in {CONFIG_REFERENCE_PATH} is \
@@ -94,30 +92,38 @@ fn config_reference_documents_all_top_level_sections() {
     }
 }
 
-/// Drift guard: every non-comment, non-section leaf key in `default.toml`
-/// must appear verbatim in the reference. When a new field is added to
+/// Drift guard: every leaf key in every top-level section of `default.toml`
+/// must appear as a code-formatted field name (`` `field` ``) in the reference.
+/// Uses the `toml` crate to parse the file so template content in multiline
+/// strings can never be misread as field names. When a new field is added to
 /// `default.toml` this test fails until the reference is updated.
 #[test]
 fn config_reference_documents_all_default_toml_fields() {
     let doc = read_config_reference();
     let default_toml = std::fs::read_to_string(DEFAULT_TOML_PATH).unwrap();
+    let parsed: toml::Value = toml::from_str(&default_toml).unwrap();
 
-    let field_names: Vec<&str> = default_toml
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') || trimmed.starts_with('[') || trimmed.is_empty() {
-                return None;
-            }
-            trimmed.split_once('=').map(|(key, _)| key.trim())
-        })
-        .collect();
+    let field_names: Vec<String> = if let toml::Value::Table(root) = &parsed {
+        root.iter()
+            .flat_map(|(_, section_val)| {
+                if let toml::Value::Table(section) = section_val {
+                    section.keys().cloned().collect::<Vec<_>>()
+                } else {
+                    vec![]
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
 
     for field in &field_names {
+        let needle = format!("`{field}`");
         assert!(
-            doc.contains(field),
-            "{CONFIG_REFERENCE_PATH} must document field '{field}' \
-             found in {DEFAULT_TOML_PATH}. Add an entry for it to pass this drift check."
+            doc.contains(&needle),
+            "{CONFIG_REFERENCE_PATH} must document field '{field}' as a code \
+             literal (`{field}`) found in {DEFAULT_TOML_PATH}. Add an entry \
+             for it to pass this drift check."
         );
     }
 }
@@ -178,23 +184,16 @@ fn interactive_local_example_parses() {
 fn config_reference_explains_precedence() {
     let doc = read_config_reference();
     // Must name all four layers.
-    for keyword in &[
-        "default",
-        "config file",
-        "environment variable",
-        "CLI",
-    ] {
+    for keyword in &["default", "config file", "environment variable", "CLI"] {
         assert!(
-            doc.to_ascii_lowercase().contains(&keyword.to_ascii_lowercase()),
+            doc.to_ascii_lowercase()
+                .contains(&keyword.to_ascii_lowercase()),
             "{CONFIG_REFERENCE_PATH} must mention '{keyword}' in the precedence section"
         );
     }
     // Must include at least three concrete conflict examples (look for numbered
     // list items or example headings that follow the precedence section).
-    let precedence_section = doc
-        .split_once("recedence")
-        .map(|(_, rest)| rest)
-        .unwrap_or("");
+    let precedence_section = doc.split_once("recedence").map_or("", |(_, rest)| rest);
     let example_count = precedence_section
         .lines()
         .filter(|l| {
@@ -262,7 +261,9 @@ fn config_validation_error_points_to_reference() {
 
     // ConfigError::Toml (TOML parse failure) must also mention the reference so
     // operators aren't left with only a parser diagnostic.
-    let toml_err = Config::from_toml_str("[[[ not valid toml").unwrap_err().to_string();
+    let toml_err = Config::from_toml_str("[[[ not valid toml")
+        .unwrap_err()
+        .to_string();
     assert!(
         toml_err.contains("config-reference") || toml_err.contains("configuration reference"),
         "ConfigError::Toml must point to docs/config-reference.md; got: {toml_err}"
@@ -293,10 +294,7 @@ fn config_reference_documents_actual_default_values() {
             "agent.tool_hook_timeout_secs",
             cfg.root.agent.tool_hook_timeout_secs.to_string(),
         ),
-        (
-            "model.name",
-            format!("\"{}\"", cfg.root.model.name),
-        ),
+        ("model.name", format!("\"{}\"", cfg.root.model.name)),
         ("model.max_tokens", cfg.root.model.max_tokens.to_string()),
         (
             "environment.timeout_secs",
