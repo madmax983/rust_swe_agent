@@ -256,6 +256,13 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "find-exec-rm-all",
             r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*find\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)?(?:/[^\s'"|;]*)?['"]?\s+[^|;\n]*-exec\s+rm\b"#,
         ),
+        // `cd` to root or a protected system dir followed by `rm` makes
+        // any relative target (e.g. `etc`) point at the protected dir.
+        // Conservative: any `cd /protected ... ; rm` or `cd / ... && rm`.
+        PolicyRule::deny_static(
+            "cd-to-protected-then-rm",
+            r#"(?:^|\n\s*|;\s*|&&\s*|\|\|\s*)(?:[A-Za-z_]\w*=\S*\s+|(?:sudo|command|env|time|exec|nohup|nice|builtin|eval)(?:\s+-\S+)*\s+)*(?:cd|pushd)\s+['"]?/(?:etc|var|usr|home|root|boot|lib|bin|sbin)?(?:/[^|;\n\s'"]*)?['"]?\s*(?:;|&&|\n)\s*(?:[^;\n]*\s)?(?:sudo\s+(?:-\S+\s+)*)?rm\b"#,
+        ),
         // --- xargs feeding rm with recursive/force flags ---
         // `printf '/etc\n' | xargs rm -rf` runs `rm -rf` on whatever stdin
         // delivers, so the dangerous target may not be visible in the
@@ -392,39 +399,39 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // (assignments, sudo, wrappers).
         PolicyRule::deny_static(
             "read-ssh-private-key",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings|xxd|hexdump)\s+[^|;\n]*~?/?\.?ssh/id_(?:rsa|ecdsa|ed25519|dsa)\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings|xxd|hexdump)[\s<][^|;\n]*~?/?\.?ssh/id_(?:rsa|ecdsa|ed25519|dsa)\b"#,
         ),
         PolicyRule::deny_static(
             "read-aws-credentials",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.aws/(?:credentials|config)\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*~?/?\.aws/(?:credentials|config)\b"#,
         ),
         PolicyRule::deny_static(
             "read-shadow",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/(?:shadow|gshadow)\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)[\s<][^|;\n]*/etc/(?:shadow|gshadow)\b"#,
         ),
         PolicyRule::deny_static(
             "read-etc-passwd",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)\s+[^|;\n]*/etc/passwd\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more|strings)[\s<][^|;\n]*/etc/passwd\b"#,
         ),
         PolicyRule::deny_static(
             "read-proc-keys",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*/proc/(?:keys|key-users|kmsg|version)\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*/proc/(?:keys|key-users|kmsg|version)\b"#,
         ),
         PolicyRule::deny_static(
             "read-netrc",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.netrc\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*~?/?\.netrc\b"#,
         ),
         PolicyRule::deny_static(
             "read-git-credentials",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.git-credentials\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*~?/?\.git-credentials\b"#,
         ),
         PolicyRule::deny_static(
             "read-pgpass",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*~?/?\.pgpass\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*~?/?\.pgpass\b"#,
         ),
         PolicyRule::deny_static(
             "read-gcloud-credentials",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)\s+[^|;\n]*(?:application_default_credentials\.json|gcloud/credentials)"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+|(?:bash|sh|zsh|ksh|dash|fish)\s+(?:-\S+\s+)*-\S*c\S*\s+['"]?|eval\s+(?:-\S+\s+)*['"]?)*(?:cat|head|tail|less|more)[\s<][^|;\n]*(?:application_default_credentials\.json|gcloud/credentials)"#,
         ),
         PolicyRule::deny_static(
             "find-read-private-keys",
@@ -436,15 +443,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // match.
         PolicyRule::deny_static(
             "script-from-network-pipe-shell",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:ba)?sh\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:\S*/)?(?:ba)?sh\b"#,
         ),
         PolicyRule::deny_static(
             "script-from-network-pipe-python",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*python[23]?\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:\S*/)?python[23]?\b"#,
         ),
         PolicyRule::deny_static(
             "script-from-network-pipe-interpreter",
-            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:perl|ruby|node|php)\b"#,
+            r#"(?:^|\n\s*|\|\s*|;\s*|&&\s*|&\s*|\|\|\s*|\$\(\s*|`\s*|\(\s*|\{\s*|\)\s*|\bthen\s+|\bdo\s+|\belse\s+)(?:[A-Za-z_]\w*=\S*\s+|sudo(?:\s+-[uUgGDhprtT]\s+\S+|\s+--(?:user|group|chdir|host|prompt|role|type)\s+\S+|\s+-\S+)*\s+|env(?:\s+-[uCS]\s+\S+|\s+--(?:unset|chdir|split-string|block-signal|default-signal|ignore-signal)\s+\S+|\s+-\S+)*\s+|(?:command|time|exec|nohup|nice|builtin)(?:\s+-\S+)*\s+)*(?:curl|wget|fetch)\b[^|;\n]*\|\s*(?:\S*/)?(?:perl|ruby|node|php)\b"#,
         ),
         PolicyRule::deny_static(
             "bash-process-substitution-network",
