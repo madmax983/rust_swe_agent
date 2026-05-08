@@ -2099,6 +2099,36 @@ fn safe_blocks_env_s_with_options_inside_payload() {
     }
 }
 
+// ── Parent-component path normalization (Codex P1) ──────────────────────────
+
+#[test]
+fn safe_blocks_protected_deletes_via_double_dot_components() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cases = [
+        // Single ..
+        "rm -rf /tmp/../etc",
+        "rm -rf /etc/../home",
+        "rm -rf /var/../etc",
+        // Multiple ..
+        "rm -rf /a/b/../../etc",
+        "rm -rf /tmp/foo/../../etc",
+        // Leading /..
+        "rm -rf /../etc",
+        // Quoted target
+        "rm -rf '/tmp/../etc'",
+        // sudo + ..
+        "sudo rm -rf /tmp/../etc",
+        // dd via .. path
+        "dd if=/dev/zero of=/tmp/../etc/passwd",
+    ];
+    for cmd in cases {
+        assert!(
+            matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+            "double-dot bypass must be blocked: {cmd:?}"
+        );
+    }
+}
+
 // ── Config round-trip ─────────────────────────────────────────────────────────
 
 #[test]

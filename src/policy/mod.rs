@@ -658,6 +658,34 @@ fn interpreter_invokes_file(region: &str, file: &str) -> bool {
 ///
 /// Both single- and double-quoted forms are unwrapped.  Other surrounding
 /// shell structure (sudo, `&&`, `;`, etc.) is preserved.
+/// Collapse `..` parent-directory components in absolute paths, so a
+/// command like `rm -rf /tmp/../etc` is normalized to `rm -rf /etc`
+/// before the deny corpus scans it.
+///
+/// Iterates until no more `/x/..` patterns remain.  Also collapses
+/// leading `/..` (since `/..` resolves to `/` in unix).
+///
+/// Limitation: only handles absolute-path components in plain command
+/// text.  Doesn't follow symlinks, doesn't resolve `..` past variable
+/// expansions, and doesn't apply inside shell strings (which heredoc
+/// stripping and env-S unwrapping already handle).
+fn collapse_parent_components(command: &str) -> String {
+    // Capture the trailing terminator so we can put it back: a `..` at
+    // path position is followed by `/`, whitespace, or a separator.
+    let Ok(re) = Regex::new(r#"/(?:[^/\s'"]+/)?\.\.([/\s;&|)])"#) else {
+        return command.to_owned();
+    };
+    let mut current = command.to_owned();
+    loop {
+        let next = re.replace_all(&current, "$1").into_owned();
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
 fn unwrap_env_split_string_payloads(command: &str) -> String {
     // Unwrap env -S/-c/--split-string by re-injecting `env <preserved_flags>
     // <payload>`.  This lets the existing env-wrapper alternations consume
@@ -920,6 +948,7 @@ impl PolicyEngine {
         let normalized = command.replace("\\\n", "");
         let normalized = strip_heredoc_bodies(&normalized);
         let normalized = unwrap_env_split_string_payloads(&normalized);
+        let normalized = collapse_parent_components(&normalized);
 
         for rule in &self.rules {
             if rule.matches(&normalized) {
