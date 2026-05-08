@@ -179,6 +179,10 @@ pub struct MiniCmd {
 pub struct HelloWorldCmd {
     #[arg(long, default_value = "./runs")]
     pub output: PathBuf,
+
+    /// Optional path to a TOML config (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

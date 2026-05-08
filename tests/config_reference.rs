@@ -7,7 +7,11 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::process::Command;
+
 use rust_swe_agent::config::Config;
+
+mod support;
 
 const CONFIG_REFERENCE_PATH: &str = "docs/config-reference.md";
 const DEFAULT_TOML_PATH: &str = "src/config/defaults/default.toml";
@@ -243,18 +247,134 @@ fn config_reference_states_toml_format_and_migration_note() {
     );
 }
 
-// ── Error message integration ────────────────────────────────────────────────
+// ── Error message integration (AC 9) ─────────────────────────────────────────
 
 #[test]
 fn config_validation_error_points_to_reference() {
-    // An invalid regex in agent.test_command_patterns produces ConfigError::Invalid.
-    // The error message must mention the reference so operators can self-serve.
-    let err = Config::from_toml_str("[agent]\ntest_command_patterns = [\"(\"]")
+    // ConfigError::Invalid (regex validation failure) must mention the reference.
+    let invalid_err = Config::from_toml_str("[agent]\ntest_command_patterns = [\"(\"]")
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("config-reference") || err.contains("configuration reference"),
-        "Config validation errors must point to docs/config-reference.md so \
-         operators can self-serve; got: {err}"
+        invalid_err.contains("config-reference") || invalid_err.contains("configuration reference"),
+        "ConfigError::Invalid must point to docs/config-reference.md; got: {invalid_err}"
+    );
+
+    // ConfigError::Toml (TOML parse failure) must also mention the reference so
+    // operators aren't left with only a parser diagnostic.
+    let toml_err = Config::from_toml_str("[[[ not valid toml").unwrap_err().to_string();
+    assert!(
+        toml_err.contains("config-reference") || toml_err.contains("configuration reference"),
+        "ConfigError::Toml must point to docs/config-reference.md; got: {toml_err}"
+    );
+}
+
+// ── Default value drift (AC 7 extension) ─────────────────────────────────────
+
+/// Verifies that actual runtime default *values* (not just field names) are
+/// documented. Catches changes like `step_limit` moving from 50 → 100 when the
+/// field name stays the same — the field-name drift guard would miss that.
+#[test]
+fn config_reference_documents_actual_default_values() {
+    let doc = read_config_reference();
+    let cfg = Config::defaults().unwrap();
+
+    let checks: &[(&str, String)] = &[
+        ("agent.step_limit", cfg.root.agent.step_limit.to_string()),
+        (
+            "agent.observation_max_bytes",
+            cfg.root.agent.observation_max_bytes.to_string(),
+        ),
+        (
+            "agent.observation_head_ratio",
+            cfg.root.agent.observation_head_ratio.to_string(),
+        ),
+        (
+            "agent.tool_hook_timeout_secs",
+            cfg.root.agent.tool_hook_timeout_secs.to_string(),
+        ),
+        (
+            "model.name",
+            format!("\"{}\"", cfg.root.model.name),
+        ),
+        ("model.max_tokens", cfg.root.model.max_tokens.to_string()),
+        (
+            "environment.timeout_secs",
+            cfg.root.environment.timeout_secs.to_string(),
+        ),
+        (
+            "environment.workdir",
+            format!("\"{}\"", cfg.root.environment.workdir),
+        ),
+    ];
+
+    for (field, value) in checks {
+        assert!(
+            doc.contains(value.as_str()),
+            "{CONFIG_REFERENCE_PATH} must document the actual default value \
+             '{value}' for field '{field}'. Update the reference when defaults change."
+        );
+    }
+}
+
+// ── No-key example binary execution (AC 8) ───────────────────────────────────
+
+/// Extracts the no-key-smoke TOML from the reference, writes it to a tempfile,
+/// runs `hello-world --config <file>`, and verifies the output trajectory is
+/// valid. This is the "produces a valid trajectory" check required by AC 8.
+#[test]
+fn no_key_smoke_example_produces_valid_trajectory() {
+    let doc = read_config_reference();
+    let toml = extract_toml_example(&doc, "no-key-smoke");
+
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("smoke.toml");
+    let output_dir = temp.path().join("runs");
+    std::fs::write(&config_path, &toml).unwrap();
+
+    let out = Command::new(support::binary_path())
+        .args([
+            "--log",
+            "error",
+            "hello-world",
+            "--config",
+            &config_path.display().to_string(),
+            "--output",
+            &output_dir.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "no-key smoke run with reference config failed\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let trajectory_path = output_dir.join("hello-world.traj.json");
+    assert!(
+        trajectory_path.exists(),
+        "trajectory not written at {}",
+        trajectory_path.display()
+    );
+
+    let trajectory: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trajectory_path).unwrap()).unwrap();
+    assert_eq!(
+        trajectory["trajectory_format"].as_str(),
+        Some("mini-swe-agent-1.1"),
+        "trajectory must be mini-swe-agent-1.1 format"
+    );
+    assert_eq!(
+        trajectory["info"]["outcome"].as_str(),
+        Some("submitted"),
+        "no-key smoke must produce outcome=submitted"
+    );
+    assert_eq!(
+        trajectory["info"]["total_cost_usd"].as_f64(),
+        Some(0.0),
+        "no-key smoke must cost $0"
     );
 }

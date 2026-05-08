@@ -1,14 +1,17 @@
 //! Sanity-check the pipeline with a scripted model. Runs a two-turn agent that
 //! echoes hello, then submits "ok".
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::mini::{MiniArgs, run};
 use crate::config::Config;
 use crate::error::Error;
 
-pub async fn main(output_dir: PathBuf) -> Result<(), Error> {
-    let cfg = Config::defaults()?;
+pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(), Error> {
+    let cfg = match config_path {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
     let traj_path = output_dir.join("hello-world.traj.json");
     let out_path = output_dir.join("hello-world.output.txt");
     let args = MiniArgs {
@@ -43,7 +46,7 @@ mod tests {
     #[tokio::test]
     async fn hello_world_smoke() {
         let dir = tempdir().unwrap();
-        main(dir.path().to_path_buf()).await.unwrap();
+        main(dir.path().to_path_buf(), None).await.unwrap();
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(Result::ok)
