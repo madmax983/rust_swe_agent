@@ -95,7 +95,7 @@ Controls the inner agent loop.
 
 | Field | Type | Default | Valid values | Notes |
 |---|---|---|---|---|
-| `kind` | string | `"default"` | `"default"`, `"interactive"` | `"interactive"` prompts for human approval; in CI it fails closed |
+| `kind` | string | `"default"` | `"default"`, `"interactive"` | **Not yet dispatched** — the `interactive` variant is defined in the schema but `mini`, `bench swebench`, and `hello-world` all construct `DefaultAgent` unconditionally. Setting `kind = "interactive"` has no effect in those commands today. |
 | `step_limit` | integer | `50` | `1`–`∞` | Hard cap on conversation turns; prevents runaway loops |
 | `per_task_budget_usd` | float \| null | `null` | Any positive float | Per-task spend ceiling; loop terminates with `budget_exhausted` when reached |
 | `cost_limit_usd` | float \| null | `null` | Any positive float | Per-task spend ceiling inside the agent loop; terminates the current task with `cost_limit` failure when reached. Does **not** cap the whole sweep — for a sweep-wide aggregate cap use `--sweep-cost-limit-usd` (CLI only, no config equivalent) |
@@ -144,7 +144,7 @@ Controls where agent commands run.
 | Field | Type | Default | Valid values | Notes |
 |---|---|---|---|---|
 | `kind` | string | `"local"` | `"local"`, `"docker"` | `"docker"` requires the `docker` Cargo feature and a running Docker daemon |
-| `timeout_secs` | integer | `60` | `1`–`∞` | Per-command wall-clock timeout; maps to `--task-timeout-secs` on the CLI |
+| `timeout_secs` | integer | `60` | `1`–`∞` | Per-**command** wall-clock timeout — applied to each individual shell command. This is **not** the same as `--task-timeout-secs`, which is a whole-task wallclock budget passed via CLI only (no config equivalent). Setting `timeout_secs` only caps individual commands; a multi-step task can still run much longer. |
 | `docker_image` | string \| null | `null` | Any Docker image reference | Required when `kind = "docker"` |
 | `workdir` | string | `"/workspace"` | Any absolute path | Working directory inside the environment |
 
