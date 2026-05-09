@@ -330,6 +330,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         .await
     };
 
+    // Refresh redaction summary: verification may have redacted command text
+    // or stdout/stderr previews after finalize_run_metadata already stamped
+    // info.redaction, so update it before writing the artifact.
+    agent.trajectory.info.redaction = Some(agent.redactor.summary());
     agent.trajectory.save_pretty(&traj_path)?;
 
     let exit = match run_result {

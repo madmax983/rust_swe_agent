@@ -295,6 +295,73 @@ async fn cancellation_during_verification_sets_unverified() {
     );
 }
 
+/// Large verification output is truncated to VERIFICATION_PREVIEW_MAX_BYTES.
+#[tokio::test]
+async fn large_verification_output_is_truncated() {
+    let work = tempfile::tempdir().unwrap();
+    // seq 1 1000 produces ~3893 bytes (> 2048 VERIFICATION_PREVIEW_MAX_BYTES).
+    let checks = vec![VerificationCheck {
+        name: "big-output".into(),
+        command: "seq 1 1000".into(),
+    }];
+    run(mini_args(&work, "big-output", checks)).await.unwrap();
+
+    let traj = read_traj(&work, "big-output");
+    let preview = traj["info"]["verification_results"][0]["stdout_preview"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        preview.len() <= 2048,
+        "stdout_preview should be truncated to ≤2048 bytes; got {}",
+        preview.len()
+    );
+    assert!(!preview.is_empty(), "stdout_preview should not be empty");
+}
+
+/// inspect renders timed_out=true with a "(timed_out)" note.
+#[test]
+fn inspect_shows_timed_out_note_in_verification_detail() {
+    use rust_swe_agent::trajectory::{Trajectory, VerificationResult, outcome};
+
+    let sweep = tempfile::tempdir().unwrap();
+    let mut t = Trajectory::new();
+    t.info.outcome = Some(outcome::SUBMITTED.into());
+    t.info.verification_status = Some(verification_status::VERIFICATION_FAILED.into());
+    t.info.verification_results = vec![VerificationResult {
+        name: "slow-check".into(),
+        command: "sleep 300".into(),
+        exit_code: -1,
+        duration_ms: 1000,
+        passed: false,
+        stdout_preview: String::new(),
+        stderr_preview: "timed out after 1s".into(),
+        timed_out: true,
+    }];
+    std::fs::write(
+        sweep.path().join("timedout.traj.json"),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "timedout",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("(timed_out)"),
+        "expected '(timed_out)' in inspect output; stdout={stdout}"
+    );
+}
+
 /// AC: `bench inspect` shows verification summary in the run header.
 #[test]
 fn inspect_shows_verification_summary_in_header() {
