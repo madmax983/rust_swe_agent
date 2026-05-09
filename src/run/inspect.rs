@@ -848,6 +848,9 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
         redacted |= redactor.redact_json_value(value, surface::INSPECT);
     }
     for vr in &mut trajectory.info.verification_results {
+        let command = redactor.redact_text(&vr.command, surface::INSPECT);
+        redacted |= command.redacted;
+        vr.command = command.text;
         let stdout = redactor.redact_text(&vr.stdout_preview, surface::INSPECT);
         redacted |= stdout.redacted;
         vr.stdout_preview = stdout.text;
@@ -874,4 +877,118 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
         }
     }
     redacted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trajectory::{VerificationResult, verification_status};
+
+    fn write_trajectory_fixture(
+        sweep: &std::path::Path,
+        instance_id: &str,
+        results: &[VerificationResult],
+        status: &str,
+    ) {
+        let instance_dir = sweep.join(instance_id);
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {
+                "verification_status": status,
+                "verification_results": serde_json::to_value(results).unwrap(),
+            },
+            "messages": [{"role": "assistant", "content": "done"}]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn timed_out_check_renders_timeout_note() {
+        let dir = tempfile::tempdir().unwrap();
+        write_trajectory_fixture(
+            dir.path(),
+            "task-a",
+            &[VerificationResult {
+                name: "slow-check".into(),
+                command: "sleep 60".into(),
+                exit_code: -1,
+                duration_ms: 5000,
+                passed: false,
+                stdout_preview: String::new(),
+                stderr_preview: String::new(),
+                timed_out: true,
+            }],
+            verification_status::VERIFICATION_FAILED,
+        );
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-a".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+        assert!(
+            text.contains("(timed_out)"),
+            "expected timed_out note in:\n{text}"
+        );
+        assert!(
+            text.contains("verification:"),
+            "expected verification line in:\n{text}"
+        );
+        if let InspectOutput::Instance(report) = &output {
+            assert_eq!(report.verification_results.len(), 1);
+            assert!(report.verification_results[0].timed_out);
+        } else {
+            panic!("expected Instance output");
+        }
+    }
+
+    #[test]
+    fn verification_command_and_output_redacted_at_view_time() {
+        let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+        let dir = tempfile::tempdir().unwrap();
+        write_trajectory_fixture(
+            dir.path(),
+            "task-b",
+            &[VerificationResult {
+                name: "secret-check".into(),
+                command: format!("curl -H 'Authorization: Bearer {secret}'"),
+                exit_code: 0,
+                duration_ms: 50,
+                passed: true,
+                stdout_preview: format!("token={secret}"),
+                stderr_preview: String::new(),
+                timed_out: false,
+            }],
+            verification_status::VERIFIED,
+        );
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-b".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        if let InspectOutput::Instance(report) = &output {
+            let vr = &report.verification_results[0];
+            assert!(
+                !vr.command.contains(secret),
+                "command should be redacted at view time"
+            );
+            assert!(
+                !vr.stdout_preview.contains(secret),
+                "stdout_preview should be redacted at view time"
+            );
+        } else {
+            panic!("expected Instance output");
+        }
+    }
 }
