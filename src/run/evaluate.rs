@@ -2575,4 +2575,53 @@ mod tests {
         );
         assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
     }
+
+    #[test]
+    fn build_redacted_submit_command_contains_expected_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::SbCli,
+            timeout_per_instance_secs: 300,
+            parallel: 4,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let preds = dir.path().join("all_preds.jsonl");
+        let report_dir = dir.path().join("sb_cli_reports");
+        let cmd = build_redacted_submit_command(&args, &preds, &report_dir, "test-run");
+        assert!(cmd.starts_with("sb-cli submit"), "got: {cmd}");
+        assert!(cmd.contains("swe-bench-m"), "got: {cmd}");
+        assert!(cmd.contains("dev"), "got: {cmd}");
+        assert!(cmd.contains("test-run"), "got: {cmd}");
+        assert!(cmd.contains("--timeout-per-instance 300"), "got: {cmd}");
+        assert!(cmd.contains("--parallel 4"), "got: {cmd}");
+    }
+
+    #[test]
+    fn build_redacted_report_command_contains_expected_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::SbCli,
+            timeout_per_instance_secs: 300,
+            parallel: 4,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let report_dir = dir.path().join("sb_cli_reports");
+        let cmd = build_redacted_report_command(&args, &report_dir, "test-run");
+        assert!(cmd.starts_with("sb-cli get-report"), "got: {cmd}");
+        assert!(cmd.contains("swe-bench-m"), "got: {cmd}");
+        assert!(cmd.contains("dev"), "got: {cmd}");
+        assert!(cmd.contains("test-run"), "got: {cmd}");
+    }
 }
