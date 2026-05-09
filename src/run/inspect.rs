@@ -128,6 +128,9 @@ pub struct SummaryReport {
     pub filter: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ProvenanceManifest>,
+    /// Evaluator provenance from `evaluation.json`, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluator_provenance: Option<crate::run::evaluate::EvaluatorProvenance>,
     pub rows: Vec<SummaryRow>,
 }
 
@@ -193,10 +196,13 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
         });
     }
     rows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+    let evaluator_provenance =
+        crate::run::compare::load_evaluation_results(sweep)?.and_then(|eval| eval.provenance);
     Ok(SummaryReport {
         sweep_dir: sweep.to_path_buf(),
         filter: filter.raw,
         manifest: loaded.manifest,
+        evaluator_provenance,
         rows,
     })
 }
@@ -406,6 +412,20 @@ fn render_summary_text(report: &SummaryReport) -> String {
         );
     } else {
         s.push_str("Manifest: unavailable\n");
+    }
+    if let Some(prov) = &report.evaluator_provenance {
+        let version = prov.backend_version.as_deref().unwrap_or("?");
+        let subset = prov.dataset_subset.as_deref().unwrap_or("?");
+        let split = prov.dataset_split.as_deref().unwrap_or("?");
+        let run_id = prov.run_id.as_deref().unwrap_or("?");
+        let started = prov.eval_started_at.as_deref().unwrap_or("?");
+        let _ = writeln!(
+            s,
+            "evaluator_provenance: backend={} version={} subset={} split={} run_id={} started={}",
+            prov.backend, version, subset, split, run_id, started
+        );
+    } else {
+        s.push_str("evaluator_provenance: unavailable\n");
     }
     s.push('\n');
 
