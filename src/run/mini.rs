@@ -725,16 +725,21 @@ async fn run_verification_checks(
             cancellation.clone(),
         );
 
+        let command = redactor
+            .redact_text(&check.command, surface::TRAJECTORY)
+            .text;
         let run_result = match env.run(req).await {
             Ok(r) => r,
             Err(e) => {
                 failed += 1;
-                let stderr_preview = redactor
-                    .redact_text(&truncate_preview(&e.to_string()), surface::TRAJECTORY)
-                    .text;
+                let stderr_preview = truncate_preview(
+                    &redactor
+                        .redact_text(&e.to_string(), surface::TRAJECTORY)
+                        .text,
+                );
                 results.push(crate::trajectory::VerificationResult {
                     name: check.name.clone(),
-                    command: check.command.clone(),
+                    command,
                     exit_code: -1,
                     duration_ms: elapsed_ms(start),
                     passed: false,
@@ -751,15 +756,19 @@ async fn run_verification_checks(
         if !passed {
             failed += 1;
         }
-        let stdout_preview = redactor
-            .redact_text(&truncate_preview(&run_result.stdout), surface::TRAJECTORY)
-            .text;
-        let stderr_preview = redactor
-            .redact_text(&truncate_preview(&run_result.stderr), surface::TRAJECTORY)
-            .text;
+        let stdout_preview = truncate_preview(
+            &redactor
+                .redact_text(&run_result.stdout, surface::TRAJECTORY)
+                .text,
+        );
+        let stderr_preview = truncate_preview(
+            &redactor
+                .redact_text(&run_result.stderr, surface::TRAJECTORY)
+                .text,
+        );
         results.push(crate::trajectory::VerificationResult {
             name: check.name.clone(),
-            command: check.command.clone(),
+            command,
             exit_code: run_result.exit_code,
             duration_ms,
             passed,

@@ -25,6 +25,7 @@
     "steps": 1,
     "test_invocations": [],
     "tests_run_before_submit": false,
+    "verification_status": "unverified",
     "started_at": "2026-05-01T00:00:00Z",
     "ended_at": "2026-05-01T00:00:01Z"
   },
