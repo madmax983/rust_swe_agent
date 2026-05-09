@@ -163,13 +163,13 @@ pub enum ConfigError {
     #[error("config file not found: {0}")]
     NotFound(String),
 
-    #[error("toml parse failed: {0}")]
+    #[error("toml parse failed: {0} (see docs/config-reference.md for format and examples)")]
     Toml(String),
 
     #[error("include chain exceeded {0} levels (possible cycle)")]
     IncludeDepthExceeded(usize),
 
-    #[error("invalid config: {0}")]
+    #[error("invalid config: {0} (see docs/config-reference.md for valid values and examples)")]
     Invalid(String),
 }
 

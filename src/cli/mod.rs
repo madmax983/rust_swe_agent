@@ -48,7 +48,9 @@ pub async fn run() -> Result<(), Error> {
 
     match cli.command {
         Command::Mini(m) => mini_cmd(m).await,
-        Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
+        Command::HelloWorld(h) => {
+            crate::run::hello_world::main(h.output, h.config.as_deref()).await
+        }
         Command::Replay(r) => replay_cmd(r).await,
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),

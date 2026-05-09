@@ -140,6 +140,9 @@ budget. This avoids beginning with a multi-instance spendfest. Tiny mercy.
 Start with the first-run path above, then use these deeper specs once you have
 a valid trajectory in hand:
 
+- [`configuration reference`](docs/config-reference.md): every config field,
+  default value, valid values, precedence rules, copy-pasteable TOML examples,
+  and secret handling guidance. Start here before tuning a sweep.
 - [`bench tail`](docs/spec-tail.md): live aggregate progress, cost burn, ETA,
   and failure mix for running SWE-bench sweeps.
 - [`bench evaluate`](docs/spec-evaluation.md): evaluator output, rerun metrics,
