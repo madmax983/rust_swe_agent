@@ -48,6 +48,34 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// Operator-supplied verification check run after the agent finishes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationCheck {
+    pub name: String,
+    pub command: String,
+}
+
+/// Per-check evidence recorded after a verification check runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationResult {
+    pub name: String,
+    pub command: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub passed: bool,
+    pub stdout_preview: String,
+    pub stderr_preview: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub timed_out: bool,
+}
+
+/// Operator-facing verification status values.
+pub mod verification_status {
+    pub const VERIFIED: &str = "verified";
+    pub const UNVERIFIED: &str = "unverified";
+    pub const VERIFICATION_FAILED: &str = "verification_failed";
+}
+
 /// Coarse run outcome. Exactly one of three values, suitable for computing
 /// pass@1-style metrics from trajectory files alone:
 /// `"submitted"` | `"step_limit_reached"` | `"error"`.
@@ -359,6 +387,14 @@ pub struct TrajectoryInfo {
     /// for single-model runs (preserves legacy artifact shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_summary: Option<FallbackSummary>,
+    /// Operator-facing verification outcome. `"verified"` | `"unverified"` |
+    /// `"verification_failed"`. Set on every run that reaches the verification
+    /// phase; absent on trajectories written before this feature was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<String>,
+    /// Per-check evidence for runs where verification checks were configured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_results: Vec<VerificationResult>,
     #[serde(flatten, default)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
