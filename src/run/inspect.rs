@@ -196,8 +196,8 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
         });
     }
     rows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
-    let evaluator_provenance = crate::run::compare::load_evaluation_results(sweep)?
-        .and_then(|eval| eval.provenance);
+    let evaluator_provenance =
+        crate::run::compare::load_evaluation_results(sweep)?.and_then(|eval| eval.provenance);
     Ok(SummaryReport {
         sweep_dir: sweep.to_path_buf(),
         filter: filter.raw,

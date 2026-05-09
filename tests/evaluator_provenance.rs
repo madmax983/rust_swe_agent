@@ -8,12 +8,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rust_swe_agent::run::evaluate::{
-    EvaluationResults, EvaluatorProvenance, InstanceEvaluation, SbCliProvenance,
-    SourceReportEntry, EvalExitReason,
-};
 use rust_swe_agent::run::compare::{
     CompareArgs, CompareFormat, EvaluatorProvenanceStatus, load_evaluation_results_checked,
+};
+use rust_swe_agent::run::evaluate::{
+    EvalExitReason, EvaluationResults, EvaluatorProvenance, InstanceEvaluation, SbCliProvenance,
+    SourceReportEntry,
 };
 use rust_swe_agent::run::inspect::SummaryReport;
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
@@ -426,9 +426,15 @@ fn compare_backend_mismatch_gives_mismatched_status() {
     let report =
         rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
-    assert_eq!(report.evaluator_provenance_status, EvaluatorProvenanceStatus::Mismatched);
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("backend")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("backend")),
         "expected backend mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
@@ -483,9 +489,15 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
     let report =
         rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
-    assert_eq!(report.evaluator_provenance_status, EvaluatorProvenanceStatus::Mismatched);
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("subset") || w.contains("dataset")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("subset") || w.contains("dataset")),
         "expected dataset subset mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
@@ -529,9 +541,15 @@ fn compare_dataset_split_mismatch_gives_mismatched_status() {
     let report =
         rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
-    assert_eq!(report.evaluator_provenance_status, EvaluatorProvenanceStatus::Mismatched);
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("split")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("split")),
         "expected split mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
@@ -775,8 +793,7 @@ fn sb_cli_provenance_secrets_are_redacted() {
     // sb-cli command shapes that might contain API keys.
     let redactor = rust_swe_agent::redaction::Redactor::default_enabled();
 
-    let cmd_with_secret =
-        "sb-cli submit swe-bench-m dev --predictions_path /tmp/p.jsonl --api_key sk-ant-secret123456789ABCDEF";
+    let cmd_with_secret = "sb-cli submit swe-bench-m dev --predictions_path /tmp/p.jsonl --api_key sk-ant-secret123456789ABCDEF";
     let outcome = redactor.redact_text(cmd_with_secret, "evaluator_provenance");
 
     assert!(outcome.redacted, "API key in command should be redacted");
@@ -864,9 +881,15 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
     let report =
         rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
-    assert_eq!(report.evaluator_provenance_status, EvaluatorProvenanceStatus::Mismatched);
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("version")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("version")),
         "expected version mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
@@ -1005,7 +1028,10 @@ fn compare_timeout_mismatch_gives_mismatched_status() {
         "different timeout_per_instance_secs should give Mismatched"
     );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("timeout")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("timeout")),
         "expected timeout mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
@@ -1066,7 +1092,10 @@ fn compare_parallel_mismatch_gives_mismatched_status() {
         "different parallel should give Mismatched"
     );
     assert!(
-        report.evaluator_provenance_warnings.iter().any(|w| w.contains("parallel")),
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("parallel")),
         "expected parallel mismatch warning, got: {:?}",
         report.evaluator_provenance_warnings
     );
