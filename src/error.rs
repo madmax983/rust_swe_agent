@@ -28,6 +28,11 @@ pub enum Error {
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /// One or more operator-supplied verification checks did not pass.
+    /// `(failed_count, total_count)`.
+    #[error("verification failed: {0} of {1} check(s) did not pass")]
+    VerificationFailed(usize, usize),
 }
 
 #[derive(Debug, Error)]

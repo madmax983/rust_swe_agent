@@ -150,6 +150,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         None => None,
     };
 
+    let verification_checks = parse_verify_checks(&m.verify)?;
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -162,9 +163,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cancellation: None,
         stream_addr,
         patch_capture,
+        verification_checks,
+        verification_timeout_secs: m.verify_timeout_secs,
     };
-    crate::run::mini::run(args).await?;
+    let run_result = crate::run::mini::run(args).await;
+    // Always try to publish PR — trajectory and patch are on disk regardless
+    // of whether verification passed.
     maybe_publish_mini_github_pr(github_pr).await?;
+    // Propagate verification failure after PR publication.
+    run_result?;
     Ok(())
 }
 
@@ -573,6 +580,25 @@ fn swebench_args_from_cmd(
         cancellation_signals: None,
         github_pr,
     }
+}
+
+fn parse_verify_checks(
+    specs: &[String],
+) -> Result<Vec<crate::trajectory::VerificationCheck>, Error> {
+    specs
+        .iter()
+        .map(|s| {
+            let colon = s.find(':').ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--verify must be in NAME:COMMAND format, got `{s}`"
+                )))
+            })?;
+            Ok(crate::trajectory::VerificationCheck {
+                name: s[..colon].to_owned(),
+                command: s[colon + 1..].to_owned(),
+            })
+        })
+        .collect()
 }
 
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
@@ -1145,6 +1171,8 @@ mod tests {
             trajectory_name: None,
             stream: None,
             skip_patch_validation: false,
+            verify: vec![],
+            verify_timeout_secs: 60,
             github_pr: args::MiniGithubPrArgs {
                 open_pr,
                 target_repo: Some("madmax983/rust_swe_agent".into()),

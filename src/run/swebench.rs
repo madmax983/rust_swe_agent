@@ -3457,6 +3457,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 patch_path: patch_path.clone(),
                 skip_patch_validation,
             }),
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

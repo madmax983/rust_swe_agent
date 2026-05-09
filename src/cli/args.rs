@@ -171,6 +171,17 @@ pub struct MiniCmd {
     #[arg(long, default_value_t = false)]
     pub skip_patch_validation: bool,
 
+    /// Operator-supplied verification check. Format: `NAME:COMMAND`.
+    /// Can be repeated for multiple checks. After the agent finishes, each
+    /// check is run once; if any fail the artifact is marked
+    /// `verification_failed` and the command exits non-zero.
+    #[arg(long = "verify", value_name = "NAME:COMMAND")]
+    pub verify: Vec<String>,
+
+    /// Per-check timeout in seconds for `--verify` checks. Default: 60.
+    #[arg(long = "verify-timeout-secs", default_value_t = 60)]
+    pub verify_timeout_secs: u64,
+
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
 }

@@ -15,7 +15,9 @@ use crate::redaction::{Redactor, surface};
 use crate::run::evaluate::EvaluationResults;
 use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
-use crate::trajectory::{FailureCategory, FallbackSummary, TokenUsage, Trajectory};
+use crate::trajectory::{
+    FailureCategory, FallbackSummary, TokenUsage, Trajectory, VerificationResult,
+};
 
 const TRUNCATE_MAX_LINES: usize = 40;
 const TRUNCATE_MAX_BYTES: usize = 2 * 1024;
@@ -97,6 +99,10 @@ pub struct InspectReport {
     pub last_tests_passed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_summary: Option<FallbackSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_results: Vec<VerificationResult>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
@@ -252,6 +258,8 @@ fn build_instance_report(
                 tests_run_before_submit: false,
                 last_tests_passed: None,
                 fallback_summary: None,
+                verification_status: None,
+                verification_results: vec![],
                 warnings,
                 steps: vec![],
             });
@@ -306,6 +314,8 @@ fn build_instance_report(
         tests_run_before_submit: traj.info.tests_run_before_submit,
         last_tests_passed: traj.info.last_tests_passed,
         fallback_summary: traj.info.fallback_summary,
+        verification_status: traj.info.verification_status,
+        verification_results: traj.info.verification_results,
         warnings,
         steps,
     })
@@ -525,6 +535,25 @@ fn render_instance_text(report: &InspectReport) -> String {
         );
         if !fb.attempted_models.is_empty() {
             let _ = writeln!(s, "fallback_chain:   {}", fb.attempted_models.join(" → "));
+        }
+    }
+    if report.verification_status.is_some() || !report.verification_results.is_empty() {
+        let _ = writeln!(
+            s,
+            "verification:     status={} checks={}",
+            report
+                .verification_status
+                .as_deref()
+                .unwrap_or("unverified"),
+            report.verification_results.len(),
+        );
+        for r in &report.verification_results {
+            let timeout_note = if r.timed_out { " (timed_out)" } else { "" };
+            let _ = writeln!(
+                s,
+                "  [{}] passed={} exit_code={} duration={}ms{}",
+                r.name, r.passed, r.exit_code, r.duration_ms, timeout_note,
+            );
         }
     }
     for w in &report.warnings {

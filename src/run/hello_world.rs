@@ -29,6 +29,8 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         cancellation: None,
         stream_addr: None,
         patch_capture: None,
+        verification_checks: vec![],
+        verification_timeout_secs: 60,
     };
     run(args).await?;
     println!("hello-world smoke complete");

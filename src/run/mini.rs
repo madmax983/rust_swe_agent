@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
 use crate::config::{Config, EnvKind};
@@ -22,6 +22,7 @@ use crate::trajectory::FailureCategory;
 pub use crate::env::CancellationToken as MiniCancellation;
 
 const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
+const VERIFICATION_PREVIEW_MAX_BYTES: usize = 2 * 1024;
 
 #[cfg(test)]
 struct CancelBeforePatchCaptureHook {
@@ -105,6 +106,12 @@ pub struct MiniArgs {
     /// `patch_path`. Capture failures downgrade the run's recorded
     /// outcome to `error` rather than crashing the runner.
     pub patch_capture: Option<PatchCaptureSpec>,
+    /// Operator-supplied checks that run after the agent finishes.
+    /// Empty vec preserves previous behavior but marks the run as
+    /// `unverified` in the trajectory artifact.
+    pub verification_checks: Vec<crate::trajectory::VerificationCheck>,
+    /// Per-check timeout in seconds. Defaults to 60.
+    pub verification_timeout_secs: u64,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -172,6 +179,8 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         match capture_patch(agent.env.as_ref(), spec, args.cancellation.clone()).await {
             Ok(diff) => {
                 if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
+                    agent.trajectory.info.verification_status =
+                        Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
                     if let Some(server) = server {
@@ -205,6 +214,8 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         }),
                     );
                     agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+                    agent.trajectory.info.verification_status =
+                        Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
                     if let Some(server) = server {
@@ -294,6 +305,30 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         }
     }
 
+    // ── Verification ─────────────────────────────────────────────────────────
+    // Runs after all patch-capture logic, for any exit that is not a
+    // cancellation or an agent-internal error (which would already have
+    // returned Err above). Sets `verification_status` on the trajectory so
+    // every persisted artifact carries a deterministic verification outcome.
+    let skip_verification = run_result.is_err()
+        || run_result
+            .as_ref()
+            .is_ok_and(|r| matches!(r, crate::agent::ExitReason::UserInterrupt));
+    let verification_err = if skip_verification {
+        agent.trajectory.info.verification_status =
+            Some(crate::trajectory::verification_status::UNVERIFIED.into());
+        None
+    } else {
+        run_verification_checks(
+            &mut agent.trajectory,
+            agent.env.as_ref(),
+            &args.verification_checks,
+            args.verification_timeout_secs,
+            args.cancellation.clone(),
+        )
+        .await
+    };
+
     agent.trajectory.save_pretty(&traj_path)?;
 
     let exit = match run_result {
@@ -317,6 +352,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
 
     if let Some(server) = server {
         server.shutdown().await;
+    }
+    if let Some(err) = verification_err {
+        return Err(err);
     }
     Ok(())
 }
@@ -654,6 +692,99 @@ async fn build_docker_env(_cfg: &Config) -> Result<Box<dyn Environment>, Error> 
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "docker support not compiled in — rebuild with --features docker".into(),
     )))
+}
+
+/// Run operator-supplied verification checks after the agent finishes.
+///
+/// Sets `trajectory.info.verification_status` and
+/// `trajectory.info.verification_results` unconditionally.
+/// Returns `Some(Error::VerificationFailed(...))` when at least one check
+/// fails; `None` when all pass or no checks were configured.
+async fn run_verification_checks(
+    trajectory: &mut crate::trajectory::Trajectory,
+    env: &dyn crate::env::Environment,
+    checks: &[crate::trajectory::VerificationCheck],
+    timeout_secs: u64,
+    cancellation: Option<MiniCancellation>,
+) -> Option<Error> {
+    if checks.is_empty() {
+        trajectory.info.verification_status =
+            Some(crate::trajectory::verification_status::UNVERIFIED.into());
+        return None;
+    }
+
+    let mut results = Vec::with_capacity(checks.len());
+    let mut failed = 0usize;
+
+    for check in checks {
+        let start = Instant::now();
+        let req = attach_cancellation(
+            RunRequest::new(check.command.clone())
+                .with_timeout(Duration::from_secs(timeout_secs)),
+            cancellation.clone(),
+        );
+
+        let run_result = match env.run(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                failed += 1;
+                results.push(crate::trajectory::VerificationResult {
+                    name: check.name.clone(),
+                    command: check.command.clone(),
+                    exit_code: -1,
+                    duration_ms: elapsed_ms(start),
+                    passed: false,
+                    stdout_preview: String::new(),
+                    stderr_preview: truncate_preview(&e.to_string()),
+                    timed_out: false,
+                });
+                continue;
+            }
+        };
+
+        let duration_ms = elapsed_ms(start);
+        let passed = !run_result.timed_out && run_result.exit_code == 0;
+        if !passed {
+            failed += 1;
+        }
+        results.push(crate::trajectory::VerificationResult {
+            name: check.name.clone(),
+            command: check.command.clone(),
+            exit_code: run_result.exit_code,
+            duration_ms,
+            passed,
+            stdout_preview: truncate_preview(&run_result.stdout),
+            stderr_preview: truncate_preview(&run_result.stderr),
+            timed_out: run_result.timed_out,
+        });
+    }
+
+    trajectory.info.verification_results = results;
+
+    if failed == 0 {
+        trajectory.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFIED.into());
+        None
+    } else {
+        trajectory.info.verification_status =
+            Some(crate::trajectory::verification_status::VERIFICATION_FAILED.into());
+        Some(Error::VerificationFailed(failed, checks.len()))
+    }
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn truncate_preview(text: &str) -> String {
+    if text.len() <= VERIFICATION_PREVIEW_MAX_BYTES {
+        return text.to_owned();
+    }
+    let mut end = VERIFICATION_PREVIEW_MAX_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 /// Derive a filename-safe trajectory name from a task string.
@@ -1199,6 +1330,8 @@ index 8a1218a..24c5735 100644\n\
                 patch_path: patch_path.clone(),
                 skip_patch_validation: false,
             }),
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
         };
 
         run(args).await.unwrap();
@@ -1281,6 +1414,8 @@ index 8a1218a..24c5735 100644\n\
                 patch_path: patch_path.clone(),
                 skip_patch_validation: true,
             }),
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
         };
 
         run(args).await.unwrap();

@@ -36,5 +36,5 @@ pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use trajectory::{
     FORMAT_VERSION, FailureCategory, FallbackSummary, MessageRecord, TestInvocation, TokenUsage,
-    Trajectory, TrajectoryInfo,
+    Trajectory, TrajectoryInfo, VerificationCheck, VerificationResult, verification_status,
 };
