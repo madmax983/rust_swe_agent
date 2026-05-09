@@ -38,17 +38,36 @@ pub use parse::{Action, extract_action};
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     /// The agent explicitly decided to submit a final answer.
-    Submitted { final_output: String },
+    Submitted {
+        /// The final output text provided by the agent.
+        final_output: String,
+    },
     /// The agent reached its configured maximum number of allowed steps.
-    StepLimit { limit: u32 },
+    StepLimit {
+        /// The step limit that was reached.
+        limit: u32,
+    },
     /// The agent exceeded its configured maximum spend.
-    CostLimit { limit_usd: f64, spent_usd: f64 },
+    CostLimit {
+        /// The configured cost limit in USD.
+        limit_usd: f64,
+        /// The actual amount spent in USD.
+        spent_usd: f64,
+    },
     /// The agent's per-task USD budget was exhausted mid-loop.
-    BudgetExhausted { limit_usd: f64, spent_usd: f64 },
+    BudgetExhausted {
+        /// The budget limit in USD.
+        limit_usd: f64,
+        /// The actual amount spent in USD.
+        spent_usd: f64,
+    },
     /// A human explicitly cancelled the run.
     UserInterrupt,
     /// The LLM backend refused to complete the prompt (e.g. safety filters).
-    ModelRefusal { reason: String },
+    ModelRefusal {
+        /// The reason the model gave for refusal.
+        reason: String,
+    },
 }
 
 impl ExitReason {

@@ -15,6 +15,7 @@ use crate::model::{Message, MessageExtra};
 
 pub use crate::model::FallbackAttemptRecord;
 
+/// The protocol format version string used for serialization compatibility.
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 
 /// Trajectory-level summary of fallback behavior for a single agent run.
@@ -51,45 +52,63 @@ fn is_false(b: &bool) -> bool {
 /// Operator-supplied verification check run after the agent finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationCheck {
+    /// The descriptive name of the check.
     pub name: String,
+    /// The bash command string to execute.
     pub command: String,
 }
 
 /// Per-check evidence recorded after a verification check runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationResult {
+    /// The descriptive name of the check.
     pub name: String,
+    /// The bash command string that was executed.
     pub command: String,
+    /// The exit code of the command (0 implies success).
     pub exit_code: i32,
+    /// How long the check took to execute, in milliseconds.
     pub duration_ms: u64,
+    /// True if the check passed (exit code 0).
     pub passed: bool,
+    /// A truncated snippet of the check's standard output.
     pub stdout_preview: String,
+    /// A truncated snippet of the check's standard error.
     pub stderr_preview: String,
     #[serde(default, skip_serializing_if = "is_false")]
+    /// True if the check process was terminated due to exceeding a timeout.
     pub timed_out: bool,
 }
 
 /// Operator-facing verification status values.
 pub mod verification_status {
+    /// Indicates all configured checks passed.
     pub const VERIFIED: &str = "verified";
+    /// Indicates the run finished successfully, but no checks were configured.
     pub const UNVERIFIED: &str = "unverified";
+    /// Indicates one or more configured checks failed.
     pub const VERIFICATION_FAILED: &str = "verification_failed";
 }
 
-/// Coarse run outcome. Exactly one of three values, suitable for computing
-/// pass@1-style metrics from trajectory files alone:
-/// `"submitted"` | `"step_limit_reached"` | `"error"`.
 pub mod export;
 
+/// Constants tracking overarching status strings.
 pub mod outcome {
+    /// Agent explicitly chose to submit the task as complete.
     pub const SUBMITTED: &str = "submitted";
+    /// Agent loop was forcibly stopped due to exceeding the maximum allowed steps.
     pub const STEP_LIMIT_REACHED: &str = "step_limit_reached";
+    /// Agent loop failed due to a fatal, non-recoverable error.
     pub const ERROR: &str = "error";
+    /// Agent loop was stopped due to exhausting its API cost budget.
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
 }
 
+/// Constants classifying reason values recorded on early agent exits.
 pub mod exit_reason {
+    /// Run was intentionally cancelled by a user or signal.
     pub const CANCELLED: &str = "cancelled";
+    /// Run exceeded the absolute global time limit.
     pub const WALLCLOCK_TIMEOUT: &str = "wallclock_timeout";
 }
 
@@ -97,15 +116,22 @@ pub mod exit_reason {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCategory {
+    /// Agent failed to correctly configure its local dependencies.
     EnvSetup,
+    /// The LLM provider API returned repeated unrecoverable errors.
     ModelApi,
+    /// The agent failed to parse tool outputs properly.
     ModelParse,
+    /// The agent exhausted its maximum allotted turn count.
     StepLimit,
+    /// The agent exhausted its local cost limit.
     CostLimit,
     /// Per-task USD ceiling was reached mid-loop. The harness terminated the
     /// agent; any patch accumulated before the cap fired is preserved.
     BudgetExhausted,
+    /// A global, absolute wallclock timeout was reached.
     WallclockTimeout,
+    /// Internal rust_swe_agent fatal panic or bug.
     AgentInternal,
     /// Patch was captured but `git apply --check` rejected it at capture time.
     PatchApplyInvalid,
@@ -113,9 +139,11 @@ pub enum FailureCategory {
     PatchEmpty,
     /// A configured secret literal was found in a submission artifact.
     SecretLeakDetected,
+    /// Reason could not be identified or didn't fall into an existing category.
     Unknown,
 }
 
+/// A default list of regular expressions or substrings used to detect if an executed shell command is a test invocation.
 pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "pytest",
     "python -m pytest",
@@ -136,12 +164,16 @@ pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone)]
+/// An internally compiled representation of a string pattern to match test commands.
 pub struct TestCommandPattern {
+    /// The uncompiled string form of the pattern.
     source: String,
+    /// The compiled detection mechanism.
     matcher: TestCommandMatcher,
 }
 
 #[derive(Debug, Clone)]
+/// Internal strategies for checking test commands.
 enum TestCommandMatcher {
     Literal,
     Regex(Regex),
@@ -175,13 +207,19 @@ impl TestCommandPattern {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A record of a specific test run within the sandbox environment.
 pub struct TestInvocation {
+    /// The step number where this test was run.
     pub step_index: u32,
+    /// The exact bash command that initiated the test.
     pub command: String,
+    /// The exit status returned by the test command (0 implies success).
     pub exit_code: i32,
+    /// The regex or literal pattern that identified this command as a test.
     pub matched_pattern: String,
 }
 
+/// Combines default test command patterns with extra patterns provided by the user.
 pub fn effective_test_command_patterns(
     extra_patterns: &[String],
     replace_defaults: bool,
@@ -201,6 +239,7 @@ pub fn effective_test_command_patterns(
 }
 
 #[must_use]
+/// Parses a command string to see if it invokes any recognized test patterns.
 pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Option<String> {
     let mut single_quoted = false;
     let mut double_quoted = false;
@@ -310,17 +349,23 @@ fn is_command_boundary(ch: char) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Metrics tracking how many tokens were consumed during execution.
 pub struct TokenUsage {
+    /// The number of tokens sent to the model as input.
     pub prompt_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
+    /// The number of tokens read from the prompt cache.
     pub cache_read_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
+    /// The number of tokens written to the prompt cache.
     pub cache_creation_tokens: u64,
+    /// The number of tokens generated by the model as output.
     pub completion_tokens: u64,
 }
 
 impl TokenUsage {
     #[must_use]
+    /// Calculates the total number of input tokens, encompassing both cached and uncached tokens.
     pub fn total_prompt_tokens(&self) -> u64 {
         self.prompt_tokens
             .saturating_add(self.cache_read_tokens)
@@ -328,6 +373,7 @@ impl TokenUsage {
     }
 
     #[must_use]
+    /// Returns `true` if this token usage record indicates that any tokens were served from cache.
     pub fn has_cached_prompt_tokens(&self) -> bool {
         self.cache_read_tokens > 0 || self.cache_creation_tokens > 0
     }
@@ -339,46 +385,69 @@ const fn is_zero_u64(value: &u64) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Metadata containing execution details, costs, and the final state of an agent run.
+///
+/// Serves as the central place to store run outcome data compatible with `mini-swe-agent-1.1`.
 pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The original prompt or instruction provided to the agent.
     pub task: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The name of the primary model utilized during the run.
     pub model_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The programmatic reason for the agent loop terminating.
     pub exit_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// If a failure occurred, categorizes the nature of the error.
     pub failure_category: Option<FailureCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The overall result of the task, e.g., "submitted", "error".
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Any final text produced by the agent or loop driver upon completion.
     pub final_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Total cost incurred during the run, in USD.
     pub total_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The exact cost in USD as reported by the actual provider endpoint.
     pub actual_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Where the cost information was derived from (e.g., API response, local estimate).
     pub actual_cost_source: Option<CostSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A fallback calculated cost estimate using standard model pricing.
     pub baseline_cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The model name used to calculate the baseline cost.
     pub baseline_cost_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Token usage metrics for the entire run.
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Total duration of the run in seconds.
     pub duration_secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Redaction metadata, detailing any sensitive information that was scrubbed.
     pub redaction: Option<crate::redaction::RedactionSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Total number of steps executed by the agent loop.
     pub steps: Option<u32>,
     #[serde(default)]
+    /// Records of individual test executions within the sandbox.
     pub test_invocations: Vec<TestInvocation>,
     #[serde(default)]
+    /// Whether any tests were explicitly run before the final submission.
     pub tests_run_before_submit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Indicates if the final test execution in the sequence passed.
     pub last_tests_passed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The timestamp when the trajectory execution started.
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The timestamp when the trajectory execution finished.
     pub ended_at: Option<String>,
     /// Command-policy telemetry: counts of allowed/asked/blocked/yolo commands.
     #[serde(default, skip_serializing_if = "crate::policy::PolicyCounts::is_empty")]
@@ -396,14 +465,19 @@ pub struct TrajectoryInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification_results: Vec<VerificationResult>,
     #[serde(flatten, default)]
+    /// Any other custom fields found in or injected into the trajectory json.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A serialized representation of a conversational message in the trajectory.
 pub struct MessageRecord {
+    /// The role of the message sender (e.g., "user", "assistant", "system", "tool").
     pub role: String,
+    /// The raw content payload of the message.
     pub content: String,
     #[serde(default, skip_serializing_if = "extra_is_empty")]
+    /// Additional metadata associated with the message, like parsed tool actions or API cost.
     pub extra: MessageExtra,
 }
 
@@ -416,9 +490,15 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+/// The root structure representing a complete interaction history and metadata record.
+///
+/// Trajectories are standard serializable artifacts used for replay, analysis, and debugging.
 pub struct Trajectory {
+    /// A version string dictating the format layout, e.g. "mini-swe-agent-1.1".
     pub trajectory_format: String,
+    /// Summary metadata regarding execution limits, telemetry, and final outcome.
     pub info: TrajectoryInfo,
+    /// A chronological list of conversational messages.
     pub messages: Vec<MessageRecord>,
 }
 
@@ -451,10 +531,20 @@ impl Default for Trajectory {
 }
 
 impl Trajectory {
+    /// Creates a new, empty trajectory with default values and version info.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::trajectory::Trajectory;
+    /// let mut t = Trajectory::new();
+    /// assert_eq!(t.trajectory_format, "mini-swe-agent-1.1");
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Records a new message to the end of the trajectory's message history.
     pub fn record_message(&mut self, m: &Message) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -463,6 +553,7 @@ impl Trajectory {
         });
     }
 
+    /// Records a new message, substituting its `extra` metadata with a provided custom one.
     pub fn record_with_extra(&mut self, m: &Message, extra: MessageExtra) {
         self.messages.push(MessageRecord {
             role: role_to_string(m.role),
@@ -471,12 +562,14 @@ impl Trajectory {
         });
     }
 
+    /// Persists the trajectory to a file at the specified `path` using pretty-printed JSON.
     pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
         let s = serde_json::to_string_pretty(self)?;
         std::fs::write(path, s)?;
         Ok(())
     }
 
+    /// Serializes the trajectory to a pretty-printed JSON string.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }

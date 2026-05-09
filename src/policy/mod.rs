@@ -1026,7 +1026,7 @@ impl PolicyEngine {
         }
     }
 
-    /// Like [`check_command`] but resolves `Ask` to `Deny` for non-interactive
+    /// Like [`PolicyEngine::check_command`] but resolves `Ask` to `Deny` for non-interactive
     /// contexts (CI, unattended sweeps).  Guarantees no process is launched.
     pub fn check_command_non_interactive(&self, command: &str) -> PolicyDecision {
         match self.check_command(command) {
