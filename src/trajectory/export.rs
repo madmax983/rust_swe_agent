@@ -165,6 +165,83 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
+
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut html = String::new();
+
+        html.push_str("<!DOCTYPE html>\n<html>\n<head>\n<title>Trajectory Export</title>\n");
+        html.push_str("<style>\n");
+        html.push_str("  body { font-family: sans-serif; line-height: 1.6; margin: 2rem auto; max-width: 800px; padding: 0 1rem; }\n");
+        html.push_str("  .message { margin-bottom: 1.5rem; padding: 1rem; border-radius: 4px; }\n");
+        html.push_str("  .role-system { background: #e9ecef; border-left: 4px solid #6c757d; }\n");
+        html.push_str("  .role-user { background: #d1ecf1; border-left: 4px solid #17a2b8; }\n");
+        html.push_str(
+            "  .role-assistant { background: #d4edda; border-left: 4px solid #28a745; }\n",
+        );
+        html.push_str("  .role-tool { background: #fff3cd; border-left: 4px solid #ffc107; }\n");
+        html.push_str("  pre { white-space: pre-wrap; margin: 0; }\n");
+        html.push_str("</style>\n</head>\n<body>\n");
+
+        html.push_str("<h1>Trajectory Export</h1>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = writeln!(html, "<p><strong>Task:</strong> {safe_task}</p>");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let safe_outcome = outcome
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = writeln!(html, "<p><strong>Outcome:</strong> {safe_outcome}</p>");
+        }
+
+        html.push_str("<h2>Messages</h2>\n");
+
+        for msg in &trajectory.messages {
+            let role_class = match msg.role.as_str() {
+                "system" => "role-system",
+                "user" => "role-user",
+                "assistant" => "role-assistant",
+                "tool" => "role-tool",
+                _ => "role-unknown",
+            };
+
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+
+            let _ = writeln!(
+                html,
+                "<div class=\"message {role_class}\">\n  <h3>{role_title}</h3>\n  <pre>{safe_content}</pre>\n</div>"
+            );
+        }
+
+        html.push_str("</body>\n</html>\n");
+        html
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +316,36 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature <tag>".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt & info"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<title>Trajectory Export</title>"));
+        assert!(html.contains("<strong>Task:</strong> Add a feature &lt;tag&gt;"));
+        assert!(html.contains("<strong>Outcome:</strong> submitted"));
+
+        assert!(html.contains("<div class=\"message role-system\">"));
+        assert!(html.contains("<h3>System</h3>"));
+        assert!(html.contains("<pre>System prompt &amp; info</pre>"));
+
+        assert!(html.contains("<div class=\"message role-user\">"));
+        assert!(html.contains("<h3>User</h3>"));
+        assert!(html.contains("<pre>Hello agent</pre>"));
+
+        assert!(html.contains("<div class=\"message role-assistant\">"));
+        assert!(html.contains("<h3>Assistant</h3>"));
+        assert!(html.contains("<pre>Hello user</pre>"));
     }
 }
