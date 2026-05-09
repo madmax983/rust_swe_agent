@@ -880,6 +880,7 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::trajectory::{VerificationResult, verification_status};
