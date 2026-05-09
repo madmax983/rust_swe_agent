@@ -901,8 +901,10 @@ impl DefaultAgent {
         if !self.fallback_failed_attempts.is_empty() {
             // Build attempted_models from all models that were tried (failed or
             // responded) across every step, deduped while preserving order.
-            let mut seen = std::collections::HashSet::new();
-            let mut attempted_models: Vec<String> = Vec::new();
+            let capacity = self.fallback_failed_attempts.len() + self.all_step_responders.len();
+            // Pre-allocate hashset and vectors to avoid reallocation overhead
+            let mut seen = std::collections::HashSet::with_capacity(capacity);
+            let mut attempted_models: Vec<String> = Vec::with_capacity(capacity);
             for m in self
                 .fallback_failed_attempts
                 .iter()
@@ -1032,7 +1034,8 @@ impl DefaultAgent {
         command: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
-        let mut reports = Vec::new();
+        // Pre-allocate vectors to avoid reallocation overhead
+        let mut reports = Vec::with_capacity(hooks.len());
         for hook in hooks {
             reports.push(self.run_tool_hook(phase, hook, command, result).await?);
         }
