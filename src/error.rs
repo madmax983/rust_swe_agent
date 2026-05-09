@@ -137,6 +137,22 @@ mod tests {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
     }
+
+    #[test]
+    fn retry_after_secs_handles_missing_digit_after_prefix() {
+        let e = ModelError::RateLimited("retry-after: ".into());
+        assert_eq!(e.retry_after_secs(), None);
+    }
+
+    #[test]
+    fn is_transient_identifies_transient_and_non_transient_errors() {
+        assert!(ModelError::RateLimited(String::new()).is_transient());
+        assert!(ModelError::Request(String::new()).is_transient());
+        assert!(!ModelError::Malformed(String::new()).is_transient());
+        assert!(!ModelError::Refused(String::new()).is_transient());
+        assert!(!ModelError::MissingCredentials(String::new()).is_transient());
+        assert!(!ModelError::AllCandidatesFailed(String::new(), vec![]).is_transient());
+    }
 }
 
 #[derive(Debug, Error)]
