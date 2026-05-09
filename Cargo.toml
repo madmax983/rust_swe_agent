@@ -70,6 +70,7 @@ pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [features]
+html-export = []
 default = []
 docker = []
 chaos = []
