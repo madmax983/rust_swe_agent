@@ -28,6 +28,12 @@ Disabling redaction is a run-time decision (`enabled = false` in the run config)
 
 If a submitted patch or prediction artifact contains a configured literal or structured secret shape, the run is downgraded to `failure_category = "secret_leak_detected"` unless `unsafe_allow_secret_leaks = true`.
 
+## Verification Check Output
+
+When operator-supplied verification checks are run after the agent finishes (see `--verify`), the stdout and stderr of each check are captured as bounded previews and saved in the trajectory artifact. `bench inspect` applies the same view-time redactor to these previews before display.
+
+**Warning:** verification command output is subject to the same redaction contract as agent observations, but only configured literals, structured secret shapes, and current-process environment variables are masked. If a verification command prints a secret that does not match any of those patterns (e.g. a raw password from a test fixture file), it will appear in plain text in the trajectory artifact and `bench inspect` output. Until issue #86 (comprehensive DLP) is complete, do not run verification commands that may print secrets that fall outside the configured redaction patterns.
+
 ## Limitations
 
 This is deterministic masking for known values and structured secrets, not an enterprise DLP system. It does not provide semantic PII detection, license scanning, retroactive rewriting of old artifacts, or a guarantee that a model cannot infer a secret from surrounding context.

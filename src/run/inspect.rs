@@ -847,6 +847,14 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
     for value in trajectory.info.other.values_mut() {
         redacted |= redactor.redact_json_value(value, surface::INSPECT);
     }
+    for vr in &mut trajectory.info.verification_results {
+        let stdout = redactor.redact_text(&vr.stdout_preview, surface::INSPECT);
+        redacted |= stdout.redacted;
+        vr.stdout_preview = stdout.text;
+        let stderr = redactor.redact_text(&vr.stderr_preview, surface::INSPECT);
+        redacted |= stderr.redacted;
+        vr.stderr_preview = stderr.text;
+    }
     for message in &mut trajectory.messages {
         let outcome = redactor.redact_text(&message.content, surface::INSPECT);
         redacted |= outcome.redacted;

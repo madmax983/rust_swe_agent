@@ -315,6 +315,49 @@ fn inspect_shows_verification_summary_in_header() {
     );
 }
 
+/// AC: inspect output for unverified status (no checks supplied).
+#[test]
+fn inspect_shows_unverified_status_in_header() {
+    use rust_swe_agent::trajectory::{Trajectory, outcome};
+
+    let sweep = tempfile::tempdir().unwrap();
+    let mut t = Trajectory::new();
+    t.info.outcome = Some(outcome::SUBMITTED.into());
+    t.info.verification_status = Some(verification_status::UNVERIFIED.into());
+    // verification_results stays empty — that's the no-checks case
+    std::fs::write(
+        sweep.path().join("unverified.traj.json"),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "unverified",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("verification:"),
+        "expected 'verification:' in header; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("unverified"),
+        "expected status 'unverified'; stdout={stdout}"
+    );
+}
+
 /// AC: verification evidence is included in machine-readable run artifacts.
 #[test]
 fn inspect_json_includes_verification_evidence() {
