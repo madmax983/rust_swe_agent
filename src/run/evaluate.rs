@@ -336,6 +336,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         ));
     }
     let results = loaded.instances;
+    let eval_started_at = utc_now_iso8601();
     let run_output = match args.backend {
         EvaluateBackend::None => {
             EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
@@ -347,7 +348,12 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         resolved_by_run,
         effective_run_id,
     } = run_output;
-    let provenance = build_provenance(args, &resolved_by_run, effective_run_id.as_deref());
+    let provenance = build_provenance(
+        args,
+        &resolved_by_run,
+        effective_run_id.as_deref(),
+        eval_started_at,
+    );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(
@@ -380,8 +386,8 @@ fn build_provenance(
     args: &EvaluateArgs,
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     effective_run_id: Option<&str>,
+    started_at: String,
 ) -> EvaluatorProvenance {
-    let started_at = utc_now_iso8601();
     let run_id_str = effective_run_id
         .or(args.run_id.as_deref())
         .unwrap_or_default();
@@ -2536,7 +2542,7 @@ mod tests {
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
         };
-        let prov = build_provenance(&args, &HashMap::new(), None);
+        let prov = build_provenance(&args, &HashMap::new(), None, "2026-01-01T00:00:00Z".into());
         assert_eq!(prov.backend, "none");
         assert!(prov.backend_version.is_none());
         assert!(prov.prediction_path.is_none());
@@ -2561,7 +2567,12 @@ mod tests {
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
         };
-        let prov = build_provenance(&args, &HashMap::new(), Some("generated-123"));
+        let prov = build_provenance(
+            &args,
+            &HashMap::new(),
+            Some("generated-123"),
+            "2026-01-01T00:00:00Z".into(),
+        );
         assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
     }
 }
