@@ -13,6 +13,83 @@ use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
 
+/// Evaluator provenance recorded in every `bench evaluate` artifact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvaluatorProvenance {
+    /// Evaluator backend name: `"sb-cli"` or `"none"`.
+    pub backend: String,
+    /// Backend/tool version when determinable (e.g. `sb-cli --version` output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_version: Option<String>,
+    /// SWE-bench dataset subset (e.g. `"swe-bench-m"`, `"swe-bench_lite"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_subset: Option<String>,
+    /// SWE-bench dataset split (e.g. `"dev"`, `"test"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_split: Option<String>,
+    /// Run ID supplied to the evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Path to the predictions file consumed by the evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_path: Option<String>,
+    /// SHA-256 hex digest of the predictions file at evaluation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_sha256: Option<String>,
+    /// ISO 8601 UTC timestamp when the evaluation run started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_started_at: Option<String>,
+    /// ISO 8601 UTC timestamp when the evaluation run ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_ended_at: Option<String>,
+    /// Human-readable description of how the report was obtained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_source: Option<String>,
+    /// `sb-cli`-specific provenance fields; present only when `backend == "sb-cli"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_cli: Option<SbCliProvenance>,
+    /// One entry per run slot for rerun/pass@k evaluations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_reports: Vec<SourceReportEntry>,
+}
+
+/// Provenance specific to `sb-cli` submit/get-report command pairs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SbCliProvenance {
+    /// Redacted `sb-cli submit` command shape used for submission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_command: Option<String>,
+    /// Redacted `sb-cli get-report` command shape used for report retrieval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_command: Option<String>,
+    /// Paths to the generated report JSON files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_paths: Vec<String>,
+    /// SHA-256 hex digests of the report files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_hashes: Vec<String>,
+    pub verify_submission: bool,
+    pub wait_for_evaluation: bool,
+    pub overwrite: bool,
+    pub timeout_per_instance_secs: u64,
+    pub parallel: usize,
+}
+
+/// One source-report entry for a single run slot in a rerun/pass@k evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceReportEntry {
+    pub run_index: u32,
+    /// Path to the report file for this run slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_path: Option<String>,
+    /// SHA-256 hex digest of the report file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_sha256: Option<String>,
+    /// Instance IDs whose rows were influenced by this run slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instance_ids: Vec<String>,
+}
+
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
 pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
 pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
@@ -128,6 +205,10 @@ pub struct EvaluationResults {
     pub cost_attribution: Vec<CostAttributionBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_mix_summary: Vec<ModelMixBucket>,
+    /// Evaluator provenance recorded at evaluation time.
+    /// `None` for artifacts produced before this field was added (legacy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<EvaluatorProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -258,8 +339,9 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
-    let mut eval = run_output.eval;
-    attach_patch_stats(&mut eval, args, &run_output.resolved_by_run)?;
+    let EvaluateRunOutput { mut eval, resolved_by_run } = run_output;
+    let provenance = build_provenance(args, &resolved_by_run);
+    attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(
         &eval.instances,
@@ -271,13 +353,14 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     if args.cost_attribution {
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
-            &run_output.resolved_by_run,
+            &resolved_by_run,
             model_name.as_deref(),
         )
         .rows;
     }
     eval.model_mix_summary =
-        build_model_mix_summary_from_slots(&run_slots, &run_output.resolved_by_run);
+        build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
+    eval.provenance = Some(provenance);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -285,6 +368,205 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         &eval,
     )?;
     Ok(eval)
+}
+
+fn build_provenance(
+    args: &EvaluateArgs,
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+) -> EvaluatorProvenance {
+    let started_at = utc_now_iso8601();
+    let (backend_str, sb_cli, source_reports) = match args.backend {
+        EvaluateBackend::None => ("none", None, vec![]),
+        EvaluateBackend::SbCli => {
+            let preds = swebench::predictions_path(&args.sweep_dir);
+            let report_dir = args.sweep_dir.join("sb_cli_reports");
+            let run_id = args.run_id.clone().unwrap_or_default();
+
+            let submit_cmd = build_redacted_submit_command(args, &preds, &report_dir, &run_id);
+            let report_paths = collect_report_paths(&report_dir, &run_id, args);
+            let report_hashes = report_paths
+                .iter()
+                .filter_map(|p| sha256_file(std::path::Path::new(p)).ok())
+                .collect();
+            let source_reports = build_source_reports(resolved_by_run, args);
+            let sb = SbCliProvenance {
+                submit_command: Some(submit_cmd),
+                report_command: None,
+                report_paths,
+                report_hashes,
+                verify_submission: false,
+                wait_for_evaluation: true,
+                overwrite: true,
+                timeout_per_instance_secs: args.timeout_per_instance_secs,
+                parallel: args.parallel,
+            };
+            ("sb-cli", Some(sb), source_reports)
+        }
+    };
+
+    let prediction_path = match args.backend {
+        EvaluateBackend::SbCli => {
+            let p = swebench::predictions_path(&args.sweep_dir);
+            Some(p.display().to_string())
+        }
+        EvaluateBackend::None => None,
+    };
+    let prediction_sha256 = prediction_path
+        .as_deref()
+        .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
+
+    EvaluatorProvenance {
+        backend: backend_str.into(),
+        backend_version: probe_sb_cli_version(),
+        dataset_subset: Some(args.sb_subset.clone()),
+        dataset_split: Some(args.sb_split.clone()),
+        run_id: args.run_id.clone(),
+        prediction_path,
+        prediction_sha256,
+        eval_started_at: Some(started_at),
+        eval_ended_at: Some(utc_now_iso8601()),
+        report_source: None,
+        sb_cli,
+        source_reports,
+    }
+}
+
+fn build_redacted_submit_command(
+    args: &EvaluateArgs,
+    preds: &Path,
+    report_dir: &Path,
+    run_id: &str,
+) -> String {
+    let redactor = crate::redaction::Redactor::default_enabled();
+    let raw = format!(
+        "sb-cli submit {} {} --predictions_path {} --run_id {} --output_dir {} --wait_for_evaluation 1 --gen_report 1 --timeout-per-instance {} --parallel {}",
+        args.sb_subset,
+        args.sb_split,
+        preds.display(),
+        run_id,
+        report_dir.display(),
+        args.timeout_per_instance_secs,
+        args.parallel,
+    );
+    redactor.redact_text(&raw, "evaluator_provenance").text
+}
+
+fn collect_report_paths(report_dir: &Path, run_id: &str, args: &EvaluateArgs) -> Vec<String> {
+    let path = report_dir.join(format!(
+        "{}__{}__{}.json",
+        args.sb_subset, args.sb_split, run_id
+    ));
+    if path.exists() {
+        vec![path.display().to_string()]
+    } else {
+        vec![]
+    }
+}
+
+fn build_source_reports(
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+    args: &EvaluateArgs,
+) -> Vec<SourceReportEntry> {
+    if resolved_by_run.is_empty() {
+        return vec![];
+    }
+    let max_run_index = resolved_by_run.keys().map(|k| k.run_index).max().unwrap_or(1);
+    if max_run_index <= 1 {
+        return vec![];
+    }
+    let report_dir = args.sweep_dir.join("sb_cli_reports");
+    let run_id = args.run_id.clone().unwrap_or_default();
+    let mut entries: Vec<SourceReportEntry> = (1..=max_run_index)
+        .map(|run_index| {
+            let run_report_id = format!("{run_id}-run-{run_index}");
+            let report_path = report_dir.join(format!(
+                "{}__{}__{}.json",
+                args.sb_subset, args.sb_split, run_report_id
+            ));
+            let path_str = if report_path.exists() {
+                Some(report_path.display().to_string())
+            } else {
+                None
+            };
+            let report_sha256 = path_str
+                .as_deref()
+                .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
+            let instance_ids: Vec<String> = resolved_by_run
+                .keys()
+                .filter(|k| k.run_index == run_index)
+                .map(|k| k.instance_id.clone())
+                .collect();
+            SourceReportEntry {
+                run_index,
+                report_path: path_str,
+                report_sha256,
+                instance_ids,
+            }
+        })
+        .collect();
+    entries.sort_by_key(|e| e.run_index);
+    entries
+}
+
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    use sha2::{Digest as _, Sha256};
+    let data = std::fs::read(path)?;
+    let digest = Sha256::digest(&data);
+    Ok(format!("{digest:x}"))
+}
+
+fn probe_sb_cli_version() -> Option<String> {
+    let output = Command::new("sb-cli").arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text.trim().to_owned();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+fn utc_now_iso8601() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Format as a basic ISO 8601 UTC string: 1970-01-01T00:00:00Z
+    let s = secs;
+    let sec = s % 60;
+    let min = (s / 60) % 60;
+    let hour = (s / 3600) % 24;
+    let days = s / 86400;
+    // Approximate Gregorian calendar conversion (good enough for provenance timestamps)
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    let mut year = 1970u64;
+    loop {
+        let leap = is_leap_year(year);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    let month_days: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
+    }
+    (year, month, days + 1)
+}
+
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn attach_patch_stats(
@@ -541,6 +823,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -894,6 +1177,7 @@ fn merge_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -1002,6 +1286,7 @@ fn merge_rerun_reports_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -1563,6 +1848,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -1744,6 +2030,7 @@ mod tests {
             breakdown: vec![],
             cost_attribution: vec![],
             model_mix_summary: vec![],
+            provenance: None,
         };
         let summary = summarize_with_model(&eval, &results, None);
         assert_eq!(summary.budget_exhausted_excluded, 1);
@@ -1866,6 +2153,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -1916,6 +2204,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1948,6 +2237,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -1969,6 +2259,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1997,6 +2288,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -2023,6 +2315,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+        provenance: None,
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);

@@ -200,6 +200,13 @@ pub struct CompareReport {
     /// (fallback chains differ). Empty when both sides used the same model(s).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_mix_warnings: Vec<String>,
+    /// Comparability classification based on evaluator provenance.
+    /// Always present; classifies as matching, mismatched, or unavailable.
+    pub evaluator_provenance_status: EvaluatorProvenanceStatus,
+    /// Warnings describing specific evaluator provenance mismatches or missing provenance.
+    /// Empty when `evaluator_provenance_status == Matching`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evaluator_provenance_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -228,6 +235,18 @@ pub enum ParetoVerdict {
     BaselineDominates,
     CandidateDominates,
     NonDominated,
+}
+
+/// Classification of evaluator provenance comparability between baseline and candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatorProvenanceStatus {
+    /// Both evaluations have provenance and all scoring-affecting fields match.
+    Matching,
+    /// Both evaluations have provenance but differ in backend, version, subset, or split.
+    Mismatched,
+    /// One or both evaluations lack provenance.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1338,6 +1357,12 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             total_fallbacks: candidate.total_fallbacks,
         },
     );
+    let (prov_status, prov_warnings) = compare_evaluator_provenance(
+        baseline_eval.as_ref().and_then(|e| e.results.provenance.as_ref()),
+        candidate_eval.as_ref().and_then(|e| e.results.provenance.as_ref()),
+    );
+    report.evaluator_provenance_status = prov_status;
+    report.evaluator_provenance_warnings = prov_warnings;
     Ok(report)
 }
 
@@ -1593,6 +1618,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         cost_per_resolved_delta_usd,
         pareto_verdict,
         model_mix_warnings: Vec::new(),
+        evaluator_provenance_status: EvaluatorProvenanceStatus::Unavailable,
+        evaluator_provenance_warnings: Vec::new(),
     }
 }
 
@@ -2414,6 +2441,65 @@ fn breakdown_map<S: std::hash::BuildHasher>(
         }
     }
     out
+}
+
+/// Compare evaluator provenance from two `evaluation.json` artifacts and return
+/// the classification status plus human-readable warning strings.
+///
+/// Fields that do NOT affect scoring comparability (run_id, prediction_path,
+/// prediction_sha256, timestamps) are intentionally ignored so that comparing
+/// two different candidate sweeps scored by the same evaluator setup reports
+/// `Matching` rather than `Mismatched`.
+fn compare_evaluator_provenance(
+    baseline: Option<&crate::run::evaluate::EvaluatorProvenance>,
+    candidate: Option<&crate::run::evaluate::EvaluatorProvenance>,
+) -> (EvaluatorProvenanceStatus, Vec<String>) {
+    let (Some(b), Some(c)) = (baseline, candidate) else {
+        let msg = match (baseline.is_some(), candidate.is_some()) {
+            (true, false) => "evaluator provenance: candidate evaluation.json has no provenance (legacy artifact)".into(),
+            (false, true) => "evaluator provenance: baseline evaluation.json has no provenance (legacy artifact)".into(),
+            _ => "evaluator provenance: neither evaluation.json has provenance (legacy artifacts or evaluation not yet run)".into(),
+        };
+        return (EvaluatorProvenanceStatus::Unavailable, vec![msg]);
+    };
+
+    let mut warnings = Vec::new();
+
+    if b.backend != c.backend {
+        warnings.push(format!(
+            "evaluator provenance: backend differs (baseline={:?}, candidate={:?})",
+            b.backend, c.backend
+        ));
+    }
+
+    match (&b.backend_version, &c.backend_version) {
+        (Some(bv), Some(cv)) if bv != cv => {
+            warnings.push(format!(
+                "evaluator provenance: backend version differs (baseline={bv:?}, candidate={cv:?})"
+            ));
+        }
+        _ => {}
+    }
+
+    if b.dataset_subset != c.dataset_subset {
+        warnings.push(format!(
+            "evaluator provenance: dataset subset differs (baseline={:?}, candidate={:?})",
+            b.dataset_subset, c.dataset_subset
+        ));
+    }
+
+    if b.dataset_split != c.dataset_split {
+        warnings.push(format!(
+            "evaluator provenance: dataset split differs (baseline={:?}, candidate={:?})",
+            b.dataset_split, c.dataset_split
+        ));
+    }
+
+    if warnings.is_empty() {
+        (EvaluatorProvenanceStatus::Matching, Vec::new())
+    } else {
+        (EvaluatorProvenanceStatus::Mismatched, warnings)
+    }
 }
 
 #[cfg(test)]
@@ -3307,6 +3393,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -3325,6 +3412,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
 
         std::fs::write(
@@ -3379,6 +3467,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),
