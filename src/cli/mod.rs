@@ -598,9 +598,16 @@ fn parse_verify_checks(
                     "--verify must be in NAME:COMMAND format, got `{s}`"
                 )))
             })?;
+            let name = s[..colon].trim();
+            let command = s[colon + 1..].trim();
+            if name.is_empty() || command.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--verify NAME:COMMAND requires non-empty name and command, got `{s}`"
+                ))));
+            }
             Ok(crate::trajectory::VerificationCheck {
-                name: s[..colon].to_owned(),
-                command: s[colon + 1..].to_owned(),
+                name: name.to_owned(),
+                command: command.to_owned(),
             })
         })
         .collect()
@@ -975,8 +982,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
         Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        required_github_arg, swebench_args_from_cmd, swebench_github_pr_config,
-        trajectory_submitted, validate_observation_head_ratio, validate_swebench_github_pr_args,
+        parse_verify_checks, required_github_arg, swebench_args_from_cmd,
+        swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
+        validate_swebench_github_pr_args,
     };
     use crate::error::Error;
     use crate::run::github_pr::PublishMode;
@@ -1281,5 +1289,38 @@ mod tests {
          @@ -1 +1 @@\n\
          -base\n\
          +patched\n"
+    }
+
+    #[test]
+    fn parse_verify_checks_parses_valid_specs() {
+        let checks = parse_verify_checks(&["unit-tests:cargo test -q".into()]).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "unit-tests");
+        assert_eq!(checks[0].command, "cargo test -q");
+    }
+
+    #[test]
+    fn parse_verify_checks_trims_whitespace() {
+        let checks = parse_verify_checks(&["  lint  :  cargo clippy  ".into()]).unwrap();
+        assert_eq!(checks[0].name, "lint");
+        assert_eq!(checks[0].command, "cargo clippy");
+    }
+
+    #[test]
+    fn parse_verify_checks_rejects_missing_colon() {
+        let err = parse_verify_checks(&["no-colon-here".into()]).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("NAME:COMMAND"), "{err}");
+    }
+
+    #[test]
+    fn parse_verify_checks_rejects_empty_name_or_command() {
+        let err = parse_verify_checks(&[":ls".into()]).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("non-empty"), "{err}");
+
+        let err2 = parse_verify_checks(&["test:".into()]).unwrap_err();
+        assert!(matches!(err2, Error::Config(_)));
+        assert!(err2.to_string().contains("non-empty"), "{err2}");
     }
 }
