@@ -27,20 +27,27 @@ Resolution order, lowest to highest:
 Deep merge semantics: object keys recurse, leaf values prefer the higher
 layer, arrays are replaced wholesale (not appended).
 
-**Example 1 — model name:** The built-in default is
-`model.name = "claude-opus-4-7"`. If your config file sets
-`model.name = "claude-sonnet-4-6"`, the CLI flag `--model claude-haiku-4-5`
-wins over both. Final model used: `claude-haiku-4-5`.
+**Example 1 — per-task budget:** The built-in default is
+`per_task_budget_usd = null` (no cap). A config file that sets
+`per_task_budget_usd = 0.50` applies a $0.50 ceiling per task for every run
+using that file. Passing `--per-task-budget-usd 0.10` on the CLI tightens the
+cap to $0.10 for that single invocation only.
 
-**Example 2 — step limit:** Built-in default is `agent.step_limit = 50`. A
-config file overlay of `step_limit = 20` takes effect for every run using that
-file. Passing `--step-limit 5` on the CLI overrides the file value for that
-single invocation only.
+**Example 2 — observation truncation:** Built-in default is
+`observation_max_bytes = 16384`. A config file that sets
+`observation_max_bytes = 8192` halves the truncation window for all runs
+using that file. Passing `--observation-max-bytes 4096` on the CLI overrides
+the file value for that invocation only.
 
-**Example 3 — per-task budget:** `per_task_budget_usd` is `null` (no cap) in
-defaults. A config file that sets `per_task_budget_usd = 0.50` applies a
-$0.50 ceiling per task. Passing `--per-task-budget-usd 0.10` on the CLI
-tightens the cap to $0.10 for that run, regardless of the file value.
+**Example 3 — model name (clap-default caveat):** For `mini` and
+`bench swebench`, `--model` has a clap default of `claude-opus-4-7` that is
+written back over the config unconditionally. Setting `model.name` in a
+config file has **no effect** for those commands unless you also pass `--model`
+explicitly. To use a model from config, always supply the flag:
+`mini --config cfg.toml --model claude-sonnet-4-6`. The same caveat applies
+to `agent.step_limit` (clap default: `50`) for those two commands.
+Fields without a clap default — such as `per_task_budget_usd`,
+`observation_max_bytes`, and template fields — layer correctly from config.
 
 ---
 
@@ -91,7 +98,7 @@ Controls the inner agent loop.
 | `kind` | string | `"default"` | `"default"`, `"interactive"` | `"interactive"` prompts for human approval; in CI it fails closed |
 | `step_limit` | integer | `50` | `1`–`∞` | Hard cap on conversation turns; prevents runaway loops |
 | `per_task_budget_usd` | float \| null | `null` | Any positive float | Per-task spend ceiling; loop terminates with `budget_exhausted` when reached |
-| `cost_limit_usd` | float \| null | `null` | Any positive float | Sweep-level total spend ceiling |
+| `cost_limit_usd` | float \| null | `null` | Any positive float | Per-task spend ceiling inside the agent loop; terminates the current task with `cost_limit` failure when reached. Does **not** cap the whole sweep — for a sweep-wide aggregate cap use `--sweep-cost-limit-usd` (CLI only, no config equivalent) |
 | `hide_budget_from_agent` | bool | `false` | `true`, `false` | When `true`, the budget block is not appended to observations (A/B flag) |
 | `budget_block_template` | string | see defaults | Handlebars template | Variables: `budget_used`, `budget_limit`, `budget_remaining_pct`, `turn`, `max_turns` |
 | `format_error_template` | string | see defaults | Any string | Rendered when the model response contains no valid bash action |
