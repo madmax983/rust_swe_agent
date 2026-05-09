@@ -339,7 +339,10 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
-    let EvaluateRunOutput { mut eval, resolved_by_run } = run_output;
+    let EvaluateRunOutput {
+        mut eval,
+        resolved_by_run,
+    } = run_output;
     let provenance = build_provenance(args, &resolved_by_run);
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
@@ -358,8 +361,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         )
         .rows;
     }
-    eval.model_mix_summary =
-        build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
+    eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
     eval.provenance = Some(provenance);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
@@ -483,13 +485,24 @@ fn build_source_reports(
     if resolved_by_run.is_empty() {
         return vec![];
     }
-    let max_run_index = resolved_by_run.keys().map(|k| k.run_index).max().unwrap_or(1);
+    let max_run_index = resolved_by_run
+        .keys()
+        .map(|k| k.run_index)
+        .max()
+        .unwrap_or(1);
     if max_run_index <= 1 {
         return vec![];
     }
+    let mut ids_by_run: HashMap<u32, Vec<String>> = HashMap::new();
+    for key in resolved_by_run.keys() {
+        ids_by_run
+            .entry(key.run_index)
+            .or_default()
+            .push(key.instance_id.clone());
+    }
     let report_dir = args.sweep_dir.join("sb_cli_reports");
     let run_id = args.run_id.clone().unwrap_or_default();
-    let mut entries: Vec<SourceReportEntry> = (1..=max_run_index)
+    (1..=max_run_index)
         .map(|run_index| {
             let run_report_id = format!("{run_id}-run-{run_index}");
             let report_path = report_dir.join(format!(
@@ -504,11 +517,7 @@ fn build_source_reports(
             let report_sha256 = path_str
                 .as_deref()
                 .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
-            let instance_ids: Vec<String> = resolved_by_run
-                .keys()
-                .filter(|k| k.run_index == run_index)
-                .map(|k| k.instance_id.clone())
-                .collect();
+            let instance_ids = ids_by_run.remove(&run_index).unwrap_or_default();
             SourceReportEntry {
                 run_index,
                 report_path: path_str,
@@ -516,15 +525,23 @@ fn build_source_reports(
                 instance_ids,
             }
         })
-        .collect();
-    entries.sort_by_key(|e| e.run_index);
-    entries
+        .collect()
 }
 
 fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     use sha2::{Digest as _, Sha256};
-    let data = std::fs::read(path)?;
-    let digest = Sha256::digest(&data);
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let digest = hasher.finalize();
     Ok(format!("{digest:x}"))
 }
 
@@ -540,46 +557,7 @@ fn probe_sb_cli_version() -> Option<String> {
 }
 
 fn utc_now_iso8601() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Format as a basic ISO 8601 UTC string: 1970-01-01T00:00:00Z
-    let s = secs;
-    let sec = s % 60;
-    let min = (s / 60) % 60;
-    let hour = (s / 3600) % 24;
-    let days = s / 86400;
-    // Approximate Gregorian calendar conversion (good enough for provenance timestamps)
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let leap = is_leap_year(year);
-        let days_in_year = if leap { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let leap = is_leap_year(year);
-    let month_days: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    (year, month, days + 1)
-}
-
-fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn attach_patch_stats(
@@ -1861,7 +1839,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -2166,7 +2144,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -2217,7 +2195,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -2250,7 +2228,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -2272,7 +2250,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -2301,7 +2279,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -2328,7 +2306,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
-        provenance: None,
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);

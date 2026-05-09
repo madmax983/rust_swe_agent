@@ -1379,8 +1379,12 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         },
     );
     let (prov_status, prov_warnings) = compare_evaluator_provenance(
-        baseline_eval.as_ref().and_then(|e| e.results.provenance.as_ref()),
-        candidate_eval.as_ref().and_then(|e| e.results.provenance.as_ref()),
+        baseline_eval
+            .as_ref()
+            .and_then(|e| e.results.provenance.as_ref()),
+        candidate_eval
+            .as_ref()
+            .and_then(|e| e.results.provenance.as_ref()),
     );
     report.evaluator_provenance_status = prov_status;
     report.evaluator_provenance_warnings = prov_warnings;
@@ -2517,19 +2521,30 @@ fn compare_evaluator_provenance(
     }
 
     if b.backend == "sb-cli" && c.backend == "sb-cli" {
-        if let (Some(b_sb), Some(c_sb)) = (&b.sb_cli, &c.sb_cli) {
-            if b_sb.timeout_per_instance_secs != c_sb.timeout_per_instance_secs {
-                warnings.push(format!(
-                    "evaluator provenance: timeout_per_instance_secs differs (baseline={}, candidate={})",
-                    b_sb.timeout_per_instance_secs, c_sb.timeout_per_instance_secs
-                ));
+        match (&b.sb_cli, &c.sb_cli) {
+            (Some(b_sb), Some(c_sb)) => {
+                if b_sb.timeout_per_instance_secs != c_sb.timeout_per_instance_secs {
+                    warnings.push(format!(
+                        "evaluator provenance: timeout_per_instance_secs differs (baseline={}, candidate={})",
+                        b_sb.timeout_per_instance_secs, c_sb.timeout_per_instance_secs
+                    ));
+                }
+                if b_sb.parallel != c_sb.parallel {
+                    warnings.push(format!(
+                        "evaluator provenance: parallel differs (baseline={}, candidate={})",
+                        b_sb.parallel, c_sb.parallel
+                    ));
+                }
             }
-            if b_sb.parallel != c_sb.parallel {
-                warnings.push(format!(
-                    "evaluator provenance: parallel differs (baseline={}, candidate={})",
-                    b_sb.parallel, c_sb.parallel
-                ));
-            }
+            (None, Some(_)) => warnings.push(
+                "evaluator provenance: baseline sb-cli details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (Some(_), None) => warnings.push(
+                "evaluator provenance: candidate sb-cli details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (None, None) => {}
         }
     }
 
