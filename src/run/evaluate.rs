@@ -301,6 +301,8 @@ impl RunSlotKey {
 struct EvaluateRunOutput {
     eval: EvaluationResults,
     resolved_by_run: HashMap<RunSlotKey, bool>,
+    /// The actual run id used (may be auto-generated when args.run_id is None).
+    effective_run_id: Option<String>,
 }
 
 impl EvaluateRunOutput {
@@ -308,6 +310,7 @@ impl EvaluateRunOutput {
         Self {
             eval,
             resolved_by_run: HashMap::new(),
+            effective_run_id: None,
         }
     }
 }
@@ -342,8 +345,9 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let EvaluateRunOutput {
         mut eval,
         resolved_by_run,
+        effective_run_id,
     } = run_output;
-    let provenance = build_provenance(args, &resolved_by_run);
+    let provenance = build_provenance(args, &resolved_by_run, effective_run_id.as_deref());
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(
@@ -375,23 +379,26 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
 fn build_provenance(
     args: &EvaluateArgs,
     resolved_by_run: &HashMap<RunSlotKey, bool>,
+    effective_run_id: Option<&str>,
 ) -> EvaluatorProvenance {
     let started_at = utc_now_iso8601();
+    let run_id_str = effective_run_id
+        .or(args.run_id.as_deref())
+        .unwrap_or_default();
     let (backend_str, sb_cli, source_reports) = match args.backend {
         EvaluateBackend::None => ("none", None, vec![]),
         EvaluateBackend::SbCli => {
             let preds = swebench::predictions_path(&args.sweep_dir);
             let report_dir = args.sweep_dir.join("sb_cli_reports");
-            let run_id = args.run_id.clone().unwrap_or_default();
 
-            let submit_cmd = build_redacted_submit_command(args, &preds, &report_dir, &run_id);
-            let report_cmd = build_redacted_report_command(args, &report_dir, &run_id);
-            let report_paths = collect_report_paths(&report_dir, &run_id, args);
+            let submit_cmd = build_redacted_submit_command(args, &preds, &report_dir, run_id_str);
+            let report_cmd = build_redacted_report_command(args, &report_dir, run_id_str);
+            let report_paths = collect_report_paths(&report_dir, run_id_str, args);
             let report_hashes = report_paths
                 .iter()
                 .filter_map(|p| sha256_file(std::path::Path::new(p)).ok())
                 .collect();
-            let source_reports = build_source_reports(resolved_by_run, args);
+            let source_reports = build_source_reports(resolved_by_run, args, run_id_str);
             let sb = SbCliProvenance {
                 submit_command: Some(submit_cmd),
                 report_command: Some(report_cmd),
@@ -418,12 +425,15 @@ fn build_provenance(
         .as_deref()
         .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
 
+    let recorded_run_id = effective_run_id
+        .map(str::to_owned)
+        .or_else(|| args.run_id.clone());
     EvaluatorProvenance {
         backend: backend_str.into(),
         backend_version: probe_sb_cli_version(),
         dataset_subset: Some(args.sb_subset.clone()),
         dataset_split: Some(args.sb_split.clone()),
-        run_id: args.run_id.clone(),
+        run_id: recorded_run_id,
         prediction_path,
         prediction_sha256,
         eval_started_at: Some(started_at),
@@ -481,6 +491,7 @@ fn collect_report_paths(report_dir: &Path, run_id: &str, args: &EvaluateArgs) ->
 fn build_source_reports(
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     args: &EvaluateArgs,
+    run_id_str: &str,
 ) -> Vec<SourceReportEntry> {
     if resolved_by_run.is_empty() {
         return vec![];
@@ -501,7 +512,7 @@ fn build_source_reports(
             .push(key.instance_id.clone());
     }
     let report_dir = args.sweep_dir.join("sb_cli_reports");
-    let run_id = args.run_id.clone().unwrap_or_default();
+    let run_id = run_id_str;
     (1..=max_run_index)
         .map(|run_index| {
             let run_report_id = format!("{run_id}-run-{run_index}");
@@ -876,6 +887,7 @@ fn run_sb_cli(
         return Ok(EvaluateRunOutput {
             eval: merge_rerun_reports_with_results(results, &reports),
             resolved_by_run,
+            effective_run_id: Some(run_id),
         });
     }
 
@@ -888,6 +900,7 @@ fn run_sb_cli(
     Ok(EvaluateRunOutput {
         eval: merge_with_results(results, &parsed),
         resolved_by_run,
+        effective_run_id: Some(run_id),
     })
 }
 
