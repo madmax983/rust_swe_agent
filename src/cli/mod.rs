@@ -167,10 +167,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         verification_timeout_secs: m.verify_timeout_secs,
     };
     let run_result = crate::run::mini::run(args).await;
-    // Always try to publish PR — trajectory and patch are on disk regardless
-    // of whether verification passed.
-    maybe_publish_mini_github_pr(github_pr).await?;
-    // Propagate verification failure after PR publication.
+    // Only publish when the run succeeded or failed at verification — those are
+    // the two cases where the trajectory and patch are guaranteed on disk.
+    // For other errors (env setup, model API, pre-trajectory I/O) propagate
+    // immediately so the real failure isn't masked by a trajectory-read error.
+    let is_verification_failure =
+        matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
+    if run_result.is_ok() || is_verification_failure {
+        maybe_publish_mini_github_pr(github_pr).await?;
+    }
     run_result?;
     Ok(())
 }

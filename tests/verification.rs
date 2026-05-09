@@ -16,11 +16,7 @@ use support::binary_path;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-fn mini_args(
-    work: &tempfile::TempDir,
-    name: &str,
-    checks: Vec<VerificationCheck>,
-) -> MiniArgs {
+fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck>) -> MiniArgs {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
     MiniArgs {
@@ -65,7 +61,7 @@ async fn no_verification_check_sets_unverified_status() {
     assert!(
         traj["info"]["verification_results"]
             .as_array()
-            .map_or(true, |a| a.is_empty()),
+            .is_none_or(Vec::is_empty),
         "expected empty verification_results; traj={traj}"
     );
 }
@@ -79,7 +75,10 @@ async fn single_passing_check_sets_verified_status() {
         command: "true".into(),
     }];
     let result = run(mini_args(&work, "passing-check", checks)).await;
-    assert!(result.is_ok(), "expected Ok for passing check; got {result:?}");
+    assert!(
+        result.is_ok(),
+        "expected Ok for passing check; got {result:?}"
+    );
 
     let traj = read_traj(&work, "passing-check");
     assert_eq!(

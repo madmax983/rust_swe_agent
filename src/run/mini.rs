@@ -719,8 +719,7 @@ async fn run_verification_checks(
     for check in checks {
         let start = Instant::now();
         let req = attach_cancellation(
-            RunRequest::new(check.command.clone())
-                .with_timeout(Duration::from_secs(timeout_secs)),
+            RunRequest::new(check.command.clone()).with_timeout(Duration::from_secs(timeout_secs)),
             cancellation.clone(),
         );
 
