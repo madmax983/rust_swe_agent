@@ -731,6 +731,15 @@ async fn run_verification_checks(
         let run_result = match env.run(req).await {
             Ok(r) => r,
             Err(e) => {
+                // If the error was caused by cancellation, stop and mark unverified.
+                if cancellation
+                    .as_ref()
+                    .is_some_and(MiniCancellation::is_cancelled)
+                {
+                    trajectory.info.verification_status =
+                        Some(crate::trajectory::verification_status::UNVERIFIED.into());
+                    return None;
+                }
                 failed += 1;
                 let stderr_preview = truncate_preview(
                     &redactor
@@ -750,6 +759,18 @@ async fn run_verification_checks(
                 continue;
             }
         };
+
+        // Cancellation fires after the command finishes with exit_code=-1 and
+        // stderr="cancelled" (not an Err). Detect it here so a Ctrl-C during
+        // verification produces `unverified` rather than `verification_failed`.
+        if cancellation
+            .as_ref()
+            .is_some_and(MiniCancellation::is_cancelled)
+        {
+            trajectory.info.verification_status =
+                Some(crate::trajectory::verification_status::UNVERIFIED.into());
+            return None;
+        }
 
         let duration_ms = elapsed_ms(start);
         let passed = !run_result.timed_out && run_result.exit_code == 0;

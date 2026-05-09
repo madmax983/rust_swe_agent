@@ -258,6 +258,43 @@ async fn timed_out_check_treated_as_failure() {
     assert_eq!(results[0]["timed_out"].as_bool(), Some(true));
 }
 
+/// AC: Ctrl-C during verification produces `unverified`, not `verification_failed`.
+#[tokio::test]
+async fn cancellation_during_verification_sets_unverified() {
+    use rust_swe_agent::env::CancellationToken;
+
+    let work = tempfile::tempdir().unwrap();
+    // Pre-fire the cancellation token so the first verification check is
+    // immediately interrupted before it can complete.
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    tx.send(true).unwrap();
+    let cancel = CancellationToken::new(rx);
+
+    let mut args = mini_args(
+        &work,
+        "cancelled-verify",
+        vec![VerificationCheck {
+            name: "slow".into(),
+            command: "sleep 300".into(),
+        }],
+    );
+    args.cancellation = Some(cancel);
+
+    // Should NOT return VerificationFailed — the run was cancelled.
+    let result = run(args).await;
+    assert!(
+        result.is_ok(),
+        "expected Ok (cancelled, not verification_failed); got {result:?}"
+    );
+
+    let traj = read_traj(&work, "cancelled-verify");
+    assert_eq!(
+        traj["info"]["verification_status"].as_str(),
+        Some(verification_status::UNVERIFIED),
+        "expected unverified after cancellation; traj={traj}"
+    );
+}
+
 /// AC: `bench inspect` shows verification summary in the run header.
 #[test]
 fn inspect_shows_verification_summary_in_header() {
