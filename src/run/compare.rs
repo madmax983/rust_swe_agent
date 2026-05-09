@@ -4275,4 +4275,95 @@ mod tests {
             "expected warnings for both mix diff and rate diff: {w:?}"
         );
     }
+
+    // --- Evaluator provenance comparison ---
+
+    fn sb_prov(timeout: u64, parallel: usize) -> crate::run::evaluate::SbCliProvenance {
+        crate::run::evaluate::SbCliProvenance {
+            submit_command: None,
+            report_command: None,
+            report_paths: vec![],
+            report_hashes: vec![],
+            verify_submission: false,
+            wait_for_evaluation: true,
+            overwrite: true,
+            timeout_per_instance_secs: timeout,
+            parallel,
+        }
+    }
+
+    fn eval_prov(
+        backend: &str,
+        sb_cli: Option<crate::run::evaluate::SbCliProvenance>,
+    ) -> crate::run::evaluate::EvaluatorProvenance {
+        crate::run::evaluate::EvaluatorProvenance {
+            backend: backend.into(),
+            backend_version: None,
+            dataset_subset: Some("swe-bench-m".into()),
+            dataset_split: Some("dev".into()),
+            run_id: None,
+            prediction_path: None,
+            prediction_sha256: None,
+            eval_started_at: None,
+            eval_ended_at: None,
+            report_source: None,
+            sb_cli,
+            source_reports: vec![],
+        }
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_both_none_sb_details_gives_matching() {
+        // Both sides have sb-cli backend but neither has sb_cli details — (None, None) arm
+        let b = eval_prov("sb-cli", None);
+        let c = eval_prov("sb-cli", None);
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Matching);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_baseline_missing_sb_details_gives_mismatched() {
+        // Baseline has sb_cli: None, candidate has Some — (None, Some) arm
+        let b = eval_prov("sb-cli", None);
+        let c = eval_prov("sb-cli", Some(sb_prov(300, 4)));
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Mismatched);
+        assert!(
+            warnings.iter().any(|w| w.contains("baseline")),
+            "expected baseline warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_candidate_missing_sb_details_gives_mismatched() {
+        // Baseline has Some, candidate has sb_cli: None — (Some, None) arm
+        let b = eval_prov("sb-cli", Some(sb_prov(300, 4)));
+        let c = eval_prov("sb-cli", None);
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Mismatched);
+        assert!(
+            warnings.iter().any(|w| w.contains("candidate")),
+            "expected candidate warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn write_evaluator_provenance_section_matching_label() {
+        let mut s = String::new();
+        write_evaluator_provenance_section(&mut s, EvaluatorProvenanceStatus::Matching, &[]);
+        assert!(s.contains("matching"), "got: {s}");
+    }
+
+    #[test]
+    fn write_evaluator_provenance_section_mismatched_with_warnings() {
+        let mut s = String::new();
+        write_evaluator_provenance_section(
+            &mut s,
+            EvaluatorProvenanceStatus::Mismatched,
+            &["backend differs".into()],
+        );
+        assert!(s.contains("mismatched"));
+        assert!(s.contains("backend differs"));
+    }
 }

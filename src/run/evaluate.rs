@@ -2398,4 +2398,170 @@ mod tests {
         assert_eq!(bucket.n, 2);
         assert_eq!(bucket.resolved, 1);
     }
+
+    // --- Evaluator provenance helpers ---
+
+    #[test]
+    fn sha256_file_produces_valid_hex_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, b"hello world").unwrap();
+        let digest = sha256_file(&path).unwrap();
+        assert_eq!(digest.len(), 64, "SHA-256 hex digest should be 64 chars");
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "digest should be lowercase hex: {digest}"
+        );
+        // Same content → same digest (deterministic)
+        let digest2 = sha256_file(&path).unwrap();
+        assert_eq!(digest, digest2);
+    }
+
+    #[test]
+    fn sha256_file_returns_error_for_missing_file() {
+        let result = sha256_file(std::path::Path::new("/nonexistent/path/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn utc_now_iso8601_returns_valid_format() {
+        let ts = utc_now_iso8601();
+        // Expected: "YYYY-MM-DDTHH:MM:SSZ"
+        assert_eq!(ts.len(), 20, "timestamp should be 20 chars: {ts}");
+        assert!(ts.ends_with('Z'), "timestamp should end with Z: {ts}");
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+    }
+
+    #[test]
+    fn collect_report_paths_returns_empty_when_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let report_dir = dir.path().join("sb_cli_reports");
+        let paths = collect_report_paths(&report_dir, "test-run", &args);
+        assert!(paths.is_empty(), "no report file should mean empty paths");
+    }
+
+    #[test]
+    fn collect_report_paths_returns_path_when_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("sb_cli_reports");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let report_file = report_dir.join("swe-bench-m__dev__test-run.json");
+        std::fs::write(&report_file, b"{}").unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let paths = collect_report_paths(&report_dir, "test-run", &args);
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].contains("swe-bench-m__dev__test-run.json"));
+    }
+
+    #[test]
+    fn build_source_reports_returns_empty_when_resolved_by_run_is_empty() {
+        let args = EvaluateArgs {
+            sweep_dir: "/tmp".into(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("r".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let entries = build_source_reports(&HashMap::new(), &args, "r");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn build_source_reports_returns_empty_when_max_run_index_is_one() {
+        let mut resolved_by_run = HashMap::new();
+        resolved_by_run.insert(RunSlotKey::new("task-a", 1), true);
+        let args = EvaluateArgs {
+            sweep_dir: "/tmp".into(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("r".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let entries = build_source_reports(&resolved_by_run, &args, "r");
+        assert!(
+            entries.is_empty(),
+            "single-run sweeps have no source_reports"
+        );
+    }
+
+    #[test]
+    fn build_provenance_none_backend_has_no_prediction_path_or_sb_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("my-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let prov = build_provenance(&args, &HashMap::new(), None);
+        assert_eq!(prov.backend, "none");
+        assert!(prov.backend_version.is_none());
+        assert!(prov.prediction_path.is_none());
+        assert!(prov.sb_cli.is_none());
+        assert_eq!(prov.run_id.as_deref(), Some("my-run"));
+        assert_eq!(prov.dataset_subset.as_deref(), Some("swe-bench-m"));
+        assert_eq!(prov.dataset_split.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn build_provenance_effective_run_id_overrides_args_run_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: None,
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let prov = build_provenance(&args, &HashMap::new(), Some("generated-123"));
+        assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
+    }
 }
