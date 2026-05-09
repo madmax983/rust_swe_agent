@@ -1485,4 +1485,71 @@ index 8a1218a..24c5735 100644\n\
             "cancelled submission should not write final output artifact"
         );
     }
+
+    /// Environment that always returns `Err(EnvError::CommandFailed(...))`.
+    struct FailingEnvironment {
+        message: String,
+    }
+
+    #[async_trait]
+    impl Environment for FailingEnvironment {
+        async fn run(
+            &self,
+            _req: RunRequest,
+        ) -> Result<crate::env::RunResult, crate::error::EnvError> {
+            Err(crate::error::EnvError::CommandFailed(self.message.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn env_error_during_verification_records_failed_check() {
+        let env = FailingEnvironment {
+            message: "spawn failed".into(),
+        };
+        let redactor = crate::redaction::Redactor::disabled();
+        let checks = vec![crate::trajectory::VerificationCheck {
+            name: "my-check".into(),
+            command: "exit 0".into(),
+        }];
+        let mut traj = crate::trajectory::Trajectory::default();
+        let err = run_verification_checks(&mut traj, &env, &redactor, &checks, 30, None).await;
+        assert!(err.is_some(), "expected VerificationFailed error");
+        assert_eq!(traj.info.verification_results.len(), 1);
+        let vr = &traj.info.verification_results[0];
+        assert!(!vr.passed);
+        assert_eq!(vr.exit_code, -1);
+        assert!(!vr.timed_out);
+        assert!(
+            vr.stderr_preview.contains("spawn failed"),
+            "stderr_preview should carry env error: {}",
+            vr.stderr_preview
+        );
+        assert_eq!(
+            traj.info.verification_status.as_deref(),
+            Some(crate::trajectory::verification_status::VERIFICATION_FAILED)
+        );
+    }
+
+    #[tokio::test]
+    async fn env_error_with_cancellation_sets_unverified() {
+        let (_tx, rx) = watch::channel(true); // pre-fired
+        let cancellation = MiniCancellation::new(rx);
+        let env = FailingEnvironment {
+            message: "interrupted".into(),
+        };
+        let redactor = crate::redaction::Redactor::disabled();
+        let checks = vec![crate::trajectory::VerificationCheck {
+            name: "my-check".into(),
+            command: "exit 0".into(),
+        }];
+        let mut traj = crate::trajectory::Trajectory::default();
+        let err =
+            run_verification_checks(&mut traj, &env, &redactor, &checks, 30, Some(cancellation))
+                .await;
+        assert!(err.is_none(), "cancelled run should not return an error");
+        assert_eq!(
+            traj.info.verification_status.as_deref(),
+            Some(crate::trajectory::verification_status::UNVERIFIED)
+        );
+    }
 }
