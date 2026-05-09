@@ -1439,7 +1439,7 @@ completion_tokens: 300\n\
 cache_hit_rate: 0.0000\n\
 total_cost_usd: 0.1500\n\
 cost_per_resolved_usd: NaN\n\
-evaluator_provenance: backend=none subset=swe-bench-m split=dev\n\
+evaluator_provenance: backend=none subset=? split=?\n\
 axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd\n\
 repo,unknown,2,0,0.0000,NaN\n\
 failure_category,model_api,1,0,0.0000,NaN\n\

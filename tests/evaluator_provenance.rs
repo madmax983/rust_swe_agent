@@ -732,7 +732,10 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
             );
             let prov = summary.evaluator_provenance.unwrap();
             assert_eq!(prov.backend, "none");
-            assert_eq!(prov.dataset_subset.as_deref(), Some("swe-bench-m"));
+            assert!(
+                prov.dataset_subset.is_none(),
+                "none backend does not stamp dataset_subset"
+            );
         }
         rust_swe_agent::run::inspect::InspectOutput::Instance(_) => {
             panic!("expected Summary output, got Instance")

@@ -440,8 +440,14 @@ fn build_provenance(
             EvaluateBackend::SbCli => probe_sb_cli_version(),
             EvaluateBackend::None => None,
         },
-        dataset_subset: Some(args.sb_subset.clone()),
-        dataset_split: Some(args.sb_split.clone()),
+        dataset_subset: match args.backend {
+            EvaluateBackend::SbCli => Some(args.sb_subset.clone()),
+            EvaluateBackend::None => None,
+        },
+        dataset_split: match args.backend {
+            EvaluateBackend::SbCli => Some(args.sb_split.clone()),
+            EvaluateBackend::None => None,
+        },
         run_id: recorded_run_id,
         prediction_path,
         prediction_sha256,
@@ -460,8 +466,13 @@ fn build_redacted_submit_command(
     run_id: &str,
 ) -> String {
     let redactor = crate::redaction::Redactor::default_enabled();
+    let dataset_flag = args
+        .dataset_path
+        .as_ref()
+        .map(|p| format!(" --dataset {}", p.display()))
+        .unwrap_or_default();
     let raw = format!(
-        "sb-cli submit {} {} --predictions_path {} --run_id {} --output_dir {} --wait_for_evaluation 1 --gen_report 1 --timeout-per-instance {} --parallel {}",
+        "sb-cli submit {} {} --predictions_path {} --run_id {} --output_dir {} --wait_for_evaluation 1 --gen_report 1 --timeout-per-instance {} --parallel {}{}",
         args.sb_subset,
         args.sb_split,
         preds.display(),
@@ -469,6 +480,7 @@ fn build_redacted_submit_command(
         report_dir.display(),
         args.timeout_per_instance_secs,
         args.parallel,
+        dataset_flag,
     );
     redactor.redact_text(&raw, "evaluator_provenance").text
 }
@@ -2548,8 +2560,14 @@ mod tests {
         assert!(prov.prediction_path.is_none());
         assert!(prov.sb_cli.is_none());
         assert_eq!(prov.run_id.as_deref(), Some("my-run"));
-        assert_eq!(prov.dataset_subset.as_deref(), Some("swe-bench-m"));
-        assert_eq!(prov.dataset_split.as_deref(), Some("dev"));
+        assert!(
+            prov.dataset_subset.is_none(),
+            "none backend does not stamp dataset_subset"
+        );
+        assert!(
+            prov.dataset_split.is_none(),
+            "none backend does not stamp dataset_split"
+        );
     }
 
     #[test]
