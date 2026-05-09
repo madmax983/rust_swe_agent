@@ -322,6 +322,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         run_verification_checks(
             &mut agent.trajectory,
             agent.env.as_ref(),
+            &agent.redactor,
             &args.verification_checks,
             args.verification_timeout_secs,
             args.cancellation.clone(),
@@ -703,6 +704,7 @@ async fn build_docker_env(_cfg: &Config) -> Result<Box<dyn Environment>, Error> 
 async fn run_verification_checks(
     trajectory: &mut crate::trajectory::Trajectory,
     env: &dyn crate::env::Environment,
+    redactor: &crate::redaction::Redactor,
     checks: &[crate::trajectory::VerificationCheck],
     timeout_secs: u64,
     cancellation: Option<MiniCancellation>,
@@ -727,6 +729,9 @@ async fn run_verification_checks(
             Ok(r) => r,
             Err(e) => {
                 failed += 1;
+                let stderr_preview = redactor
+                    .redact_text(&truncate_preview(&e.to_string()), surface::TRAJECTORY)
+                    .text;
                 results.push(crate::trajectory::VerificationResult {
                     name: check.name.clone(),
                     command: check.command.clone(),
@@ -734,7 +739,7 @@ async fn run_verification_checks(
                     duration_ms: elapsed_ms(start),
                     passed: false,
                     stdout_preview: String::new(),
-                    stderr_preview: truncate_preview(&e.to_string()),
+                    stderr_preview,
                     timed_out: false,
                 });
                 continue;
@@ -746,14 +751,20 @@ async fn run_verification_checks(
         if !passed {
             failed += 1;
         }
+        let stdout_preview = redactor
+            .redact_text(&truncate_preview(&run_result.stdout), surface::TRAJECTORY)
+            .text;
+        let stderr_preview = redactor
+            .redact_text(&truncate_preview(&run_result.stderr), surface::TRAJECTORY)
+            .text;
         results.push(crate::trajectory::VerificationResult {
             name: check.name.clone(),
             command: check.command.clone(),
             exit_code: run_result.exit_code,
             duration_ms,
             passed,
-            stdout_preview: truncate_preview(&run_result.stdout),
-            stderr_preview: truncate_preview(&run_result.stderr),
+            stdout_preview,
+            stderr_preview,
             timed_out: run_result.timed_out,
         });
     }
