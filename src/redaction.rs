@@ -413,92 +413,35 @@ impl RedactingSink {
 }
 
 impl StreamSink for RedactingSink {
-    fn emit(&self, event: StreamEvent) {
-        self.inner.emit(redact_stream_event(&event, &self.redactor));
+    fn emit(&self, mut event: StreamEvent) {
+        redact_stream_event(&mut event, &self.redactor);
+        self.inner.emit(event);
     }
 }
 
-pub fn redact_stream_event(event: &StreamEvent, redactor: &Redactor) -> StreamEvent {
+pub fn redact_stream_event(event: &mut StreamEvent, redactor: &Redactor) {
     match event {
-        StreamEvent::RunStarted {
-            task,
-            model,
-            started_at,
-        } => StreamEvent::RunStarted {
-            task: redactor.redact_text(task, surface::STREAM).text,
-            model: redactor.redact_text(model, surface::STREAM).text,
-            started_at: started_at.clone(),
-        },
-        StreamEvent::AssistantMessage {
-            step,
-            content,
-            cost_usd,
-            timestamp,
-        } => StreamEvent::AssistantMessage {
-            step: *step,
-            content: redactor.redact_text(content, surface::STREAM).text,
-            cost_usd: *cost_usd,
-            timestamp: timestamp.clone(),
-        },
-        StreamEvent::BashStart {
-            step,
-            command,
-            timestamp,
-        } => StreamEvent::BashStart {
-            step: *step,
-            command: redactor.redact_text(command, surface::STREAM).text,
-            timestamp: timestamp.clone(),
-        },
-        StreamEvent::BashResult {
-            step,
-            exit_code,
-            stdout,
-            stderr,
-            timed_out,
-            timestamp,
-        } => StreamEvent::BashResult {
-            step: *step,
-            exit_code: *exit_code,
-            stdout: redactor.redact_text(stdout, surface::STREAM).text,
-            stderr: redactor.redact_text(stderr, surface::STREAM).text,
-            timed_out: *timed_out,
-            timestamp: timestamp.clone(),
-        },
-        StreamEvent::Observation {
-            step,
-            content,
-            timestamp,
-        } => StreamEvent::Observation {
-            step: *step,
-            content: redactor.redact_text(content, surface::STREAM).text,
-            timestamp: timestamp.clone(),
-        },
-        StreamEvent::FormatError {
-            step,
-            content,
-            timestamp,
-        } => StreamEvent::FormatError {
-            step: *step,
-            content: redactor.redact_text(content, surface::STREAM).text,
-            timestamp: timestamp.clone(),
-        },
-        StreamEvent::RunEnded {
-            exit_reason,
-            failure_category,
-            final_output,
-            steps,
-            total_cost_usd,
-            ended_at,
-        } => StreamEvent::RunEnded {
-            exit_reason: exit_reason.clone(),
-            failure_category: *failure_category,
-            final_output: final_output
-                .as_ref()
-                .map(|value| redactor.redact_text(value, surface::STREAM).text),
-            steps: *steps,
-            total_cost_usd: *total_cost_usd,
-            ended_at: ended_at.clone(),
-        },
+        StreamEvent::RunStarted { task, model, .. } => {
+            *task = redactor.redact_text(task, surface::STREAM).text;
+            *model = redactor.redact_text(model, surface::STREAM).text;
+        }
+        StreamEvent::AssistantMessage { content, .. }
+        | StreamEvent::Observation { content, .. }
+        | StreamEvent::FormatError { content, .. } => {
+            *content = redactor.redact_text(content, surface::STREAM).text;
+        }
+        StreamEvent::BashStart { command, .. } => {
+            *command = redactor.redact_text(command, surface::STREAM).text;
+        }
+        StreamEvent::BashResult { stdout, stderr, .. } => {
+            *stdout = redactor.redact_text(stdout, surface::STREAM).text;
+            *stderr = redactor.redact_text(stderr, surface::STREAM).text;
+        }
+        StreamEvent::RunEnded { final_output, .. } => {
+            if let Some(text) = final_output {
+                *text = redactor.redact_text(text, surface::STREAM).text;
+            }
+        }
     }
 }
 
