@@ -312,6 +312,11 @@ impl CompareReport {
         for w in &self.model_mix_warnings {
             let _ = writeln!(s, "WARNING: {w}");
         }
+        write_evaluator_provenance_section(
+            &mut s,
+            self.evaluator_provenance_status,
+            &self.evaluator_provenance_warnings,
+        );
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -571,6 +576,22 @@ fn write_mean_steps_line(
             let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
         }
         _ => s.push_str("Mean steps:         n/a\n"),
+    }
+}
+
+fn write_evaluator_provenance_section(
+    s: &mut String,
+    status: EvaluatorProvenanceStatus,
+    warnings: &[String],
+) {
+    let label = match status {
+        EvaluatorProvenanceStatus::Matching => "matching",
+        EvaluatorProvenanceStatus::Mismatched => "mismatched",
+        EvaluatorProvenanceStatus::Unavailable => "unavailable",
+    };
+    let _ = writeln!(s, "Evaluator provenance: {label}");
+    for w in warnings {
+        let _ = writeln!(s, "  ! {w}");
     }
 }
 
@@ -2493,6 +2514,23 @@ fn compare_evaluator_provenance(
             "evaluator provenance: dataset split differs (baseline={:?}, candidate={:?})",
             b.dataset_split, c.dataset_split
         ));
+    }
+
+    if b.backend == "sb-cli" && c.backend == "sb-cli" {
+        if let (Some(b_sb), Some(c_sb)) = (&b.sb_cli, &c.sb_cli) {
+            if b_sb.timeout_per_instance_secs != c_sb.timeout_per_instance_secs {
+                warnings.push(format!(
+                    "evaluator provenance: timeout_per_instance_secs differs (baseline={}, candidate={})",
+                    b_sb.timeout_per_instance_secs, c_sb.timeout_per_instance_secs
+                ));
+            }
+            if b_sb.parallel != c_sb.parallel {
+                warnings.push(format!(
+                    "evaluator provenance: parallel differs (baseline={}, candidate={})",
+                    b_sb.parallel, c_sb.parallel
+                ));
+            }
+        }
     }
 
     if warnings.is_empty() {

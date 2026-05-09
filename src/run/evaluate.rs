@@ -383,6 +383,7 @@ fn build_provenance(
             let run_id = args.run_id.clone().unwrap_or_default();
 
             let submit_cmd = build_redacted_submit_command(args, &preds, &report_dir, &run_id);
+            let report_cmd = build_redacted_report_command(args, &report_dir, &run_id);
             let report_paths = collect_report_paths(&report_dir, &run_id, args);
             let report_hashes = report_paths
                 .iter()
@@ -391,7 +392,7 @@ fn build_provenance(
             let source_reports = build_source_reports(resolved_by_run, args);
             let sb = SbCliProvenance {
                 submit_command: Some(submit_cmd),
-                report_command: None,
+                report_command: Some(report_cmd),
                 report_paths,
                 report_hashes,
                 verify_submission: false,
@@ -447,6 +448,18 @@ fn build_redacted_submit_command(
         report_dir.display(),
         args.timeout_per_instance_secs,
         args.parallel,
+    );
+    redactor.redact_text(&raw, "evaluator_provenance").text
+}
+
+fn build_redacted_report_command(args: &EvaluateArgs, report_dir: &Path, run_id: &str) -> String {
+    let redactor = crate::redaction::Redactor::default_enabled();
+    let raw = format!(
+        "sb-cli get-report {} {} --run_id {} --output_dir {} --overwrite 1",
+        args.sb_subset,
+        args.sb_split,
+        run_id,
+        report_dir.display(),
     );
     redactor.redact_text(&raw, "evaluator_provenance").text
 }

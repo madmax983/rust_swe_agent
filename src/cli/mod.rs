@@ -791,6 +791,14 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         "evaluation complete"
     );
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
+    if let Some(prov) = &eval.provenance {
+        println!(
+            "evaluator_provenance: backend={} subset={} split={}",
+            prov.backend,
+            prov.dataset_subset.as_deref().unwrap_or("?"),
+            prov.dataset_split.as_deref().unwrap_or("?"),
+        );
+    }
     if let Some(rl) = &loaded_sweep.rate_limit_events {
         println!("rate_limit_throttled_calls: {}", rl.throttled_calls);
         println!(

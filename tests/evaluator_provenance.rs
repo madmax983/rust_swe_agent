@@ -949,3 +949,212 @@ fn compare_run_id_diff_does_not_warn() {
         report.evaluator_provenance_warnings
     );
 }
+
+// ---------------------------------------------------------------------------
+// 23. sb-cli timeout_per_instance_secs mismatch → Mismatched + warning
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_timeout_mismatch_gives_mismatched_status() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    let sb_cli_prov = |timeout: u64| SbCliProvenance {
+        submit_command: None,
+        report_command: None,
+        report_paths: vec![],
+        report_hashes: vec![],
+        verify_submission: false,
+        wait_for_evaluation: true,
+        overwrite: true,
+        timeout_per_instance_secs: timeout,
+        parallel: 4,
+    };
+    let base_prov = |timeout: u64| EvaluatorProvenance {
+        backend: "sb-cli".into(),
+        backend_version: None,
+        dataset_subset: Some("swe-bench-m".into()),
+        dataset_split: Some("dev".into()),
+        run_id: None,
+        prediction_path: None,
+        prediction_sha256: None,
+        eval_started_at: None,
+        eval_ended_at: None,
+        report_source: None,
+        sb_cli: Some(sb_cli_prov(timeout)),
+        source_reports: vec![],
+    };
+
+    let mut eval_b = minimal_evaluation_results(false);
+    eval_b.provenance = Some(base_prov(300));
+    write_evaluation(dir_b.path(), &eval_b);
+
+    let mut eval_c = minimal_evaluation_results(false);
+    eval_c.provenance = Some(base_prov(600)); // different timeout
+    write_evaluation(dir_c.path(), &eval_c);
+
+    let report =
+        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched,
+        "different timeout_per_instance_secs should give Mismatched"
+    );
+    assert!(
+        report.evaluator_provenance_warnings.iter().any(|w| w.contains("timeout")),
+        "expected timeout mismatch warning, got: {:?}",
+        report.evaluator_provenance_warnings
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 24. sb-cli parallel mismatch → Mismatched + warning
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_parallel_mismatch_gives_mismatched_status() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    let sb_cli_prov = |parallel: usize| SbCliProvenance {
+        submit_command: None,
+        report_command: None,
+        report_paths: vec![],
+        report_hashes: vec![],
+        verify_submission: false,
+        wait_for_evaluation: true,
+        overwrite: true,
+        timeout_per_instance_secs: 300,
+        parallel,
+    };
+    let base_prov = |parallel: usize| EvaluatorProvenance {
+        backend: "sb-cli".into(),
+        backend_version: None,
+        dataset_subset: Some("swe-bench-m".into()),
+        dataset_split: Some("dev".into()),
+        run_id: None,
+        prediction_path: None,
+        prediction_sha256: None,
+        eval_started_at: None,
+        eval_ended_at: None,
+        report_source: None,
+        sb_cli: Some(sb_cli_prov(parallel)),
+        source_reports: vec![],
+    };
+
+    let mut eval_b = minimal_evaluation_results(false);
+    eval_b.provenance = Some(base_prov(4));
+    write_evaluation(dir_b.path(), &eval_b);
+
+    let mut eval_c = minimal_evaluation_results(false);
+    eval_c.provenance = Some(base_prov(8)); // different parallel
+    write_evaluation(dir_c.path(), &eval_c);
+
+    let report =
+        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched,
+        "different parallel should give Mismatched"
+    );
+    assert!(
+        report.evaluator_provenance_warnings.iter().any(|w| w.contains("parallel")),
+        "expected parallel mismatch warning, got: {:?}",
+        report.evaluator_provenance_warnings
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 25. human_table() renders evaluator_provenance_status
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_human_table_shows_provenance_status() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+    // No evaluation.json → Unavailable
+
+    let report =
+        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+    let text = report.human_table();
+
+    assert!(
+        text.contains("Evaluator provenance"),
+        "human_table() should show evaluator provenance status; got:\n{text}"
+    );
+    assert!(
+        text.contains("unavailable"),
+        "human_table() should show 'unavailable' when provenance missing; got:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 26. human_table() shows provenance warnings when Mismatched
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_human_table_shows_provenance_warnings() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    let mut eval_b = minimal_evaluation_results(false);
+    eval_b.provenance = Some(EvaluatorProvenance {
+        backend: "sb-cli".into(),
+        backend_version: None,
+        dataset_subset: Some("swe-bench-m".into()),
+        dataset_split: Some("dev".into()),
+        run_id: None,
+        prediction_path: None,
+        prediction_sha256: None,
+        eval_started_at: None,
+        eval_ended_at: None,
+        report_source: None,
+        sb_cli: None,
+        source_reports: vec![],
+    });
+    write_evaluation(dir_b.path(), &eval_b);
+
+    let mut eval_c = minimal_evaluation_results(false);
+    eval_c.provenance = Some(EvaluatorProvenance {
+        backend: "none".into(), // DIFFERENT
+        backend_version: None,
+        dataset_subset: Some("swe-bench-m".into()),
+        dataset_split: Some("dev".into()),
+        run_id: None,
+        prediction_path: None,
+        prediction_sha256: None,
+        eval_started_at: None,
+        eval_ended_at: None,
+        report_source: None,
+        sb_cli: None,
+        source_reports: vec![],
+    });
+    write_evaluation(dir_c.path(), &eval_c);
+
+    let report =
+        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+    let text = report.human_table();
+
+    assert!(
+        text.contains("mismatched"),
+        "human_table() should show 'mismatched' status; got:\n{text}"
+    );
+    assert!(
+        text.contains("backend"),
+        "human_table() should show provenance warning text; got:\n{text}"
+    );
+}
