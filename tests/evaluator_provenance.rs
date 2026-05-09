@@ -8,9 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rust_swe_agent::run::compare::{
-    CompareArgs, CompareFormat, EvaluatorProvenanceStatus, load_evaluation_results_checked,
-};
+use rust_swe_agent::run::compare::{CompareArgs, CompareFormat, EvaluatorProvenanceStatus};
 use rust_swe_agent::run::evaluate::{
     EvalExitReason, EvaluationResults, EvaluatorProvenance, InstanceEvaluation, SbCliProvenance,
     SourceReportEntry,
@@ -18,8 +16,6 @@ use rust_swe_agent::run::evaluate::{
 use rust_swe_agent::run::inspect::SummaryReport;
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
 use rust_swe_agent::trajectory::outcome;
-
-mod support;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,7 +56,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
             instance_id: "task-a".into(),
             resolved,
             runs: 1,
-            resolved_count: if resolved { 1 } else { 0 },
+            resolved_count: u32::from(resolved),
             pass_at_1: resolved,
             tests_passed: vec![],
             tests_failed: vec![],
@@ -206,7 +202,7 @@ fn evaluation_results_roundtrip_with_provenance() {
     };
 
     let mut eval = minimal_evaluation_results(false);
-    eval.provenance = Some(prov.clone());
+    eval.provenance = Some(prov);
 
     let json = serde_json::to_string_pretty(&eval).unwrap();
     let parsed: EvaluationResults = serde_json::from_str(&json).unwrap();
@@ -353,7 +349,7 @@ fn compare_matching_provenance_gives_matching_status() {
     write_evaluation(dir_b.path(), &eval_b);
 
     // Candidate has same backend/subset/split but different run_id and prediction_path
-    let mut prov_c = prov.clone();
+    let mut prov_c = prov;
     prov_c.run_id = Some("run-002".into()); // different run_id — should NOT trigger mismatch
     prov_c.prediction_path = Some("/tmp/other_preds.jsonl".into()); // different path — should NOT trigger mismatch
     prov_c.prediction_sha256 = Some("xyz".into());
@@ -738,7 +734,9 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
             assert_eq!(prov.backend, "none");
             assert_eq!(prov.dataset_subset.as_deref(), Some("swe-bench-m"));
         }
-        other => panic!("expected Summary output, got {:?}", other),
+        rust_swe_agent::run::inspect::InspectOutput::Instance(_) => {
+            panic!("expected Summary output, got Instance")
+        }
     }
 }
 
@@ -949,7 +947,7 @@ fn compare_run_id_diff_does_not_warn() {
     eval_b.provenance = Some(base_prov.clone());
     write_evaluation(dir_b.path(), &eval_b);
 
-    let mut prov_c = base_prov.clone();
+    let mut prov_c = base_prov;
     prov_c.run_id = Some("run-BBBB".into());
     prov_c.prediction_path = Some("/sweeps/run-b/predictions.jsonl".into());
     prov_c.prediction_sha256 = Some("bbbb".into());

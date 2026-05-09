@@ -430,7 +430,10 @@ fn build_provenance(
         .or_else(|| args.run_id.clone());
     EvaluatorProvenance {
         backend: backend_str.into(),
-        backend_version: probe_sb_cli_version(),
+        backend_version: match args.backend {
+            EvaluateBackend::SbCli => probe_sb_cli_version(),
+            EvaluateBackend::None => None,
+        },
         dataset_subset: Some(args.sb_subset.clone()),
         dataset_split: Some(args.sb_split.clone()),
         run_id: recorded_run_id,

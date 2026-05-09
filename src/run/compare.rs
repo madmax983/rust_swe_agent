@@ -1378,17 +1378,21 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             total_fallbacks: candidate.total_fallbacks,
         },
     );
-    let (prov_status, prov_warnings) = compare_evaluator_provenance(
-        baseline_eval
-            .as_ref()
-            .and_then(|e| e.results.provenance.as_ref()),
-        candidate_eval
-            .as_ref()
-            .and_then(|e| e.results.provenance.as_ref()),
-    );
-    report.evaluator_provenance_status = prov_status;
-    report.evaluator_provenance_warnings = prov_warnings;
+    apply_evaluator_provenance(&mut report, baseline_eval.as_ref(), candidate_eval.as_ref());
     Ok(report)
+}
+
+fn apply_evaluator_provenance(
+    report: &mut CompareReport,
+    baseline_eval: Option<&LoadedEvaluationResults>,
+    candidate_eval: Option<&LoadedEvaluationResults>,
+) {
+    let (status, warnings) = compare_evaluator_provenance(
+        baseline_eval.and_then(|e| e.results.provenance.as_ref()),
+        candidate_eval.and_then(|e| e.results.provenance.as_ref()),
+    );
+    report.evaluator_provenance_status = status;
+    report.evaluator_provenance_warnings = warnings;
 }
 
 #[derive(Clone, Copy)]
