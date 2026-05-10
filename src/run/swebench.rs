@@ -1150,6 +1150,7 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
             || instance.instance_id.contains('\\')
             || instance.instance_id == ".."
             || instance.instance_id == "."
+            || instance.instance_id.contains(':')
             || instance.instance_id.is_empty()
         {
             return Err(Error::Trajectory(format!(
