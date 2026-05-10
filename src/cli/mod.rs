@@ -307,9 +307,7 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
     match run_forecast_from_cmd(s).await? {
         crate::run::forecast::ForecastOutcome::Report(report) => {
             print_forecast_report(&report, &output_format)?;
-            if let Err(e) =
-                crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
-            {
+            if let Err(e) = crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap) {
                 exit_with_outcome(ExitCode::BudgetHalt, &e.to_string());
             }
             Ok(())

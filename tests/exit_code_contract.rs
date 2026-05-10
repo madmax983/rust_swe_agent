@@ -80,12 +80,18 @@ fn outcome_class_usage_error() {
 
 #[test]
 fn outcome_class_preflight_failure() {
-    assert_eq!(ExitCode::PreflightFailure.outcome_class(), "preflight_failure");
+    assert_eq!(
+        ExitCode::PreflightFailure.outcome_class(),
+        "preflight_failure"
+    );
 }
 
 #[test]
 fn outcome_class_task_unsuccessful() {
-    assert_eq!(ExitCode::TaskUnsuccessful.outcome_class(), "task_unsuccessful");
+    assert_eq!(
+        ExitCode::TaskUnsuccessful.outcome_class(),
+        "task_unsuccessful"
+    );
 }
 
 #[test]
@@ -160,7 +166,11 @@ fn all_variants_have_unique_outcome_classes() {
     let mut sorted = classes.clone();
     sorted.sort_unstable();
     sorted.dedup();
-    assert_eq!(classes.len(), sorted.len(), "duplicate outcome classes detected");
+    assert_eq!(
+        classes.len(),
+        sorted.len(),
+        "duplicate outcome classes detected"
+    );
 }
 
 // ── from_error mappings ───────────────────────────────────────────────────────
@@ -227,7 +237,10 @@ fn env_timeout_maps_to_task_unsuccessful() {
 
 #[test]
 fn io_error_maps_to_internal_error() {
-    let e = Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file gone"));
+    let e = Error::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "file gone",
+    ));
     assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
 }
 
@@ -281,8 +294,14 @@ fn outcome_class_strings_are_valid_snake_case_identifiers() {
             s.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
             "outcome_class {s:?} contains non-snake-case characters"
         );
-        assert!(!s.starts_with('_'), "outcome_class {s:?} starts with underscore");
-        assert!(!s.ends_with('_'), "outcome_class {s:?} ends with underscore");
+        assert!(
+            !s.starts_with('_'),
+            "outcome_class {s:?} starts with underscore"
+        );
+        assert!(
+            !s.ends_with('_'),
+            "outcome_class {s:?} ends with underscore"
+        );
     }
 }
 
@@ -309,8 +328,8 @@ fn only_success_is_zero() {
 /// Interruption codes match POSIX signal convention (128 + signal number).
 #[test]
 fn interrupted_and_killed_follow_posix_signal_convention() {
-    assert_eq!(ExitCode::Interrupted.as_i32(), 128 + 2);  // SIGINT = 2
-    assert_eq!(ExitCode::Killed.as_i32(), 128 + 9);        // SIGKILL = 9
+    assert_eq!(ExitCode::Interrupted.as_i32(), 128 + 2); // SIGINT = 2
+    assert_eq!(ExitCode::Killed.as_i32(), 128 + 9); // SIGKILL = 9
 }
 
 /// Constants exported by swebench match the ExitCode values so sweep
@@ -330,9 +349,15 @@ fn sweep_cancel_codes_align_with_exit_code_contract() {
 #[test]
 fn text_and_numeric_surfaces_agree_for_every_error_variant() {
     let error_cases: Vec<(&str, Error)> = vec![
-        ("usage_error", Error::Config(ConfigError::Invalid("x".into()))),
+        (
+            "usage_error",
+            Error::Config(ConfigError::Invalid("x".into())),
+        ),
         ("verification_failure", Error::VerificationFailed(1, 2)),
-        ("preflight_failure", Error::Env(EnvError::DockerNotInstalled)),
+        (
+            "preflight_failure",
+            Error::Env(EnvError::DockerNotInstalled),
+        ),
         (
             "preflight_failure",
             Error::Env(EnvError::DockerDaemonUnreachable("down".into())),
