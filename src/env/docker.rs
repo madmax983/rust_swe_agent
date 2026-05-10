@@ -185,7 +185,7 @@ impl Environment for DockerEnvironment {
 
         match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
             ChildStop::Exited(status) => {
-                join_stdin_writer(stdin_task).await?;
+                join_stdin_writer_after_exit(stdin_task).await?;
                 let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
                 let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
                 Ok(RunResult {
@@ -259,6 +259,20 @@ async fn join_stdin_writer(
             .map_err(|e| EnvError::UnexpectedExit(format!("stdin writer task failed: {e}")))??;
     }
     Ok(())
+}
+
+async fn join_stdin_writer_after_exit(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    match join_stdin_writer(handle).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_broken_pipe(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_broken_pipe(err: &EnvError) -> bool {
+    matches!(err, EnvError::Io(io) if io.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 async fn abort_stdin_writer(handle: Option<JoinHandle<Result<(), EnvError>>>) {

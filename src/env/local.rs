@@ -102,7 +102,7 @@ impl Environment for LocalEnvironment {
         match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
             ChildStop::Exited(status) => {
                 process_guard.disarm();
-                join_stdin_writer(stdin_task).await?;
+                join_stdin_writer_after_exit(stdin_task).await?;
                 let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
                 let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
                 Ok(RunResult {
@@ -164,6 +164,20 @@ async fn join_stdin_writer(
             .map_err(|e| EnvError::UnexpectedExit(format!("stdin writer task failed: {e}")))??;
     }
     Ok(())
+}
+
+async fn join_stdin_writer_after_exit(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    match join_stdin_writer(handle).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_broken_pipe(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_broken_pipe(err: &EnvError) -> bool {
+    matches!(err, EnvError::Io(io) if io.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 async fn abort_stdin_writer(handle: Option<JoinHandle<Result<(), EnvError>>>) {
@@ -519,6 +533,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exited_child_preserves_output_when_stdin_pipe_breaks() {
+        let env = LocalEnvironment::new();
+        let req = RunRequest::new(exit_without_reading_stdin_command())
+            .with_stdin("x".repeat(16 * 1024 * 1024));
+
+        let r = env.run(req).await.unwrap();
+
+        assert_eq!(r.exit_code, 7);
+        assert_eq!(r.stdout.trim(), "child stdout");
+        assert_eq!(r.stderr.trim(), "child stderr");
+        assert!(!r.timed_out);
+    }
+
+    #[tokio::test]
     async fn timeout_flags_timed_out() {
         let env = LocalEnvironment::new();
         let req = RunRequest::new(sleep_command()).with_timeout(Duration::from_millis(100));
@@ -567,6 +595,14 @@ mod tests {
 
     fn stdin_echo_command() -> &'static str {
         if cfg!(windows) { "more" } else { "cat" }
+    }
+
+    fn exit_without_reading_stdin_command() -> &'static str {
+        if cfg!(windows) {
+            "echo child stdout & echo child stderr 1>&2 & exit /B 7"
+        } else {
+            "printf 'child stdout\n'; printf 'child stderr\n' >&2; exit 7"
+        }
     }
 
     fn sleep_command() -> &'static str {
