@@ -3,16 +3,16 @@
 //!
 //! Red phase: these tests are written before the implementation exists.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
 
 use rust_swe_agent::run::reproduce::{
     DriftSeverity, build_reproducibility_report, compare_manifests, load_manifest_from_sweep,
-    render_summary, top_diverging_failure_categories,
+    render_summary,
 };
 use rust_swe_agent::run::swebench::{
-    HarnessManifest, InstanceResult, ManifestReproducedFrom, ProvenanceManifest, SweepResults,
+    HarnessManifest, InstanceResult, ProvenanceManifest, SweepResults,
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ fn load_manifest_rejects_results_without_manifest_block() {
 fn load_manifest_returns_manifest_from_valid_sweep() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = minimal_manifest("claude-opus-4-7", Some("abc123sha"));
-    let results = minimal_sweep_results(Some(manifest.clone()));
+    let results = minimal_sweep_results(Some(manifest));
     write_results_json(dir.path(), &results);
 
     let loaded = load_manifest_from_sweep(dir.path()).unwrap();
@@ -237,12 +237,8 @@ fn compare_manifests_skips_sha_drift_when_either_sha_is_absent() {
     let original = minimal_manifest("claude-opus-4-7", None);
     let current = minimal_manifest("claude-opus-4-7", Some("some-sha"));
     let drifts = compare_manifests(&original, &current);
-    let sha_drifts: Vec<_> = drifts
-        .iter()
-        .filter(|d| d.field.contains("git_sha"))
-        .collect();
     assert!(
-        sha_drifts.is_empty(),
+        !drifts.iter().any(|d| d.field.contains("git_sha")),
         "should not flag SHA when original has no SHA"
     );
 }

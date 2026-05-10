@@ -486,6 +486,7 @@ pub fn write_report(report: &ReproducibilityReport, output_dir: &Path) -> Result
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

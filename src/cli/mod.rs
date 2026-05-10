@@ -1174,14 +1174,26 @@ fn reproduce_swebench_args(
         }
     };
 
+    // Determine the exact instance subset to replay.
+    // Priority: explicit --filter > recorded filter_spec.instance_ids > actual
+    // instance list from the source results. The fallback ensures that sweeps
+    // originally run with --limit or --sample (no explicit instance-id list)
+    // still reproduce only the recorded subset rather than the entire dataset.
     let instance_ids = if let Some(filter) = &r.filter {
         Some(filter.clone())
+    } else if let Some(ids) = source_results.filter_spec.instance_ids.as_ref() {
+        Some(ids.join(","))
     } else {
-        source_results
-            .filter_spec
-            .instance_ids
-            .as_ref()
-            .map(|ids| ids.join(","))
+        let ids: Vec<&str> = source_results
+            .instances
+            .iter()
+            .map(|i| i.instance_id.as_str())
+            .collect();
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids.join(","))
+        }
     };
 
     Ok(crate::run::swebench::SwebenchArgs {

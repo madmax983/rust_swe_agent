@@ -3,7 +3,7 @@
 //! model credits (`--skip-model-probe` equivalent logic tested here via the
 //! public API directly).
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rust_swe_agent::run::reproduce::{DriftSeverity, compare_manifests, load_manifest_from_sweep};
 
