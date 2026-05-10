@@ -381,7 +381,7 @@ impl RateLimitGovernor {
     /// Returns `None` when no recognizable pattern is found.
     #[must_use]
     pub fn parse_retry_after_from_error(msg: &str) -> Option<u64> {
-        let lower = msg.to_lowercase();
+        let lower = msg.to_ascii_lowercase();
         for prefix in ["retry-after: ", "retry_after: ", "retry after: "] {
             if let Some(pos) = lower.find(prefix) {
                 let rest = lower[pos + prefix.len()..].trim();

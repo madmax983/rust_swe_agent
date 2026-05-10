@@ -1013,8 +1013,13 @@ fn default_attempts() -> u32 {
 /// Path where `run_one` writes the trajectory for an instance. Centralized so
 /// the resume-skip check stays in lockstep with the writer.
 #[must_use]
+fn safe_instance_id(id: &str) -> String {
+    id.replace(['/', '\\'], "_")
+}
+
 pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    trajectory_path_for_run(output_dir, instance_id, 1)
+    let safe_id = safe_instance_id(instance_id);
+    trajectory_path_for_run(output_dir, &safe_id, 1)
 }
 
 /// Path where the SWE-bench-style unified diff is written for an instance.
@@ -1022,7 +1027,8 @@ pub fn trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> P
 /// captured for a previously-submitted run.
 #[must_use]
 pub fn patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    patch_path_for_run(output_dir, instance_id, 1)
+    let safe_id = safe_instance_id(instance_id);
+    patch_path_for_run(output_dir, &safe_id, 1)
 }
 
 #[must_use]
@@ -1032,7 +1038,7 @@ pub fn trajectory_path_for_run(
     run_index: u32,
 ) -> PathBuf {
     output_dir
-        .join(instance_id)
+        .join(safe_instance_id(instance_id))
         .join(format!("run-{run_index}.traj.json"))
 }
 
@@ -1043,16 +1049,18 @@ pub fn patch_path_for_run(
     run_index: u32,
 ) -> PathBuf {
     output_dir
-        .join(instance_id)
+        .join(safe_instance_id(instance_id))
         .join(format!("run-{run_index}.patch"))
 }
 
 fn legacy_trajectory_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    output_dir.join(format!("{instance_id}.traj.json"))
+    let safe_id = safe_instance_id(instance_id);
+    output_dir.join(format!("{safe_id}.traj.json"))
 }
 
 fn legacy_patch_path_for(output_dir: &std::path::Path, instance_id: &str) -> PathBuf {
-    output_dir.join(format!("{instance_id}.patch"))
+    let safe_id = safe_instance_id(instance_id);
+    output_dir.join(format!("{safe_id}.patch"))
 }
 
 fn existing_trajectory_path_for_run(
@@ -1060,7 +1068,8 @@ fn existing_trajectory_path_for_run(
     instance_id: &str,
     run_index: u32,
 ) -> PathBuf {
-    let nested = trajectory_path_for_run(output_dir, instance_id, run_index);
+    let safe_id = safe_instance_id(instance_id);
+    let nested = trajectory_path_for_run(output_dir, &safe_id, run_index);
     if nested.exists() || run_index != 1 {
         return nested;
     }
@@ -1072,7 +1081,8 @@ fn existing_patch_path_for_run(
     instance_id: &str,
     run_index: u32,
 ) -> PathBuf {
-    let nested = patch_path_for_run(output_dir, instance_id, run_index);
+    let safe_id = safe_instance_id(instance_id);
+    let nested = patch_path_for_run(output_dir, &safe_id, run_index);
     if nested.exists() || run_index != 1 {
         return nested;
     }

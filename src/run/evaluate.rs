@@ -647,11 +647,12 @@ fn read_patch_or_empty(
 }
 
 fn existing_patch_path_for_run(sweep_dir: &Path, instance_id: &str, run_index: u32) -> PathBuf {
-    let nested = swebench::patch_path_for_run(sweep_dir, instance_id, run_index);
+    let safe_id = instance_id.replace(['/', '\\'], "_");
+    let nested = swebench::patch_path_for_run(sweep_dir, &safe_id, run_index);
     if nested.exists() || run_index != 1 {
         return nested;
     }
-    sweep_dir.join(format!("{instance_id}.patch"))
+    sweep_dir.join(format!("{safe_id}.patch"))
 }
 
 #[must_use]
