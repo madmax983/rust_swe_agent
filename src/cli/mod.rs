@@ -51,6 +51,7 @@ pub async fn run() -> Result<(), Error> {
         let _ = e.print();
         if e.exit_code() != 0 {
             eprintln!("outcome_class: {}", ExitCode::UsageError.outcome_class());
+            eprintln!("error: {e}");
         }
         std::process::exit(e.exit_code());
     });

@@ -474,13 +474,13 @@ fn preflight_probe_errors_map_to_preflight_failure() {
 }
 
 /// Model probe failures (run_preflight's model availability check) map to
-/// TaskUnsuccessful (4) — better than InternalError (1) and the closest
-/// existing variant for a model API failure before sweep start.
+/// PreflightFailure (3) — the probe happens before the sweep starts, so it
+/// is a preflight condition, not a task execution failure.
 #[test]
-fn model_probe_failure_maps_to_task_unsuccessful() {
-    let e = Error::Model(ModelError::Request(
-        "model probe failed: 401 unauthorized".into(),
+fn model_probe_failure_maps_to_preflight_failure() {
+    let e = Error::Env(EnvError::DockerDaemonUnreachable(
+        "preflight: model probe failed: 401 unauthorized".into(),
     ));
-    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
-    assert_eq!(ExitCode::from_error(&e).as_i32(), 4);
+    assert_eq!(ExitCode::from_error(&e), ExitCode::PreflightFailure);
+    assert_eq!(ExitCode::from_error(&e).as_i32(), 3);
 }

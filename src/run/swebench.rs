@@ -28,7 +28,7 @@ pub use crate::cost::{
     ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL,
     CostSource, SONNET_INPUT_USD_PER_MTOK, SONNET_OUTPUT_USD_PER_MTOK, estimate_cost_usd,
 };
-use crate::error::{ConfigError, EnvError, Error, ModelError};
+use crate::error::{ConfigError, EnvError, Error};
 use crate::model::{Model, ModelUsage};
 use crate::redaction::{Redactor, surface};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
@@ -2194,8 +2194,16 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         let budget = remaining.min(per_check);
         let _ = tokio::time::timeout(budget, backend.query(&msgs, &opts))
             .await
-            .map_err(|_| Error::Model(ModelError::Request("model probe timed out".into())))?
-            .map_err(|e| Error::Model(ModelError::Request(format!("model probe failed: {e}"))))?;
+            .map_err(|_| {
+                Error::Env(EnvError::DockerDaemonUnreachable(
+                    "preflight: model probe timed out".into(),
+                ))
+            })?
+            .map_err(|e| {
+                Error::Env(EnvError::DockerDaemonUnreachable(format!(
+                    "preflight: model probe failed: {e}"
+                )))
+            })?;
         checks.push(CheckResult {
             status: CheckStatus::Ok,
             name: "model.probe",
