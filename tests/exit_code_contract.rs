@@ -266,7 +266,10 @@ fn github_error_maps_to_internal_error() {
 
 #[test]
 fn template_error_maps_to_internal_error() {
-    let e = Error::Template("render failed".into());
+    let e = Error::Template(minijinja::Error::new(
+        minijinja::ErrorKind::InvalidOperation,
+        "render failed",
+    ));
     assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
 }
 
@@ -384,7 +387,13 @@ fn text_and_numeric_surfaces_agree_for_every_error_variant() {
         ),
         ("internal_error", Error::Trajectory("corrupt".into())),
         ("internal_error", Error::Github("api 500".into())),
-        ("internal_error", Error::Template("render".into())),
+        (
+            "internal_error",
+            Error::Template(minijinja::Error::new(
+                minijinja::ErrorKind::InvalidOperation,
+                "render",
+            )),
+        ),
     ];
 
     for (expected_class, e) in error_cases {

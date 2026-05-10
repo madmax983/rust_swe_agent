@@ -40,13 +40,11 @@ impl Renderer {
     pub fn render_str<T: Serialize>(&self, tmpl: &str, ctx: &T) -> Result<String, Error> {
         self.env
             .render_str(tmpl, Value::from_serialize(ctx))
-            .map_err(|e| Error::Template(e.to_string()))
+            .map_err(Into::into)
     }
 
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
-        self.env
-            .render_str(tmpl, ctx)
-            .map_err(|e| Error::Template(e.to_string()))
+        self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
 }
 
@@ -67,7 +65,7 @@ pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error>
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
     let map: BTreeMap<&str, &str> = vars.iter().copied().collect();
     env.render_str(tmpl, Value::from_serialize(&map))
-        .map_err(|e| Error::Template(e.to_string()))
+        .map_err(Into::into)
 }
 
 /// Keep `Arc<Renderer>` cheap in hot paths.
