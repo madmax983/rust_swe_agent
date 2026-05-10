@@ -60,6 +60,7 @@ coarse sweep-level result.
 | `bench evaluate`                | `success`, `usage_error`, `internal_error` |
 | `bench inspect`                 | `success`, `usage_error`, `internal_error` |
 | `bench tail`                    | `success`, `usage_error`, `internal_error` |
+| `bench triage`                  | `success`, `usage_error`, `internal_error` |
 | `bench frontier`                | `success`, `usage_error`, `internal_error` |
 
 > **Legacy note:** `hello-world` and `replay` do not yet produce distinct

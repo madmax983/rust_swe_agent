@@ -246,6 +246,8 @@ pub enum BenchCmd {
     Inspect(InspectCmd),
     /// Tail live aggregate progress for a running sweep directory.
     Tail(TailCmd),
+    /// Cluster unresolved sweep failures into ranked actionable groups.
+    Triage(TriageCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
@@ -699,6 +701,31 @@ pub struct TailCmd {
     /// Print one snapshot and exit.
     #[arg(long, default_value_t = false)]
     pub once: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+#[derive(Debug, Args)]
+pub struct TriageCmd {
+    /// Completed sweep directory produced by `bench swebench` and scored by
+    /// `bench evaluate`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Restrict clusters to one failure category bucket, such as
+    /// `model_parse` or `env_setup`.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Hide clusters smaller than this size.
+    #[arg(long, default_value_t = 1)]
+    pub min_cluster_size: usize,
+
+    /// Number of ranked clusters to print in text mode.
+    #[arg(long, default_value_t = 10)]
+    pub top: usize,
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]

@@ -1,0 +1,36 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "info": {
+    "task": "model-a-2",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "failure_category": "model_parse",
+    "total_cost_usd": 1.5,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": " parser FAILED in C:\\tmp\\task-202\\src\\main.py line 44 "
+    },
+    {
+      "role": "user",
+      "content": "observation",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "syntaxerror: unexpected token 505 in C:\\tmp\\task-202\\src\\main.py",
+          "exit_code": 2,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}

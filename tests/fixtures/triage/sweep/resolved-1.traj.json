@@ -1,0 +1,35 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "info": {
+    "task": "resolved-1",
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "total_cost_usd": 9.0,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Submitted a patch"
+    },
+    {
+      "role": "user",
+      "content": "observation",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "",
+          "exit_code": 0,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}

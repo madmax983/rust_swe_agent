@@ -88,6 +88,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Tail(t),
         } => bench_tail(t).await,
         Command::Bench {
+            cmd: args::BenchCmd::Triage(t),
+        } => bench_triage(t),
+        Command::Bench {
             cmd: args::BenchCmd::Frontier(f),
         } => bench_frontier(f),
         Command::Bench {
@@ -231,7 +234,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
     validate_swebench_github_pr_args(&sweep_cmd.github_pr)?;
     if sweep_cmd.forecast_first {
-        match run_forecast_from_cmd(sweep_cmd.clone()).await? {
+        match Box::pin(run_forecast_from_cmd(sweep_cmd.clone())).await? {
             crate::run::forecast::ForecastOutcome::Report(report) => {
                 print_forecast_report(&report, &sweep_cmd.format)?;
                 if let Err(e) =
@@ -319,7 +322,7 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
 async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
     let output_format = s.format.clone();
     let fail_over_cap = s.fail_over_cap;
-    match run_forecast_from_cmd(s).await? {
+    match Box::pin(run_forecast_from_cmd(s)).await? {
         crate::run::forecast::ForecastOutcome::Report(report) => {
             print_forecast_report(&report, &output_format)?;
             if let Err(e) = crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap) {
@@ -1352,8 +1355,42 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
+    let format = match t.format.as_str() {
+        "text" => TriageFormat::Text,
+        "json" => TriageFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::triage::run(&crate::run::triage::TriageArgs {
+        sweep_dir: t.sweep,
+        bucket: t.bucket,
+        min_cluster_size: t.min_cluster_size,
+        top: t.top,
+    })?;
+    match format {
+        TriageFormat::Text => {
+            print!("{}", crate::run::triage::render_text(&report, t.top));
+            Ok(())
+        }
+        TriageFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TailFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TriageFormat {
     Text,
     Json,
 }

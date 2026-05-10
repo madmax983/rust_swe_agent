@@ -169,6 +169,8 @@ a valid trajectory in hand:
   and failure mix for running SWE-bench sweeps.
 - [`bench evaluate`](docs/spec-evaluation.md): evaluator output, rerun metrics,
   pass@k, and compare regression gates.
+- [`bench triage`](docs/spec-triage.md): deterministic unresolved-failure
+  clustering, ranked stdout tables, and the `triage.json` schema.
 - [`agent scriptability`](docs/spec-scriptability.md): invocation-time MCP
   servers plus `PreToolUse` and `PostToolUse` hooks for A/B testing agent
   toolsets without rebuilding Rust.
