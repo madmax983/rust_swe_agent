@@ -118,6 +118,7 @@ fn write_results_with_filter_spec(
     write_results_with_filter_spec_and_model(dir, instances, filter_spec, None);
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_results_with_filter_spec_and_model(
     dir: &Path,
     instances: Vec<InstanceResult>,

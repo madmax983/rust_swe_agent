@@ -2018,7 +2018,7 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
                         crate::run::dataset::DatasetSource::Named { alias, split } => {
                             (alias.as_str(), split.as_str())
                         }
-                        _ => ("?", "?"),
+                        crate::run::dataset::DatasetSource::LocalPath(_) => ("?", "?"),
                     };
                     checks.push(CheckResult {
                         status: CheckStatus::Warn,
@@ -2310,6 +2310,7 @@ fn ensure_total_deadline(deadline: Instant) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_manifest(
     args: &SwebenchArgs,
     dataset_sha: &str,

@@ -26,6 +26,7 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run one task end-to-end and write a trajectory.
     Mini(args::MiniCmd),
@@ -54,10 +55,10 @@ pub async fn run() -> Result<(), Error> {
         Command::Replay(r) => replay_cmd(r).await,
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
-        } => bench_swebench(s).await,
+        } => Box::pin(bench_swebench(s)).await,
         Command::Bench {
             cmd: args::BenchCmd::Forecast(s),
-        } => bench_forecast(s).await,
+        } => Box::pin(bench_forecast(s)).await,
         Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
         } => bench_doctor(s).await,

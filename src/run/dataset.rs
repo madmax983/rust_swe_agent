@@ -173,9 +173,10 @@ impl CacheStatus {
 /// Falls back to `<cwd>/.dataset-cache` when the home directory cannot be determined.
 #[must_use]
 pub fn default_cache_dir() -> PathBuf {
-    home_dir()
-        .map(|h| h.join(".cache").join("rust-swe-agent").join("datasets"))
-        .unwrap_or_else(|| PathBuf::from(".dataset-cache"))
+    home_dir().map_or_else(
+        || PathBuf::from(".dataset-cache"),
+        |h| h.join(".cache").join("rust-swe-agent").join("datasets"),
+    )
 }
 
 fn home_dir() -> Option<PathBuf> {

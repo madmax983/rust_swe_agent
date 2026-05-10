@@ -11,8 +11,7 @@ use std::path::{Path, PathBuf};
 
 use rust_swe_agent::Config;
 use rust_swe_agent::run::dataset::{
-    CacheStatus, DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit, cache_path_for,
-    check_cache, resolve_dataset, write_cache,
+    DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit, cache_path_for, write_cache,
 };
 use rust_swe_agent::run::swebench::{DatasetManifest, SwebenchArgs, run};
 
@@ -305,6 +304,22 @@ async fn sweep_artifact_records_provenance_for_local_dataset() {
 
 #[tokio::test]
 async fn named_and_local_datasets_produce_identical_sampling_for_same_seed() {
+    async fn dry_run_with_sample(
+        source: DatasetSource,
+        cache_dir: PathBuf,
+        out: PathBuf,
+        sample: usize,
+        seed: u64,
+    ) -> rust_swe_agent::run::swebench::SweepResults {
+        let mut args = base_args(source, out);
+        args.dataset_cache_dir = cache_dir;
+        args.sample = Some(sample);
+        args.seed = Some(seed);
+        args.dry_run = false;
+        args.skip_preflight = true;
+        run(args).await.unwrap()
+    }
+
     let cache_dir = tempfile::tempdir().unwrap();
     // build a 10-instance dataset
     let mut content = String::new();
@@ -325,22 +340,6 @@ async fn named_and_local_datasets_produce_identical_sampling_for_same_seed() {
 
     let local_file = cache_dir.path().join("local.jsonl");
     std::fs::write(&local_file, content_bytes).unwrap();
-
-    async fn dry_run_with_sample(
-        source: DatasetSource,
-        cache_dir: PathBuf,
-        out: PathBuf,
-        sample: usize,
-        seed: u64,
-    ) -> rust_swe_agent::run::swebench::SweepResults {
-        let mut args = base_args(source, out);
-        args.dataset_cache_dir = cache_dir;
-        args.sample = Some(sample);
-        args.seed = Some(seed);
-        args.dry_run = false;
-        args.skip_preflight = true;
-        run(args).await.unwrap()
-    }
 
     let work = tempfile::tempdir().unwrap();
     let named_results = dry_run_with_sample(
@@ -442,10 +441,7 @@ async fn doctor_reports_cache_miss_without_launching_tasks() {
 fn dataset_source_from_alias_and_split_strings() {
     let alias: SwebenchAlias = "verified".parse().unwrap();
     let split: SwebenchSplit = "test".parse().unwrap();
-    let src = DatasetSource::Named {
-        alias: alias.clone(),
-        split: split.clone(),
-    };
+    let src = DatasetSource::Named { alias, split };
     assert_eq!(src.kind(), DatasetSourceKind::Named);
     if let DatasetSource::Named { alias: a, split: s } = src {
         assert_eq!(a, SwebenchAlias::Verified);
