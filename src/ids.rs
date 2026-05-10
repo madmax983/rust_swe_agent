@@ -14,6 +14,7 @@ macro_rules! string_id {
             pub fn new(s: impl Into<String>) -> Self {
                 Self(s.into())
             }
+            /// Access the string reference.
             pub fn as_str(&self) -> &str {
                 &self.0
             }

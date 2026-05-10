@@ -19,11 +19,16 @@ pub const ANTHROPIC_CACHE_CREATION_MULTIPLIER: f64 = 1.25;
 /// Provenance for the actual cost number recorded on run artifacts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Origin of cost tracking metrics.
 pub enum CostSource {
+    /// The exact cost reported by the API provider.
     ProviderReported,
+    /// The estimated cost calculated from token counts and rate cards.
     RateCardEstimate,
+    /// The run was free tier and did not use billable tokens.
     FreeTierInferred,
     #[default]
+    /// Source is not identifiable.
     Unknown,
 }
 

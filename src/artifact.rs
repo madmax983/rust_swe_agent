@@ -15,7 +15,9 @@ use thiserror::Error;
 /// contract. Major bumps are breaking; minor bumps must remain additive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ArtifactSchemaVersion {
+    /// The major version number.
     pub major: u16,
+    /// The minor version number.
     pub minor: u16,
 }
 
@@ -45,10 +47,15 @@ impl fmt::Display for ArtifactSchemaVersion {
 /// contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Supported payload types across the ecosystem.
 pub enum ArtifactKind {
+    /// An execution trace for a single task.
     Trajectory,
+    /// Comprehensive structured results matrix.
     SweepResults,
+    /// Evaluation outcomes.
     EvaluationResults,
+    /// Forecast predictions and bounds.
     ForecastReport,
     CalibrationReport,
     PreflightReport,
@@ -79,7 +86,9 @@ impl fmt::Display for ArtifactKind {
 /// Standard top-level artifact metadata fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactHeader {
+    /// The primary kind of artifact (trajectory, dataset, etc.).
     pub artifact_kind: ArtifactKind,
+    /// The schema version used by the artifact.
     pub schema_version: ArtifactSchemaVersion,
 }
 
@@ -96,8 +105,12 @@ impl ArtifactHeader {
 /// Compatibility class for a detected artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Semver-like resolution determining parser support.
+/// Semver-like resolution determining parser support.
 pub enum CompatibilityClass {
+    /// The artifact uses the exact current schema version.
     SupportedCurrent,
+    /// The artifact uses an older schema version but can be parsed.
     SupportedLegacy,
 }
 
@@ -114,9 +127,13 @@ impl CompatibilityClass {
 /// Result of classifying a specific artifact payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactCompatibility {
+    /// The type of the loaded artifact.
     pub kind: ArtifactKind,
+    /// The schema version found in the loaded artifact, if any.
     pub version: Option<ArtifactSchemaVersion>,
+    /// The inferred compatibility classification.
     pub class: CompatibilityClass,
+    /// Any non-fatal parsing warnings.
     pub warnings: Vec<String>,
 }
 
@@ -135,21 +152,34 @@ impl ArtifactCompatibility {
 pub enum ArtifactSchemaError {
     #[error("{path}: artifact kind mismatch: expected {expected}, found {found}")]
     KindMismatch {
+        /// File path context.
         path: String,
+        /// The required artifact kind.
         expected: ArtifactKind,
+        /// The encountered artifact kind.
         found: ArtifactKind,
     },
     #[error(
         "{path}: unsupported future artifact schema for {kind}: version {version}; this binary supports major {supported_major}. Re-run with a newer rust-swe-agent."
     )]
     UnsupportedFuture {
+        /// File path context.
         path: String,
+        /// The kind of artifact associated with the missing schema.
         kind: ArtifactKind,
+        /// The unsupported schema version.
         version: ArtifactSchemaVersion,
+        /// The major version expected by the parser.
         supported_major: u16,
     },
     #[error("{path}: malformed artifact schema header: {message}")]
-    MalformedHeader { path: String, message: String },
+    /// The artifact header could not be parsed.
+    MalformedHeader {
+        /// File path.
+        path: String,
+        /// Error message.
+        message: String,
+    },
 }
 
 /// Classify a decoded JSON artifact against the expected artifact family.

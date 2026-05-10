@@ -15,6 +15,7 @@ use crate::model::{Message, MessageExtra};
 
 pub use crate::model::FallbackAttemptRecord;
 
+/// The format version string expected by mini-swe-agent tools.
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
 
 /// Trajectory-level summary of fallback behavior for a single agent run.
@@ -51,28 +52,41 @@ fn is_false(b: &bool) -> bool {
 /// Operator-supplied verification check run after the agent finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationCheck {
+    /// The name of the check.
     pub name: String,
+    /// The bash command to execute.
     pub command: String,
 }
 
 /// Per-check evidence recorded after a verification check runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationResult {
+    /// The name of the check.
     pub name: String,
+    /// The bash command to execute.
     pub command: String,
+    /// The shell exit code.
     pub exit_code: i32,
+    /// The duration of execution in milliseconds.
     pub duration_ms: u64,
+    /// True if the check passed.
     pub passed: bool,
+    /// The truncated standard output from the check.
     pub stdout_preview: String,
+    /// The truncated standard error from the check.
     pub stderr_preview: String,
     #[serde(default, skip_serializing_if = "is_false")]
+    /// True if the execution hit the timeout.
     pub timed_out: bool,
 }
 
 /// Operator-facing verification status values.
 pub mod verification_status {
+    /// Indicates successful verification.
     pub const VERIFIED: &str = "verified";
+    /// Indicates verification was skipped or unavailable.
     pub const UNVERIFIED: &str = "unverified";
+    /// Indicates verification was run but failed.
     pub const VERIFICATION_FAILED: &str = "verification_failed";
 }
 
@@ -132,6 +146,7 @@ pub enum FailureCategory {
     Unknown,
 }
 
+/// Default regex patterns used to detect test command invocations.
 pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "pytest",
     "python -m pytest",
@@ -152,6 +167,7 @@ pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone)]
+/// A compiled regex or exact literal pattern for testing command execution.
 pub struct TestCommandPattern {
     source: String,
     matcher: TestCommandMatcher,
@@ -191,13 +207,19 @@ impl TestCommandPattern {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A single detected invocation of a test framework in a shell command.
 pub struct TestInvocation {
+    /// The step index in which the invocation occurred.
     pub step_index: u32,
+    /// The bash command to execute.
     pub command: String,
+    /// The shell exit code.
     pub exit_code: i32,
+    /// The pattern string that successfully matched the invocation.
     pub matched_pattern: String,
 }
 
+/// Computes the final set of test command matchers by merging defaults and extra patterns.
 pub fn effective_test_command_patterns(
     extra_patterns: &[String],
     replace_defaults: bool,
@@ -217,6 +239,7 @@ pub fn effective_test_command_patterns(
 }
 
 #[must_use]
+/// Scans a shell command string for test framework invocations and extracts them.
 pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Option<String> {
     let mut single_quoted = false;
     let mut double_quoted = false;

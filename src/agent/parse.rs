@@ -15,6 +15,7 @@ pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 use crate::tool::{BASH_TOOL_NAME, ToolCall};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// An action decided by the agent parsed from the model response.
 pub enum Action {
     Bash(String),
     Tool(ToolCall),

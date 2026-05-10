@@ -9,8 +9,11 @@ use async_trait::async_trait;
 use super::{Agent, DefaultAgent, ExitReason, StepOutcome};
 use crate::error::Error;
 
+/// A decorator wrapper around an Agent allowing interactive terminal control.
 pub struct InteractiveAgent {
+    /// The inner agent logic instance.
     pub inner: DefaultAgent,
+    /// If true, bypasses user confirmation prompts.
     pub yolo: bool,
 }
 

@@ -886,6 +886,7 @@ fn strip_heredoc_bodies(command: &str) -> String {
 // ── PolicyEngine ──────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
+/// The rule checker applying validations against environment actions.
 pub struct PolicyEngine {
     profile: PolicyProfile,
     /// Rules are evaluated in order; first match wins.

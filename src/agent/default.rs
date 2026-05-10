@@ -114,15 +114,28 @@ fn ceil_char_boundary(input: &str, idx: usize) -> usize {
     i
 }
 
+/// The default reference implementation of a software engineering agent.
+///
+/// Contains the configuration, backing model, isolated sandbox environment,
+/// template renderer, conversation history, and trajectory sequence.
 pub struct DefaultAgent {
+    /// The static configuration governing this agent run.
     pub config: Config,
+    /// The thread-safe model backend for prompt inference.
     pub model: Arc<dyn Model>,
+    /// The environment sandbox.
     pub env: Box<dyn Environment>,
+    /// The templating engine for constructing system prompts.
     pub renderer: Arc<Renderer>,
+    /// The rolling conversational history.
     pub history: Vec<Message>,
+    /// The internal trajectory builder for saving steps.
     pub trajectory: Trajectory,
+    /// Number of execution steps taken so far.
     pub steps: u32,
+    /// The running total cost across all steps, in USD.
     pub total_cost_usd: f64,
+    /// The inferred source for the cost metrics.
     pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
@@ -137,9 +150,13 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    /// PII / Secrets redactor to filter outputs.
     pub redactor: Redactor,
+    /// Handles graceful shutdowns for manual interrupts.
     pub cancellation: Option<CancellationToken>,
+    /// Validates actions against configured safety rules.
     pub policy_engine: PolicyEngine,
+    /// Stores tools available to the agent.
     pub tool_registry: ToolRegistry,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
@@ -153,13 +170,21 @@ pub struct DefaultAgent {
     all_step_responders: Vec<String>,
 }
 
+/// Builder for initializing the DefaultAgent safely.
 pub struct DefaultAgentBuilder {
+    /// The static configuration governing this agent run.
     pub config: Config,
+    /// The thread-safe model backend for prompt inference.
     pub model: Arc<dyn Model>,
+    /// The environment sandbox.
     pub env: Box<dyn Environment>,
+    /// The primary task text supplied to the agent.
     pub task: String,
+    /// Any supplemental context string.
     pub extra_context: Option<String>,
+    /// Overrides the default template renderer if provided.
     pub renderer: Option<Arc<Renderer>>,
+    /// Optional stream sink for event emissions.
     pub stream: Option<Arc<dyn StreamSink>>,
 }
 
