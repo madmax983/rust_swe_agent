@@ -45,7 +45,15 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<(), Error> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|e| {
+        // Print clap's formatted error or help text, then add the outcome label
+        // for non-zero exits (exit 0 means --help / --version, not an error).
+        let _ = e.print();
+        if e.exit_code() != 0 {
+            eprintln!("outcome_class: {}", ExitCode::UsageError.outcome_class());
+        }
+        std::process::exit(e.exit_code());
+    });
     init_logging(&cli.log);
 
     match cli.command {
@@ -341,7 +349,12 @@ fn cancellation_exit_code(results: &crate::run::swebench::SweepResults) -> Optio
 
 fn exit_if_cancelled_sweep(results: &crate::run::swebench::SweepResults) {
     if let Some(code) = cancellation_exit_code(results) {
-        std::process::exit(code);
+        let outcome = if code == crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL {
+            ExitCode::Interrupted
+        } else {
+            ExitCode::Killed
+        };
+        exit_with_outcome(outcome, "sweep was cancelled");
     }
 }
 

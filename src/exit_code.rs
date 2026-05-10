@@ -158,10 +158,7 @@ mod tests {
     #[test]
     fn from_error_io_is_internal_error() {
         assert_eq!(
-            ExitCode::from_error(&Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "disk full"
-            ))),
+            ExitCode::from_error(&Error::Io(std::io::Error::other("disk full"))),
             ExitCode::InternalError
         );
     }
