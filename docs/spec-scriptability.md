@@ -3,14 +3,80 @@
 ## User Story
 
 As an agent developer, I want scriptable tool boundaries, so that experiments
-can add diagnostics, policy checks, and workflow context without turning the
-Rust core into a plugin framework.
+can add diagnostics, policy checks, and workflow context without rebuilding the
+Rust core.
 
-## Current Slice: Tool Hooks
+## Current Slice: MCP Servers And Tool Hooks
+
+MCP servers are invocation-time providers. They let an experiment choose a
+different active toolset per run without rebuilding the Rust core. A server is a
+process that speaks MCP JSON-RPC over stdio:
+
+```toml
+[[agent.mcp_servers]]
+command = "diagnostic-mcp"
+timeout_secs = 30
+```
+
+```bash
+rust-swe-agent mini --task "Fix it" --mcp-server diagnostic-mcp
+```
+
+For each MCP server, the runner sends the standard lifecycle handshake:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rust-swe-agent","version":"0.1.0"}}}
+```
+
+Then it sends `notifications/initialized` and asks the server to list tools:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+The MCP server returns definitions that are advertised to the model:
+
+```json
+{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"diagnose","description":"Run repository diagnostics.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]}}
+```
+
+The assistant calls a tool with a fenced block whose language tag matches a
+runtime tool name. For MCP-backed tools, the block body should be a JSON object
+matching the tool's `inputSchema`:
+
+````markdown
+```diagnose
+{"query":"check flaky test"}
+```
+````
+
+The runner sends the MCP server a `tools/call` request:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"diagnose","arguments":{"query":"check flaky test"}}}
+```
+
+The MCP server returns content, which is converted into the next model-visible
+observation:
+
+```json
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"diagnostic output"}],"isError":false}}
+```
+
+The built-in `bash` tool remains always available. The active toolset is
+recorded in trajectory metadata under `info.toolset`, so A/B runs can be
+compared against the actual tools shown to the model.
+
+`[[agent.tools]]` still exists as a low-level command adapter escape hatch. It
+maps a fenced tool block directly to one configured command and passes the block
+body through `RUST_SWE_AGENT_TOOL_INPUT`. Prefer `agent.mcp_servers` for toolset
+experiments; command aliases are not the MCP path. Tiny footgun, now labeled.
+
+## Tool Hooks
 
 Tool hooks are ordinary shell commands configured under `agent.hooks`. They are
 rendered as MiniJinja templates, then executed in the same `Environment` as the
-agent's bash tool. Hook results are model-visible in the next observation and
+agent's tool processes. Hook results are model-visible in the next observation and
 recorded in trajectory message extra data.
 
 ```toml
@@ -27,10 +93,10 @@ name = "git-status"
 command = "git status --short"
 ```
 
-`PreToolUse` hooks run before the assistant's bash command. A nonzero exit code
-or timeout blocks the bash command and sends a blocked-tool observation back to
-the model. `PostToolUse` hooks run only after the bash command executes; their
-exit codes are reported but do not abort the agent run.
+`PreToolUse` hooks run before the assistant's tool call. A nonzero exit code or
+timeout blocks the tool process and sends a blocked-tool observation back to the
+model. `PostToolUse` hooks run only after the tool executes; their exit codes
+are reported but do not abort the agent run.
 
 ## Context Contract
 
@@ -38,11 +104,12 @@ Hook commands can use MiniJinja variables (note: prefer environment variables fo
 
 - `{{ hook.phase }}`: `pre_tool_use` or `post_tool_use`
 - `{{ hook.name }}`
-- `{{ tool.name }}`: currently `bash`
+- `{{ tool.name }}`: `bash` or a runtime tool name
 - `{{ task }}`
 - `{{ model }}`
 - `{{ step }}`
-- `{{ command }}`
+- `{{ command }}`: bash command or non-bash tool input
+- `{{ tool_input }}`: bash command or non-bash tool input
 - `{{ returncode }}`: `null` for `PreToolUse`
 - `{{ stdout }}`: empty for `PreToolUse`
 - `{{ stderr }}`: empty for `PreToolUse`
@@ -59,6 +126,7 @@ The same data is exposed as environment variables:
 - `RUST_SWE_AGENT_MODEL`
 - `RUST_SWE_AGENT_STEP`
 - `RUST_SWE_AGENT_COMMAND`
+- `RUST_SWE_AGENT_TOOL_INPUT`
 - `RUST_SWE_AGENT_EXIT_CODE`
 - `RUST_SWE_AGENT_STDOUT`
 - `RUST_SWE_AGENT_STDERR`

@@ -52,10 +52,10 @@ pub async fn run() -> Result<(), Error> {
         Command::Replay(r) => replay_cmd(r).await,
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
-        } => bench_swebench(s).await,
+        } => Box::pin(bench_swebench(s)).await,
         Command::Bench {
             cmd: args::BenchCmd::Forecast(s),
-        } => bench_forecast(s).await,
+        } => Box::pin(bench_forecast(s)).await,
         Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
         } => bench_doctor(s).await,
@@ -124,6 +124,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if m.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
+    apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
     let trajectory_name = m
         .trajectory_name
@@ -390,7 +391,27 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     if s.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
+    apply_mcp_server_overrides(&mut cfg, &s.mcp_servers)?;
     Ok(cfg)
+}
+
+fn apply_mcp_server_overrides(cfg: &mut Config, commands: &[String]) -> Result<(), Error> {
+    for command in commands {
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--mcp-server command cannot be empty".into(),
+            )));
+        }
+        cfg.root
+            .agent
+            .mcp_servers
+            .push(crate::config::McpServerCfg {
+                command: command.to_owned(),
+                timeout_secs: None,
+            });
+    }
+    Ok(())
 }
 
 fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
@@ -1034,6 +1055,23 @@ mod tests {
         assert!(validate_swebench_github_pr_args(&missing_branch).is_err());
     }
 
+    #[test]
+    fn mini_cli_parses_invocation_time_mcp_server() {
+        let cli = Cli::parse_from([
+            "rust-swe-agent",
+            "mini",
+            "--task",
+            "Fix it",
+            "--mcp-server",
+            "diagnostic-mcp",
+        ]);
+        let crate::cli::Command::Mini(cmd) = cli.command else {
+            panic!("expected mini command");
+        };
+
+        assert_eq!(cmd.mcp_servers, vec!["diagnostic-mcp"]);
+    }
+
     #[tokio::test]
     async fn mini_github_pr_publish_helper_respects_submission_state() {
         let work = tempfile::tempdir().unwrap();
@@ -1136,6 +1174,7 @@ mod tests {
             task_timeout_secs: None,
             per_task_budget_usd: None,
             hide_budget_from_agent: false,
+            mcp_servers: Vec::new(),
             config: None,
             env: None,
             docker_image: None,

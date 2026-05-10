@@ -45,6 +45,13 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
     // 3. Setup the replay environment and model
     let model: Arc<dyn Model> = Arc::new(DeterministicModel::new(responses));
     let env = build_env(&args.config).await?;
+    let tool_providers = crate::tool::discover_mcp_servers(
+        env.as_ref(),
+        &args.config.root.agent.mcp_servers,
+        args.config.root.agent.tool_hook_timeout_secs,
+        None,
+    )
+    .await?;
 
     let task = orig_trajectory
         .info
@@ -63,7 +70,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         renderer: None,
         stream: None,
     }
-    .build()?;
+    .build_with_tool_providers(tool_providers)?;
 
     // 4. Run the replay
     tracing::info!(?args.trajectory_path, "starting replay mode");

@@ -1,4 +1,4 @@
-//! Extract bash actions or the submit sentinel from assistant-text content.
+//! Extract tool actions or the submit sentinel from assistant-text content.
 //!
 //! The grammar (matching mini-swe-agent's Python):
 //!
@@ -12,9 +12,12 @@
 
 pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 
+use crate::tool::{BASH_TOOL_NAME, ToolCall};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Bash(String),
+    Tool(ToolCall),
     Submit(String),
     None,
 }
@@ -44,6 +47,31 @@ fn extract_first_any_block(s: &str) -> Option<String> {
     let body = &after_fence[body_start..];
     let end = body.find("```")?;
     Some(body[..end].trim_end_matches('\n').to_owned())
+}
+
+fn extract_first_registered_tool_block(content: &str, tool_names: &[String]) -> Option<ToolCall> {
+    let mut remaining = content;
+    while let Some(start) = remaining.find("```") {
+        let after_fence = &remaining[start + 3..];
+        let line_end = after_fence.find('\n')?;
+        let tag = after_fence[..line_end].trim();
+        let body = &after_fence[line_end + 1..];
+        if let Some(end) = body.find("```") {
+            if tool_names.iter().any(|name| name == tag) {
+                let input = body[..end].trim_end_matches('\n').to_owned();
+                if !input.trim().is_empty() {
+                    return Some(ToolCall {
+                        name: tag.to_owned(),
+                        input,
+                    });
+                }
+            }
+            remaining = &body[end + 3..];
+        } else {
+            return None;
+        }
+    }
+    None
 }
 
 /// Extracts the intended `Action` (bash command, submit, or none) from a model's response string.
@@ -79,6 +107,11 @@ fn extract_first_any_block(s: &str) -> Option<String> {
 /// assert_eq!(action, Action::Submit("Bug fixed!".to_string()));
 /// ```
 pub fn extract_action(content: &str) -> Action {
+    extract_action_for_tools(content, &[BASH_TOOL_NAME.to_owned()])
+}
+
+/// Extracts the intended action using the supplied runtime tool names.
+pub fn extract_action_for_tools(content: &str, tool_names: &[String]) -> Action {
     // 1) Submit wins if the sentinel appears on its own line.
     let sentinel_on_own_line = content.lines().any(|l| l.trim() == SUBMIT_SENTINEL);
 
@@ -92,9 +125,17 @@ pub fn extract_action(content: &str) -> Action {
         return Action::Submit(final_output);
     }
 
-    // 2) Otherwise, a bash block is the action.
+    // 2) Otherwise, any registered tool fence is the action.
+    if let Some(call) = extract_first_registered_tool_block(content, tool_names) {
+        if call.name == BASH_TOOL_NAME {
+            return Action::Bash(call.input);
+        }
+        return Action::Tool(call);
+    }
+
+    // 3) Preserve the historical bash parser's lenient prefix handling.
     if let Some(cmd) = extract_first_bash_block(content) {
-        if !cmd.trim().is_empty() {
+        if tool_names.iter().any(|name| name == BASH_TOOL_NAME) && !cmd.trim().is_empty() {
             return Action::Bash(cmd);
         }
     }
@@ -156,5 +197,23 @@ mod tests {
         let s =
             "The sentinel is COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT in prose.\n```bash\necho x\n```";
         assert_eq!(extract_action(s), Action::Bash("echo x".into()));
+    }
+
+    #[test]
+    fn extracts_registered_runtime_tool() {
+        let s = "Need a diagnostic.\n```diagnose\ncheck flaky test\n```";
+        assert_eq!(
+            extract_action_for_tools(s, &["bash".into(), "diagnose".into()]),
+            Action::Tool(ToolCall {
+                name: "diagnose".into(),
+                input: "check flaky test".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_unregistered_tool_fence() {
+        let s = "```diagnose\ncheck flaky test\n```";
+        assert_eq!(extract_action_for_tools(s, &["bash".into()]), Action::None);
     }
 }

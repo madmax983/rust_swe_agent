@@ -1,4 +1,4 @@
-//! Measure-first SWE agent harness with a minimal bash-only loop.
+//! Measure-first SWE agent harness with runtime MCP toolsets.
 //!
 //! Re-exports the public surface. See module docs for the architecture.
 
@@ -16,10 +16,11 @@ pub mod redaction;
 pub mod run;
 pub mod stream;
 pub mod template;
+pub mod tool;
 pub mod trajectory;
 
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
-pub use config::{Config, RedactionCfg, ToolHookCfg, ToolHooksCfg};
+pub use config::{Config, McpServerCfg, RedactionCfg, ToolCfg, ToolHookCfg, ToolHooksCfg};
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
@@ -34,6 +35,11 @@ pub use policy::{
 };
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
+pub use tool::{
+    BASH_TOOL_NAME, CommandTool, McpStdioServer, ToolCall, ToolDefinition, ToolInvocation,
+    ToolManifestEntry, ToolOutput, ToolPromptInfo, ToolProvider, ToolRegistry, ToolSource,
+    ToolsetManifest,
+};
 pub use trajectory::{
     FORMAT_VERSION, FailureCategory, FallbackSummary, MessageRecord, TestInvocation, TokenUsage,
     Trajectory, TrajectoryInfo,

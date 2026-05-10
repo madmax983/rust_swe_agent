@@ -8,12 +8,13 @@ kind = "default"
 step_limit = 50
 # Template rendered when the model's response contains no valid action.
 format_error_template = '''
-Your response did not include a shell command. Respond with a single
+Your response did not include a valid tool call. Respond with a single
 ```bash
 # command here
 ```
-block, or the sentinel `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own
-line followed by the final output block.
+block (or another listed tool block), or the sentinel
+`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by the final
+output block.
 '''
 # Template rendered over each command's RunResult to form the next
 # user-observation message. `pre_tool_use_hooks` and
@@ -75,6 +76,23 @@ tool_hook_timeout_secs = 10
 # [[agent.hooks.post_tool_use]]
 # name = "git-status"
 # command = "git status --short"
+#
+# Optional invocation-time MCP stdio servers. Each server is initialized with
+# MCP JSON-RPC, exposes tools through `tools/list`, and receives `tools/call`
+# requests when the assistant uses one of those tools.
+#
+# [[agent.mcp_servers]]
+# command = "diagnostic-mcp"
+# timeout_secs = 30
+#
+# Low-level command adapter escape hatch. Prefer `agent.mcp_servers` for A/B
+# toolset experiments; this only maps a fenced tool block to one command.
+#
+# [[agent.tools]]
+# name = "diagnose"
+# description = "Run a repository diagnostic helper."
+# command = "diagnose-helper"
+# timeout_secs = 30
 
 [model]
 # String name. Routed by prefix to backend (claude* -> Anthropic).
@@ -120,8 +138,15 @@ unsafe_allow_secret_leaks = false
 [prompts]
 system = '''
 You are a skilled software engineer working at a terminal. You have
-access to a bash shell. Each response must contain exactly one action:
-either a single ```bash block to execute, or the literal sentinel
+access to these tools:
+{% for tool in tools %}
+- `{{ tool.name }}`: {{ tool.description }}
+{% if tool.input_schema %}  Input JSON schema: {{ tool.input_schema }}
+{% endif %}
+{% endfor %}
+
+Each response must contain exactly one action:
+either a single fenced block for one listed tool, or the literal sentinel
 `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a
 final output block.
 '''

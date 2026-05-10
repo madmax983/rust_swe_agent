@@ -1,4 +1,4 @@
-//! One-shot task runner for the minimal bash-only loop. Resolves backend from
+//! One-shot task runner for the minimal tool loop. Resolves backend from
 //! the model name, builds `DefaultAgent`, runs to completion, writes a
 //! trajectory file and (if submitted) an output artifact.
 
@@ -117,6 +117,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_usage_per_call.clone(),
     );
     let env = build_env(&args.config).await?;
+    let tool_providers = crate::tool::discover_mcp_servers(
+        env.as_ref(),
+        &args.config.root.agent.mcp_servers,
+        args.config.root.agent.tool_hook_timeout_secs,
+        args.cancellation.clone(),
+    )
+    .await?;
 
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
@@ -142,7 +149,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         renderer: None,
         stream: sink,
     }
-    .build()?;
+    .build_with_tool_providers(tool_providers)?;
     agent.cancellation = args.cancellation.clone();
 
     let traj_path = args

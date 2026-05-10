@@ -140,6 +140,10 @@ pub struct MiniCmd {
     #[arg(long, default_value_t = false)]
     pub hide_budget_from_agent: bool,
 
+    /// Register an invocation-time MCP stdio server command.
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
+
     /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -349,6 +353,10 @@ pub struct SwebenchCmd {
     /// `--per-task-budget-usd` is active. Useful for A/B experiments.
     #[arg(long, default_value_t = false)]
     pub hide_budget_from_agent: bool,
+
+    /// Register an invocation-time MCP stdio server command.
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
 
     #[arg(long)]
     pub config: Option<PathBuf>,

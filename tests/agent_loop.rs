@@ -11,7 +11,8 @@ use rust_swe_agent::env::CancellationToken;
 use rust_swe_agent::error::EnvError;
 use rust_swe_agent::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
-    Message, Role, RunRequest, RunResult, ToolHookCfg,
+    McpServerCfg, McpStdioServer, Message, Role, RunRequest, RunResult, ToolDefinition,
+    ToolHookCfg, ToolInvocation, ToolOutput, ToolProvider,
 };
 
 #[tokio::test]
@@ -312,6 +313,209 @@ command = "echo post"
     assert_eq!(post.name, "probe");
     assert_eq!(post.command, "echo post");
     assert_eq!(post.timeout_secs, None);
+}
+
+#[test]
+fn config_parses_invocation_time_mcp_servers() {
+    let cfg = Config::from_toml_str(
+        r#"
+[[agent.mcp_servers]]
+command = "diagnostic-mcp"
+timeout_secs = 3
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(cfg.root.agent.mcp_servers.len(), 1);
+    let server = &cfg.root.agent.mcp_servers[0];
+    assert_eq!(server.command, "diagnostic-mcp");
+    assert_eq!(server.timeout_secs, Some(3));
+}
+
+#[tokio::test]
+async fn command_tool_adapter_executes_from_matching_fenced_block() {
+    let cfg = Config::from_toml_str(
+        r#"
+[agent]
+step_limit = 5
+
+[[agent.tools]]
+name = "diagnose"
+description = "Run a repository diagnostic helper."
+command = "diagnose-helper"
+timeout_secs = 3
+"#,
+    )
+    .unwrap();
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```diagnose\ncheck flaky test\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env = PluginToolEnv::default();
+    let calls = Arc::clone(&env.calls);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].command, "diagnose-helper");
+    assert_eq!(
+        calls[0]
+            .env
+            .get("RUST_SWE_AGENT_TOOL_NAME")
+            .map(String::as_str),
+        Some("diagnose")
+    );
+    assert_eq!(
+        calls[0]
+            .env
+            .get("RUST_SWE_AGENT_TOOL_INPUT")
+            .map(String::as_str),
+        Some("check flaky test")
+    );
+    assert_eq!(
+        calls[0]
+            .env
+            .get("RUST_SWE_AGENT_COMMAND")
+            .map(String::as_str),
+        Some("check flaky test")
+    );
+
+    let observation = agent
+        .history
+        .iter()
+        .find(|m| m.role == Role::User && m.content.contains("diagnose saw check flaky test"));
+    assert!(
+        observation.is_some(),
+        "command-adapter output should be model-visible: {:#?}",
+        agent.history
+    );
+
+    let assistant = agent.trajectory.messages.iter().find(|m| {
+        m.role == "assistant"
+            && m.extra.actions.as_ref().is_some_and(|actions| {
+                actions
+                    .iter()
+                    .any(|action| action == "diagnose:check flaky test")
+            })
+    });
+    assert!(
+        assistant.is_some(),
+        "trajectory should record the command-adapter action: {:#?}",
+        agent.trajectory.messages
+    );
+}
+
+#[tokio::test]
+async fn runtime_tool_provider_executes_without_command_tool_config() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```diagnose\ncheck flaky test\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let provider = Arc::new(InMemoryToolProvider::new("diagnose"));
+    let calls = Arc::clone(&provider.calls);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(PanicEnvironment),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build_with_tool_providers(vec![provider])
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "diagnose");
+    assert_eq!(calls[0].input, "check flaky test");
+    assert!(
+        agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("provider saw check flaky test")),
+        "provider output should be model-visible: {:#?}",
+        agent.history
+    );
+    let toolset = agent.trajectory.info.other.get("toolset").unwrap();
+    assert_eq!(toolset["tools"][1]["name"], "diagnose");
+    assert_eq!(toolset["tools"][1]["source"], "runtime_provider");
+}
+
+#[tokio::test]
+async fn mcp_server_tool_executes_from_matching_fenced_block() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let env = McpToolEnv::default();
+    let requests = Arc::clone(&env.requests);
+    let provider = Arc::new(
+        McpStdioServer::discover(
+            &env,
+            &McpServerCfg {
+                command: "diagnostic-mcp".into(),
+                timeout_secs: Some(3),
+            },
+            10,
+            None,
+        )
+        .await
+        .unwrap(),
+    );
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```diagnose\n{\"query\":\"check flaky test\"}\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build_with_tool_providers(vec![provider])
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].stdin.as_deref().unwrap().contains("tools/list"));
+    assert!(requests[1].stdin.as_deref().unwrap().contains("tools/call"));
+    assert!(
+        agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("mcp saw check flaky test")),
+        "MCP output should be model-visible: {:#?}",
+        agent.history
+    );
+    let toolset = agent.trajectory.info.other.get("toolset").unwrap();
+    assert_eq!(toolset["tools"][1]["name"], "diagnose");
+    assert_eq!(toolset["tools"][1]["source"], "mcp_server");
 }
 
 #[tokio::test]
@@ -805,6 +1009,65 @@ fn hook_command(vars: &[&str]) -> String {
     }
 }
 
+fn fake_mcp_stdout(stdin: &str) -> String {
+    let mut responses = Vec::new();
+    for line in stdin.lines() {
+        let request: serde_json::Value = serde_json::from_str(line).unwrap();
+        let Some(method) = request.get("method").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        match method {
+            "initialize" => responses.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "diagnostic-mcp", "version": "1.0.0"},
+                },
+            })),
+            "notifications/initialized" => {}
+            "tools/list" => responses.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "tools": [{
+                        "name": "diagnose",
+                        "description": "Run diagnostics.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"}
+                            },
+                            "required": ["query"]
+                        },
+                    }]
+                },
+            })),
+            "tools/call" => {
+                let query = request["params"]["arguments"]["query"]
+                    .as_str()
+                    .unwrap_or_default();
+                responses.push(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": {
+                        "content": [{"type": "text", "text": format!("mcp saw {query}")}],
+                        "isError": false,
+                    },
+                }));
+            }
+            other => panic!("unexpected MCP method: {other}"),
+        }
+    }
+    responses
+        .into_iter()
+        .map(|response| serde_json::to_string(&response).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 fn failing_hook_command() -> String {
     if cfg!(windows) {
         "echo hook failed & exit /B 7".into()
@@ -842,6 +1105,72 @@ struct FixedExitEnvironment {
     exit_code: i32,
 }
 
+#[derive(Default)]
+struct InMemoryToolProvider {
+    tools: Vec<ToolDefinition>,
+    calls: Arc<Mutex<Vec<ToolInvocation>>>,
+}
+
+impl InMemoryToolProvider {
+    fn new(name: &str) -> Self {
+        Self {
+            tools: vec![ToolDefinition {
+                name: name.into(),
+                description: "In-memory test provider.".into(),
+                input_schema: None,
+            }],
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolProvider for InMemoryToolProvider {
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
+    }
+
+    async fn call(
+        &self,
+        _env: &dyn Environment,
+        invocation: ToolInvocation,
+        _cancellation: Option<CancellationToken>,
+    ) -> Result<ToolOutput, Error> {
+        self.calls.lock().unwrap().push(invocation.clone());
+        Ok(ToolOutput {
+            stdout: format!("provider saw {}\n", invocation.input),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+}
+
+struct PanicEnvironment;
+
+#[async_trait]
+impl Environment for PanicEnvironment {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        panic!("runtime provider should not require env command execution: {req:?}");
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PluginToolCall {
+    command: String,
+    env: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct PluginToolEnv {
+    calls: Arc<Mutex<Vec<PluginToolCall>>>,
+}
+
+#[derive(Default)]
+struct McpToolEnv {
+    requests: Arc<Mutex<Vec<RunRequest>>>,
+}
+
 struct PreHookSpawnFailureEnv;
 
 #[derive(Default)]
@@ -872,6 +1201,40 @@ impl Environment for FixedExitEnvironment {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: self.exit_code,
+            timed_out: false,
+        })
+    }
+}
+
+#[async_trait]
+impl Environment for PluginToolEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        self.calls.lock().unwrap().push(PluginToolCall {
+            command: req.command,
+            env: req.env.clone(),
+        });
+        let input = req
+            .env
+            .get("RUST_SWE_AGENT_TOOL_INPUT")
+            .cloned()
+            .unwrap_or_default();
+        Ok(RunResult {
+            stdout: format!("diagnose saw {input}\n"),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+        })
+    }
+}
+
+#[async_trait]
+impl Environment for McpToolEnv {
+    async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+        self.requests.lock().unwrap().push(req.clone());
+        Ok(RunResult {
+            stdout: fake_mcp_stdout(req.stdin.as_deref().unwrap_or_default()),
+            stderr: String::new(),
+            exit_code: 0,
             timed_out: false,
         })
     }
