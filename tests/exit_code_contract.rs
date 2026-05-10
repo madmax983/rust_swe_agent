@@ -450,3 +450,37 @@ fn regression_gate_is_distinct_from_internal_error() {
         "regression_gate_failure"
     );
 }
+
+/// Preflight probe errors use EnvError::DockerDaemonUnreachable so they route
+/// to PreflightFailure (3) rather than InternalError (1). Verify the mapping
+/// works for the messages written by run_preflight in swebench.rs.
+#[test]
+fn preflight_probe_errors_map_to_preflight_failure() {
+    let cases = [
+        "preflight: required binary missing: bash",
+        "docker preflight timed out",
+        "preflight: dataset.read: timeout exceeded",
+        "preflight total timeout exceeded",
+    ];
+    for msg in cases {
+        let e = Error::Env(EnvError::DockerDaemonUnreachable(msg.into()));
+        assert_eq!(
+            ExitCode::from_error(&e),
+            ExitCode::PreflightFailure,
+            "message {msg:?} should map to PreflightFailure"
+        );
+        assert_eq!(ExitCode::from_error(&e).as_i32(), 3);
+    }
+}
+
+/// Model probe failures (run_preflight's model availability check) map to
+/// TaskUnsuccessful (4) — better than InternalError (1) and the closest
+/// existing variant for a model API failure before sweep start.
+#[test]
+fn model_probe_failure_maps_to_task_unsuccessful() {
+    let e = Error::Model(ModelError::Request(
+        "model probe failed: 401 unauthorized".into(),
+    ));
+    assert_eq!(ExitCode::from_error(&e), ExitCode::TaskUnsuccessful);
+    assert_eq!(ExitCode::from_error(&e).as_i32(), 4);
+}
