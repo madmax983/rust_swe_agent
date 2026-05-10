@@ -690,6 +690,7 @@ fn swebench_args_from_cmd(
         install_os_signal_handlers: true,
         cancellation_signals: None,
         github_pr,
+        reproduced_from: None,
     })
 }
 
@@ -995,7 +996,8 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     let source_manifest_hash = hash_manifest(&source_manifest);
 
     // Build the swebench args from the source manifest, applying any overrides.
-    let sweep_args = reproduce_swebench_args(&r, &source_manifest, &source_results)?;
+    let sweep_args =
+        reproduce_swebench_args(&r, &source_manifest, &source_results, &source_manifest_hash)?;
 
     // Run the replay sweep.
     let replay_results = crate::run::swebench::run(sweep_args).await?;
@@ -1066,6 +1068,7 @@ fn reproduce_swebench_args(
     r: &args::ReproduceCmd,
     manifest: &crate::run::swebench::ProvenanceManifest,
     source_results: &crate::run::swebench::SweepResults,
+    source_manifest_hash: &str,
 ) -> Result<crate::run::swebench::SwebenchArgs, Error> {
     use crate::run::dataset::DatasetSource;
 
@@ -1143,6 +1146,10 @@ fn reproduce_swebench_args(
         install_os_signal_handlers: true,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: Some((
+            source_manifest_hash.to_owned(),
+            r.from.display().to_string(),
+        )),
     })
 }
 

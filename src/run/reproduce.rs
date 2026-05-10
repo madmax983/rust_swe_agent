@@ -146,8 +146,9 @@ pub fn load_manifest_from_sweep(sweep_dir: &Path) -> Result<ProvenanceManifest, 
 
 /// Compare two manifests and return every field that diverges.
 ///
-/// Hard divergences (harness SHA, dataset hash, model name) abort unless
-/// whitelisted. Soft divergences are warnings.
+/// Hard divergences (harness SHA, dataset hash, model name, resolved config)
+/// abort unless whitelisted. Soft divergences (Rust version, host OS) are
+/// reported as warnings only.
 #[must_use]
 pub fn compare_manifests(
     original: &ProvenanceManifest,
@@ -165,9 +166,7 @@ pub fn compare_manifests(
                 severity: DriftSeverity::Hard,
                 source_value: Some(orig_sha.clone()),
                 current_value: Some(curr_sha.clone()),
-                message: format!(
-                    "harness git SHA changed: {orig_sha} → {curr_sha}"
-                ),
+                message: format!("harness git SHA changed: {orig_sha} → {curr_sha}"),
             });
         }
     }
@@ -199,6 +198,46 @@ pub fn compare_manifests(
             message: format!(
                 "model name changed: {} → {}",
                 original.model.name, current.model.name
+            ),
+        });
+    }
+
+    // Hard: resolved config (direct string comparison — both sides are TOML)
+    if original.config.resolved != current.config.resolved {
+        drifts.push(DriftField {
+            field: "config.resolved".into(),
+            severity: DriftSeverity::Hard,
+            source_value: None,
+            current_value: None,
+            message: "resolved config changed (TOML differs from source sweep)".into(),
+        });
+    }
+
+    // Soft: Rust compiler version (informational; does not affect correctness)
+    if let (Some(orig_rv), Some(curr_rv)) =
+        (&original.runtime.rust_version, &current.runtime.rust_version)
+    {
+        if orig_rv != curr_rv {
+            drifts.push(DriftField {
+                field: "runtime.rust_version".into(),
+                severity: DriftSeverity::Soft,
+                source_value: Some(orig_rv.clone()),
+                current_value: Some(curr_rv.clone()),
+                message: format!("Rust version changed: {orig_rv} → {curr_rv}"),
+            });
+        }
+    }
+
+    // Soft: host OS (cross-platform replay may behave differently)
+    if original.runtime.host_os != current.runtime.host_os {
+        drifts.push(DriftField {
+            field: "runtime.host_os".into(),
+            severity: DriftSeverity::Soft,
+            source_value: Some(original.runtime.host_os.clone()),
+            current_value: Some(current.runtime.host_os.clone()),
+            message: format!(
+                "host OS changed: {} → {}",
+                original.runtime.host_os, current.runtime.host_os
             ),
         });
     }
@@ -316,10 +355,14 @@ fn compare_patches(
 }
 
 /// Render a human-readable summary of a `ReproducibilityReport` to stdout.
+///
+/// Includes total instances, % matched on resolved status, % patch-identical,
+/// aggregate counts, and the top-3 diverging failure categories.
 #[must_use]
 pub fn render_summary(report: &ReproducibilityReport) -> String {
     let total = report.instances.len() + report.aggregate.errored;
-    let status_matched = report.aggregate.matched + report.aggregate.both_unresolved_same_category;
+    let status_matched =
+        report.aggregate.matched + report.aggregate.both_unresolved_same_category;
 
     let pct = |n: usize| -> f64 {
         if total == 0 { 0.0 } else { n as f64 / total as f64 * 100.0 }
@@ -344,7 +387,64 @@ pub fn render_summary(report: &ReproducibilityReport) -> String {
         both_unresolved_different_category = report.aggregate.both_unresolved_different_category,
         errored = report.aggregate.errored,
     ));
+
+    let top3 = top_diverging_failure_categories(&report.instances, 3);
+    if !top3.is_empty() {
+        out.push_str("  top diverging failure categories:");
+        for (cat, count) in &top3 {
+            out.push_str(&format!(" {cat}×{count}"));
+        }
+        out.push('\n');
+    }
+
     out
+}
+
+/// Collect failure categories from instances where resolved status diverged or
+/// failure category changed, returning the top `n` by occurrence count.
+///
+/// "Diverging" means any instance where:
+/// - it flipped to unresolved (replay category)
+/// - it flipped to resolved (original category — the "was failing" label)
+/// - both unresolved but different categories (both sides)
+#[must_use]
+pub fn top_diverging_failure_categories(
+    instances: &[InstanceComparisonEntry],
+    n: usize,
+) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for entry in instances {
+        let diverging = match (entry.original_resolved, entry.replay_resolved) {
+            (true, false) => {
+                // flipped to unresolved — note the new failure category
+                entry.replay_failure_category.iter().collect::<Vec<_>>()
+            }
+            (false, true) => {
+                // flipped to resolved — note what was failing before
+                entry.original_failure_category.iter().collect::<Vec<_>>()
+            }
+            (false, false)
+                if entry.original_failure_category != entry.replay_failure_category =>
+            {
+                // same unresolved outcome but different category — note both
+                entry
+                    .original_failure_category
+                    .iter()
+                    .chain(entry.replay_failure_category.iter())
+                    .collect::<Vec<_>>()
+            }
+            _ => vec![],
+        };
+        for cat in diverging {
+            *counts.entry(cat.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    sorted.truncate(n);
+    sorted
 }
 
 /// Write `reproducibility.json` to the output directory.

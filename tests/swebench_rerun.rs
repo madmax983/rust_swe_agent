@@ -96,6 +96,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     }
 }
 

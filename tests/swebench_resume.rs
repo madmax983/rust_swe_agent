@@ -176,6 +176,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -280,6 +281,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -353,6 +355,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -426,6 +429,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -526,6 +530,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -600,6 +605,7 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -711,6 +717,7 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
             backoff_base_ms: 1,
             branch_prefix: "rust-swe-agent".into(),
         }),
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -810,6 +817,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
             backoff_base_ms: 1,
             branch_prefix: "rust-swe-agent".into(),
         }),
+        reproduced_from: None,
     })
     .await
     .unwrap();

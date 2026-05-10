@@ -70,6 +70,7 @@ fn base_args(dataset_source: DatasetSource, output_dir: PathBuf) -> SwebenchArgs
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     }
 }
 

@@ -154,6 +154,7 @@ fn base_args(
         install_os_signal_handlers: false,
         cancellation_signals: signal_rx,
         github_pr: None,
+        reproduced_from: None,
     }
 }
 

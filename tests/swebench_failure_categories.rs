@@ -138,6 +138,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();

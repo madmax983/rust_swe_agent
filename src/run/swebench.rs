@@ -337,6 +337,16 @@ pub enum StratifyMode {
     Balanced,
 }
 
+/// Back-pointer written into a replay sweep's manifest so any reader can
+/// trace it back to the source sweep that was reproduced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestReproducedFrom {
+    /// Stable hash of the source sweep's `ProvenanceManifest` JSON.
+    pub manifest_hash: String,
+    /// Absolute or relative path of the source sweep directory.
+    pub sweep_dir: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +358,10 @@ pub struct ProvenanceManifest {
     pub model: ModelManifest,
     pub runtime: RuntimeManifest,
     pub cli: CliManifest,
+    /// Present only when this sweep was produced by `bench reproduce`.
+    /// Points back at the source sweep's manifest for full provenance chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reproduced_from: Option<ManifestReproducedFrom>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1013,6 +1027,10 @@ pub struct SwebenchArgs {
     pub cancellation_signals: Option<mpsc::UnboundedReceiver<SweepSignal>>,
     /// Optional GitHub PR publisher for submitted patch artifacts.
     pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
+    /// When this sweep is a reproduction of a prior run, embed a back-pointer
+    /// in the new sweep's `ProvenanceManifest`. Tuple of
+    /// `(manifest_hash, sweep_dir)` matching the source sweep.
+    pub reproduced_from: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2419,6 +2437,13 @@ fn build_manifest(
         cli: CliManifest {
             argv: redact_argv(std::env::args().collect(), &args.config.root.redaction),
         },
+        reproduced_from: args
+            .reproduced_from
+            .as_ref()
+            .map(|(hash, dir)| ManifestReproducedFrom {
+                manifest_hash: hash.clone(),
+                sweep_dir: dir.clone(),
+            }),
     }
 }
 
@@ -4424,6 +4449,7 @@ mod tests {
             install_os_signal_handlers: false,
             cancellation_signals: Some(signal_rx),
             github_pr: None,
+            reproduced_from: None,
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -5272,6 +5298,7 @@ mod tests {
             install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
+            reproduced_from: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5342,6 +5369,7 @@ mod tests {
             install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
+            reproduced_from: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5422,6 +5450,7 @@ instance = "inst"
             install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
+            reproduced_from: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5543,6 +5572,7 @@ instance = "inst"
             install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
+            reproduced_from: None,
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -6207,6 +6237,7 @@ instance = "inst"
             install_os_signal_handlers: false,
             cancellation_signals: None,
             github_pr: None,
+            reproduced_from: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));

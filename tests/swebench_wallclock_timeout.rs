@@ -77,6 +77,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();

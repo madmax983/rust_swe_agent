@@ -138,6 +138,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -241,6 +242,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -337,6 +339,7 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -430,6 +433,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
