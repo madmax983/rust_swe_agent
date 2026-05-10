@@ -156,6 +156,7 @@ fn dataset_model_parallel_and_instance_mismatches_are_flagged() {
             dataset_sha256: "sha256:other".into(),
             model: "other-model".into(),
             parallel: 8,
+            ..ManifestCase::default()
         },
     );
 
@@ -179,6 +180,124 @@ fn dataset_model_parallel_and_instance_mismatches_are_flagged() {
         "{:#?}",
         report.mismatches
     );
+}
+
+#[test]
+fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
+    let cwd = std::env::current_dir().unwrap();
+    let work = tempfile::tempdir_in(cwd.join("target")).unwrap();
+    let rel_work = work.path().strip_prefix(&cwd).unwrap();
+    let runs_dir = rel_work.join("runs");
+    let forecast_path = runs_dir.join("forecast.json");
+    let results_path = runs_dir.join("results.json");
+    let calibration_dir = runs_dir.join("forecast").join("forecast");
+
+    std::fs::create_dir_all(cwd.join(&calibration_dir)).unwrap();
+
+    let forecast_report = forecast_report(&ForecastCase::default(), &calibration_dir);
+    std::fs::write(
+        cwd.join(&forecast_path),
+        rust_swe_agent::run::forecast::to_json(&forecast_report).unwrap(),
+    )
+    .unwrap();
+
+    let calibration_results = sweep_results(
+        ResultsCase {
+            total: 2,
+            resolved: 2,
+            ..ResultsCase::default()
+        },
+        ManifestCase::default(),
+        &["a".to_owned(), "b".to_owned()],
+    );
+    std::fs::write(
+        cwd.join(&calibration_dir).join("results.json"),
+        rust_swe_agent::artifact::to_string_pretty(
+            ArtifactKind::SweepResults,
+            &calibration_results,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let actual = sweep_results(
+        ResultsCase::default(),
+        ManifestCase {
+            model: "other-model".into(),
+            ..ManifestCase::default()
+        },
+        &[
+            "a".to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+            "d".to_owned(),
+        ],
+    );
+    std::fs::write(
+        cwd.join(&results_path),
+        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
+    )
+    .unwrap();
+
+    let report = compute(&CalibrationArgs {
+        forecast_path,
+        results_path,
+    })
+    .unwrap();
+
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.field == "model.name"),
+        "{:#?}",
+        report.mismatches
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("forecast calibration results unavailable")),
+        "{:#?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn parallel_mismatch_is_detected_from_equals_and_short_manifest_forms() {
+    for parallel_arg_style in [
+        ParallelArgStyle::LongEquals,
+        ParallelArgStyle::ShortSeparated,
+    ] {
+        let work = tempfile::tempdir().unwrap();
+        let (forecast_path, results_path) = write_pair(
+            work.path(),
+            ForecastCase::default(),
+            ResultsCase::default(),
+            ManifestCase::default(),
+            ManifestCase {
+                parallel: 8,
+                parallel_arg_style,
+                ..ManifestCase::default()
+            },
+        );
+
+        let report = compute(&CalibrationArgs {
+            forecast_path,
+            results_path,
+        })
+        .unwrap();
+
+        assert_eq!(report.verdict, CalibrationVerdict::NotComparable);
+        assert!(
+            report
+                .mismatches
+                .iter()
+                .any(|mismatch| mismatch.field == "parallel"),
+            "{parallel_arg_style:?}: {:#?}",
+            report.mismatches
+        );
+    }
 }
 
 #[test]
@@ -210,6 +329,44 @@ fn exact_target_instance_set_mismatch_is_flagged_even_when_counts_match() {
         "{:#?}",
         report.mismatches
     );
+}
+
+#[test]
+fn small_n_zero_resolution_signal_uses_nonzero_interval() {
+    let work = tempfile::tempdir().unwrap();
+    let (forecast_path, results_path) = write_pair(
+        work.path(),
+        ForecastCase {
+            resolution_point: 0.0,
+            resolution_resolved: 0,
+            resolution_total: 2,
+            ..ForecastCase::default()
+        },
+        ResultsCase {
+            resolved: 1,
+            total: 4,
+            ..ResultsCase::default()
+        },
+        ManifestCase::default(),
+        ManifestCase::default(),
+    );
+
+    let report = compute(&CalibrationArgs {
+        forecast_path,
+        results_path,
+    })
+    .unwrap();
+
+    assert_eq!(
+        report.metrics.resolution_rate.status,
+        CalibrationMetricStatus::WithinInterval
+    );
+    assert!(
+        report.metrics.resolution_rate.forecast.upper > 0.2,
+        "{:#?}",
+        report.metrics.resolution_rate
+    );
+    assert_eq!(report.verdict, CalibrationVerdict::WellCalibrated);
 }
 
 #[test]
@@ -366,6 +523,8 @@ struct ForecastCase {
     output_tokens: IntervalEstimate,
     wall_clock_secs: IntervalEstimate,
     resolution_point: f64,
+    resolution_resolved: usize,
+    resolution_total: usize,
     calibration_ids: Vec<String>,
     target_n: usize,
     target_instance_ids: Vec<String>,
@@ -380,6 +539,8 @@ impl Default for ForecastCase {
             output_tokens: interval(100.0, 80.0, 120.0),
             wall_clock_secs: interval(100.0, 80.0, 120.0),
             resolution_point: 0.5,
+            resolution_resolved: 1,
+            resolution_total: 2,
             calibration_ids: vec!["a".into(), "b".into()],
             target_n: 4,
             target_instance_ids: vec!["a".into(), "b".into(), "c".into(), "d".into()],
@@ -416,6 +577,7 @@ struct ManifestCase {
     dataset_sha256: String,
     model: String,
     parallel: usize,
+    parallel_arg_style: ParallelArgStyle,
 }
 
 impl Default for ManifestCase {
@@ -424,6 +586,41 @@ impl Default for ManifestCase {
             dataset_sha256: "sha256:dataset".into(),
             model: "fixture-model".into(),
             parallel: 4,
+            parallel_arg_style: ParallelArgStyle::LongSeparated,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ParallelArgStyle {
+    LongSeparated,
+    LongEquals,
+    ShortSeparated,
+}
+
+impl ParallelArgStyle {
+    fn argv(self, parallel: usize) -> Vec<String> {
+        match self {
+            Self::LongSeparated => vec![
+                "rust-swe-agent".into(),
+                "bench".into(),
+                "swebench".into(),
+                "--parallel".into(),
+                parallel.to_string(),
+            ],
+            Self::LongEquals => vec![
+                "rust-swe-agent".into(),
+                "bench".into(),
+                "swebench".into(),
+                format!("--parallel={parallel}"),
+            ],
+            Self::ShortSeparated => vec![
+                "rust-swe-agent".into(),
+                "bench".into(),
+                "swebench".into(),
+                "-p".into(),
+                parallel.to_string(),
+            ],
         }
     }
 }
@@ -514,8 +711,8 @@ fn forecast_report(case: &ForecastCase, calibration_dir: &Path) -> ForecastRepor
             wall_clock_seconds: case.wall_clock_secs,
         },
         resolution_rate: ResolutionRateSignal {
-            resolved: 1,
-            total: 2,
+            resolved: case.resolution_resolved,
+            total: case.resolution_total,
             point: case.resolution_point,
             disclaimer: "fixture".into(),
         },
@@ -686,13 +883,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
             rust_version: None,
         },
         cli: CliManifest {
-            argv: vec![
-                "rust-swe-agent".into(),
-                "bench".into(),
-                "swebench".into(),
-                "--parallel".into(),
-                case.parallel.to_string(),
-            ],
+            argv: case.parallel_arg_style.argv(case.parallel),
         },
     }
 }

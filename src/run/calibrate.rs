@@ -392,14 +392,13 @@ fn load_forecast_calibration_results(
 
 fn calibration_results_path(forecast_path: &Path, report: &ForecastReport) -> PathBuf {
     let output_dir = PathBuf::from(&report.calibration.output_dir);
-    let base = if output_dir.is_absolute() {
-        output_dir
-    } else {
-        forecast_path
-            .parent()
-            .map_or_else(|| output_dir.clone(), |parent| parent.join(&output_dir))
-    };
-    base.join("results.json")
+    let cwd_relative = output_dir.join("results.json");
+    if output_dir.is_absolute() || cwd_relative.is_file() {
+        return cwd_relative;
+    }
+    forecast_path.parent().map_or(cwd_relative, |parent| {
+        parent.join(output_dir).join("results.json")
+    })
 }
 
 fn build_metrics(forecast: &ForecastReport, actual: &SweepResults) -> CalibrationMetrics {
@@ -619,13 +618,19 @@ fn compare_optional_field(
 
 fn parallel_from_manifest(manifest: &ProvenanceManifest) -> Option<usize> {
     let argv = &manifest.cli.argv;
-    argv.windows(2).find_map(|pair| {
-        if pair[0] == "--parallel" {
-            pair[1].parse().ok()
-        } else {
-            None
+    for (idx, arg) in argv.iter().enumerate() {
+        if let Some(value) = arg.strip_prefix("--parallel=") {
+            if let Ok(parallel) = value.parse() {
+                return Some(parallel);
+            }
         }
-    })
+        if (arg == "--parallel" || arg == "-p") && idx + 1 < argv.len() {
+            if let Ok(parallel) = argv[idx + 1].parse() {
+                return Some(parallel);
+            }
+        }
+    }
+    None
 }
 
 fn calibration_verdict(
@@ -671,20 +676,26 @@ fn relative_error(point: f64, actual: f64) -> Option<f64> {
 
 fn resolution_interval(forecast: &ForecastReport) -> IntervalEstimate {
     let point = forecast.resolution_rate.point.clamp(0.0, 1.0);
-    let n = forecast.resolution_rate.total;
-    if n == 0 {
+    let total = forecast.resolution_rate.total;
+    if total == 0 {
         return IntervalEstimate {
             point,
             lower: point,
             upper: point,
         };
     }
+    let successes = forecast.resolution_rate.resolved.min(total);
+    let n = as_f64_usize(total);
+    let p_hat = as_f64_usize(successes) / n;
     let z = z_for_confidence(forecast.forecast.confidence_pct);
-    let margin = z * ((point * (1.0 - point)) / as_f64_usize(n)).sqrt();
+    let z2 = z * z;
+    let denominator = 1.0 + z2 / n;
+    let center = (p_hat + z2 / (2.0 * n)) / denominator;
+    let margin = z * (p_hat.mul_add(1.0 - p_hat, z2 / (4.0 * n)) / n).sqrt() / denominator;
     IntervalEstimate {
         point,
-        lower: (point - margin).max(0.0),
-        upper: (point + margin).min(1.0),
+        lower: (center - margin).max(0.0),
+        upper: (center + margin).min(1.0),
     }
 }
 
