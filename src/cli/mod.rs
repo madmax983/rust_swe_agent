@@ -337,6 +337,9 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
 fn exit_with_outcome(code: ExitCode, detail: &str) -> ! {
     eprintln!("outcome_class: {}", code.outcome_class());
     eprintln!("error: {detail}");
+    // Flush stdout so piped consumers receive any buffered report output
+    // before the process terminates (process::exit bypasses Drop).
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     std::process::exit(code.as_i32());
 }
 

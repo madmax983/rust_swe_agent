@@ -50,7 +50,7 @@ coarse sweep-level result.
 
 | Command                         | Possible outcome classes |
 |---------------------------------|--------------------------|
-| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `internal_error`, `interrupted` |
+| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `internal_error` |
 | `bench swebench`                | `success`, `usage_error`, `preflight_failure`, `budget_halt`, `internal_error`, `interrupted`, `killed` |
 | `bench forecast`                | `success`, `usage_error`, `budget_halt`, `internal_error`, `interrupted` |
 | `bench doctor`                  | `success`, `usage_error`, `preflight_failure`, `internal_error` |
