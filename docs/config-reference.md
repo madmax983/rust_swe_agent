@@ -108,6 +108,8 @@ Controls the inner agent loop.
 | `tool_hook_timeout_secs` | integer | `10` | `1`–`∞` | Default timeout for pre/post tool hooks unless a hook overrides it |
 | `test_command_patterns` | array of strings | `[]` | Valid regexes | Extends the built-in test-command corpus; see `spec-test-telemetry.md` |
 | `test_command_patterns_replace` | bool | `false` | `true`, `false` | When `true`, replaces rather than extends the built-in corpus |
+| `mcp_servers` | array of tables | `[]` | `[[agent.mcp_servers]]` entries | Invocation-time MCP stdio servers that contribute tools to the agent loop |
+| `tools` | array of tables | `[]` | `[[agent.tools]]` entries | Low-level command adapters; prefer MCP servers for toolset experiments |
 
 ### `[[agent.hooks.pre_tool_use]]` / `[[agent.hooks.post_tool_use]]`
 
@@ -121,6 +123,34 @@ Optional inline hooks that run before or after each bash tool invocation.
 
 A non-zero PreToolUse exit code blocks the command and reports the result to
 the model. PostToolUse hooks are diagnostic only.
+
+### `[[agent.mcp_servers]]`
+
+Optional invocation-time MCP stdio servers. Each server is initialized with
+MCP JSON-RPC, listed through `tools/list`, and called through `tools/call`
+when the assistant emits the corresponding fenced tool block.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `command` | string | yes | Server command executed in the task environment |
+| `timeout_secs` | integer | no | Overrides `tool_hook_timeout_secs` for this server |
+
+CLI `--mcp-server <command>` entries append to this list for the current
+invocation, which is the intended path for A/B testing different toolsets
+without rebuilding the binary.
+
+### `[[agent.tools]]`
+
+Optional command adapter escape hatch. These tools map a fenced tool block
+directly to a command with the block body passed on stdin and through
+`RUST_SWE_AGENT_TOOL_INPUT`.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Tool block name; must be unique and cannot be `bash` |
+| `description` | string | no | Description shown in the agent prompt |
+| `command` | string | yes | Command executed in the task environment |
+| `timeout_secs` | integer | no | Overrides `tool_hook_timeout_secs` for this tool |
 
 ---
 

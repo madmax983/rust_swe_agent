@@ -17,7 +17,7 @@ use std::process::Stdio as StdStdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
@@ -142,18 +142,35 @@ impl Environment for DockerEnvironment {
             .into_owned();
 
         let mut cmd = Command::new("docker");
-        cmd.args(["exec", "-w", &wd]);
+        cmd.arg("exec");
+        if req.stdin.is_some() {
+            cmd.arg("-i");
+        }
+        cmd.args(["-w", &wd]);
         for (k, v) in &req.env {
             cmd.args(["-e", &format!("{k}={v}")]);
         }
         cmd.arg(self.container_id.as_str())
             .args(["bash", "-c", &req.command])
-            .stdin(StdStdio::null())
             .stdout(StdStdio::piped())
             .stderr(StdStdio::piped())
             .kill_on_drop(true);
+        if req.stdin.is_some() {
+            cmd.stdin(StdStdio::piped());
+        } else {
+            cmd.stdin(StdStdio::null());
+        }
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
+        let stdin_task = match req.stdin {
+            Some(stdin) => {
+                let pipe = child.stdin.take().ok_or_else(|| {
+                    EnvError::UnexpectedExit("docker exec stdin pipe missing".into())
+                })?;
+                Some(spawn_stdin_writer(pipe, stdin))
+            }
+            None => None,
+        };
         let stdout_pipe = child
             .stdout
             .take()
@@ -168,6 +185,7 @@ impl Environment for DockerEnvironment {
 
         match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
             ChildStop::Exited(status) => {
+                join_stdin_writer_after_exit(stdin_task).await?;
                 let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
                 let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
                 Ok(RunResult {
@@ -180,6 +198,7 @@ impl Environment for DockerEnvironment {
             ChildStop::TimedOut => {
                 let _ = child.start_kill();
                 let _ = tokio::time::timeout(FORCE_KILL_WAIT, child.wait()).await;
+                abort_stdin_writer(stdin_task).await;
                 let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
                 let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
                 Ok(RunResult {
@@ -196,6 +215,7 @@ impl Environment for DockerEnvironment {
                 let remove_error = self.force_remove_container().await.err();
                 let _ = child.start_kill();
                 let _ = tokio::time::timeout(FORCE_KILL_WAIT, child.wait()).await;
+                abort_stdin_writer(stdin_task).await;
                 let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
                 let mut stderr = partial_reader_output(stderr_task, stderr_buffer).await;
                 stderr = append_status_message(stderr, "cancelled");
@@ -215,6 +235,50 @@ impl Environment for DockerEnvironment {
 
     async fn shutdown(&mut self) -> Result<(), EnvError> {
         self.force_remove_container().await
+    }
+}
+
+fn spawn_stdin_writer(
+    mut pipe: tokio::process::ChildStdin,
+    stdin: String,
+) -> JoinHandle<Result<(), EnvError>> {
+    tokio::spawn(async move {
+        pipe.write_all(stdin.as_bytes())
+            .await
+            .map_err(EnvError::Io)?;
+        pipe.shutdown().await.map_err(EnvError::Io)
+    })
+}
+
+async fn join_stdin_writer(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    if let Some(handle) = handle {
+        handle
+            .await
+            .map_err(|e| EnvError::UnexpectedExit(format!("stdin writer task failed: {e}")))??;
+    }
+    Ok(())
+}
+
+async fn join_stdin_writer_after_exit(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    match join_stdin_writer(handle).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_broken_pipe(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_broken_pipe(err: &EnvError) -> bool {
+    matches!(err, EnvError::Io(io) if io.kind() == std::io::ErrorKind::BrokenPipe)
+}
+
+async fn abort_stdin_writer(handle: Option<JoinHandle<Result<(), EnvError>>>) {
+    if let Some(handle) = handle {
+        handle.abort();
+        let _ = handle.await;
     }
 }
 

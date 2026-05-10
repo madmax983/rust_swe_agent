@@ -1,11 +1,11 @@
-//! `DefaultAgent`: the minimal bash-only agent loop.
+//! `DefaultAgent`: the minimal agent loop with bash plus runtime tools.
 //!
 //! Loop:
 //!   1. Limit check → Terminate if exceeded
 //!   2. Retag cache hints on history
 //!   3. model.query
-//!   4. parse::extract_action
-//!   5. env.run
+//!   4. parse::extract_action_for_tools
+//!   5. tool dispatch through env.run
 //!   6. observation template → push as user message, record in trajectory
 //!   7. bump steps, Continue
 
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{Action, Agent, ExitReason, StepOutcome, extract_action};
+use super::{Action, Agent, ExitReason, StepOutcome, extract_action_for_tools};
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
@@ -27,6 +27,9 @@ use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
+use crate::tool::{
+    BASH_TOOL_NAME, CommandTool, ToolCall, ToolInvocation, ToolProvider, ToolRegistry,
+};
 use crate::trajectory::{
     FailureCategory, FallbackSummary, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
     detect_test_command, effective_test_command_patterns, exit_reason, outcome,
@@ -137,6 +140,7 @@ pub struct DefaultAgent {
     pub redactor: Redactor,
     pub cancellation: Option<CancellationToken>,
     pub policy_engine: PolicyEngine,
+    pub tool_registry: ToolRegistry,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
     /// Accumulated fallback failure records across every model call in this run.
@@ -161,13 +165,24 @@ pub struct DefaultAgentBuilder {
 
 impl DefaultAgentBuilder {
     pub fn build(self) -> Result<DefaultAgent, Error> {
+        self.build_with_tool_providers(Vec::new())
+    }
+
+    pub fn build_with_tool_providers(
+        self,
+        tool_providers: Vec<Arc<dyn ToolProvider>>,
+    ) -> Result<DefaultAgent, Error> {
         let renderer = self.renderer.unwrap_or_else(|| Arc::new(Renderer::new()));
+        let tool_registry =
+            ToolRegistry::from_config_and_providers(&self.config.root.agent.tools, tool_providers)?;
+        let prompt_tools = tool_registry.prompt_tools();
 
         let system_rendered = renderer.render_str(
             &self.config.root.prompts.system,
             &serde_json::json!({
                 "task": self.task,
                 "extra_context": self.extra_context,
+                "tools": &prompt_tools,
             }),
         )?;
         let instance_rendered = renderer.render_str(
@@ -175,6 +190,7 @@ impl DefaultAgentBuilder {
             &serde_json::json!({
                 "task": self.task,
                 "extra_context": self.extra_context,
+                "tools": &prompt_tools,
             }),
         )?;
 
@@ -194,6 +210,10 @@ impl DefaultAgentBuilder {
         trajectory.info.task = Some(redactor.redact_text(&self.task, surface::TRAJECTORY).text);
         trajectory.info.model_name = Some(self.model.name().to_owned());
         trajectory.info.started_at = Some(started_at.clone());
+        trajectory.info.other.insert(
+            "toolset".into(),
+            serde_json::to_value(tool_registry.manifest())?,
+        );
         for m in &history {
             record_redacted_message(&mut trajectory, m, m.extra.clone(), &redactor);
         }
@@ -241,6 +261,7 @@ impl DefaultAgentBuilder {
             redactor,
             cancellation: None,
             policy_engine,
+            tool_registry,
             raw_task: self.task,
             test_command_patterns,
             fallback_failed_attempts: Vec::new(),
@@ -457,7 +478,7 @@ impl Agent for DefaultAgent {
         });
 
         // 4. Parse action.
-        let action = extract_action(&resp.content);
+        let action = extract_action_for_tools(&resp.content, &self.tool_registry.tool_names());
         match &action {
             Action::Submit(output) => {
                 asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
@@ -487,6 +508,9 @@ impl Agent for DefaultAgent {
             }
             Action::Bash(cmd) => {
                 asst.extra.actions = Some(vec![cmd.clone()]);
+            }
+            Action::Tool(call) => {
+                asst.extra.actions = Some(vec![call.action_label()]);
             }
             Action::None => {
                 // Keep a breadcrumb that at least one model response could
@@ -537,10 +561,20 @@ impl Agent for DefaultAgent {
             }
         }
 
-        // 5. Policy gate: check command before hooks or execution.
-        let Action::Bash(cmd) = action else {
-            unreachable!("Submit and None handled above");
+        // 5. Policy gate: check bash commands before hooks or execution.
+        let tool_call = match action {
+            Action::Bash(cmd) => ToolCall::bash(cmd),
+            Action::Tool(call) => call,
+            Action::Submit(_) | Action::None => {
+                unreachable!("Submit and None handled above");
+            }
         };
+        let tool_name = tool_call.name;
+        let tool_input = tool_call.input;
+        let is_bash = tool_name == BASH_TOOL_NAME;
+        if !self.tool_registry.contains(&tool_name) {
+            unreachable!("Submit and None handled above");
+        }
 
         // Record the assistant proposal in history & trajectory before any
         // gating decision so blocked attempts are still audited.
@@ -556,55 +590,71 @@ impl Agent for DefaultAgent {
             &self.redactor,
         );
 
-        // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
-        // spec for issue #90 we use the non-interactive resolver: any `Ask`
-        // decision fails closed before a child process is launched.  Future
-        // `InteractiveAgent` integration should call `check_command` directly
-        // and present an approval prompt for `Ask` decisions.
-        let policy_decision = self.policy_engine.check_command_non_interactive(&cmd);
-        if let PolicyDecision::Deny { ref label } = policy_decision {
-            self.trajectory.info.policy_counts.record(&policy_decision);
-            let rejection = format!(
-                "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
-                 The command was not executed. Please attempt a safer alternative.",
-            );
-            let obs_msg = Message::user(rejection.clone());
-            self.history.push(obs_msg.clone());
-            let mut obs_extra = crate::model::MessageExtra::default();
-            obs_extra
-                .other
-                .insert("policy_blocked".into(), serde_json::Value::Bool(true));
-            obs_extra.other.insert(
-                "policy_rule".into(),
-                serde_json::Value::String(label.clone()),
-            );
-            obs_extra.other.insert(
-                "blocked_command".into(),
-                serde_json::Value::String(
-                    self.redactor.redact_text(&cmd, surface::TRAJECTORY).text,
-                ),
-            );
-            record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
-            self.stream.emit(StreamEvent::Observation {
-                step: self.steps,
-                content: rejection,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
-            self.steps += 1;
-            return Ok(StepOutcome::Continue);
-        }
-        if *self.policy_engine.profile() == PolicyProfile::Yolo {
-            self.trajectory.info.policy_counts.record_yolo_bypass();
+        let policy_command = if is_bash {
+            Some(tool_input.clone())
+        } else if let Some(tool) = self.tool_registry.command_tool(&tool_name) {
+            let context = self.command_tool_context(tool, &tool_input);
+            Some(self.renderer.render_str(&tool.command, &context)?)
         } else {
-            self.trajectory.info.policy_counts.record(&policy_decision);
+            None
+        };
+
+        if let Some(policy_command) = policy_command.as_deref() {
+            // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
+            // spec for issue #90 we use the non-interactive resolver: any `Ask`
+            // decision fails closed before a child process is launched. This
+            // applies to bash and command-adapter tools because both execute
+            // shell commands.
+            let policy_decision = self
+                .policy_engine
+                .check_command_non_interactive(policy_command);
+            if let PolicyDecision::Deny { ref label } = policy_decision {
+                self.trajectory.info.policy_counts.record(&policy_decision);
+                let rejection = format!(
+                    "Exit code: 1\nOutput:\nCommand blocked by policy rule '{label}'. \
+                     The command was not executed. Please attempt a safer alternative.",
+                );
+                let obs_msg = Message::user(rejection.clone());
+                self.history.push(obs_msg.clone());
+                let mut obs_extra = crate::model::MessageExtra::default();
+                obs_extra
+                    .other
+                    .insert("policy_blocked".into(), serde_json::Value::Bool(true));
+                obs_extra.other.insert(
+                    "policy_rule".into(),
+                    serde_json::Value::String(label.clone()),
+                );
+                obs_extra.other.insert(
+                    "blocked_command".into(),
+                    serde_json::Value::String(
+                        self.redactor
+                            .redact_text(policy_command, surface::TRAJECTORY)
+                            .text,
+                    ),
+                );
+                record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+                self.stream.emit(StreamEvent::Observation {
+                    step: self.steps,
+                    content: rejection,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+                self.steps += 1;
+                return Ok(StepOutcome::Continue);
+            }
+            if *self.policy_engine.profile() == PolicyProfile::Yolo {
+                self.trajectory.info.policy_counts.record_yolo_bypass();
+            } else {
+                self.trajectory.info.policy_counts.record(&policy_decision);
+            }
         }
 
-        // 5c. PreToolUse hooks, then env.run if not blocked.
+        // 5c. PreToolUse hooks, then tool execution if not blocked.
         let pre_hook_results = self
             .run_tool_hooks(
                 ToolHookPhase::PreToolUse,
                 &self.config.root.agent.hooks.pre_tool_use,
-                &cmd,
+                &tool_name,
+                &tool_input,
                 None,
             )
             .await?;
@@ -617,41 +667,47 @@ impl Agent for DefaultAgent {
         let (result, post_hook_results) = if tool_use_blocked {
             (blocked_run_result(&pre_hook_results), Vec::new())
         } else {
-            self.stream.emit(StreamEvent::BashStart {
-                step: self.steps,
-                command: cmd.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
-            let run_req = RunRequest::new(&cmd).with_timeout(Duration::from_secs(
-                self.config.root.environment.timeout_secs,
-            ));
-            let run_req = if let Some(cancellation) = self.cancellation.clone() {
-                run_req.with_cancellation(cancellation)
+            let result = if is_bash {
+                self.stream.emit(StreamEvent::BashStart {
+                    step: self.steps,
+                    command: tool_input.clone(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+                let run_req = RunRequest::new(&tool_input).with_timeout(Duration::from_secs(
+                    self.config.root.environment.timeout_secs,
+                ));
+                let run_req = if let Some(cancellation) = self.cancellation.clone() {
+                    run_req.with_cancellation(cancellation)
+                } else {
+                    run_req
+                };
+                let result = self.env.run(run_req).await?;
+                self.stream.emit(StreamEvent::BashResult {
+                    step: self.steps,
+                    exit_code: result.exit_code,
+                    stdout: result.stdout.clone(),
+                    stderr: result.stderr.clone(),
+                    timed_out: result.timed_out,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                });
+                result
             } else {
-                run_req
+                self.run_non_bash_tool(&tool_name, &tool_input).await?
             };
-            let result = self.env.run(run_req).await?;
-            self.stream.emit(StreamEvent::BashResult {
-                step: self.steps,
-                exit_code: result.exit_code,
-                stdout: result.stdout.clone(),
-                stderr: result.stderr.clone(),
-                timed_out: result.timed_out,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
             let post_hook_results = self
                 .run_tool_hooks(
                     ToolHookPhase::PostToolUse,
                     &self.config.root.agent.hooks.post_tool_use,
-                    &cmd,
+                    &tool_name,
+                    &tool_input,
                     Some(&result),
                 )
                 .await?;
             (result, post_hook_results)
         };
 
-        if !tool_use_blocked {
-            self.record_test_invocation_if_matched(&cmd, result.exit_code);
+        if is_bash && !tool_use_blocked {
+            self.record_test_invocation_if_matched(&tool_input, result.exit_code);
         }
 
         let result_for_observation = RunResult {
@@ -718,9 +774,13 @@ impl Agent for DefaultAgent {
             &self.redactor,
             surface::MODEL_OBSERVATION,
         );
-        let cmd_for_observation = self
+        let tool_input_for_observation = self
             .redactor
-            .redact_text(&cmd, surface::MODEL_OBSERVATION)
+            .redact_text(&tool_input, surface::MODEL_OBSERVATION)
+            .text;
+        let tool_name_for_observation = self
+            .redactor
+            .redact_text(&tool_name, surface::MODEL_OBSERVATION)
             .text;
         // 6. Render observation.
         let obs_text = self.renderer.render_str(
@@ -731,7 +791,9 @@ impl Agent for DefaultAgent {
                 "stdout": trunc_stdout.text,
                 "stderr": trunc_stderr.text,
                 "timed_out": result.timed_out,
-                "command": cmd_for_observation,
+                "command": tool_input_for_observation,
+                "tool_name": tool_name_for_observation,
+                "tool_input": tool_input_for_observation,
                 "step": self.steps,
                 "tool_use_blocked": tool_use_blocked,
                 "pre_tool_use_hooks": pre_hook_results_for_observation,
@@ -1029,12 +1091,16 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hooks: &[ToolHookCfg],
-        command: &str,
+        tool_name: &str,
+        tool_input: &str,
         result: Option<&RunResult>,
     ) -> Result<Vec<ToolHookResult>, Error> {
         let mut reports = Vec::new();
         for hook in hooks {
-            reports.push(self.run_tool_hook(phase, hook, command, result).await?);
+            reports.push(
+                self.run_tool_hook(phase, hook, tool_name, tool_input, result)
+                    .await?,
+            );
         }
         Ok(reports)
     }
@@ -1043,10 +1109,11 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hook: &ToolHookCfg,
-        command: &str,
+        tool_name: &str,
+        tool_input: &str,
         result: Option<&RunResult>,
     ) -> Result<ToolHookResult, Error> {
-        let context = self.tool_hook_context(phase, hook, command, result);
+        let context = self.tool_hook_context(phase, hook, tool_name, tool_input, result);
         let rendered_command = self.renderer.render_str(&hook.command, &context)?;
         let timeout_secs = hook
             .timeout_secs
@@ -1093,7 +1160,8 @@ impl DefaultAgent {
         &self,
         phase: ToolHookPhase,
         hook: &ToolHookCfg,
-        command: &str,
+        tool_name: &str,
+        tool_input: &str,
         result: Option<&RunResult>,
     ) -> serde_json::Value {
         let model = self
@@ -1115,17 +1183,91 @@ impl DefaultAgent {
                 "name": hook.name,
             },
             "tool": {
-                "name": "bash",
+                "name": tool_name,
             },
             "task": self.raw_task,
             "model": model,
             "step": self.steps,
-            "command": command,
+            "command": tool_input,
+            "tool_input": tool_input,
             "returncode": returncode,
             "stdout": stdout,
             "stderr": stderr,
             "output": output,
             "timed_out": timed_out,
+            "total_cost_usd": self.total_cost_usd,
+        })
+    }
+
+    async fn run_command_tool(
+        &self,
+        tool_name: &str,
+        tool_input: &str,
+    ) -> Result<RunResult, Error> {
+        let Some(tool) = self.tool_registry.command_tool(tool_name) else {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown tool `{tool_name}`"
+            ))));
+        };
+        let context = self.command_tool_context(tool, tool_input);
+        let rendered_command = self.renderer.render_str(&tool.command, &context)?;
+        let timeout_secs = tool
+            .timeout_secs
+            .unwrap_or(self.config.root.environment.timeout_secs);
+        let mut req = RunRequest::new(rendered_command)
+            .with_timeout(Duration::from_secs(timeout_secs))
+            .with_stdin(tool_input.to_owned());
+        if let Some(cancellation) = self.cancellation.clone() {
+            req = req.with_cancellation(cancellation);
+        }
+        req.env = tool_process_env(&context)?;
+        Ok(self.env.run(req).await?)
+    }
+
+    async fn run_non_bash_tool(
+        &self,
+        tool_name: &str,
+        tool_input: &str,
+    ) -> Result<RunResult, Error> {
+        if self.tool_registry.command_tool(tool_name).is_some() {
+            return self.run_command_tool(tool_name, tool_input).await;
+        }
+        let Some(provider) = self.tool_registry.provider_for(tool_name) else {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown tool `{tool_name}`"
+            ))));
+        };
+        let invocation = ToolInvocation {
+            name: tool_name.to_owned(),
+            input: tool_input.to_owned(),
+            task: self.raw_task.clone(),
+            model: self.trajectory.info.model_name.clone().unwrap_or_default(),
+            step: self.steps,
+            total_cost_usd: self.total_cost_usd,
+        };
+        Ok(provider
+            .call(self.env.as_ref(), invocation, self.cancellation.clone())
+            .await?
+            .into())
+    }
+
+    fn command_tool_context(&self, tool: &CommandTool, tool_input: &str) -> serde_json::Value {
+        let model = self
+            .trajectory
+            .info
+            .model_name
+            .as_deref()
+            .unwrap_or_default();
+        serde_json::json!({
+            "tool": {
+                "name": tool.name,
+                "description": tool.description,
+            },
+            "task": self.raw_task,
+            "model": model,
+            "step": self.steps,
+            "command": tool_input,
+            "tool_input": tool_input,
             "total_cost_usd": self.total_cost_usd,
         })
     }
@@ -1256,6 +1398,11 @@ fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>
     insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
     insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
     insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
+    insert_json_str_untruncated(
+        &mut env,
+        "RUST_SWE_AGENT_TOOL_INPUT",
+        &context["tool_input"],
+    );
     insert_json_str(
         &mut env,
         "RUST_SWE_AGENT_EXIT_CODE",
@@ -1268,6 +1415,35 @@ fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>
         &mut env,
         "RUST_SWE_AGENT_TIMED_OUT",
         &env_context["timed_out"],
+    );
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TOTAL_COST_USD",
+        &env_context["total_cost_usd"],
+    );
+    env.insert(
+        "RUST_SWE_AGENT_CONTEXT_JSON".into(),
+        serde_json::to_string(&env_context)?,
+    );
+    Ok(env)
+}
+
+fn tool_process_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
+    let mut env = BTreeMap::new();
+    let env_context = capped_env_context(context);
+    insert_json_str(
+        &mut env,
+        "RUST_SWE_AGENT_TOOL_NAME",
+        &env_context["tool"]["name"],
+    );
+    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
+    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
+    insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
+    insert_json_str_untruncated(
+        &mut env,
+        "RUST_SWE_AGENT_TOOL_INPUT",
+        &context["tool_input"],
     );
     insert_json_str(
         &mut env,
@@ -1629,7 +1805,7 @@ mod tests {
         assert!(
             a.history
                 .iter()
-                .any(|m| m.content.contains("did not include a shell command"))
+                .any(|m| m.content.contains("did not include a valid tool call"))
         );
     }
 

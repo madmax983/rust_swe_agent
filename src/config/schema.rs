@@ -59,6 +59,10 @@ pub struct AgentCfg {
     #[serde(default)]
     pub test_command_patterns_replace: bool,
     #[serde(default)]
+    pub mcp_servers: Vec<McpServerCfg>,
+    #[serde(default)]
+    pub tools: Vec<ToolCfg>,
+    #[serde(default)]
     pub hooks: ToolHooksCfg,
 }
 
@@ -71,7 +75,7 @@ fn default_budget_block_template() -> String {
 }
 
 fn default_format_error_template() -> String {
-    "Your response did not include a shell command.".into()
+    "Your response did not include a valid tool call.".into()
 }
 
 fn default_observation_template() -> String {
@@ -101,6 +105,23 @@ pub struct ToolHooksCfg {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolHookCfg {
     pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCfg {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub command: String,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServerCfg {
     pub command: String,
     #[serde(default)]
     pub timeout_secs: Option<u64>,

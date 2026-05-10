@@ -3,8 +3,8 @@
 # rust_swe_agent
 
 A minimal harness for operators who want to own the SWE agent loop: start with
-a small bash-only agent, produce inspectable trajectories, and measure each
-change before adding more machinery.
+a small bash-first agent, swap MCP toolsets at invocation time, produce
+inspectable trajectories, and measure each change before adding more machinery.
 
 ## Getting Started
 
@@ -147,9 +147,9 @@ a valid trajectory in hand:
   and failure mix for running SWE-bench sweeps.
 - [`bench evaluate`](docs/spec-evaluation.md): evaluator output, rerun metrics,
   pass@k, and compare regression gates.
-- [`agent scriptability`](docs/spec-scriptability.md): config-defined
-  `PreToolUse` and `PostToolUse` hooks for extending the tiny agent loop
-  without new Rust tools.
+- [`agent scriptability`](docs/spec-scriptability.md): invocation-time MCP
+  servers plus `PreToolUse` and `PostToolUse` hooks for A/B testing agent
+  toolsets without rebuilding Rust.
 - [`streaming`](docs/spec-streaming.md): SSE and webhook event surfaces for
   observing runs while they execute.
 - [`secret redaction`](docs/spec-secret-redaction.md): redaction guarantees for

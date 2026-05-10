@@ -7,7 +7,7 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
@@ -67,12 +67,25 @@ impl Environment for LocalEnvironment {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        if req.stdin.is_some() {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(EnvError::Io)?;
         let mut process_guard = ProcessTreeGuard::new(child.id());
+        let stdin_task = match req.stdin {
+            Some(stdin) => {
+                let pipe = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| EnvError::UnexpectedExit("stdin pipe missing".into()))?;
+                Some(spawn_stdin_writer(pipe, stdin))
+            }
+            None => None,
+        };
 
         // Take pipes so we can read them concurrently with `wait`.
         let stdout_pipe = child
@@ -89,6 +102,7 @@ impl Environment for LocalEnvironment {
         match wait_for_child(&mut child, req.timeout, req.cancellation).await? {
             ChildStop::Exited(status) => {
                 process_guard.disarm();
+                join_stdin_writer_after_exit(stdin_task).await?;
                 let stdout = join_reader(stdout_task, stdout_buffer, "stdout").await?;
                 let stderr = join_reader(stderr_task, stderr_buffer, "stderr").await?;
                 Ok(RunResult {
@@ -100,6 +114,7 @@ impl Environment for LocalEnvironment {
             }
             ChildStop::TimedOut => {
                 process_guard.terminate_and_wait(&mut child).await;
+                abort_stdin_writer(stdin_task).await;
                 let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
                 let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
                 Ok(RunResult {
@@ -114,6 +129,7 @@ impl Environment for LocalEnvironment {
             }
             ChildStop::Cancelled => {
                 process_guard.terminate_and_wait(&mut child).await;
+                abort_stdin_writer(stdin_task).await;
                 let stdout = partial_reader_output(stdout_task, stdout_buffer).await;
                 let stderr = partial_reader_output(stderr_task, stderr_buffer).await;
                 Ok(RunResult {
@@ -124,6 +140,50 @@ impl Environment for LocalEnvironment {
                 })
             }
         }
+    }
+}
+
+fn spawn_stdin_writer(
+    mut pipe: tokio::process::ChildStdin,
+    stdin: String,
+) -> JoinHandle<Result<(), EnvError>> {
+    tokio::spawn(async move {
+        pipe.write_all(stdin.as_bytes())
+            .await
+            .map_err(EnvError::Io)?;
+        pipe.shutdown().await.map_err(EnvError::Io)
+    })
+}
+
+async fn join_stdin_writer(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    if let Some(handle) = handle {
+        handle
+            .await
+            .map_err(|e| EnvError::UnexpectedExit(format!("stdin writer task failed: {e}")))??;
+    }
+    Ok(())
+}
+
+async fn join_stdin_writer_after_exit(
+    handle: Option<JoinHandle<Result<(), EnvError>>>,
+) -> Result<(), EnvError> {
+    match join_stdin_writer(handle).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_broken_pipe(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_broken_pipe(err: &EnvError) -> bool {
+    matches!(err, EnvError::Io(io) if io.kind() == std::io::ErrorKind::BrokenPipe)
+}
+
+async fn abort_stdin_writer(handle: Option<JoinHandle<Result<(), EnvError>>>) {
+    if let Some(handle) = handle {
+        handle.abort();
+        let _ = handle.await;
     }
 }
 
@@ -465,6 +525,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stdin_is_passed_to_child() {
+        let env = LocalEnvironment::new();
+        let req = RunRequest::new(stdin_echo_command()).with_stdin("from stdin\n");
+        let r = env.run(req).await.unwrap();
+        assert_eq!(r.stdout.trim(), "from stdin");
+    }
+
+    #[tokio::test]
+    async fn exited_child_preserves_output_when_stdin_pipe_breaks() {
+        let env = LocalEnvironment::new();
+        let req = RunRequest::new(exit_without_reading_stdin_command())
+            .with_stdin("x".repeat(16 * 1024 * 1024));
+
+        let r = env.run(req).await.unwrap();
+
+        assert_eq!(r.exit_code, 7);
+        assert_eq!(r.stdout.trim(), "child stdout");
+        assert_eq!(r.stderr.trim(), "child stderr");
+        assert!(!r.timed_out);
+    }
+
+    #[tokio::test]
     async fn timeout_flags_timed_out() {
         let env = LocalEnvironment::new();
         let req = RunRequest::new(sleep_command()).with_timeout(Duration::from_millis(100));
@@ -508,6 +590,18 @@ mod tests {
             "echo %RSA_TEST_VAR%"
         } else {
             "echo $RSA_TEST_VAR"
+        }
+    }
+
+    fn stdin_echo_command() -> &'static str {
+        if cfg!(windows) { "more" } else { "cat" }
+    }
+
+    fn exit_without_reading_stdin_command() -> &'static str {
+        if cfg!(windows) {
+            "echo child stdout & echo child stderr 1>&2 & exit /B 7"
+        } else {
+            "printf 'child stdout\n'; printf 'child stderr\n' >&2; exit 7"
         }
     }
 

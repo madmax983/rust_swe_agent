@@ -44,6 +44,30 @@ fn read_traj(work: &tempfile::TempDir, name: &str) -> serde_json::Value {
     serde_json::from_str(&json).unwrap()
 }
 
+fn pass_command() -> &'static str {
+    if cfg!(windows) { "exit /B 0" } else { "true" }
+}
+
+fn fail_command() -> &'static str {
+    if cfg!(windows) { "exit /B 1" } else { "false" }
+}
+
+fn slow_command() -> &'static str {
+    if cfg!(windows) {
+        "for /L %i in (1,0,2) do @rem"
+    } else {
+        "sleep 300"
+    }
+}
+
+fn big_output_command() -> &'static str {
+    if cfg!(windows) {
+        "for /L %i in (1,1,1000) do @echo %i"
+    } else {
+        "seq 1 1000"
+    }
+}
+
 // ── RED-phase tests ──────────────────────────────────────────────────────────
 
 /// AC: no verification check supplied → trajectory has verification_status: "unverified".
@@ -72,7 +96,7 @@ async fn single_passing_check_sets_verified_status() {
     let work = tempfile::tempdir().unwrap();
     let checks = vec![VerificationCheck {
         name: "always-pass".into(),
-        command: "true".into(),
+        command: pass_command().into(),
     }];
     let result = run(mini_args(&work, "passing-check", checks)).await;
     assert!(
@@ -103,7 +127,7 @@ async fn single_failing_check_sets_verification_failed_and_returns_error() {
     let work = tempfile::tempdir().unwrap();
     let checks = vec![VerificationCheck {
         name: "always-fail".into(),
-        command: "false".into(),
+        command: fail_command().into(),
     }];
     let result = run(mini_args(&work, "failing-check", checks)).await;
     assert!(result.is_err(), "expected Err for failing check");
@@ -122,7 +146,7 @@ async fn single_failing_check_sets_verification_failed_and_returns_error() {
     let results = traj["info"]["verification_results"].as_array().unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["passed"].as_bool(), Some(false));
-    // `false` exits 1 on Linux/macOS
+    // Failure command exits non-zero on every supported local shell.
     assert_ne!(
         results[0]["exit_code"].as_i64(),
         Some(0),
@@ -137,7 +161,7 @@ async fn multiple_checks_all_pass_sets_verified() {
     let checks = vec![
         VerificationCheck {
             name: "check-1".into(),
-            command: "true".into(),
+            command: pass_command().into(),
         },
         VerificationCheck {
             name: "check-2".into(),
@@ -169,11 +193,11 @@ async fn multiple_checks_mixed_results_sets_verification_failed() {
     let checks = vec![
         VerificationCheck {
             name: "pass".into(),
-            command: "true".into(),
+            command: pass_command().into(),
         },
         VerificationCheck {
             name: "fail".into(),
-            command: "false".into(),
+            command: fail_command().into(),
         },
         VerificationCheck {
             name: "pass2".into(),
@@ -239,7 +263,7 @@ async fn timed_out_check_treated_as_failure() {
         "timeout-check",
         vec![VerificationCheck {
             name: "slow".into(),
-            command: "sleep 300".into(),
+            command: slow_command().into(),
         }],
     );
     args.verification_timeout_secs = 1;
@@ -275,7 +299,7 @@ async fn cancellation_during_verification_sets_unverified() {
         "cancelled-verify",
         vec![VerificationCheck {
             name: "slow".into(),
-            command: "sleep 300".into(),
+            command: slow_command().into(),
         }],
     );
     args.cancellation = Some(cancel);
@@ -299,10 +323,10 @@ async fn cancellation_during_verification_sets_unverified() {
 #[tokio::test]
 async fn large_verification_output_is_truncated() {
     let work = tempfile::tempdir().unwrap();
-    // seq 1 1000 produces ~3893 bytes (> 2048 VERIFICATION_PREVIEW_MAX_BYTES).
+    // The platform helper produces >2048 bytes.
     let checks = vec![VerificationCheck {
         name: "big-output".into(),
-        command: "seq 1 1000".into(),
+        command: big_output_command().into(),
     }];
     run(mini_args(&work, "big-output", checks)).await.unwrap();
 

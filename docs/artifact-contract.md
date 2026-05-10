@@ -15,7 +15,7 @@ Run artifacts use explicit top-level metadata:
 
 | Kind | File(s) | Required fields | Optional/additive fields |
 | --- | --- | --- | --- |
-| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), extra `info` fields, message `extra` fields |
+| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), extra `info` fields, message `extra` fields |
 | `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, manifest, filter spec, token, retry, rate-limit, cancellation fields |
 | `evaluation_results` | `evaluation.json` | `artifact_kind`, `schema_version`, `instances` | behavioral metrics, breakdown rows, cost attribution |
 | `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | additional forecast diagnostics |

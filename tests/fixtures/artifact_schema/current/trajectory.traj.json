@@ -27,7 +27,16 @@
     "tests_run_before_submit": false,
     "verification_status": "unverified",
     "started_at": "2026-05-01T00:00:00Z",
-    "ended_at": "2026-05-01T00:00:01Z"
+    "ended_at": "2026-05-01T00:00:01Z",
+    "toolset": {
+      "tools": [
+        {
+          "name": "bash",
+          "description": "Run shell commands in the configured environment.",
+          "source": "built_in"
+        }
+      ]
+    }
   },
   "messages": [
     {

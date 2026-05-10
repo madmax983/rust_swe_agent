@@ -12,8 +12,8 @@ use crate::error::ConfigError;
 pub mod schema;
 
 pub use schema::{
-    AgentCfg, AgentKind, EnvCfg, EnvKind, ModelCfg, PromptCfg, RedactionCfg, RootCfg, SweepCfg,
-    ToolHookCfg, ToolHooksCfg,
+    AgentCfg, AgentKind, EnvCfg, EnvKind, McpServerCfg, ModelCfg, PromptCfg, RedactionCfg, RootCfg,
+    SweepCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
 };
 
 const DEFAULT_TOML: &str = include_str!("defaults/default.toml");
@@ -53,12 +53,14 @@ impl Config {
     fn from_merged_value(merged: Value) -> Result<Self, ConfigError> {
         let root: RootCfg = serde_json::from_value(merged.clone())
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-        validate_test_command_patterns(&root)?;
+        validate_root(&root)?;
         Ok(Self { root, raw: merged })
     }
 }
 
-fn validate_test_command_patterns(root: &RootCfg) -> Result<(), ConfigError> {
+fn validate_root(root: &RootCfg) -> Result<(), ConfigError> {
+    validate_agent_tools(root)?;
+    validate_mcp_servers(root)?;
     for pattern in &root.agent.test_command_patterns {
         Regex::new(pattern).map_err(|err| {
             ConfigError::Invalid(format!(
@@ -72,6 +74,38 @@ fn validate_test_command_patterns(root: &RootCfg) -> Result<(), ConfigError> {
                 "invalid redaction.custom_patterns regex {pattern:?}: {err}"
             ))
         })?;
+    }
+    Ok(())
+}
+
+fn validate_mcp_servers(root: &RootCfg) -> Result<(), ConfigError> {
+    for server in &root.agent.mcp_servers {
+        if server.command.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "agent.mcp_servers command cannot be empty".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_agent_tools(root: &RootCfg) -> Result<(), ConfigError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for tool in &root.agent.tools {
+        crate::tool::validate_tool_name(&tool.name).map_err(|err| {
+            ConfigError::Invalid(format!("invalid agent.tools name {:?}: {err}", tool.name))
+        })?;
+        if tool.name == crate::tool::BASH_TOOL_NAME {
+            return Err(ConfigError::Invalid(
+                "agent.tools cannot redefine built-in tool `bash`".into(),
+            ));
+        }
+        if !seen.insert(tool.name.clone()) {
+            return Err(ConfigError::Invalid(format!(
+                "duplicate agent.tools entry {:?}",
+                tool.name
+            )));
+        }
     }
     Ok(())
 }
@@ -183,6 +217,23 @@ name = "claude-sonnet-4-6"
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(
             err.to_string().contains("agent.test_command_patterns"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn invalid_agent_tool_names_return_config_error() {
+        let err = Config::from_toml_str("[[agent.tools]]\nname = \"bash\"\ncommand = \"echo no\"")
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("built-in tool `bash`"), "{err}");
+
+        let err =
+            Config::from_toml_str("[[agent.tools]]\nname = \"bad name\"\ncommand = \"echo no\"")
+                .unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(
+            err.to_string().contains("invalid agent.tools name"),
             "{err}"
         );
     }
