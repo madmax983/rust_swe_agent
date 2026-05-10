@@ -359,13 +359,43 @@ pub struct HarnessManifest {
     pub git_resolution: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatasetManifest {
     pub path: String,
     pub sha256: String,
     pub instance_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_spec: Option<FilterSpec>,
+    /// How the dataset was supplied: `"local"` for `--dataset-path`,
+    /// `"named"` for `--dataset` alias.
+    #[serde(
+        default = "default_source_kind_local",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub source_kind: String,
+    /// Named alias (`full`, `lite`, `verified`). `None` for local-path datasets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// Split selector (`train`, `test`, `dev`). `None` for local-path datasets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<String>,
+    /// Content hash of the cached bytes, prefixed with `sha256:`.
+    /// Used to pin the exact dataset bytes for reproducibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revision: Option<String>,
+    /// Absolute path of the on-disk cache file for named datasets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_path: Option<String>,
+    /// Total rows in the dataset before instance-id / sample / limit filters.
+    #[serde(default)]
+    pub selected_row_count: usize,
+    /// Rows remaining after all selection filters have been applied.
+    #[serde(default)]
+    pub post_filter_row_count: usize,
+}
+
+fn default_source_kind_local() -> String {
+    "local".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -892,7 +922,12 @@ fn write_effective_task_line(
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchArgs {
-    pub dataset_path: PathBuf,
+    /// Dataset source: either a local JSONL path or a named alias + split.
+    pub dataset_source: crate::run::dataset::DatasetSource,
+    /// Directory used for the named-dataset on-disk cache.
+    /// Defaults to `~/.cache/rust-swe-agent/datasets` when constructed from
+    /// CLI args; tests inject a temp dir for isolation.
+    pub dataset_cache_dir: PathBuf,
     pub output_dir: PathBuf,
     pub parallel: usize,
     pub config: Config,
@@ -1137,6 +1172,12 @@ fn load_dataset_from_bytes(bytes: &[u8]) -> Result<Vec<SweBenchInstance>, Error>
     parse_dataset_lines(text)
 }
 
+/// Public alias for `load_dataset_from_bytes`, used by the forecast runner
+/// which receives pre-resolved bytes from `resolve_dataset`.
+pub fn load_dataset_from_bytes_pub(bytes: &[u8]) -> Result<Vec<SweBenchInstance>, Error> {
+    load_dataset_from_bytes(bytes)
+}
+
 fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
@@ -1231,8 +1272,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         args.retry_backoff_cap_s,
     )?;
 
-    let dataset_bytes = std::fs::read(&args.dataset_path)?;
-    let dataset_sha = sha256_hex(&dataset_bytes);
+    let (dataset_bytes, dataset_meta) =
+        crate::run::dataset::resolve_dataset(&args.dataset_source, &args.dataset_cache_dir)?;
+    let dataset_sha = dataset_meta.sha256.clone();
+    let dataset_instance_count = dataset_meta.instance_count;
     let instances = load_dataset_from_bytes(&dataset_bytes)?;
     let (instances, filter_spec) = apply_subset(
         instances,
@@ -1251,7 +1294,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     let initial_manifest = build_manifest(
         &args,
         &dataset_sha,
+        dataset_instance_count,
         total,
+        &dataset_meta,
         &filter_spec,
         &started_at_utc,
         None,
@@ -1830,7 +1875,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         manifest: Some(build_manifest(
             &args,
             &dataset_sha,
+            dataset_instance_count,
             total,
+            &dataset_meta,
             &initial.filter_spec,
             &started_at_utc,
             Some(chrono::Utc::now().to_rfc3339()),
@@ -1918,19 +1965,105 @@ async fn forward_os_cancellation_signals(tx: mpsc::UnboundedSender<SweepSignal>)
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let deadline = Instant::now() + Duration::from_secs(args.preflight_total_timeout_s);
     let mut checks = Vec::new();
-    let dataset_path = args.dataset_path.clone();
-    let dataset_bytes = timed_sync(
-        "dataset.read",
-        args.preflight_check_timeout_s,
-        deadline,
-        move || std::fs::read(&dataset_path),
-    )
-    .await?;
-    checks.push(CheckResult {
-        status: CheckStatus::Ok,
-        name: "dataset.read",
-        message: format!("readable: {}", args.dataset_path.display()),
-    });
+
+    // ── dataset availability check (local or named alias) ────────────────
+    let dataset_bytes = match &args.dataset_source {
+        crate::run::dataset::DatasetSource::LocalPath(path) => {
+            let path = path.clone();
+            let bytes = timed_sync(
+                "dataset.read",
+                args.preflight_check_timeout_s,
+                deadline,
+                move || std::fs::read(&path),
+            )
+            .await?;
+            checks.push(CheckResult {
+                status: CheckStatus::Ok,
+                name: "dataset.read",
+                message: format!("readable: {}", args.dataset_source.display_path()),
+            });
+            bytes
+        }
+        crate::run::dataset::DatasetSource::Named { alias, split } => {
+            let alias = alias.clone();
+            let split = split.clone();
+            let cache_dir = args.dataset_cache_dir.clone();
+            let cache_status = timed_sync(
+                "dataset.cache",
+                args.preflight_check_timeout_s,
+                deadline,
+                move || {
+                    Ok::<_, String>(crate::run::dataset::check_cache(&cache_dir, &alias, &split))
+                },
+            )
+            .await?;
+            match &cache_status {
+                crate::run::dataset::CacheStatus::Hit {
+                    path,
+                    instance_count,
+                    ..
+                } => {
+                    checks.push(CheckResult {
+                        status: CheckStatus::Ok,
+                        name: "dataset.cache",
+                        message: format!(
+                            "cache hit: {} ({instance_count} instances)",
+                            path.display()
+                        ),
+                    });
+                    std::fs::read(path)?
+                }
+                crate::run::dataset::CacheStatus::Miss { expected_path } => {
+                    let (alias_str, split_str) = match &args.dataset_source {
+                        crate::run::dataset::DatasetSource::Named { alias, split } => {
+                            (alias.as_str(), split.as_str())
+                        }
+                        crate::run::dataset::DatasetSource::LocalPath(_) => ("?", "?"),
+                    };
+                    checks.push(CheckResult {
+                        status: CheckStatus::Warn,
+                        name: "dataset.cache",
+                        message: format!(
+                            "cache miss: expected file at `{}`\n\
+                            To populate: download the SWE-bench JSONL for `{alias_str}` \
+                            (`{split_str}` split) and place it at `{p}`.\n\
+                            See: https://www.swebench.com/SWE-bench/guides/datasets/",
+                            expected_path.display(),
+                            p = expected_path.display()
+                        ),
+                    });
+                    if args.preflight_mode == "doctor" {
+                        return Ok(checks);
+                    }
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "dataset alias `{alias_str}` split `{split_str}` not in cache: \
+                        expected file at `{p}`\n\
+                        \n\
+                        To populate the cache, download the SWE-bench JSONL for the \
+                        `{alias_str}` dataset (`{split_str}` split) and place it at:\n\
+                        \n  {p}\n\
+                        \n\
+                        See: https://www.swebench.com/SWE-bench/guides/datasets/ for \
+                        dataset download instructions.",
+                        p = expected_path.display()
+                    ))));
+                }
+                crate::run::dataset::CacheStatus::Corrupt { path, reason } => {
+                    checks.push(CheckResult {
+                        status: CheckStatus::Warn,
+                        name: "dataset.cache",
+                        message: format!("corrupt cache: `{}`: {reason}", path.display()),
+                    });
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "cached dataset at `{}` is corrupt: {reason}\n\
+                        Delete the file and re-populate the cache.",
+                        path.display()
+                    ))));
+                }
+            }
+        }
+    };
+
     let instances = timed_sync(
         "dataset.parse",
         args.preflight_check_timeout_s,
@@ -2177,10 +2310,13 @@ fn ensure_total_deadline(deadline: Instant) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_manifest(
     args: &SwebenchArgs,
     dataset_sha: &str,
     dataset_instance_count: usize,
+    post_filter_count: usize,
+    dataset_meta: &crate::run::dataset::ResolvedDatasetMeta,
     filter_spec: &FilterSpec,
     started_at_utc: &str,
     finished_at_utc: Option<String>,
@@ -2197,10 +2333,20 @@ fn build_manifest(
         purpose: None,
         harness: resolve_harness_manifest(),
         dataset: DatasetManifest {
-            path: args.dataset_path.display().to_string(),
+            path: dataset_meta.path.display().to_string(),
             sha256: dataset_sha.to_owned(),
             instance_count: dataset_instance_count,
             filter_spec: Some(filter_spec.clone()),
+            source_kind: args.dataset_source.kind().as_str().to_owned(),
+            alias: dataset_meta.alias.as_ref().map(|a| a.as_str().to_owned()),
+            split: dataset_meta.split.as_ref().map(|s| s.as_str().to_owned()),
+            source_revision: Some(format!("sha256:{dataset_sha}")),
+            cache_path: dataset_meta
+                .cache_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            selected_row_count: dataset_instance_count,
+            post_filter_row_count: post_filter_count,
         },
         prompt_template: PromptTemplateManifest {
             source: "builtin".into(),
@@ -4205,7 +4351,8 @@ mod tests {
         }
 
         let args = SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output.clone(),
             parallel: 1,
             reruns: 1,
@@ -5052,7 +5199,10 @@ mod tests {
         cfg.root.agent.step_limit = 7;
         cfg.root.model.name = "override-model".into();
         let args = SwebenchArgs {
-            dataset_path: PathBuf::from("dataset.jsonl"),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
+            dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
             reruns: 1,
@@ -5089,10 +5239,20 @@ mod tests {
             cancellation_signals: None,
             github_pr: None,
         };
+        let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
+            path: PathBuf::from("dataset.jsonl"),
+            sha256: "dataset".into(),
+            instance_count: 1,
+            alias: None,
+            split: None,
+            cache_path: None,
+        };
         let manifest = build_manifest(
             &args,
             "dataset",
             1,
+            1,
+            &dummy_meta,
             &FilterSpec::default(),
             "2026-01-01T00:00:00Z",
             None,
@@ -5109,7 +5269,10 @@ mod tests {
     #[test]
     fn manifest_records_resume_mode_from_args() {
         let args = SwebenchArgs {
-            dataset_path: PathBuf::from("dataset.jsonl"),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
+            dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
             reruns: 1,
@@ -5146,10 +5309,20 @@ mod tests {
             cancellation_signals: None,
             github_pr: None,
         };
+        let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
+            path: PathBuf::from("dataset.jsonl"),
+            sha256: "dataset".into(),
+            instance_count: 1,
+            alias: None,
+            split: None,
+            cache_path: None,
+        };
         let manifest = build_manifest(
             &args,
             "dataset",
             1,
+            1,
+            &dummy_meta,
             &FilterSpec::default(),
             "2026-01-01T00:00:00Z",
             None,
@@ -5176,7 +5349,10 @@ instance = "inst"
         )
         .unwrap();
         let args_a = SwebenchArgs {
-            dataset_path: PathBuf::from("dataset.jsonl"),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
+            dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
             reruns: 1,
@@ -5213,13 +5389,39 @@ instance = "inst"
             cancellation_signals: None,
             github_pr: None,
         };
+        let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
+            path: PathBuf::from("dataset.jsonl"),
+            sha256: "dataset".into(),
+            instance_count: 1,
+            alias: None,
+            split: None,
+            cache_path: None,
+        };
         let filter = FilterSpec::default();
-        let m_a = build_manifest(&args_a, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
+        let m_a = build_manifest(
+            &args_a,
+            "dataset",
+            1,
+            1,
+            &dummy_meta,
+            &filter,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
         let args_b = SwebenchArgs {
             config: cfg_b,
             ..args_a
         };
-        let m_b = build_manifest(&args_b, "dataset", 1, &filter, "2026-01-01T00:00:00Z", None);
+        let m_b = build_manifest(
+            &args_b,
+            "dataset",
+            1,
+            1,
+            &dummy_meta,
+            &filter,
+            "2026-01-01T00:00:00Z",
+            None,
+        );
         assert_ne!(m_a.prompt_template.sha256, m_b.prompt_template.sha256);
     }
 
@@ -5270,7 +5472,8 @@ instance = "inst"
         std::fs::write(&dataset, r#"{"instance_id":"x"}"#).unwrap();
         let out = tmp.path().join("out");
         let args = SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: out.clone(),
             parallel: 1,
             reruns: 1,
@@ -5933,7 +6136,8 @@ instance = "inst"
     #[test]
     fn swebench_args_has_max_rpm_and_max_input_tpm_fields() {
         let args = SwebenchArgs {
-            dataset_path: PathBuf::from("d.jsonl"),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from("d.jsonl")),
+            dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 4,
             reruns: 1,

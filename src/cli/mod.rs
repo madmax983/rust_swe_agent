@@ -26,6 +26,7 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run one task end-to-end and write a trajectory.
     Mini(args::MiniCmd),
@@ -247,7 +248,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep"
     };
     let results =
-        crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)).await?;
+        crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)?).await?;
 
     tracing::info!(
         total = results.total,
@@ -278,7 +279,7 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
-    let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")).await?;
+    let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
     if output_format != "json" {
         print!("{}", results.summary_table());
     }
@@ -330,7 +331,7 @@ async fn run_forecast_from_cmd(
         s.seed = None;
     }
     let cfg = swebench_config_from_cmd(&s)?;
-    let sweep = swebench_args_from_cmd(s, cfg, "forecast");
+    let sweep = swebench_args_from_cmd(s, cfg, "forecast")?;
     crate::run::forecast::run(crate::run::forecast::ForecastArgs {
         sweep,
         calibration_n,
@@ -552,16 +553,53 @@ fn github_pr_failure_count(results: &crate::run::swebench::SweepResults) -> usiz
     results.github_pr_failures
 }
 
+fn parse_dataset_source(
+    s: &args::SwebenchCmd,
+) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    match (&s.dataset_path, &s.dataset) {
+        (Some(_), Some(_)) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+        ))),
+        (None, None) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "one of --dataset-path or --dataset is required".into(),
+        ))),
+        (Some(path), None) => Ok((
+            crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+            cache_dir,
+        )),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = s.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            Ok((
+                crate::run::dataset::DatasetSource::Named { alias, split },
+                cache_dir,
+            ))
+        }
+    }
+}
+
 fn swebench_args_from_cmd(
     s: args::SwebenchCmd,
     cfg: Config,
     preflight_mode: &str,
-) -> crate::run::swebench::SwebenchArgs {
+) -> Result<crate::run::swebench::SwebenchArgs, Error> {
     let cfg_max_rpm = cfg.root.sweep.max_rpm;
     let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
     let github_pr = swebench_github_pr_config(&s.github_pr);
-    crate::run::swebench::SwebenchArgs {
-        dataset_path: s.dataset_path,
+    let (dataset_source, dataset_cache_dir) = parse_dataset_source(&s)?;
+    Ok(crate::run::swebench::SwebenchArgs {
+        dataset_source,
+        dataset_cache_dir,
         output_dir: s.output,
         parallel: s.parallel,
         config: cfg,
@@ -605,7 +643,7 @@ fn swebench_args_from_cmd(
         install_os_signal_handlers: true,
         cancellation_signals: None,
         github_pr,
-    }
+    })
 }
 
 fn parse_verify_checks(
@@ -1204,7 +1242,8 @@ mod tests {
             panic!("expected bench swebench command");
         };
 
-        let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep");
+        let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep")
+            .unwrap();
         assert!(args.install_os_signal_handlers);
         assert!(
             args.cancellation_signals.is_none(),

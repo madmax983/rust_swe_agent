@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod compare;
+pub mod dataset;
 pub mod evaluate;
 pub mod forecast;
 pub mod frontier;

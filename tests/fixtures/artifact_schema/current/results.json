@@ -49,7 +49,11 @@
       "filter_spec": {
         "original_count": 1,
         "selected_count": 1
-      }
+      },
+      "source_kind": "local",
+      "source_revision": "sha256:fixture",
+      "selected_row_count": 1,
+      "post_filter_row_count": 1
     },
     "prompt_template": {
       "source": "inline",

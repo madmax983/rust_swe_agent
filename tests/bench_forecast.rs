@@ -197,6 +197,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
                 sha256: "test".into(),
                 instance_count: instances.len(),
                 filter_spec: Some(Default::default()),
+                ..Default::default()
             },
             prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),
@@ -708,7 +709,8 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
     };
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output.clone(),
             parallel: 1,
             reruns: 1,
@@ -834,7 +836,8 @@ async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_rep
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
             reruns: 1,
@@ -912,7 +915,8 @@ async fn default_target_n_honors_planned_sample_and_seed() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
             reruns: 1,
@@ -976,7 +980,8 @@ async fn calibration_sampling_stays_within_planned_limit() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
             reruns: 1,
@@ -1041,7 +1046,8 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
 
     let err = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output.clone(),
             parallel: 1,
             reruns: 1,
@@ -1111,7 +1117,8 @@ async fn forecast_with_stratified_planning_runs_calibration_subset() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_path: dataset,
+            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
             reruns: 1,

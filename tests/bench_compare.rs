@@ -118,6 +118,7 @@ fn write_results_with_filter_spec(
     write_results_with_filter_spec_and_model(dir, instances, filter_spec, None);
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_results_with_filter_spec_and_model(
     dir: &Path,
     instances: Vec<InstanceResult>,
@@ -188,6 +189,7 @@ fn write_results_with_filter_spec_and_model(
                 sha256: "test".into(),
                 instance_count: instances.len(),
                 filter_spec: Some(filter_spec.clone()),
+                ..Default::default()
             },
             prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),

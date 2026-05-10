@@ -327,8 +327,26 @@ pub struct CompareCmd {
 #[derive(Debug, Clone, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SwebenchCmd {
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    /// Exactly one of `--dataset-path` or `--dataset` must be provided.
     #[arg(long)]
-    pub dataset_path: PathBuf,
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias: `full`, `lite`, or `verified`.
+    /// Mutually exclusive with `--dataset-path`.
+    /// Resolved against the on-disk cache (see `--dataset-cache-dir`).
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    /// Ignored when `--dataset-path` is used.
+    #[arg(long, default_value = "test", value_name = "SPLIT")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    /// Defaults to `~/.cache/rust-swe-agent/datasets`.
+    #[arg(long, value_name = "DIR")]
+    pub dataset_cache_dir: Option<PathBuf>,
 
     #[arg(long, alias = "output-dir")]
     pub output: PathBuf,

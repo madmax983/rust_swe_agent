@@ -117,7 +117,8 @@ fn base_args(
     signal_rx: Option<mpsc::UnboundedReceiver<SweepSignal>>,
 ) -> SwebenchArgs {
     SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,

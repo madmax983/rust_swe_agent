@@ -139,7 +139,8 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 2,
         reruns: 1,
@@ -242,7 +243,8 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -314,7 +316,8 @@ async fn without_resume_existing_trajectories_are_overwritten() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -386,7 +389,8 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -485,7 +489,8 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -558,7 +563,8 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
 
     let cfg = config_with_workdir_and_redaction(&repo, secret);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -659,7 +665,8 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
 
     let cfg = config_with_workdir_and_redaction(&repo, secret);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -757,7 +764,8 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,

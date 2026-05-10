@@ -124,7 +124,8 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel,
         reruns: 1,
@@ -297,7 +298,8 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, "openai/gpt-4o-mini");
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -378,7 +380,8 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, model_name);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -462,7 +465,8 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, model_name);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -536,7 +540,8 @@ async fn sweep_without_limit_runs_all_tasks() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 2,
         reruns: 1,
@@ -605,7 +610,8 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -736,7 +742,8 @@ async fn resume_skipped_costs_count_against_budget() {
     // must halt — otherwise the resume case is broken.
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -908,7 +915,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -1068,7 +1076,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -1233,7 +1242,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -1319,7 +1329,8 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
 
     let cfg = config_with_workdir_and_per_task_budget(&repo, per_task_budget);
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -1420,7 +1431,8 @@ async fn per_task_budget_absent_means_no_enforcement() {
 
     let cfg = config_with_workdir(&repo); // no per_task_budget_usd
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
