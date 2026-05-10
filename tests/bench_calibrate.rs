@@ -978,6 +978,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
         cli: CliManifest {
             argv: case.parallel_arg_style.argv(case.parallel),
         },
+        reproduced_from: None,
     }
 }
 
