@@ -135,6 +135,15 @@ enabled = true
 # intentionally producing a private, non-shareable artifact.
 unsafe_allow_secret_leaks = false
 
+[skills]
+# Harness-level agent skills are private by default: the harness scans the
+# configured paths, selects relevant skills, and injects only active skill
+# bodies into the run's extra context.
+enabled = false
+auto_load = true
+paths = []
+max_active = 4
+
 [prompts]
 system = '''
 You are a skilled software engineer working at a terminal. You have

@@ -13,7 +13,7 @@ pub mod schema;
 
 pub use schema::{
     AgentCfg, AgentKind, EnvCfg, EnvKind, McpServerCfg, ModelCfg, PromptCfg, RedactionCfg, RootCfg,
-    SweepCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
+    SkillCfg, SweepCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
 };
 
 const DEFAULT_TOML: &str = include_str!("defaults/default.toml");
@@ -61,6 +61,7 @@ impl Config {
 fn validate_root(root: &RootCfg) -> Result<(), ConfigError> {
     validate_agent_tools(root)?;
     validate_mcp_servers(root)?;
+    validate_skills(root)?;
     for pattern in &root.agent.test_command_patterns {
         Regex::new(pattern).map_err(|err| {
             ConfigError::Invalid(format!(
@@ -74,6 +75,20 @@ fn validate_root(root: &RootCfg) -> Result<(), ConfigError> {
                 "invalid redaction.custom_patterns regex {pattern:?}: {err}"
             ))
         })?;
+    }
+    Ok(())
+}
+
+fn validate_skills(root: &RootCfg) -> Result<(), ConfigError> {
+    if root.skills.enabled && root.skills.max_active == 0 {
+        return Err(ConfigError::Invalid(
+            "skills.max_active must be greater than 0 when skills.enabled=true".into(),
+        ));
+    }
+    if root.skills.paths.iter().any(|path| path.trim().is_empty()) {
+        return Err(ConfigError::Invalid(
+            "skills.paths entries cannot be empty".into(),
+        ));
     }
     Ok(())
 }
