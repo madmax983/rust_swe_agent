@@ -82,7 +82,14 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         } else {
             "step_limit_reached".into()
         },
-        outcome: Some(if resolved { "submitted" } else { "step_limit_reached" }.into()),
+        outcome: Some(
+            if resolved {
+                "submitted"
+            } else {
+                "step_limit_reached"
+            }
+            .into(),
+        ),
         failure_category: if resolved {
             None
         } else {
@@ -230,7 +237,10 @@ fn compare_manifests_skips_sha_drift_when_either_sha_is_absent() {
     let original = minimal_manifest("claude-opus-4-7", None);
     let current = minimal_manifest("claude-opus-4-7", Some("some-sha"));
     let drifts = compare_manifests(&original, &current);
-    let sha_drifts: Vec<_> = drifts.iter().filter(|d| d.field.contains("git_sha")).collect();
+    let sha_drifts: Vec<_> = drifts
+        .iter()
+        .filter(|d| d.field.contains("git_sha"))
+        .collect();
     assert!(
         sha_drifts.is_empty(),
         "should not flag SHA when original has no SHA"
@@ -360,7 +370,10 @@ fn build_report_counts_flipped_to_unresolved() {
 fn build_report_marks_errored_for_missing_replay_instance() {
     let dir = tempfile::tempdir().unwrap();
 
-    let originals = vec![instance_result("task-1", true), instance_result("task-2", false)];
+    let originals = vec![
+        instance_result("task-1", true),
+        instance_result("task-2", false),
+    ];
     // replay only has task-1; task-2 is missing
     let replays = vec![instance_result("task-1", true)];
 
@@ -382,13 +395,8 @@ fn build_report_records_reproduced_from_block() {
     let dir = tempfile::tempdir().unwrap();
     let source_dir = dir.path().to_path_buf();
 
-    let report = build_reproducibility_report(
-        &source_dir,
-        "sha256:deadbeef".into(),
-        &[],
-        &[],
-        &source_dir,
-    );
+    let report =
+        build_reproducibility_report(&source_dir, "sha256:deadbeef".into(), &[], &[], &source_dir);
 
     assert_eq!(report.reproduced_from.manifest_hash, "sha256:deadbeef");
     assert_eq!(
@@ -408,7 +416,13 @@ fn render_summary_includes_total_instance_count() {
         instance_result("t3", false),
     ];
     let replays = originals.clone();
-    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:x".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
     let summary = render_summary(&report);
     assert!(
         summary.contains('3') || summary.contains("3 instance"),
@@ -419,12 +433,15 @@ fn render_summary_includes_total_instance_count() {
 #[test]
 fn render_summary_includes_percent_matched() {
     let dir = tempfile::tempdir().unwrap();
-    let originals = vec![
-        instance_result("t1", true),
-        instance_result("t2", true),
-    ];
+    let originals = vec![instance_result("t1", true), instance_result("t2", true)];
     let replays = originals.clone();
-    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:x".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
     let summary = render_summary(&report);
     // 2/2 both resolved → 100% matched
     assert!(
@@ -438,7 +455,13 @@ fn render_summary_includes_patch_identical_percentage() {
     let dir = tempfile::tempdir().unwrap();
     let originals = vec![instance_result("t1", true)];
     let replays = vec![instance_result("t1", true)];
-    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:x".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
     let summary = render_summary(&report);
     // summary must mention patch-identical percentage
     assert!(
@@ -578,8 +601,16 @@ fn compare_manifests_flags_rust_version_change_as_soft_drift() {
         .expect("expected runtime.rust_version drift");
 
     assert_eq!(rv_drift.severity, DriftSeverity::Soft);
-    assert!(rv_drift.message.contains("1.85.0"), "message: {}", rv_drift.message);
-    assert!(rv_drift.message.contains("1.90.0"), "message: {}", rv_drift.message);
+    assert!(
+        rv_drift.message.contains("1.85.0"),
+        "message: {}",
+        rv_drift.message
+    );
+    assert!(
+        rv_drift.message.contains("1.90.0"),
+        "message: {}",
+        rv_drift.message
+    );
 }
 
 #[test]
@@ -617,8 +648,8 @@ fn soft_drifts_are_excluded_from_filter_hard_drifts() {
 
 #[test]
 fn render_summary_lists_top_diverging_failure_categories() {
-    use rust_swe_agent::run::reproduce::top_diverging_failure_categories;
     use rust_swe_agent::run::reproduce::InstanceComparisonEntry;
+    use rust_swe_agent::run::reproduce::top_diverging_failure_categories;
 
     let instances = vec![
         // flipped to unresolved → replay_failure_category = step_limit
@@ -661,17 +692,19 @@ fn render_summary_lists_top_diverging_failure_categories() {
 fn render_summary_includes_top_categories_section_when_divergences_exist() {
     let dir = tempfile::tempdir().unwrap();
 
-    let originals = vec![
-        instance_result("t1", true),
-        instance_result("t2", true),
-    ];
+    let originals = vec![instance_result("t1", true), instance_result("t2", true)];
     let replays = vec![
         instance_result("t1", false), // flipped to unresolved
         instance_result("t2", true),
     ];
 
-    let report =
-        build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:x".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
     let summary = render_summary(&report);
 
     assert!(
@@ -686,7 +719,11 @@ fn render_summary_omits_top_categories_when_no_divergences() {
     let instances = vec![instance_result("t1", true), instance_result("t2", false)];
     // replay identical to original → no divergences
     let report = build_reproducibility_report(
-        dir.path(), "sha256:x".into(), &instances, &instances, dir.path()
+        dir.path(),
+        "sha256:x".into(),
+        &instances,
+        &instances,
+        dir.path(),
     );
     let summary = render_summary(&report);
     // No "top diverging" line expected when there are no diverging instances
@@ -711,11 +748,16 @@ fn manifest_reproduced_from_field_serializes_and_deserializes() {
     manifest.reproduced_from = Some(reproduced);
 
     let json = serde_json::to_string_pretty(&manifest).unwrap();
-    assert!(json.contains("reproduced_from"), "reproduced_from should appear in JSON");
+    assert!(
+        json.contains("reproduced_from"),
+        "reproduced_from should appear in JSON"
+    );
     assert!(json.contains("manifest-hash:deadbeef"));
 
     let roundtrip: ProvenanceManifest = serde_json::from_str(&json).unwrap();
-    let rf = roundtrip.reproduced_from.expect("reproduced_from should survive round-trip");
+    let rf = roundtrip
+        .reproduced_from
+        .expect("reproduced_from should survive round-trip");
     assert_eq!(rf.manifest_hash, "manifest-hash:deadbeef");
     assert_eq!(rf.sweep_dir, "/tmp/source-sweep");
 }

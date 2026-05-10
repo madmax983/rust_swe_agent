@@ -279,6 +279,11 @@ pub struct ReproduceCmd {
     #[arg(long)]
     pub per_task_budget_usd: Option<f64>,
 
+    /// Number of instances to run in parallel during the replay sweep.
+    /// Defaults to 4 when omitted.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
+
     /// Skip model-endpoint probe during preflight (useful for CI fixtures
     /// and dry-run modes that don't spend model credits).
     #[arg(long, default_value_t = false)]

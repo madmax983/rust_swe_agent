@@ -5,9 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::run::reproduce::{
-    compare_manifests, load_manifest_from_sweep, DriftSeverity,
-};
+use rust_swe_agent::run::reproduce::{DriftSeverity, compare_manifests, load_manifest_from_sweep};
 
 const CURRENT_FIXTURE: &str = "tests/fixtures/reproduce/current_sweep";
 const LEGACY_FIXTURE: &str = "tests/fixtures/reproduce/legacy_sweep";
@@ -16,7 +14,10 @@ const LEGACY_FIXTURE: &str = "tests/fixtures/reproduce/legacy_sweep";
 fn current_fixture_manifest_parses_successfully() {
     let manifest = load_manifest_from_sweep(std::path::Path::new(CURRENT_FIXTURE)).unwrap();
     assert_eq!(manifest.model.name, "deterministic");
-    assert_eq!(manifest.harness.git_sha.as_deref(), Some("fixture-sha-current"));
+    assert_eq!(
+        manifest.harness.git_sha.as_deref(),
+        Some("fixture-sha-current")
+    );
     assert_eq!(manifest.dataset.sha256, "fixture-dataset-hash");
 }
 
@@ -24,15 +25,16 @@ fn current_fixture_manifest_parses_successfully() {
 fn legacy_fixture_manifest_parses_successfully() {
     let manifest = load_manifest_from_sweep(std::path::Path::new(LEGACY_FIXTURE)).unwrap();
     assert_eq!(manifest.model.name, "deterministic");
-    assert_eq!(manifest.harness.git_sha.as_deref(), Some("fixture-sha-legacy"));
+    assert_eq!(
+        manifest.harness.git_sha.as_deref(),
+        Some("fixture-sha-legacy")
+    );
 }
 
 #[test]
 fn drift_detection_identifies_sha_difference_between_fixtures() {
-    let current =
-        load_manifest_from_sweep(std::path::Path::new(CURRENT_FIXTURE)).unwrap();
-    let legacy =
-        load_manifest_from_sweep(std::path::Path::new(LEGACY_FIXTURE)).unwrap();
+    let current = load_manifest_from_sweep(std::path::Path::new(CURRENT_FIXTURE)).unwrap();
+    let legacy = load_manifest_from_sweep(std::path::Path::new(LEGACY_FIXTURE)).unwrap();
 
     let drifts = compare_manifests(&legacy, &current);
 
@@ -51,5 +53,8 @@ fn drift_detection_identifies_sha_difference_between_fixtures() {
 fn same_fixture_produces_no_drift() {
     let m = load_manifest_from_sweep(std::path::Path::new(CURRENT_FIXTURE)).unwrap();
     let drifts = compare_manifests(&m, &m);
-    assert!(drifts.is_empty(), "identical manifests must produce no drift: {drifts:?}");
+    assert!(
+        drifts.is_empty(),
+        "identical manifests must produce no drift: {drifts:?}"
+    );
 }

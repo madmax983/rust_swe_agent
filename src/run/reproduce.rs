@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Error};
-use crate::run::swebench::{InstanceResult, ProvenanceManifest, SweepResults, resolved_count};
+use crate::run::swebench::{
+    InstanceResult, ProvenanceManifest, SweepResults, patch_path_for_run, resolved_count,
+};
 
 // ── public args ─────────────────────────────────────────────────────────────
 
@@ -129,13 +131,16 @@ pub struct ReproducibilityReport {
 /// Returns `Err` if the file is missing, unparseable, or has no manifest block.
 pub fn load_manifest_from_sweep(sweep_dir: &Path) -> Result<ProvenanceManifest, Error> {
     let results_path = sweep_dir.join("results.json");
-    let text = std::fs::read_to_string(&results_path).map_err(|e| {
+    let file = std::fs::File::open(&results_path).map_err(|e| {
         Error::Io(std::io::Error::new(
             e.kind(),
-            format!("cannot read results.json from {}: {e}", results_path.display()),
+            format!(
+                "cannot read results.json from {}: {e}",
+                results_path.display()
+            ),
         ))
     })?;
-    let results: SweepResults = serde_json::from_str(&text)?;
+    let results: SweepResults = serde_json::from_reader(std::io::BufReader::new(file))?;
     results.manifest.ok_or_else(|| {
         Error::Config(ConfigError::Invalid(format!(
             "sweep directory {} has no provenance manifest (manifest block) in results.json",
@@ -157,8 +162,7 @@ pub fn compare_manifests(
     let mut drifts = Vec::new();
 
     // Hard: harness git SHA (only when both are present)
-    if let (Some(orig_sha), Some(curr_sha)) =
-        (&original.harness.git_sha, &current.harness.git_sha)
+    if let (Some(orig_sha), Some(curr_sha)) = (&original.harness.git_sha, &current.harness.git_sha)
     {
         if orig_sha != curr_sha {
             drifts.push(DriftField {
@@ -214,9 +218,10 @@ pub fn compare_manifests(
     }
 
     // Soft: Rust compiler version (informational; does not affect correctness)
-    if let (Some(orig_rv), Some(curr_rv)) =
-        (&original.runtime.rust_version, &current.runtime.rust_version)
-    {
+    if let (Some(orig_rv), Some(curr_rv)) = (
+        &original.runtime.rust_version,
+        &current.runtime.rust_version,
+    ) {
         if orig_rv != curr_rv {
             drifts.push(DriftField {
                 field: "runtime.rust_version".into(),
@@ -270,8 +275,10 @@ pub fn build_reproducibility_report(
     output_dir: &Path,
 ) -> ReproducibilityReport {
     // Index replays by instance_id for O(1) lookup.
-    let replay_map: HashMap<&str, &InstanceResult> =
-        replay_instances.iter().map(|r| (r.instance_id.as_str(), r)).collect();
+    let replay_map: HashMap<&str, &InstanceResult> = replay_instances
+        .iter()
+        .map(|r| (r.instance_id.as_str(), r))
+        .collect();
 
     let mut instances = Vec::new();
     let mut aggregate = ReproducibilityAggregate::default();
@@ -304,18 +311,18 @@ pub fn build_reproducibility_report(
             instance_id: orig.instance_id.clone(),
             original_resolved,
             replay_resolved,
-            original_failure_category: orig
-                .failure_category
-                .as_ref()
-                .map(|c| serde_json::to_value(c).ok()
+            original_failure_category: orig.failure_category.as_ref().map(|c| {
+                serde_json::to_value(c)
+                    .ok()
                     .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| format!("{c:?}"))),
-            replay_failure_category: replay
-                .failure_category
-                .as_ref()
-                .map(|c| serde_json::to_value(c).ok()
+                    .unwrap_or_else(|| format!("{c:?}"))
+            }),
+            replay_failure_category: replay.failure_category.as_ref().map(|c| {
+                serde_json::to_value(c)
+                    .ok()
                     .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| format!("{c:?}"))),
+                    .unwrap_or_else(|| format!("{c:?}"))
+            }),
             patch_identical,
         });
     }
@@ -333,6 +340,9 @@ pub fn build_reproducibility_report(
 }
 
 /// Compare patch files for an instance across two sweep directories.
+///
+/// Uses run index 1 (the sweep writer's convention) and compares via SHA-256
+/// hashing to avoid loading large patch files fully into memory.
 fn compare_patches(
     orig: &InstanceResult,
     replay: &InstanceResult,
@@ -342,16 +352,28 @@ fn compare_patches(
     if !orig.patch_present || !replay.patch_present {
         return false;
     }
-    let orig_patch = source_dir
-        .join(&orig.instance_id)
-        .join("run-0.patch");
-    let replay_patch = output_dir
-        .join(&replay.instance_id)
-        .join("run-0.patch");
-    match (std::fs::read(&orig_patch), std::fs::read(&replay_patch)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
+    let orig_patch = patch_path_for_run(source_dir, &orig.instance_id, 1);
+    let replay_patch = patch_path_for_run(output_dir, &replay.instance_id, 1);
+    hash_file_sha256(&orig_patch) == hash_file_sha256(&replay_patch)
+}
+
+/// Hash a file's contents with SHA-256, reading it in 8 KiB chunks.
+/// Returns `None` if the file cannot be opened or read.
+fn hash_file_sha256(path: &Path) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return None,
+        }
     }
+    Some(hasher.finalize().into())
 }
 
 /// Render a human-readable summary of a `ReproducibilityReport` to stdout.
@@ -360,15 +382,25 @@ fn compare_patches(
 /// aggregate counts, and the top-3 diverging failure categories.
 #[must_use]
 pub fn render_summary(report: &ReproducibilityReport) -> String {
-    let total = report.instances.len() + report.aggregate.errored;
-    let status_matched =
-        report.aggregate.matched + report.aggregate.both_unresolved_same_category;
+    use std::fmt::Write as _;
 
+    let total = report.instances.len() + report.aggregate.errored;
+    let status_matched = report.aggregate.matched + report.aggregate.both_unresolved_same_category;
+
+    #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| -> f64 {
-        if total == 0 { 0.0 } else { n as f64 / total as f64 * 100.0 }
+        if total == 0 {
+            0.0
+        } else {
+            n as f64 / total as f64 * 100.0
+        }
     };
 
-    let patch_identical_count = report.instances.iter().filter(|e| e.patch_identical).count();
+    let patch_identical_count = report
+        .instances
+        .iter()
+        .filter(|e| e.patch_identical)
+        .count();
     let pct_patch_identical = pct(patch_identical_count);
     let pct_status_matched = pct(status_matched);
 
@@ -376,23 +408,24 @@ pub fn render_summary(report: &ReproducibilityReport) -> String {
         "reproduce: {total} instance(s), {pct_status_matched:.1}% matched resolved status, \
          {pct_patch_identical:.1}% patch-identical\n"
     );
-    out.push_str(&format!(
+    let _ = writeln!(
+        out,
         "  matched={status_matched} \
          flipped_to_resolved={flipped_to_resolved} \
          flipped_to_unresolved={flipped_to_unresolved} \
          both_unresolved_diff_cat={both_unresolved_different_category} \
-         errored={errored}\n",
+         errored={errored}",
         flipped_to_resolved = report.aggregate.flipped_to_resolved,
         flipped_to_unresolved = report.aggregate.flipped_to_unresolved,
         both_unresolved_different_category = report.aggregate.both_unresolved_different_category,
         errored = report.aggregate.errored,
-    ));
+    );
 
     let top3 = top_diverging_failure_categories(&report.instances, 3);
     if !top3.is_empty() {
         out.push_str("  top diverging failure categories:");
         for (cat, count) in &top3 {
-            out.push_str(&format!(" {cat}×{count}"));
+            let _ = write!(out, " {cat}×{count}");
         }
         out.push('\n');
     }
@@ -424,9 +457,7 @@ pub fn top_diverging_failure_categories(
                 // flipped to resolved — note what was failing before
                 entry.original_failure_category.iter().collect::<Vec<_>>()
             }
-            (false, false)
-                if entry.original_failure_category != entry.replay_failure_category =>
-            {
+            (false, false) if entry.original_failure_category != entry.replay_failure_category => {
                 // same unresolved outcome but different category — note both
                 entry
                     .original_failure_category

@@ -966,7 +966,7 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     let source_manifest = load_manifest_from_sweep(&r.from)?;
 
     // Build a "current" manifest from the CLI environment to detect drift.
-    let current_manifest = build_current_manifest_for_reproduce(&source_manifest)?;
+    let current_manifest = build_current_manifest_for_reproduce(&source_manifest);
 
     let all_drifts = compare_manifests(&source_manifest, &current_manifest);
 
@@ -990,7 +990,10 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
 
     // Load original results to replay.
     let source_results = load_sweep_results(&r.from)?;
-    let original_instances = source_results.instances.clone();
+    // Snapshot all original instances; will be narrowed to the replayed subset
+    // after the sweep runs so partial replays (--filter / --limit) don't count
+    // un-requested instances as errors.
+    let all_original_instances = source_results.instances.clone();
 
     // Compute source manifest hash for provenance.
     let source_manifest_hash = hash_manifest(&source_manifest);
@@ -1001,6 +1004,20 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
 
     // Run the replay sweep.
     let replay_results = crate::run::swebench::run(sweep_args).await?;
+
+    // For partial replays (--filter / --limit), restrict original instances to
+    // those actually present in the replay so skipped instances aren't counted
+    // as errors in the report.
+    let replayed_ids: std::collections::HashSet<&str> = replay_results
+        .instances
+        .iter()
+        .map(|i| i.instance_id.as_str())
+        .collect();
+    let original_instances: Vec<_> = all_original_instances
+        .iter()
+        .filter(|i| replayed_ids.contains(i.instance_id.as_str()))
+        .cloned()
+        .collect();
 
     // Build and write the reproducibility report.
     let report = crate::run::reproduce::build_reproducibility_report(
@@ -1019,18 +1036,20 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     Ok(())
 }
 
-/// Build a minimal current-environment manifest for drift comparison by
-/// cloning the source manifest and overwriting fields that reflect the
-/// current runtime environment.
+/// Build a current-environment manifest for drift comparison by cloning the
+/// source manifest and overwriting every field that reflects the runtime
+/// environment (not the intentional replay settings).
 fn build_current_manifest_for_reproduce(
     source: &crate::run::swebench::ProvenanceManifest,
-) -> Result<crate::run::swebench::ProvenanceManifest, Error> {
+) -> crate::run::swebench::ProvenanceManifest {
     let mut current = source.clone();
     current.harness.git_sha = current_git_sha();
     current.harness.git_dirty = None;
     current.runtime.started_at_utc = chrono_now_utc();
     current.runtime.finished_at_utc = None;
-    Ok(current)
+    current.runtime.host_os = std::env::consts::OS.into();
+    current.runtime.rust_version = current_rust_version();
+    current
 }
 
 fn current_git_sha() -> Option<String> {
@@ -1043,25 +1062,39 @@ fn current_git_sha() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn chrono_now_utc() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{now}")
+fn current_rust_version() -> Option<String> {
+    std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
-fn load_sweep_results(sweep_dir: &std::path::Path) -> Result<crate::run::swebench::SweepResults, Error> {
-    let text = std::fs::read_to_string(sweep_dir.join("results.json")).map_err(Error::Io)?;
-    serde_json::from_str(&text).map_err(Error::Json)
+fn chrono_now_utc() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn load_sweep_results(
+    sweep_dir: &std::path::Path,
+) -> Result<crate::run::swebench::SweepResults, Error> {
+    let path = sweep_dir.join("results.json");
+    let file = std::fs::File::open(&path).map_err(Error::Io)?;
+    serde_json::from_reader(std::io::BufReader::new(file)).map_err(Error::Json)
 }
 
 fn hash_manifest(manifest: &crate::run::swebench::ProvenanceManifest) -> String {
-    use std::hash::{Hash as _, Hasher as _};
+    use sha2::{Digest, Sha256};
     let json = serde_json::to_string(manifest).unwrap_or_default();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    json.hash(&mut hasher);
-    format!("manifest-hash:{:016x}", hasher.finish())
+    let hash = Sha256::digest(json.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for b in hash {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    format!("sha256:{hex}")
 }
 
 fn reproduce_swebench_args(
@@ -1112,7 +1145,7 @@ fn reproduce_swebench_args(
         dataset_source,
         dataset_cache_dir: crate::run::dataset::default_cache_dir(),
         output_dir: r.output.clone(),
-        parallel: 4,
+        parallel: r.parallel,
         config: cfg,
         reruns: 1,
         resume: false,
