@@ -2,10 +2,10 @@
 //!
 //! While the primary `.traj.json` format is optimized for machine replay and metric
 //! extraction, it can be dense for humans. This module provides exporters (like
-//! [`MarkdownExporter`]) that render the back-and-forth conversation into a clean
+//! [`crate::trajectory::export::MarkdownExporter`]) that render the back-and-forth conversation into a clean
 //! narrative document, complete with headers and code blocks.
 //!
-//! You can extend this module with new formats by implementing the [`TrajectoryExporter`] trait.
+//! You can extend this module with new formats by implementing the [`crate::trajectory::export::TrajectoryExporter`] trait.
 
 use super::Trajectory;
 use crate::redaction::{Redactor, surface};

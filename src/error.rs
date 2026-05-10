@@ -28,6 +28,11 @@ pub enum Error {
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    /// One or more operator-supplied verification checks did not pass.
+    /// `(failed_count, total_count)`.
+    #[error("verification failed: {0} of {1} check(s) did not pass")]
+    VerificationFailed(usize, usize),
 }
 
 #[derive(Debug, Error)]
@@ -163,13 +168,13 @@ pub enum ConfigError {
     #[error("config file not found: {0}")]
     NotFound(String),
 
-    #[error("toml parse failed: {0}")]
+    #[error("toml parse failed: {0} (see docs/config-reference.md for format and examples)")]
     Toml(String),
 
     #[error("include chain exceeded {0} levels (possible cycle)")]
     IncludeDepthExceeded(usize),
 
-    #[error("invalid config: {0}")]
+    #[error("invalid config: {0} (see docs/config-reference.md for valid values and examples)")]
     Invalid(String),
 }
 

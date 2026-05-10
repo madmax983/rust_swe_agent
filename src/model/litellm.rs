@@ -179,6 +179,7 @@ impl Model for LitellmBackend {
     }
 }
 
+/// Extracts and concatenates all text parts from a model response choice.
 fn extract_text_content(choice: &litellm_rs::Choice) -> String {
     use litellm_rs::core::types::content::ContentPart;
     use litellm_rs::core::types::message::MessageContent;
@@ -191,8 +192,7 @@ fn extract_text_content(choice: &litellm_rs::Choice) -> String {
                 ContentPart::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .collect::<Vec<_>>()
-            .join(""),
+            .collect::<String>(),
         None => String::new(),
     }
 }

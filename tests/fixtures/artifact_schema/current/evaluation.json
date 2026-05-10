@@ -1,6 +1,6 @@
 {
   "artifact_kind": "evaluation_results",
-  "schema_version": {"major": 1, "minor": 1},
+  "schema_version": {"major": 1, "minor": 2},
   "instances": [
     {
       "instance_id": "task-a",
@@ -24,5 +24,10 @@
     "tests_run_before_submit_rate": 0.0,
     "resolved_rate_when_tests_run": 0.0,
     "resolved_rate_when_tests_skipped": 0.0
+  },
+  "provenance": {
+    "backend": "none",
+    "eval_started_at": "2026-01-01T00:00:00Z",
+    "eval_ended_at": "2026-01-01T00:00:01Z"
   }
 }

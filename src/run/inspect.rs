@@ -15,7 +15,9 @@ use crate::redaction::{Redactor, surface};
 use crate::run::evaluate::EvaluationResults;
 use crate::run::patch_stats::PatchStats;
 use crate::run::swebench::{InstanceResult, ProvenanceManifest};
-use crate::trajectory::{FailureCategory, FallbackSummary, TokenUsage, Trajectory};
+use crate::trajectory::{
+    FailureCategory, FallbackSummary, TokenUsage, Trajectory, VerificationResult,
+};
 
 const TRUNCATE_MAX_LINES: usize = 40;
 const TRUNCATE_MAX_BYTES: usize = 2 * 1024;
@@ -97,6 +99,10 @@ pub struct InspectReport {
     pub last_tests_passed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_summary: Option<FallbackSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_results: Vec<VerificationResult>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
@@ -122,6 +128,9 @@ pub struct SummaryReport {
     pub filter: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ProvenanceManifest>,
+    /// Evaluator provenance from `evaluation.json`, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluator_provenance: Option<crate::run::evaluate::EvaluatorProvenance>,
     pub rows: Vec<SummaryRow>,
 }
 
@@ -187,10 +196,13 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
         });
     }
     rows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+    let evaluator_provenance =
+        crate::run::compare::load_evaluation_results(sweep)?.and_then(|eval| eval.provenance);
     Ok(SummaryReport {
         sweep_dir: sweep.to_path_buf(),
         filter: filter.raw,
         manifest: loaded.manifest,
+        evaluator_provenance,
         rows,
     })
 }
@@ -252,6 +264,8 @@ fn build_instance_report(
                 tests_run_before_submit: false,
                 last_tests_passed: None,
                 fallback_summary: None,
+                verification_status: None,
+                verification_results: vec![],
                 warnings,
                 steps: vec![],
             });
@@ -306,6 +320,8 @@ fn build_instance_report(
         tests_run_before_submit: traj.info.tests_run_before_submit,
         last_tests_passed: traj.info.last_tests_passed,
         fallback_summary: traj.info.fallback_summary,
+        verification_status: traj.info.verification_status,
+        verification_results: traj.info.verification_results,
         warnings,
         steps,
     })
@@ -396,6 +412,20 @@ fn render_summary_text(report: &SummaryReport) -> String {
         );
     } else {
         s.push_str("Manifest: unavailable\n");
+    }
+    if let Some(prov) = &report.evaluator_provenance {
+        let version = prov.backend_version.as_deref().unwrap_or("?");
+        let subset = prov.dataset_subset.as_deref().unwrap_or("?");
+        let split = prov.dataset_split.as_deref().unwrap_or("?");
+        let run_id = prov.run_id.as_deref().unwrap_or("?");
+        let started = prov.eval_started_at.as_deref().unwrap_or("?");
+        let _ = writeln!(
+            s,
+            "evaluator_provenance: backend={} version={} subset={} split={} run_id={} started={}",
+            prov.backend, version, subset, split, run_id, started
+        );
+    } else {
+        s.push_str("evaluator_provenance: unavailable\n");
     }
     s.push('\n');
 
@@ -525,6 +555,25 @@ fn render_instance_text(report: &InspectReport) -> String {
         );
         if !fb.attempted_models.is_empty() {
             let _ = writeln!(s, "fallback_chain:   {}", fb.attempted_models.join(" → "));
+        }
+    }
+    if report.verification_status.is_some() || !report.verification_results.is_empty() {
+        let _ = writeln!(
+            s,
+            "verification:     status={} checks={}",
+            report
+                .verification_status
+                .as_deref()
+                .unwrap_or("unverified"),
+            report.verification_results.len(),
+        );
+        for r in &report.verification_results {
+            let timeout_note = if r.timed_out { " (timed_out)" } else { "" };
+            let _ = writeln!(
+                s,
+                "  [{}] passed={} exit_code={} duration={}ms{}",
+                r.name, r.passed, r.exit_code, r.duration_ms, timeout_note,
+            );
         }
     }
     for w in &report.warnings {
@@ -818,6 +867,17 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
     for value in trajectory.info.other.values_mut() {
         redacted |= redactor.redact_json_value(value, surface::INSPECT);
     }
+    for vr in &mut trajectory.info.verification_results {
+        let command = redactor.redact_text(&vr.command, surface::INSPECT);
+        redacted |= command.redacted;
+        vr.command = command.text;
+        let stdout = redactor.redact_text(&vr.stdout_preview, surface::INSPECT);
+        redacted |= stdout.redacted;
+        vr.stdout_preview = stdout.text;
+        let stderr = redactor.redact_text(&vr.stderr_preview, surface::INSPECT);
+        redacted |= stderr.redacted;
+        vr.stderr_preview = stderr.text;
+    }
     for message in &mut trajectory.messages {
         let outcome = redactor.redact_text(&message.content, surface::INSPECT);
         redacted |= outcome.redacted;
@@ -837,4 +897,119 @@ fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redacto
         }
     }
     redacted
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::trajectory::{VerificationResult, verification_status};
+
+    fn write_trajectory_fixture(
+        sweep: &std::path::Path,
+        instance_id: &str,
+        results: &[VerificationResult],
+        status: &str,
+    ) {
+        let instance_dir = sweep.join(instance_id);
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {
+                "verification_status": status,
+                "verification_results": serde_json::to_value(results).unwrap(),
+            },
+            "messages": [{"role": "assistant", "content": "done"}]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn timed_out_check_renders_timeout_note() {
+        let dir = tempfile::tempdir().unwrap();
+        write_trajectory_fixture(
+            dir.path(),
+            "task-a",
+            &[VerificationResult {
+                name: "slow-check".into(),
+                command: "sleep 60".into(),
+                exit_code: -1,
+                duration_ms: 5000,
+                passed: false,
+                stdout_preview: String::new(),
+                stderr_preview: String::new(),
+                timed_out: true,
+            }],
+            verification_status::VERIFICATION_FAILED,
+        );
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-a".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+        assert!(
+            text.contains("(timed_out)"),
+            "expected timed_out note in:\n{text}"
+        );
+        assert!(
+            text.contains("verification:"),
+            "expected verification line in:\n{text}"
+        );
+        if let InspectOutput::Instance(report) = &output {
+            assert_eq!(report.verification_results.len(), 1);
+            assert!(report.verification_results[0].timed_out);
+        } else {
+            panic!("expected Instance output");
+        }
+    }
+
+    #[test]
+    fn verification_command_and_output_redacted_at_view_time() {
+        let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+        let dir = tempfile::tempdir().unwrap();
+        write_trajectory_fixture(
+            dir.path(),
+            "task-b",
+            &[VerificationResult {
+                name: "secret-check".into(),
+                command: format!("curl -H 'Authorization: Bearer {secret}'"),
+                exit_code: 0,
+                duration_ms: 50,
+                passed: true,
+                stdout_preview: format!("token={secret}"),
+                stderr_preview: String::new(),
+                timed_out: false,
+            }],
+            verification_status::VERIFIED,
+        );
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-b".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        if let InspectOutput::Instance(report) = &output {
+            let vr = &report.verification_results[0];
+            assert!(
+                !vr.command.contains(secret),
+                "command should be redacted at view time"
+            );
+            assert!(
+                !vr.stdout_preview.contains(secret),
+                "stdout_preview should be redacted at view time"
+            );
+        } else {
+            panic!("expected Instance output");
+        }
+    }
 }

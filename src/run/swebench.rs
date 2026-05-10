@@ -3457,6 +3457,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 patch_path: patch_path.clone(),
                 skip_patch_validation,
             }),
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
         };
         let run_err = crate::run::mini::run(args).await.err();
 
@@ -5793,7 +5795,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 1})
+            serde_json::json!({"major": 1, "minor": 2})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());

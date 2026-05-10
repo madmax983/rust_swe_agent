@@ -42,5 +42,5 @@ pub use tool::{
 };
 pub use trajectory::{
     FORMAT_VERSION, FailureCategory, FallbackSummary, MessageRecord, TestInvocation, TokenUsage,
-    Trajectory, TrajectoryInfo,
+    Trajectory, TrajectoryInfo, VerificationCheck, VerificationResult, verification_status,
 };

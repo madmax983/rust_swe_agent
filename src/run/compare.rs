@@ -200,6 +200,13 @@ pub struct CompareReport {
     /// (fallback chains differ). Empty when both sides used the same model(s).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_mix_warnings: Vec<String>,
+    /// Comparability classification based on evaluator provenance.
+    /// Always present; classifies as matching, mismatched, or unavailable.
+    pub evaluator_provenance_status: EvaluatorProvenanceStatus,
+    /// Warnings describing specific evaluator provenance mismatches or missing provenance.
+    /// Empty when `evaluator_provenance_status == Matching`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evaluator_provenance_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -228,6 +235,18 @@ pub enum ParetoVerdict {
     BaselineDominates,
     CandidateDominates,
     NonDominated,
+}
+
+/// Classification of evaluator provenance comparability between baseline and candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatorProvenanceStatus {
+    /// Both evaluations have provenance and all scoring-affecting fields match.
+    Matching,
+    /// Both evaluations have provenance but differ in backend, version, subset, or split.
+    Mismatched,
+    /// One or both evaluations lack provenance.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -293,6 +312,11 @@ impl CompareReport {
         for w in &self.model_mix_warnings {
             let _ = writeln!(s, "WARNING: {w}");
         }
+        write_evaluator_provenance_section(
+            &mut s,
+            self.evaluator_provenance_status,
+            &self.evaluator_provenance_warnings,
+        );
         write_mean_steps_line(
             &mut s,
             self.baseline_mean_steps,
@@ -552,6 +576,22 @@ fn write_mean_steps_line(
             let _ = writeln!(s, "Mean steps:         {b:.2} -> {c:.2} ({d:+.2})");
         }
         _ => s.push_str("Mean steps:         n/a\n"),
+    }
+}
+
+fn write_evaluator_provenance_section(
+    s: &mut String,
+    status: EvaluatorProvenanceStatus,
+    warnings: &[String],
+) {
+    let label = match status {
+        EvaluatorProvenanceStatus::Matching => "matching",
+        EvaluatorProvenanceStatus::Mismatched => "mismatched",
+        EvaluatorProvenanceStatus::Unavailable => "unavailable",
+    };
+    let _ = writeln!(s, "Evaluator provenance: {label}");
+    for w in warnings {
+        let _ = writeln!(s, "  ! {w}");
     }
 }
 
@@ -1338,7 +1378,21 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             total_fallbacks: candidate.total_fallbacks,
         },
     );
+    apply_evaluator_provenance(&mut report, baseline_eval.as_ref(), candidate_eval.as_ref());
     Ok(report)
+}
+
+fn apply_evaluator_provenance(
+    report: &mut CompareReport,
+    baseline_eval: Option<&LoadedEvaluationResults>,
+    candidate_eval: Option<&LoadedEvaluationResults>,
+) {
+    let (status, warnings) = compare_evaluator_provenance(
+        baseline_eval.and_then(|e| e.results.provenance.as_ref()),
+        candidate_eval.and_then(|e| e.results.provenance.as_ref()),
+    );
+    report.evaluator_provenance_status = status;
+    report.evaluator_provenance_warnings = warnings;
 }
 
 #[derive(Clone, Copy)]
@@ -1593,6 +1647,8 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         cost_per_resolved_delta_usd,
         pareto_verdict,
         model_mix_warnings: Vec::new(),
+        evaluator_provenance_status: EvaluatorProvenanceStatus::Unavailable,
+        evaluator_provenance_warnings: Vec::new(),
     }
 }
 
@@ -2414,6 +2470,93 @@ fn breakdown_map<S: std::hash::BuildHasher>(
         }
     }
     out
+}
+
+/// Compare evaluator provenance from two `evaluation.json` artifacts and return
+/// the classification status plus human-readable warning strings.
+///
+/// Fields that do NOT affect scoring comparability (run_id, prediction_path,
+/// prediction_sha256, timestamps) are intentionally ignored so that comparing
+/// two different candidate sweeps scored by the same evaluator setup reports
+/// `Matching` rather than `Mismatched`.
+fn compare_evaluator_provenance(
+    baseline: Option<&crate::run::evaluate::EvaluatorProvenance>,
+    candidate: Option<&crate::run::evaluate::EvaluatorProvenance>,
+) -> (EvaluatorProvenanceStatus, Vec<String>) {
+    let (Some(b), Some(c)) = (baseline, candidate) else {
+        let msg = match (baseline.is_some(), candidate.is_some()) {
+            (true, false) => "evaluator provenance: candidate evaluation.json has no provenance (legacy artifact)".into(),
+            (false, true) => "evaluator provenance: baseline evaluation.json has no provenance (legacy artifact)".into(),
+            _ => "evaluator provenance: neither evaluation.json has provenance (legacy artifacts or evaluation not yet run)".into(),
+        };
+        return (EvaluatorProvenanceStatus::Unavailable, vec![msg]);
+    };
+
+    let mut warnings = Vec::new();
+
+    if b.backend != c.backend {
+        warnings.push(format!(
+            "evaluator provenance: backend differs (baseline={:?}, candidate={:?})",
+            b.backend, c.backend
+        ));
+    }
+
+    match (&b.backend_version, &c.backend_version) {
+        (Some(bv), Some(cv)) if bv != cv => {
+            warnings.push(format!(
+                "evaluator provenance: backend version differs (baseline={bv:?}, candidate={cv:?})"
+            ));
+        }
+        _ => {}
+    }
+
+    if b.dataset_subset != c.dataset_subset {
+        warnings.push(format!(
+            "evaluator provenance: dataset subset differs (baseline={:?}, candidate={:?})",
+            b.dataset_subset, c.dataset_subset
+        ));
+    }
+
+    if b.dataset_split != c.dataset_split {
+        warnings.push(format!(
+            "evaluator provenance: dataset split differs (baseline={:?}, candidate={:?})",
+            b.dataset_split, c.dataset_split
+        ));
+    }
+
+    if b.backend == "sb-cli" && c.backend == "sb-cli" {
+        match (&b.sb_cli, &c.sb_cli) {
+            (Some(b_sb), Some(c_sb)) => {
+                if b_sb.timeout_per_instance_secs != c_sb.timeout_per_instance_secs {
+                    warnings.push(format!(
+                        "evaluator provenance: timeout_per_instance_secs differs (baseline={}, candidate={})",
+                        b_sb.timeout_per_instance_secs, c_sb.timeout_per_instance_secs
+                    ));
+                }
+                if b_sb.parallel != c_sb.parallel {
+                    warnings.push(format!(
+                        "evaluator provenance: parallel differs (baseline={}, candidate={})",
+                        b_sb.parallel, c_sb.parallel
+                    ));
+                }
+            }
+            (None, Some(_)) => warnings.push(
+                "evaluator provenance: baseline sb-cli details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (Some(_), None) => warnings.push(
+                "evaluator provenance: candidate sb-cli details unavailable (legacy artifact)"
+                    .into(),
+            ),
+            (None, None) => {}
+        }
+    }
+
+    if warnings.is_empty() {
+        (EvaluatorProvenanceStatus::Matching, Vec::new())
+    } else {
+        (EvaluatorProvenanceStatus::Mismatched, warnings)
+    }
 }
 
 #[cfg(test)]
@@ -3307,6 +3450,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -3325,6 +3469,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
 
         std::fs::write(
@@ -3379,6 +3524,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),
@@ -4128,5 +4274,96 @@ mod tests {
             2,
             "expected warnings for both mix diff and rate diff: {w:?}"
         );
+    }
+
+    // --- Evaluator provenance comparison ---
+
+    fn sb_prov(timeout: u64, parallel: usize) -> crate::run::evaluate::SbCliProvenance {
+        crate::run::evaluate::SbCliProvenance {
+            submit_command: None,
+            report_command: None,
+            report_paths: vec![],
+            report_hashes: vec![],
+            verify_submission: false,
+            wait_for_evaluation: true,
+            overwrite: true,
+            timeout_per_instance_secs: timeout,
+            parallel,
+        }
+    }
+
+    fn eval_prov(
+        backend: &str,
+        sb_cli: Option<crate::run::evaluate::SbCliProvenance>,
+    ) -> crate::run::evaluate::EvaluatorProvenance {
+        crate::run::evaluate::EvaluatorProvenance {
+            backend: backend.into(),
+            backend_version: None,
+            dataset_subset: Some("swe-bench-m".into()),
+            dataset_split: Some("dev".into()),
+            run_id: None,
+            prediction_path: None,
+            prediction_sha256: None,
+            eval_started_at: None,
+            eval_ended_at: None,
+            report_source: None,
+            sb_cli,
+            source_reports: vec![],
+        }
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_both_none_sb_details_gives_matching() {
+        // Both sides have sb-cli backend but neither has sb_cli details — (None, None) arm
+        let b = eval_prov("sb-cli", None);
+        let c = eval_prov("sb-cli", None);
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Matching);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_baseline_missing_sb_details_gives_mismatched() {
+        // Baseline has sb_cli: None, candidate has Some — (None, Some) arm
+        let b = eval_prov("sb-cli", None);
+        let c = eval_prov("sb-cli", Some(sb_prov(300, 4)));
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Mismatched);
+        assert!(
+            warnings.iter().any(|w| w.contains("baseline")),
+            "expected baseline warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compare_provenance_sb_cli_candidate_missing_sb_details_gives_mismatched() {
+        // Baseline has Some, candidate has sb_cli: None — (Some, None) arm
+        let b = eval_prov("sb-cli", Some(sb_prov(300, 4)));
+        let c = eval_prov("sb-cli", None);
+        let (status, warnings) = compare_evaluator_provenance(Some(&b), Some(&c));
+        assert_eq!(status, EvaluatorProvenanceStatus::Mismatched);
+        assert!(
+            warnings.iter().any(|w| w.contains("candidate")),
+            "expected candidate warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn write_evaluator_provenance_section_matching_label() {
+        let mut s = String::new();
+        write_evaluator_provenance_section(&mut s, EvaluatorProvenanceStatus::Matching, &[]);
+        assert!(s.contains("matching"), "got: {s}");
+    }
+
+    #[test]
+    fn write_evaluator_provenance_section_mismatched_with_warnings() {
+        let mut s = String::new();
+        write_evaluator_provenance_section(
+            &mut s,
+            EvaluatorProvenanceStatus::Mismatched,
+            &["backend differs".into()],
+        );
+        assert!(s.contains("mismatched"));
+        assert!(s.contains("backend differs"));
     }
 }

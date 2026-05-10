@@ -1,0 +1,17 @@
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        # Allow up to 1% project-level coverage drop.
+        # Some code paths (sb-cli backend) require a real binary and cannot
+        # be exercised by unit tests.
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        # Patch coverage target of 60%. sb-cli integration paths are excluded
+        # from what can be tested without the binary.
+        target: 60%
+        threshold: 5%

@@ -13,6 +13,83 @@ use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
 use crate::trajectory::{FailureCategory, outcome};
 
+/// Evaluator provenance recorded in every `bench evaluate` artifact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvaluatorProvenance {
+    /// Evaluator backend name: `"sb-cli"` or `"none"`.
+    pub backend: String,
+    /// Backend/tool version when determinable (e.g. `sb-cli --version` output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_version: Option<String>,
+    /// SWE-bench dataset subset (e.g. `"swe-bench-m"`, `"swe-bench_lite"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_subset: Option<String>,
+    /// SWE-bench dataset split (e.g. `"dev"`, `"test"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_split: Option<String>,
+    /// Run ID supplied to the evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Path to the predictions file consumed by the evaluator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_path: Option<String>,
+    /// SHA-256 hex digest of the predictions file at evaluation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_sha256: Option<String>,
+    /// ISO 8601 UTC timestamp when the evaluation run started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_started_at: Option<String>,
+    /// ISO 8601 UTC timestamp when the evaluation run ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_ended_at: Option<String>,
+    /// Human-readable description of how the report was obtained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_source: Option<String>,
+    /// `sb-cli`-specific provenance fields; present only when `backend == "sb-cli"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_cli: Option<SbCliProvenance>,
+    /// One entry per run slot for rerun/pass@k evaluations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_reports: Vec<SourceReportEntry>,
+}
+
+/// Provenance specific to `sb-cli` submit/get-report command pairs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SbCliProvenance {
+    /// Redacted `sb-cli submit` command shape used for submission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_command: Option<String>,
+    /// Redacted `sb-cli get-report` command shape used for report retrieval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_command: Option<String>,
+    /// Paths to the generated report JSON files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_paths: Vec<String>,
+    /// SHA-256 hex digests of the report files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_hashes: Vec<String>,
+    pub verify_submission: bool,
+    pub wait_for_evaluation: bool,
+    pub overwrite: bool,
+    pub timeout_per_instance_secs: u64,
+    pub parallel: usize,
+}
+
+/// One source-report entry for a single run slot in a rerun/pass@k evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceReportEntry {
+    pub run_index: u32,
+    /// Path to the report file for this run slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_path: Option<String>,
+    /// SHA-256 hex digest of the report file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_sha256: Option<String>,
+    /// Instance IDs whose rows were influenced by this run slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instance_ids: Vec<String>,
+}
+
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
 pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
 pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
@@ -128,6 +205,10 @@ pub struct EvaluationResults {
     pub cost_attribution: Vec<CostAttributionBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_mix_summary: Vec<ModelMixBucket>,
+    /// Evaluator provenance recorded at evaluation time.
+    /// `None` for artifacts produced before this field was added (legacy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<EvaluatorProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -220,6 +301,8 @@ impl RunSlotKey {
 struct EvaluateRunOutput {
     eval: EvaluationResults,
     resolved_by_run: HashMap<RunSlotKey, bool>,
+    /// The actual run id used (may be auto-generated when args.run_id is None).
+    effective_run_id: Option<String>,
 }
 
 impl EvaluateRunOutput {
@@ -227,6 +310,7 @@ impl EvaluateRunOutput {
         Self {
             eval,
             resolved_by_run: HashMap::new(),
+            effective_run_id: None,
         }
     }
 }
@@ -252,14 +336,25 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         ));
     }
     let results = loaded.instances;
+    let eval_started_at = utc_now_iso8601();
     let run_output = match args.backend {
         EvaluateBackend::None => {
             EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
     };
-    let mut eval = run_output.eval;
-    attach_patch_stats(&mut eval, args, &run_output.resolved_by_run)?;
+    let EvaluateRunOutput {
+        mut eval,
+        resolved_by_run,
+        effective_run_id,
+    } = run_output;
+    let provenance = build_provenance(
+        args,
+        &resolved_by_run,
+        effective_run_id.as_deref(),
+        eval_started_at,
+    );
+    attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     eval.breakdown = build_breakdown(
         &eval.instances,
@@ -271,13 +366,13 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     if args.cost_attribution {
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
-            &run_output.resolved_by_run,
+            &resolved_by_run,
             model_name.as_deref(),
         )
         .rows;
     }
-    eval.model_mix_summary =
-        build_model_mix_summary_from_slots(&run_slots, &run_output.resolved_by_run);
+    eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
+    eval.provenance = Some(provenance);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -285,6 +380,216 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         &eval,
     )?;
     Ok(eval)
+}
+
+fn build_provenance(
+    args: &EvaluateArgs,
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+    effective_run_id: Option<&str>,
+    started_at: String,
+) -> EvaluatorProvenance {
+    let run_id_str = effective_run_id
+        .or(args.run_id.as_deref())
+        .unwrap_or_default();
+    let (backend_str, sb_cli, source_reports) = match args.backend {
+        EvaluateBackend::None => ("none", None, vec![]),
+        EvaluateBackend::SbCli => {
+            let preds = swebench::predictions_path(&args.sweep_dir);
+            let report_dir = args.sweep_dir.join("sb_cli_reports");
+
+            let submit_cmd = build_redacted_submit_command(args, &preds, &report_dir, run_id_str);
+            let report_cmd = build_redacted_report_command(args, &report_dir, run_id_str);
+            let report_paths = collect_report_paths(&report_dir, run_id_str, args);
+            let report_hashes = report_paths
+                .iter()
+                .filter_map(|p| sha256_file(std::path::Path::new(p)).ok())
+                .collect();
+            let source_reports = build_source_reports(resolved_by_run, args, run_id_str);
+            let sb = SbCliProvenance {
+                submit_command: Some(submit_cmd),
+                report_command: Some(report_cmd),
+                report_paths,
+                report_hashes,
+                verify_submission: false,
+                wait_for_evaluation: true,
+                overwrite: true,
+                timeout_per_instance_secs: args.timeout_per_instance_secs,
+                parallel: args.parallel,
+            };
+            ("sb-cli", Some(sb), source_reports)
+        }
+    };
+
+    let prediction_path = match args.backend {
+        EvaluateBackend::SbCli => {
+            let p = swebench::predictions_path(&args.sweep_dir);
+            Some(p.display().to_string())
+        }
+        EvaluateBackend::None => None,
+    };
+    let prediction_sha256 = prediction_path
+        .as_deref()
+        .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
+
+    let recorded_run_id = effective_run_id
+        .map(str::to_owned)
+        .or_else(|| args.run_id.clone());
+    EvaluatorProvenance {
+        backend: backend_str.into(),
+        backend_version: match args.backend {
+            EvaluateBackend::SbCli => probe_sb_cli_version(),
+            EvaluateBackend::None => None,
+        },
+        dataset_subset: match args.backend {
+            EvaluateBackend::SbCli => Some(args.sb_subset.clone()),
+            EvaluateBackend::None => None,
+        },
+        dataset_split: match args.backend {
+            EvaluateBackend::SbCli => Some(args.sb_split.clone()),
+            EvaluateBackend::None => None,
+        },
+        run_id: recorded_run_id,
+        prediction_path,
+        prediction_sha256,
+        eval_started_at: Some(started_at),
+        eval_ended_at: Some(utc_now_iso8601()),
+        report_source: None,
+        sb_cli,
+        source_reports,
+    }
+}
+
+fn build_redacted_submit_command(
+    args: &EvaluateArgs,
+    preds: &Path,
+    report_dir: &Path,
+    run_id: &str,
+) -> String {
+    let redactor = crate::redaction::Redactor::default_enabled();
+    let dataset_flag = args
+        .dataset_path
+        .as_ref()
+        .map(|p| format!(" --dataset {}", p.display()))
+        .unwrap_or_default();
+    let raw = format!(
+        "sb-cli submit {} {} --predictions_path {} --run_id {} --output_dir {} --wait_for_evaluation 1 --gen_report 1 --timeout-per-instance {} --parallel {}{}",
+        args.sb_subset,
+        args.sb_split,
+        preds.display(),
+        run_id,
+        report_dir.display(),
+        args.timeout_per_instance_secs,
+        args.parallel,
+        dataset_flag,
+    );
+    redactor.redact_text(&raw, "evaluator_provenance").text
+}
+
+fn build_redacted_report_command(args: &EvaluateArgs, report_dir: &Path, run_id: &str) -> String {
+    let redactor = crate::redaction::Redactor::default_enabled();
+    let raw = format!(
+        "sb-cli get-report {} {} --run_id {} --output_dir {} --overwrite 1",
+        args.sb_subset,
+        args.sb_split,
+        run_id,
+        report_dir.display(),
+    );
+    redactor.redact_text(&raw, "evaluator_provenance").text
+}
+
+fn collect_report_paths(report_dir: &Path, run_id: &str, args: &EvaluateArgs) -> Vec<String> {
+    let path = report_dir.join(format!(
+        "{}__{}__{}.json",
+        args.sb_subset, args.sb_split, run_id
+    ));
+    if path.exists() {
+        vec![path.display().to_string()]
+    } else {
+        vec![]
+    }
+}
+
+fn build_source_reports(
+    resolved_by_run: &HashMap<RunSlotKey, bool>,
+    args: &EvaluateArgs,
+    run_id_str: &str,
+) -> Vec<SourceReportEntry> {
+    if resolved_by_run.is_empty() {
+        return vec![];
+    }
+    let max_run_index = resolved_by_run
+        .keys()
+        .map(|k| k.run_index)
+        .max()
+        .unwrap_or(1);
+    if max_run_index <= 1 {
+        return vec![];
+    }
+    let mut ids_by_run: HashMap<u32, Vec<String>> = HashMap::new();
+    for key in resolved_by_run.keys() {
+        ids_by_run
+            .entry(key.run_index)
+            .or_default()
+            .push(key.instance_id.clone());
+    }
+    let report_dir = args.sweep_dir.join("sb_cli_reports");
+    let run_id = run_id_str;
+    (1..=max_run_index)
+        .map(|run_index| {
+            let run_report_id = format!("{run_id}-run-{run_index}");
+            let report_path = report_dir.join(format!(
+                "{}__{}__{}.json",
+                args.sb_subset, args.sb_split, run_report_id
+            ));
+            let path_str = if report_path.exists() {
+                Some(report_path.display().to_string())
+            } else {
+                None
+            };
+            let report_sha256 = path_str
+                .as_deref()
+                .and_then(|p| sha256_file(std::path::Path::new(p)).ok());
+            let instance_ids = ids_by_run.remove(&run_index).unwrap_or_default();
+            SourceReportEntry {
+                run_index,
+                report_path: path_str,
+                report_sha256,
+                instance_ids,
+            }
+        })
+        .collect()
+}
+
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let digest = hasher.finalize();
+    Ok(format!("{digest:x}"))
+}
+
+fn probe_sb_cli_version() -> Option<String> {
+    let output = Command::new("sb-cli").arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text.trim().to_owned();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+fn utc_now_iso8601() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn attach_patch_stats(
@@ -541,6 +846,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -602,6 +908,7 @@ fn run_sb_cli(
         return Ok(EvaluateRunOutput {
             eval: merge_rerun_reports_with_results(results, &reports),
             resolved_by_run,
+            effective_run_id: Some(run_id),
         });
     }
 
@@ -614,6 +921,7 @@ fn run_sb_cli(
     Ok(EvaluateRunOutput {
         eval: merge_with_results(results, &parsed),
         resolved_by_run,
+        effective_run_id: Some(run_id),
     })
 }
 
@@ -894,6 +1202,7 @@ fn merge_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -1002,6 +1311,7 @@ fn merge_rerun_reports_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        provenance: None,
     }
 }
 
@@ -1563,6 +1873,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
             behavioral: BehavioralMetrics::default(),
         };
         let results = HashMap::from([
@@ -1744,6 +2055,7 @@ mod tests {
             breakdown: vec![],
             cost_attribution: vec![],
             model_mix_summary: vec![],
+            provenance: None,
         };
         let summary = summarize_with_model(&eval, &results, None);
         assert_eq!(summary.budget_exhausted_excluded, 1);
@@ -1866,6 +2178,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -1916,6 +2229,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1948,6 +2262,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -1969,6 +2284,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -1997,6 +2313,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -2023,6 +2340,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            provenance: None,
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);
@@ -2097,5 +2415,231 @@ mod tests {
         assert_eq!(bucket.model, "model-x");
         assert_eq!(bucket.n, 2);
         assert_eq!(bucket.resolved, 1);
+    }
+
+    // --- Evaluator provenance helpers ---
+
+    #[test]
+    fn sha256_file_produces_valid_hex_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, b"hello world").unwrap();
+        let digest = sha256_file(&path).unwrap();
+        assert_eq!(digest.len(), 64, "SHA-256 hex digest should be 64 chars");
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "digest should be lowercase hex: {digest}"
+        );
+        // Same content → same digest (deterministic)
+        let digest2 = sha256_file(&path).unwrap();
+        assert_eq!(digest, digest2);
+    }
+
+    #[test]
+    fn sha256_file_returns_error_for_missing_file() {
+        let result = sha256_file(std::path::Path::new("/nonexistent/path/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn utc_now_iso8601_returns_valid_format() {
+        let ts = utc_now_iso8601();
+        // Expected: "YYYY-MM-DDTHH:MM:SSZ"
+        assert_eq!(ts.len(), 20, "timestamp should be 20 chars: {ts}");
+        assert!(ts.ends_with('Z'), "timestamp should end with Z: {ts}");
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+    }
+
+    #[test]
+    fn collect_report_paths_returns_empty_when_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let report_dir = dir.path().join("sb_cli_reports");
+        let paths = collect_report_paths(&report_dir, "test-run", &args);
+        assert!(paths.is_empty(), "no report file should mean empty paths");
+    }
+
+    #[test]
+    fn collect_report_paths_returns_path_when_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("sb_cli_reports");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let report_file = report_dir.join("swe-bench-m__dev__test-run.json");
+        std::fs::write(&report_file, b"{}").unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let paths = collect_report_paths(&report_dir, "test-run", &args);
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].contains("swe-bench-m__dev__test-run.json"));
+    }
+
+    #[test]
+    fn build_source_reports_returns_empty_when_resolved_by_run_is_empty() {
+        let args = EvaluateArgs {
+            sweep_dir: "/tmp".into(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("r".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let entries = build_source_reports(&HashMap::new(), &args, "r");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn build_source_reports_returns_empty_when_max_run_index_is_one() {
+        let mut resolved_by_run = HashMap::new();
+        resolved_by_run.insert(RunSlotKey::new("task-a", 1), true);
+        let args = EvaluateArgs {
+            sweep_dir: "/tmp".into(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("r".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let entries = build_source_reports(&resolved_by_run, &args, "r");
+        assert!(
+            entries.is_empty(),
+            "single-run sweeps have no source_reports"
+        );
+    }
+
+    #[test]
+    fn build_provenance_none_backend_has_no_prediction_path_or_sb_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("my-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let prov = build_provenance(&args, &HashMap::new(), None, "2026-01-01T00:00:00Z".into());
+        assert_eq!(prov.backend, "none");
+        assert!(prov.backend_version.is_none());
+        assert!(prov.prediction_path.is_none());
+        assert!(prov.sb_cli.is_none());
+        assert_eq!(prov.run_id.as_deref(), Some("my-run"));
+        assert!(
+            prov.dataset_subset.is_none(),
+            "none backend does not stamp dataset_subset"
+        );
+        assert!(
+            prov.dataset_split.is_none(),
+            "none backend does not stamp dataset_split"
+        );
+    }
+
+    #[test]
+    fn build_provenance_effective_run_id_overrides_args_run_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::None,
+            timeout_per_instance_secs: 300,
+            parallel: 1,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: None,
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let prov = build_provenance(
+            &args,
+            &HashMap::new(),
+            Some("generated-123"),
+            "2026-01-01T00:00:00Z".into(),
+        );
+        assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
+    }
+
+    #[test]
+    fn build_redacted_submit_command_contains_expected_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::SbCli,
+            timeout_per_instance_secs: 300,
+            parallel: 4,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let preds = dir.path().join("all_preds.jsonl");
+        let report_dir = dir.path().join("sb_cli_reports");
+        let cmd = build_redacted_submit_command(&args, &preds, &report_dir, "test-run");
+        assert!(cmd.starts_with("sb-cli submit"), "got: {cmd}");
+        assert!(cmd.contains("swe-bench-m"), "got: {cmd}");
+        assert!(cmd.contains("dev"), "got: {cmd}");
+        assert!(cmd.contains("test-run"), "got: {cmd}");
+        assert!(cmd.contains("--timeout-per-instance 300"), "got: {cmd}");
+        assert!(cmd.contains("--parallel 4"), "got: {cmd}");
+    }
+
+    #[test]
+    fn build_redacted_report_command_contains_expected_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = EvaluateArgs {
+            sweep_dir: dir.path().to_path_buf(),
+            dataset_path: None,
+            backend: EvaluateBackend::SbCli,
+            timeout_per_instance_secs: 300,
+            parallel: 4,
+            sb_subset: "swe-bench-m".into(),
+            sb_split: "dev".into(),
+            run_id: Some("test-run".into()),
+            breakdown: BreakdownSelection::none(),
+            cost_attribution: false,
+        };
+        let report_dir = dir.path().join("sb_cli_reports");
+        let cmd = build_redacted_report_command(&args, &report_dir, "test-run");
+        assert!(cmd.starts_with("sb-cli get-report"), "got: {cmd}");
+        assert!(cmd.contains("swe-bench-m"), "got: {cmd}");
+        assert!(cmd.contains("dev"), "got: {cmd}");
+        assert!(cmd.contains("test-run"), "got: {cmd}");
     }
 }

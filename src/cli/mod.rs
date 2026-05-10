@@ -48,7 +48,9 @@ pub async fn run() -> Result<(), Error> {
 
     match cli.command {
         Command::Mini(m) => mini_cmd(m).await,
-        Command::HelloWorld(h) => crate::run::hello_world::main(h.output).await,
+        Command::HelloWorld(h) => {
+            crate::run::hello_world::main(h.output, h.config.as_deref()).await
+        }
         Command::Replay(r) => replay_cmd(r).await,
         Command::Bench {
             cmd: args::BenchCmd::Swebench(s),
@@ -149,6 +151,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         None => None,
     };
 
+    let verification_checks = parse_verify_checks(&m.verify)?;
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -161,9 +164,20 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cancellation: None,
         stream_addr,
         patch_capture,
+        verification_checks,
+        verification_timeout_secs: m.verify_timeout_secs,
     };
-    crate::run::mini::run(args).await?;
-    maybe_publish_mini_github_pr(github_pr).await?;
+    let run_result = crate::run::mini::run(args).await;
+    // Only publish when the run succeeded or failed at verification — those are
+    // the two cases where the trajectory and patch are guaranteed on disk.
+    // For other errors (env setup, model API, pre-trajectory I/O) propagate
+    // immediately so the real failure isn't masked by a trajectory-read error.
+    let is_verification_failure =
+        matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
+    if run_result.is_ok() || is_verification_failure {
+        maybe_publish_mini_github_pr(github_pr).await?;
+    }
+    run_result?;
     Ok(())
 }
 
@@ -594,6 +608,32 @@ fn swebench_args_from_cmd(
     }
 }
 
+fn parse_verify_checks(
+    specs: &[String],
+) -> Result<Vec<crate::trajectory::VerificationCheck>, Error> {
+    specs
+        .iter()
+        .map(|s| {
+            let colon = s.find(':').ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--verify must be in NAME:COMMAND format, got `{s}`"
+                )))
+            })?;
+            let name = s[..colon].trim();
+            let command = s[colon + 1..].trim();
+            if name.is_empty() || command.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--verify NAME:COMMAND requires non-empty name and command, got `{s}`"
+                ))));
+            }
+            Ok(crate::trajectory::VerificationCheck {
+                name: name.to_owned(),
+                command: command.to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
     if c.inspect_diff.is_some() && c.emit_diff_script.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -772,6 +812,14 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         "evaluation complete"
     );
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
+    if let Some(prov) = &eval.provenance {
+        println!(
+            "evaluator_provenance: backend={} subset={} split={}",
+            prov.backend,
+            prov.dataset_subset.as_deref().unwrap_or("?"),
+            prov.dataset_split.as_deref().unwrap_or("?"),
+        );
+    }
     if let Some(rl) = &loaded_sweep.rate_limit_events {
         println!("rate_limit_throttled_calls: {}", rl.throttled_calls);
         println!(
@@ -963,8 +1011,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
         Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        required_github_arg, swebench_args_from_cmd, swebench_github_pr_config,
-        trajectory_submitted, validate_observation_head_ratio, validate_swebench_github_pr_args,
+        parse_verify_checks, required_github_arg, swebench_args_from_cmd,
+        swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
+        validate_swebench_github_pr_args,
     };
     use crate::error::Error;
     use crate::run::github_pr::PublishMode;
@@ -1182,6 +1231,8 @@ mod tests {
             trajectory_name: None,
             stream: None,
             skip_patch_validation: false,
+            verify: vec![],
+            verify_timeout_secs: 60,
             github_pr: args::MiniGithubPrArgs {
                 open_pr,
                 target_repo: Some("madmax983/rust_swe_agent".into()),
@@ -1285,5 +1336,38 @@ mod tests {
          @@ -1 +1 @@\n\
          -base\n\
          +patched\n"
+    }
+
+    #[test]
+    fn parse_verify_checks_parses_valid_specs() {
+        let checks = parse_verify_checks(&["unit-tests:cargo test -q".into()]).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "unit-tests");
+        assert_eq!(checks[0].command, "cargo test -q");
+    }
+
+    #[test]
+    fn parse_verify_checks_trims_whitespace() {
+        let checks = parse_verify_checks(&["  lint  :  cargo clippy  ".into()]).unwrap();
+        assert_eq!(checks[0].name, "lint");
+        assert_eq!(checks[0].command, "cargo clippy");
+    }
+
+    #[test]
+    fn parse_verify_checks_rejects_missing_colon() {
+        let err = parse_verify_checks(&["no-colon-here".into()]).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("NAME:COMMAND"), "{err}");
+    }
+
+    #[test]
+    fn parse_verify_checks_rejects_empty_name_or_command() {
+        let err = parse_verify_checks(&[":ls".into()]).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("non-empty"), "{err}");
+
+        let err2 = parse_verify_checks(&["test:".into()]).unwrap_err();
+        assert!(matches!(err2, Error::Config(_)));
+        assert!(err2.to_string().contains("non-empty"), "{err2}");
     }
 }
