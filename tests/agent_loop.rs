@@ -393,6 +393,7 @@ timeout_secs = 3
             .map(String::as_str),
         Some("check flaky test")
     );
+    assert_eq!(calls[0].stdin.as_deref(), Some("check flaky test"));
 
     let observation = agent
         .history
@@ -417,6 +418,61 @@ timeout_secs = 3
         "trajectory should record the command-adapter action: {:#?}",
         agent.trajectory.messages
     );
+}
+
+#[tokio::test]
+async fn command_tool_adapter_rendered_command_is_policy_checked() {
+    let cfg = Config::from_toml_str(
+        r#"
+[agent]
+step_limit = 5
+
+[[agent.tools]]
+name = "diagnose"
+description = "Run a repository diagnostic helper."
+command = "diagnose-helper {{ tool_input }}"
+timeout_secs = 3
+
+[policy]
+profile = "safe"
+extra_deny_patterns = ["forbidden-file"]
+"#,
+    )
+    .unwrap();
+
+    let model = Arc::new(DeterministicModel::new(vec![
+        "```diagnose\nforbidden-file\n```".into(),
+        "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+    ]));
+    let env = PluginToolEnv::default();
+    let calls = Arc::clone(&env.calls);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "policy-denied command adapter must not execute"
+    );
+    assert!(
+        agent.history.iter().any(|m| {
+            m.role == Role::User && m.content.contains("Command blocked by policy rule")
+        }),
+        "policy denial should be model-visible: {:#?}",
+        agent.history
+    );
+    assert_eq!(agent.trajectory.info.policy_counts.blocked, 1);
 }
 
 #[tokio::test]
@@ -1159,6 +1215,7 @@ impl Environment for PanicEnvironment {
 struct PluginToolCall {
     command: String,
     env: std::collections::BTreeMap<String, String>,
+    stdin: Option<String>,
 }
 
 #[derive(Default)]
@@ -1210,14 +1267,11 @@ impl Environment for FixedExitEnvironment {
 impl Environment for PluginToolEnv {
     async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
         self.calls.lock().unwrap().push(PluginToolCall {
-            command: req.command,
+            command: req.command.clone(),
             env: req.env.clone(),
+            stdin: req.stdin.clone(),
         });
-        let input = req
-            .env
-            .get("RUST_SWE_AGENT_TOOL_INPUT")
-            .cloned()
-            .unwrap_or_default();
+        let input = req.stdin.unwrap_or_default();
         Ok(RunResult {
             stdout: format!("diagnose saw {input}\n"),
             stderr: String::new(),

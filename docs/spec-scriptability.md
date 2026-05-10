@@ -37,6 +37,12 @@ Then it sends `notifications/initialized` and asks the server to list tools:
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
 ```
 
+The current MCP stdio adapter is a one-shot transport built on the stateless
+`Environment` command runner: discovery and each tool call start a fresh process
+and perform the lifecycle handshake. A future persistent MCP session mode should
+use a separate configuration field from `agent.mcp_servers`, so one-shot and
+long-lived behavior can be A/B tested without a breaking semantic change.
+
 The MCP server returns definitions that are advertised to the model:
 
 ```json

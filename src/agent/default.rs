@@ -590,15 +590,24 @@ impl Agent for DefaultAgent {
             &self.redactor,
         );
 
-        if is_bash {
+        let policy_command = if is_bash {
+            Some(tool_input.clone())
+        } else if let Some(tool) = self.tool_registry.command_tool(&tool_name) {
+            let context = self.command_tool_context(tool, &tool_input);
+            Some(self.renderer.render_str(&tool.command, &context)?)
+        } else {
+            None
+        };
+
+        if let Some(policy_command) = policy_command.as_deref() {
             // `DefaultAgent` is the unattended runner (sweeps, CI), so per the
             // spec for issue #90 we use the non-interactive resolver: any `Ask`
-            // decision fails closed before a child process is launched.  Future
-            // `InteractiveAgent` integration should call `check_command` directly
-            // and present an approval prompt for `Ask` decisions.
+            // decision fails closed before a child process is launched. This
+            // applies to bash and command-adapter tools because both execute
+            // shell commands.
             let policy_decision = self
                 .policy_engine
-                .check_command_non_interactive(&tool_input);
+                .check_command_non_interactive(policy_command);
             if let PolicyDecision::Deny { ref label } = policy_decision {
                 self.trajectory.info.policy_counts.record(&policy_decision);
                 let rejection = format!(
@@ -619,7 +628,7 @@ impl Agent for DefaultAgent {
                     "blocked_command".into(),
                     serde_json::Value::String(
                         self.redactor
-                            .redact_text(&tool_input, surface::TRAJECTORY)
+                            .redact_text(policy_command, surface::TRAJECTORY)
                             .text,
                     ),
                 );
@@ -1205,8 +1214,9 @@ impl DefaultAgent {
         let timeout_secs = tool
             .timeout_secs
             .unwrap_or(self.config.root.environment.timeout_secs);
-        let mut req =
-            RunRequest::new(rendered_command).with_timeout(Duration::from_secs(timeout_secs));
+        let mut req = RunRequest::new(rendered_command)
+            .with_timeout(Duration::from_secs(timeout_secs))
+            .with_stdin(tool_input.to_owned());
         if let Some(cancellation) = self.cancellation.clone() {
             req = req.with_cancellation(cancellation);
         }

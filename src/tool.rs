@@ -334,17 +334,39 @@ impl McpStdioServer {
         cancellation: Option<crate::env::CancellationToken>,
     ) -> Result<Self, crate::error::Error> {
         let timeout = Duration::from_secs(cfg.timeout_secs.unwrap_or(default_timeout_secs));
-        let (initialize_result, list_result) = run_mcp_exchange(
-            env,
-            &cfg.command,
-            timeout,
-            mcp_tools_list_messages(None, MCP_PROTOCOL_VERSION),
-            2,
-            cancellation,
-        )
-        .await?;
-        let protocol_version = parse_mcp_initialize_protocol(&cfg.command, initialize_result)?;
-        let tools = parse_mcp_tools_list(&cfg.command, list_result)?;
+        let mut cursor = None;
+        let mut protocol_version = MCP_PROTOCOL_VERSION.to_owned();
+        let mut tools = Vec::new();
+
+        loop {
+            let (initialize_result, list_result) = run_mcp_exchange(
+                env,
+                &cfg.command,
+                timeout,
+                mcp_tools_list_messages(cursor.clone(), &protocol_version),
+                2,
+                cancellation.clone(),
+            )
+            .await?;
+            let negotiated = parse_mcp_initialize_protocol(&cfg.command, initialize_result)?;
+            if cursor.is_some() && negotiated != protocol_version {
+                return Err(crate::error::Error::Config(
+                    crate::error::ConfigError::Invalid(format!(
+                        "MCP server `{}` changed negotiated protocol version from `{}` to `{}` during tools/list pagination",
+                        cfg.command, protocol_version, negotiated
+                    )),
+                ));
+            }
+            protocol_version = negotiated;
+
+            let page = parse_mcp_tools_list(&cfg.command, list_result)?;
+            tools.extend(page.tools);
+            cursor = page.next_cursor.filter(|cursor| !cursor.is_empty());
+            if cursor.is_none() {
+                break;
+            }
+        }
+
         Ok(Self {
             command: cfg.command.clone(),
             timeout,
@@ -396,6 +418,13 @@ impl ToolProvider for McpStdioServer {
 #[derive(Debug, Deserialize)]
 struct McpToolsListResult {
     tools: Vec<McpToolDefinition>,
+    #[serde(default, rename = "nextCursor")]
+    next_cursor: Option<String>,
+}
+
+struct ParsedMcpToolsList {
+    tools: Vec<ToolDefinition>,
+    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -558,11 +587,9 @@ fn mcp_response_result(
     wanted_id: u64,
 ) -> Result<serde_json::Value, crate::error::Error> {
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
-        let response: McpJsonRpcResponse = serde_json::from_str(line).map_err(|err| {
-            crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
-                "MCP server `{command}` wrote invalid JSON-RPC line to stdout: {err}: {line}"
-            )))
-        })?;
+        let Ok(response) = serde_json::from_str::<McpJsonRpcResponse>(line) else {
+            continue;
+        };
         if !json_id_matches(response.id.as_ref(), wanted_id) {
             continue;
         }
@@ -597,13 +624,13 @@ fn json_id_matches(id: Option<&serde_json::Value>, wanted_id: u64) -> bool {
 fn parse_mcp_tools_list(
     command: &str,
     value: serde_json::Value,
-) -> Result<Vec<ToolDefinition>, crate::error::Error> {
+) -> Result<ParsedMcpToolsList, crate::error::Error> {
     let result: McpToolsListResult = serde_json::from_value(value).map_err(|err| {
         crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
             "MCP server `{command}` returned invalid tools/list result: {err}"
         )))
     })?;
-    Ok(result
+    let tools = result
         .tools
         .into_iter()
         .map(|tool| ToolDefinition {
@@ -611,7 +638,11 @@ fn parse_mcp_tools_list(
             description: tool.description.or(tool.title).unwrap_or_default(),
             input_schema: tool.input_schema,
         })
-        .collect())
+        .collect();
+    Ok(ParsedMcpToolsList {
+        tools,
+        next_cursor: result.next_cursor,
+    })
 }
 
 fn tool_input_to_mcp_arguments(input: &str) -> serde_json::Value {
@@ -859,6 +890,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mcp_response_result_skips_stdout_noise_before_json_rpc() {
+        let stdout = format!(
+            "diagnostic banner\nnot json\n{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "serverInfo": {"name": "diagnostic-mcp", "version": "1.0.0"}
+                }
+            })
+        );
+
+        let result = mcp_response_result("diagnostic-mcp", &stdout, 1).unwrap();
+        assert_eq!(
+            result["protocolVersion"].as_str(),
+            Some(MCP_PROTOCOL_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_server_discovers_paginated_tools_list() {
+        let env = PaginatedMcpEnv::default();
+        let cfg = crate::config::McpServerCfg {
+            command: "diagnostic-mcp".into(),
+            timeout_secs: Some(3),
+        };
+
+        let server = McpStdioServer::discover(&env, &cfg, 10, None)
+            .await
+            .unwrap();
+        let names = server
+            .tools()
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["diagnose", "repair"]);
+
+        let requests = env.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1]
+                .stdin
+                .as_deref()
+                .unwrap()
+                .contains("\"cursor\":\"page-2\""),
+            "second tools/list request should include nextCursor: {requests:#?}"
+        );
+    }
+
     struct JsonPluginEnv {
         requests: Arc<Mutex<Vec<RunRequest>>>,
         protocol_versions: Arc<Mutex<Vec<String>>>,
@@ -899,6 +982,11 @@ mod tests {
         fn default() -> Self {
             Self::with_protocol_version("2025-11-25")
         }
+    }
+
+    #[derive(Default)]
+    struct PaginatedMcpEnv {
+        requests: Arc<Mutex<Vec<RunRequest>>>,
     }
 
     #[async_trait]
@@ -951,6 +1039,70 @@ mod tests {
                                 "content": [{"type": "text", "text": format!("mcp saw {query}")}],
                                 "isError": false,
                             },
+                        }));
+                    }
+                    other => panic!("unexpected MCP request method: {other}"),
+                }
+            }
+            let stdout = responses
+                .into_iter()
+                .map(|response| serde_json::to_string(&response).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            Ok(RunResult {
+                stdout,
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Environment for PaginatedMcpEnv {
+        async fn run(&self, req: RunRequest) -> Result<RunResult, EnvError> {
+            self.requests.lock().unwrap().push(req.clone());
+            let stdin = req.stdin.unwrap_or_default();
+            let mut responses = Vec::new();
+            for line in stdin.lines() {
+                let request: serde_json::Value = serde_json::from_str(line).unwrap();
+                let Some(method) = request.get("method").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                match method {
+                    "initialize" => responses.push(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "diagnostic-mcp", "version": "1.0.0"},
+                        },
+                    })),
+                    "notifications/initialized" => {}
+                    "tools/list" => {
+                        let cursor = request["params"]["cursor"].as_str();
+                        let result = match cursor {
+                            None => serde_json::json!({
+                                "tools": [{
+                                    "name": "diagnose",
+                                    "description": "Run diagnostics."
+                                }],
+                                "nextCursor": "page-2"
+                            }),
+                            Some("page-2") => serde_json::json!({
+                                "tools": [{
+                                    "name": "repair",
+                                    "description": "Run repair."
+                                }]
+                            }),
+                            other => panic!("unexpected tools/list cursor: {other:?}"),
+                        };
+                        responses.push(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"],
+                            "result": result,
                         }));
                     }
                     other => panic!("unexpected MCP request method: {other}"),
