@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::error::Error;
+use crate::exit_code::ExitCode;
 
 pub mod args;
 
@@ -44,7 +45,16 @@ pub enum Command {
 }
 
 pub async fn run() -> Result<(), Error> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|e| {
+        // Print clap's formatted error or help text, then add the outcome label
+        // for non-zero exits (exit 0 means --help / --version, not an error).
+        let _ = e.print();
+        if e.exit_code() != 0 {
+            eprintln!("outcome_class: {}", ExitCode::UsageError.outcome_class());
+            eprintln!("error: {e}");
+        }
+        std::process::exit(e.exit_code());
+    });
     init_logging(&cli.log);
 
     match cli.command {
@@ -218,7 +228,11 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         match run_forecast_from_cmd(sweep_cmd.clone()).await? {
             crate::run::forecast::ForecastOutcome::Report(report) => {
                 print_forecast_report(&report, &sweep_cmd.format)?;
-                crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
+                if let Err(e) =
+                    crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)
+                {
+                    exit_with_outcome(ExitCode::BudgetHalt, &e.to_string());
+                }
                 if !crate::run::forecast::forecast_gate_allows_sweep(
                     &report,
                     crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
@@ -266,6 +280,15 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     );
     print!("{}", results.summary_table());
     exit_if_cancelled_sweep(&results);
+    if results.budget_halted > 0 && results.cost_limit_usd.is_some() {
+        exit_with_outcome(
+            ExitCode::BudgetHalt,
+            &format!(
+                "sweep stopped early: {} task(s) were not dispatched because the sweep cost limit was reached",
+                results.budget_halted
+            ),
+        );
+    }
     let github_pr_failures = github_pr_failure_count(&results);
     if github_pr_failures > 0 {
         return Err(Error::Github(format!(
@@ -293,7 +316,10 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
     match run_forecast_from_cmd(s).await? {
         crate::run::forecast::ForecastOutcome::Report(report) => {
             print_forecast_report(&report, &output_format)?;
-            crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+            if let Err(e) = crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap) {
+                exit_with_outcome(ExitCode::BudgetHalt, &e.to_string());
+            }
+            Ok(())
         }
         crate::run::forecast::ForecastOutcome::DryRun(results)
         | crate::run::forecast::ForecastOutcome::Cancelled(results) => {
@@ -302,6 +328,19 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
             Ok(())
         }
     }
+}
+
+/// Print a stable `outcome_class` label followed by the error detail, then exit.
+///
+/// Used for outcomes that are driven by explicit CLI logic (regression gate,
+/// budget-halt forecast, tail abort) rather than propagated `Error` variants.
+fn exit_with_outcome(code: ExitCode, detail: &str) -> ! {
+    eprintln!("outcome_class: {}", code.outcome_class());
+    eprintln!("error: {detail}");
+    // Flush stdout so piped consumers receive any buffered report output
+    // before the process terminates (process::exit bypasses Drop).
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    std::process::exit(code.as_i32());
 }
 
 fn cancellation_exit_code(results: &crate::run::swebench::SweepResults) -> Option<i32> {
@@ -314,7 +353,12 @@ fn cancellation_exit_code(results: &crate::run::swebench::SweepResults) -> Optio
 
 fn exit_if_cancelled_sweep(results: &crate::run::swebench::SweepResults) {
     if let Some(code) = cancellation_exit_code(results) {
-        std::process::exit(code);
+        let outcome = if code == crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL {
+            ExitCode::Interrupted
+        } else {
+            ExitCode::Killed
+        };
+        exit_with_outcome(outcome, "sweep was cancelled");
     }
 }
 
@@ -724,7 +768,14 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 ci_upper = report.resolved_delta_ci95.upper,
                 "compare: regression count exceeds --max-regressions threshold"
             );
-            std::process::exit(1);
+            exit_with_outcome(
+                ExitCode::RegressionGateFailure,
+                &format!(
+                    "compare: {} regression(s) exceed --max-regressions={}",
+                    report.regression_count(),
+                    max
+                ),
+            );
         }
     }
     if let Some(max) = c.max_patch_size_regression {
@@ -735,7 +786,12 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 candidate_mean_lines_changed = report.candidate_mean_lines_changed,
                 "compare: patch size regression exceeds --max-patch-size-regression threshold"
             );
-            std::process::exit(1);
+            exit_with_outcome(
+                ExitCode::RegressionGateFailure,
+                &format!(
+                    "compare: patch size regression exceeds --max-patch-size-regression={max}%"
+                ),
+            );
         }
     }
     Ok(())
@@ -1034,8 +1090,7 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
         stdout.flush()?;
 
         if let Some(reason) = snapshot.abort_reason {
-            eprintln!("bench tail: {reason}");
-            std::process::exit(1);
+            exit_with_outcome(ExitCode::InternalError, &format!("bench tail: {reason}"));
         }
         if t.once || snapshot.is_complete {
             return Ok(());

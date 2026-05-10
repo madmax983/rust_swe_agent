@@ -28,7 +28,7 @@ pub use crate::cost::{
     ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL,
     CostSource, SONNET_INPUT_USD_PER_MTOK, SONNET_OUTPUT_USD_PER_MTOK, estimate_cost_usd,
 };
-use crate::error::Error;
+use crate::error::{ConfigError, EnvError, Error};
 use crate::model::{Model, ModelUsage};
 use crate::redaction::{Redactor, surface};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
@@ -2141,7 +2141,9 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
                 .status
                 .success();
                 if !ok {
-                    return Err(Error::Trajectory(format!("required binary missing: {bin}")));
+                    return Err(Error::Env(EnvError::DockerDaemonUnreachable(format!(
+                        "preflight: required binary missing: {bin}"
+                    ))));
                 }
             }
             checks.push(CheckResult {
@@ -2159,7 +2161,11 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
                 let budget = remaining.min(per_check);
                 tokio::time::timeout(budget, crate::env::docker::preflight())
                     .await
-                    .map_err(|_| Error::Trajectory("docker preflight timed out".into()))??;
+                    .map_err(|_| {
+                        Error::Env(EnvError::DockerDaemonUnreachable(
+                            "docker preflight timed out".into(),
+                        ))
+                    })??;
                 checks.push(CheckResult {
                     status: CheckStatus::Ok,
                     name: "env.docker",
@@ -2168,9 +2174,10 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
             }
             #[cfg(not(feature = "docker"))]
             {
-                return Err(Error::Trajectory(
-                    "environment.kind=docker requires binary built with `docker` feature".into(),
-                ));
+                return Err(Error::Config(ConfigError::Invalid(
+                    "environment.kind=docker requires the binary to be built with the `docker` feature"
+                        .into(),
+                )));
             }
         }
     }
@@ -2187,8 +2194,16 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
         let budget = remaining.min(per_check);
         let _ = tokio::time::timeout(budget, backend.query(&msgs, &opts))
             .await
-            .map_err(|_| Error::Trajectory("model probe timed out".into()))?
-            .map_err(|e| Error::Trajectory(format!("model probe failed: {e}")))?;
+            .map_err(|_| {
+                Error::Env(EnvError::DockerDaemonUnreachable(
+                    "preflight: model probe timed out".into(),
+                ))
+            })?
+            .map_err(|e| {
+                Error::Env(EnvError::DockerDaemonUnreachable(format!(
+                    "preflight: model probe failed: {e}"
+                )))
+            })?;
         checks.push(CheckResult {
             status: CheckStatus::Ok,
             name: "model.probe",
@@ -2309,7 +2324,11 @@ where
     let h = tokio::task::spawn_blocking(f);
     let out = tokio::time::timeout(budget, h)
         .await
-        .map_err(|_| Error::Trajectory(format!("{name}: timeout exceeded")))?
+        .map_err(|_| {
+            Error::Env(EnvError::DockerDaemonUnreachable(format!(
+                "preflight: {name}: timeout exceeded"
+            )))
+        })?
         .map_err(|e| Error::Trajectory(format!("{name}: join error: {e}")))?
         .map_err(|e| Error::Trajectory(format!("{name}: {e}")))?;
     ensure_total_deadline(deadline)?;
@@ -2318,7 +2337,9 @@ where
 
 fn ensure_total_deadline(deadline: Instant) -> Result<(), Error> {
     if Instant::now() > deadline {
-        return Err(Error::Trajectory("preflight total timeout exceeded".into()));
+        return Err(Error::Env(EnvError::DockerDaemonUnreachable(
+            "preflight total timeout exceeded".into(),
+        )));
     }
     Ok(())
 }
