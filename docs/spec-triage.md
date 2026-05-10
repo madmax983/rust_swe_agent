@@ -46,8 +46,10 @@ The command reads:
 The candidate set is the union of:
 
 - rows where `evaluation.json` says `resolved: false`
-- rows in `results.json` whose outcome is `error` or whose
-  `failure_category` is present
+- still-unresolved rows in `results.json` whose outcome is `error` or whose
+  `failure_category` is present; pass@k aggregate rows with
+  `resolved_count > 0` are excluded even when they preserve the run-1
+  failure category for pass@1 compatibility
 
 This keeps evaluator omissions from hiding harness/runtime failures. Duplicate
 instance IDs are de-duplicated before clustering.

@@ -197,6 +197,28 @@ fn cli_includes_errored_results_rows_missing_from_evaluation_json() {
 }
 
 #[test]
+fn cli_excludes_resolved_rerun_aggregates_from_results_fallback_candidates() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_triage_fixture_sweep(sweep.path());
+    inject_resolved_rerun_aggregate_with_run1_failure(sweep.path());
+
+    let report = run_triage_json(sweep.path());
+    let clusters = report["clusters"].as_array().unwrap();
+    assert!(
+        clusters.iter().all(|cluster| {
+            cluster["instance_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|id| id != "resolved-rerun")
+        }),
+        "resolved rerun aggregate should not be triaged: {report:#}"
+    );
+    assert_eq!(report["totals"]["instances"], 5);
+    assert_eq!(report["totals"]["unresolved_cost_usd"], json!(15.5));
+}
+
+#[test]
 fn cli_errors_when_evaluation_json_is_missing() {
     let sweep = tempfile::tempdir().unwrap();
     copy_triage_fixture_sweep(sweep.path());
@@ -340,6 +362,88 @@ fn inject_results_only_errored_instance(sweep: &Path) {
                         "run_result": {
                             "stdout": "",
                             "stderr": "provider returned HTTP 429 retry-after 30",
+                            "exit_code": 1,
+                            "timed_out": false
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn inject_resolved_rerun_aggregate_with_run1_failure(sweep: &Path) {
+    let results_path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&results_path).unwrap()).unwrap();
+    results["total"] = json!(7);
+    results["errored"] = json!(6);
+    results["resolved"] = json!(2);
+    results["total_cost_usd"] = json!(31.5);
+    results["instances"].as_array_mut().unwrap().push(json!({
+        "instance_id": "resolved-rerun",
+        "exit_reason": "error",
+        "outcome": "error",
+        "failure_category": "model_api",
+        "cost_usd": 7.0,
+        "attempts": 3,
+        "runs": 3,
+        "resolved_count": 1,
+        "pass_at_1": false,
+        "tests_run_before_submit": true
+    }));
+    std::fs::write(
+        results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+
+    let evaluation_path = sweep.join("evaluation.json");
+    let mut evaluation: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&evaluation_path).unwrap()).unwrap();
+    evaluation["instances"].as_array_mut().unwrap().push(json!({
+        "instance_id": "resolved-rerun",
+        "resolved": true,
+        "runs": 3,
+        "resolved_count": 1,
+        "pass_at_1": false,
+        "tests_passed": [],
+        "tests_failed": [],
+        "eval_exit_reason": "resolved"
+    }));
+    std::fs::write(
+        evaluation_path,
+        serde_json::to_string_pretty(&evaluation).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        sweep.join("resolved-rerun.traj.json"),
+        serde_json::to_string_pretty(&json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 3},
+            "info": {
+                "task": "resolved-rerun",
+                "model_name": "fixture-model",
+                "outcome": "error",
+                "failure_category": "model_api",
+                "total_cost_usd": 7.0,
+                "steps": 2,
+                "test_invocations": [],
+                "tests_run_before_submit": true
+            },
+            "messages": [
+                {"role": "assistant", "content": "Run 1 hit provider failure, later run solved it"},
+                {
+                    "role": "user",
+                    "content": "observation",
+                    "extra": {
+                        "run_result": {
+                            "stdout": "",
+                            "stderr": "provider failure on run 1",
                             "exit_code": 1,
                             "timed_out": false
                         }

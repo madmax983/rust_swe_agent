@@ -11,7 +11,7 @@ use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
-use crate::run::swebench::InstanceResult;
+use crate::run::swebench::{InstanceResult, resolved_count};
 use crate::trajectory::{FailureCategory, Trajectory};
 
 const ASSISTANT_TAIL_CHARS: usize = 500;
@@ -131,18 +131,37 @@ struct ClusterMember {
 #[derive(Debug, Clone)]
 struct ClusterAccumulator {
     signature: FailureSignature,
+    signature_summary: String,
+    cluster_id: String,
     members: Vec<ClusterMember>,
+    total_cost_usd: f64,
+    score: f64,
 }
 
 impl ClusterAccumulator {
-    fn total_cost_usd(&self) -> f64 {
-        self.members.iter().map(|member| member.cost_usd).sum()
+    fn new(signature: FailureSignature) -> Self {
+        let signature_summary = signature.summary();
+        let cluster_id = signature.cluster_id();
+        Self {
+            signature,
+            signature_summary,
+            cluster_id,
+            members: Vec::new(),
+            total_cost_usd: 0.0,
+            score: 0.0,
+        }
     }
 
-    fn score(&self) -> f64 {
+    fn push_member(&mut self, member: ClusterMember) {
+        self.total_cost_usd += member.cost_usd;
+        self.members.push(member);
+        self.score = Self::score_for(self.members.len(), self.total_cost_usd);
+    }
+
+    fn score_for(member_count: usize, total_cost_usd: f64) -> f64 {
         #[allow(clippy::cast_precision_loss)]
         {
-            self.members.len() as f64 * self.total_cost_usd()
+            member_count as f64 * total_cost_usd
         }
     }
 }
@@ -326,7 +345,7 @@ fn build_report(args: &TriageArgs) -> Result<TriageReport, Error> {
         .sum::<usize>();
     let total_candidate_cost_usd = accumulators
         .values()
-        .map(ClusterAccumulator::total_cost_usd)
+        .map(|cluster| cluster.total_cost_usd)
         .sum::<f64>();
     let mut cluster_accs: Vec<ClusterAccumulator> = accumulators
         .into_values()
@@ -426,19 +445,16 @@ fn build_accumulators(
         };
         accumulators
             .entry(key)
-            .or_insert_with(|| ClusterAccumulator {
-                signature,
-                members: Vec::new(),
-            })
-            .members
-            .push(member);
+            .or_insert_with(|| ClusterAccumulator::new(signature))
+            .push_member(member);
     }
     Ok(accumulators)
 }
 
 fn instance_is_errored(instance: &InstanceResult) -> bool {
-    instance.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR)
-        || instance.failure_category.is_some()
+    resolved_count(instance) == 0
+        && (instance.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR)
+            || instance.failure_category.is_some())
 }
 
 fn compare_cluster_accumulators(
@@ -446,20 +462,16 @@ fn compare_cluster_accumulators(
     right: &ClusterAccumulator,
 ) -> std::cmp::Ordering {
     right
-        .score()
-        .total_cmp(&left.score())
-        .then_with(|| right.total_cost_usd().total_cmp(&left.total_cost_usd()))
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| right.total_cost_usd.total_cmp(&left.total_cost_usd))
         .then_with(|| {
             left.signature
                 .failure_category
                 .cmp(&right.signature.failure_category)
         })
-        .then_with(|| left.signature.summary().cmp(&right.signature.summary()))
-        .then_with(|| {
-            left.signature
-                .cluster_id()
-                .cmp(&right.signature.cluster_id())
-        })
+        .then_with(|| left.signature_summary.cmp(&right.signature_summary))
+        .then_with(|| left.cluster_id.cmp(&right.cluster_id))
 }
 
 fn cluster_from_accumulator(acc: &ClusterAccumulator) -> TriageCluster {
@@ -472,11 +484,11 @@ fn cluster_from_accumulator(acc: &ClusterAccumulator) -> TriageCluster {
         Clone::clone,
     );
     TriageCluster {
-        cluster_id: acc.signature.cluster_id(),
+        cluster_id: acc.cluster_id.clone(),
         failure_category: acc.signature.failure_category.clone(),
-        signature_summary: acc.signature.summary(),
+        signature_summary: acc.signature_summary.clone(),
         instance_count: acc.members.len(),
-        total_cost_usd: acc.total_cost_usd(),
+        total_cost_usd: acc.total_cost_usd,
         exemplar_instance_id: exemplar.instance_id,
         exemplar_trajectory_path: exemplar.trajectory_path,
         instance_ids: acc
