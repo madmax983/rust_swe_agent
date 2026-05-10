@@ -459,7 +459,9 @@ fn calibration_instance_ids(
 fn planned_instances(
     args: &swebench::SwebenchArgs,
 ) -> Result<Vec<swebench::SweBenchInstance>, Error> {
-    let instances = swebench::load_dataset(&args.dataset_path)?;
+    let (dataset_bytes, _meta) =
+        crate::run::dataset::resolve_dataset(&args.dataset_source, &args.dataset_cache_dir)?;
+    let instances = swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
     let (filtered, _) = swebench::apply_subset(
         instances,
         &swebench::ApplySubsetParams {

@@ -82,7 +82,8 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
     };
 
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -137,7 +138,8 @@ async fn retries_on_injected_transient_category_then_recovers() {
     write_dataset(&dataset, &["a"]);
 
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -199,7 +201,8 @@ async fn max_retries_zero_disables_retry() {
     write_dataset(&dataset, &["a"]);
 
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -262,7 +265,8 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
     // a: retryable parse fails twice with max_retries=1 => attempts=2 cap reached.
     // b: same parse failure but retry set excludes model_parse => never retried.
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,
@@ -309,7 +313,8 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
     let no_retry_output = work.path().join("runs_no_retry");
     std::fs::create_dir_all(&no_retry_output).unwrap();
     let no_retry = run(SwebenchArgs {
-        dataset_path: work.path().join("dataset.jsonl"),
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(work.path().join("dataset.jsonl")),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: no_retry_output,
         parallel: 1,
         reruns: 1,
@@ -371,7 +376,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     };
 
     let results = run(SwebenchArgs {
-        dataset_path: dataset.clone(),
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset.clone()),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -437,7 +443,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     write_dataset(&dataset, &["resume-id"]);
 
     let sticky = run(SwebenchArgs {
-        dataset_path: dataset.clone(),
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset.clone()),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -479,7 +486,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     assert_eq!(sticky.skipped, 1);
 
     let rerun = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
         reruns: 1,

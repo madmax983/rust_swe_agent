@@ -188,6 +188,7 @@ fn write_results_with_filter_spec_and_model(
                 sha256: "test".into(),
                 instance_count: instances.len(),
                 filter_spec: Some(filter_spec.clone()),
+                ..Default::default()
             },
             prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),

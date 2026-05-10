@@ -40,7 +40,8 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
 
     let started = Instant::now();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,

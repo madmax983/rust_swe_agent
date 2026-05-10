@@ -315,7 +315,8 @@ secret_literals = ["{configured_secret}"]
     .unwrap();
 
     let results = run_sweep(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -415,7 +416,8 @@ name = "scripted-test-model"
     .unwrap();
 
     let results = run_sweep(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,

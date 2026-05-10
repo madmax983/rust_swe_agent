@@ -18,6 +18,11 @@ pub mod stream;
 pub mod template;
 pub mod trajectory;
 
+pub use run::dataset::{
+    CacheStatus, DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit,
+    cache_path_for, check_cache, default_cache_dir, resolve_dataset, write_cache,
+};
+
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
 pub use config::{Config, RedactionCfg, ToolHookCfg, ToolHooksCfg};
 #[cfg(feature = "docker")]

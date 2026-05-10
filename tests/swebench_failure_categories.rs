@@ -101,7 +101,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
 
     let cfg = Config::defaults().unwrap();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 2,
         reruns: 1,

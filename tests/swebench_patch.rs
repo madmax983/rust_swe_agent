@@ -101,7 +101,8 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -201,7 +202,8 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -298,7 +300,8 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
@@ -388,7 +391,8 @@ async fn missing_workdir_marks_outcome_as_error() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_path: dataset,
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
         reruns: 1,
