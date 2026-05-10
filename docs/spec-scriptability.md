@@ -25,8 +25,11 @@ rust-swe-agent mini --task "Fix it" --mcp-server diagnostic-mcp
 For each MCP server, the runner sends the standard lifecycle handshake:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rust-swe-agent","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"rust-swe-agent","version":"0.1.0"}}}
 ```
+
+If the server responds with an older supported revision, the runner records that
+negotiated version and uses it for subsequent stdio exchanges with that server.
 
 Then it sends `notifications/initialized` and asks the server to list tools:
 

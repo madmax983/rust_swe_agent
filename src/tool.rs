@@ -12,7 +12,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub const BASH_TOOL_NAME: &str = "bash";
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &[MCP_PROTOCOL_VERSION, "2025-06-18", "2025-03-26"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
@@ -320,6 +322,7 @@ impl ToolRegistry {
 pub struct McpStdioServer {
     command: String,
     timeout: Duration,
+    protocol_version: String,
     tools: Vec<ToolDefinition>,
 }
 
@@ -331,19 +334,21 @@ impl McpStdioServer {
         cancellation: Option<crate::env::CancellationToken>,
     ) -> Result<Self, crate::error::Error> {
         let timeout = Duration::from_secs(cfg.timeout_secs.unwrap_or(default_timeout_secs));
-        let (_, list_result) = run_mcp_exchange(
+        let (initialize_result, list_result) = run_mcp_exchange(
             env,
             &cfg.command,
             timeout,
-            mcp_tools_list_messages(None),
+            mcp_tools_list_messages(None, MCP_PROTOCOL_VERSION),
             2,
             cancellation,
         )
         .await?;
+        let protocol_version = parse_mcp_initialize_protocol(&cfg.command, initialize_result)?;
         let tools = parse_mcp_tools_list(&cfg.command, list_result)?;
         Ok(Self {
             command: cfg.command.clone(),
             timeout,
+            protocol_version,
             tools,
         })
     }
@@ -366,15 +371,24 @@ impl ToolProvider for McpStdioServer {
         cancellation: Option<crate::env::CancellationToken>,
     ) -> Result<ToolOutput, crate::error::Error> {
         let arguments = tool_input_to_mcp_arguments(&invocation.input);
-        let (_, call_result) = run_mcp_exchange(
+        let (initialize_result, call_result) = run_mcp_exchange(
             env,
             &self.command,
             self.timeout,
-            mcp_tools_call_messages(&invocation.name, &arguments),
+            mcp_tools_call_messages(&invocation.name, &arguments, &self.protocol_version),
             2,
             cancellation,
         )
         .await?;
+        let protocol_version = parse_mcp_initialize_protocol(&self.command, initialize_result)?;
+        if protocol_version != self.protocol_version {
+            return Err(crate::error::Error::Config(
+                crate::error::ConfigError::Invalid(format!(
+                    "MCP server `{}` changed negotiated protocol version from `{}` to `{}`",
+                    self.command, self.protocol_version, protocol_version
+                )),
+            ));
+        }
         parse_mcp_tool_output(&self.command, &call_result)
     }
 }
@@ -382,6 +396,12 @@ impl ToolProvider for McpStdioServer {
 #[derive(Debug, Deserialize)]
 struct McpToolsListResult {
     tools: Vec<McpToolDefinition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct McpInitializeResult {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,13 +432,16 @@ struct McpJsonRpcError {
     data: Option<serde_json::Value>,
 }
 
-fn mcp_tools_list_messages(cursor: Option<String>) -> Vec<serde_json::Value> {
+fn mcp_tools_list_messages(
+    cursor: Option<String>,
+    protocol_version: &str,
+) -> Vec<serde_json::Value> {
     let params = cursor.map_or_else(
         || serde_json::json!({}),
         |cursor| serde_json::json!({ "cursor": cursor }),
     );
     vec![
-        mcp_initialize_request(1),
+        mcp_initialize_request(1, protocol_version),
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -432,9 +455,13 @@ fn mcp_tools_list_messages(cursor: Option<String>) -> Vec<serde_json::Value> {
     ]
 }
 
-fn mcp_tools_call_messages(name: &str, arguments: &serde_json::Value) -> Vec<serde_json::Value> {
+fn mcp_tools_call_messages(
+    name: &str,
+    arguments: &serde_json::Value,
+    protocol_version: &str,
+) -> Vec<serde_json::Value> {
     vec![
-        mcp_initialize_request(1),
+        mcp_initialize_request(1, protocol_version),
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -451,13 +478,13 @@ fn mcp_tools_call_messages(name: &str, arguments: &serde_json::Value) -> Vec<ser
     ]
 }
 
-fn mcp_initialize_request(id: u64) -> serde_json::Value {
+fn mcp_initialize_request(id: u64, protocol_version: &str) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "initialize",
         "params": {
-            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {
                 "name": "rust-swe-agent",
@@ -465,6 +492,28 @@ fn mcp_initialize_request(id: u64) -> serde_json::Value {
             },
         },
     })
+}
+
+fn parse_mcp_initialize_protocol(
+    command: &str,
+    value: serde_json::Value,
+) -> Result<String, crate::error::Error> {
+    let result: McpInitializeResult = serde_json::from_value(value).map_err(|err| {
+        crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+            "MCP server `{command}` returned invalid initialize result: {err}"
+        )))
+    })?;
+    if MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&result.protocol_version.as_str()) {
+        Ok(result.protocol_version)
+    } else {
+        Err(crate::error::Error::Config(
+            crate::error::ConfigError::Invalid(format!(
+                "MCP server `{command}` negotiated unsupported MCP protocol version `{}`; supported versions: {}",
+                result.protocol_version,
+                MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")
+            )),
+        ))
+    }
 }
 
 async fn run_mcp_exchange(
@@ -694,6 +743,13 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].command, "diagnostic-mcp");
         assert!(requests[0].stdin.as_deref().unwrap().contains("initialize"));
+        assert!(
+            requests[0]
+                .stdin
+                .as_deref()
+                .unwrap()
+                .contains("\"protocolVersion\":\"2025-11-25\"")
+        );
         assert!(requests[0].stdin.as_deref().unwrap().contains("tools/list"));
         assert!(requests[1].stdin.as_deref().unwrap().contains("tools/call"));
         assert!(
@@ -705,9 +761,144 @@ mod tests {
         );
     }
 
-    #[derive(Default)]
+    #[tokio::test]
+    async fn mcp_stdio_server_uses_negotiated_protocol_for_tool_calls() {
+        let env = JsonPluginEnv::with_protocol_version("2025-03-26");
+        let cfg = crate::config::McpServerCfg {
+            command: "diagnostic-mcp".into(),
+            timeout_secs: Some(3),
+        };
+
+        let server = McpStdioServer::discover(&env, &cfg, 10, None)
+            .await
+            .unwrap();
+        server
+            .call(
+                &env,
+                ToolInvocation {
+                    name: "diagnose".into(),
+                    input: "{\"query\":\"check flaky test\"}".into(),
+                    task: "fix it".into(),
+                    model: "deterministic".into(),
+                    step: 2,
+                    total_cost_usd: 0.25,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let requests = env.requests.lock().unwrap().clone();
+        assert!(
+            requests[0]
+                .stdin
+                .as_deref()
+                .unwrap()
+                .contains("\"protocolVersion\":\"2025-11-25\""),
+            "initial discovery should advertise the latest supported MCP revision"
+        );
+        assert!(
+            requests[1]
+                .stdin
+                .as_deref()
+                .unwrap()
+                .contains("\"protocolVersion\":\"2025-03-26\""),
+            "tool calls should reuse the protocol version negotiated during discovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_server_rejects_unsupported_negotiated_protocol() {
+        let env = JsonPluginEnv::with_protocol_version("1900-01-01");
+        let cfg = crate::config::McpServerCfg {
+            command: "diagnostic-mcp".into(),
+            timeout_secs: Some(3),
+        };
+
+        let Err(err) = McpStdioServer::discover(&env, &cfg, 10, None).await else {
+            panic!("expected unsupported protocol version to fail discovery");
+        };
+        assert!(
+            err.to_string()
+                .contains("unsupported MCP protocol version `1900-01-01`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_server_rejects_protocol_change_during_tool_call() {
+        let env = JsonPluginEnv::with_protocol_versions(["2025-06-18", "2025-03-26"]);
+        let cfg = crate::config::McpServerCfg {
+            command: "diagnostic-mcp".into(),
+            timeout_secs: Some(3),
+        };
+
+        let server = McpStdioServer::discover(&env, &cfg, 10, None)
+            .await
+            .unwrap();
+        let err = server
+            .call(
+                &env,
+                ToolInvocation {
+                    name: "diagnose".into(),
+                    input: "{\"query\":\"check flaky test\"}".into(),
+                    task: "fix it".into(),
+                    model: "deterministic".into(),
+                    step: 2,
+                    total_cost_usd: 0.25,
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("changed negotiated protocol version from `2025-06-18` to `2025-03-26`"),
+            "unexpected error: {err}"
+        );
+    }
+
     struct JsonPluginEnv {
         requests: Arc<Mutex<Vec<RunRequest>>>,
+        protocol_versions: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl JsonPluginEnv {
+        fn with_protocol_version(protocol_version: impl Into<String>) -> Self {
+            Self::with_protocol_versions([protocol_version])
+        }
+
+        fn with_protocol_versions(
+            protocol_versions: impl IntoIterator<Item = impl Into<String>>,
+        ) -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                protocol_versions: Arc::new(Mutex::new(
+                    protocol_versions.into_iter().map(Into::into).collect(),
+                )),
+            }
+        }
+
+        fn next_protocol_version(&self) -> String {
+            let mut versions = self.protocol_versions.lock().unwrap();
+            let version = if versions.len() > 1 {
+                versions.remove(0)
+            } else {
+                let Some(version) = versions.first().cloned() else {
+                    panic!("test MCP env must have at least one protocol version");
+                };
+                version
+            };
+            drop(versions);
+            version
+        }
+    }
+
+    impl Default for JsonPluginEnv {
+        fn default() -> Self {
+            Self::with_protocol_version("2025-11-25")
+        }
     }
 
     #[async_trait]
@@ -726,7 +917,7 @@ mod tests {
                         "jsonrpc": "2.0",
                         "id": request["id"],
                         "result": {
-                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "protocolVersion": self.next_protocol_version(),
                             "capabilities": {"tools": {}},
                             "serverInfo": {"name": "diagnostic-mcp", "version": "1.0.0"},
                         },
