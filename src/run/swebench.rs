@@ -1187,6 +1187,19 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
         }
         let instance: SweBenchInstance = serde_json::from_str(line)
             .map_err(|e| Error::Trajectory(format!("dataset line {}: {e}", i + 1)))?;
+        if instance.instance_id.contains('/')
+            || instance.instance_id.contains('\\')
+            || instance.instance_id == ".."
+            || instance.instance_id == "."
+            || instance.instance_id.contains(':')
+            || instance.instance_id.is_empty()
+        {
+            return Err(Error::Trajectory(format!(
+                "dataset line {}: invalid instance_id for path generation: '{}'",
+                i + 1,
+                instance.instance_id
+            )));
+        }
         out.push(instance);
     }
     Ok(out)
@@ -6802,5 +6815,14 @@ instance = "inst"
             Some(45),
             "primary retry-after must be forwarded"
         );
+    }
+
+    #[test]
+    fn rejects_path_traversal_instance_id() {
+        let text = r#"{"instance_id":"../../../etc/passwd"}"#;
+        let result = parse_dataset_lines(text);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid instance_id"));
     }
 }
