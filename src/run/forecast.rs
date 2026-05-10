@@ -103,6 +103,11 @@ pub struct QuantileSummary {
 pub struct ForecastTotals {
     /// Number of instances being forecast.
     pub target_n: usize,
+    /// Exact target instance ids when the forecast maps to a concrete planned
+    /// sweep set. Empty for legacy reports or synthetic `--target-n` forecasts
+    /// that do not correspond to the filtered dataset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_instance_ids: Vec<String>,
     /// Parallel worker count used for wall-clock extrapolation.
     pub parallel: usize,
     /// Confidence level percentage used for intervals.
@@ -187,17 +192,26 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
     let dry_run = args.sweep.dry_run;
     let original_output = args.sweep.output_dir.clone();
     let calibration_dir = original_output.join("forecast");
+    let planned = planned_instances(&args.sweep)?;
     let target_n = match args.target_n {
         Some(n) => {
             validate_positive("target-n", n)?;
             n
         }
-        None => target_count(&args.sweep)?,
+        None => planned.len(),
+    };
+    let target_instance_ids = if target_n == planned.len() {
+        planned
+            .iter()
+            .map(|inst| inst.instance_id.clone())
+            .collect()
+    } else {
+        Vec::new()
     };
     let limit = args.sweep.cost_limit_usd;
     let parallel = args.sweep.parallel.max(1);
     let calibration_instance_ids =
-        calibration_instance_ids(&args.sweep, args.calibration_n, args.seed)?;
+        calibration_instance_ids(planned, args.calibration_n, args.seed)?;
 
     let mut sweep = args.sweep;
     sweep.output_dir.clone_from(&calibration_dir);
@@ -238,6 +252,7 @@ pub async fn run(args: ForecastArgs) -> Result<ForecastOutcome, Error> {
         limit,
     )?;
     report.calibration.output_dir = calibration_dir.display().to_string();
+    report.forecast.target_instance_ids = target_instance_ids;
     Ok(ForecastOutcome::Report(Box::new(report)))
 }
 
@@ -310,6 +325,7 @@ pub fn forecast_from_results(
         },
         forecast: ForecastTotals {
             target_n,
+            target_instance_ids: Vec::new(),
             parallel,
             confidence_pct,
             total_cost_usd: total_interval(&usd_cost, target_n, 1.0, confidence_pct),
@@ -432,16 +448,11 @@ pub fn render_text(report: &ForecastReport) -> String {
     out
 }
 
-fn target_count(args: &swebench::SwebenchArgs) -> Result<usize, Error> {
-    Ok(planned_instances(args)?.len())
-}
-
 fn calibration_instance_ids(
-    args: &swebench::SwebenchArgs,
+    planned: Vec<swebench::SweBenchInstance>,
     calibration_n: usize,
     seed: u64,
 ) -> Result<Vec<String>, Error> {
-    let planned = planned_instances(args)?;
     let (calibration, _) = swebench::apply_subset(
         planned,
         &swebench::ApplySubsetParams {

@@ -5,7 +5,7 @@ Run artifacts use explicit top-level metadata:
 ```json
 {
   "artifact_kind": "sweep_results",
-  "schema_version": { "major": 1, "minor": 1 }
+  "schema_version": { "major": 1, "minor": 3 }
 }
 ```
 
@@ -18,7 +18,8 @@ Run artifacts use explicit top-level metadata:
 | `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), extra `info` fields, message `extra` fields |
 | `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, manifest, filter spec, token, retry, rate-limit, cancellation fields |
 | `evaluation_results` | `evaluation.json` | `artifact_kind`, `schema_version`, `instances` | behavioral metrics, breakdown rows, cost attribution |
-| `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | additional forecast diagnostics |
+| `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | `forecast.target_instance_ids` for exact calibration comparability, additional forecast diagnostics |
+| `calibration_report` | `bench calibrate` / `calibration.json` | `artifact_kind`, `schema_version`, `forecast_path`, `results_path`, `verdict`, `comparability`, `metrics`, `per_instance` | mismatch details, warnings, future calibration diagnostics |
 | `preflight_report` | `bench doctor/swebench --format json` | `artifact_kind`, `schema_version`, `mode`, `checks` | additional check metadata |
 | `swebench_predictions_metadata` | `all_preds.metadata.json`, `all_preds.run-k.metadata.json` | `artifact_kind`, `schema_version`, `predictions_file`, `aggregate`, `row_count`, `swebench_evaluator_compatible` | `run_index`, future provenance fields |
 
@@ -33,7 +34,7 @@ Cost fields are split deliberately:
 
 ## Reader Policy
 
-`bench inspect`, `bench tail`, `bench compare`, `bench evaluate`, and trajectory diff loading classify artifacts before reporting metrics.
+`bench inspect`, `bench tail`, `bench compare`, `bench evaluate`, `bench calibrate`, and trajectory diff loading classify artifacts before reporting metrics.
 
 Compatibility classes:
 

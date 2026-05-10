@@ -233,6 +233,8 @@ pub enum BenchCmd {
     Swebench(SwebenchCmd),
     /// Forecast sweep cost from a reproducible calibration slice.
     Forecast(SwebenchCmd),
+    /// Compare a forecast artifact against completed sweep results.
+    Calibrate(CalibrateCmd),
     /// Validate sweep inputs without launching tasks.
     Doctor(SwebenchCmd),
     /// Diff two completed sweep runs by instance id; surfaces regressions
@@ -246,6 +248,31 @@ pub enum BenchCmd {
     Tail(TailCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct CalibrateCmd {
+    /// Forecast JSON artifact emitted by `bench forecast --format json`.
+    #[arg(long)]
+    pub forecast: PathBuf,
+
+    /// Completed sweep `results.json` artifact emitted by `bench swebench`.
+    #[arg(long)]
+    pub results: PathBuf,
+
+    /// Path to write the versioned calibration JSON artifact.
+    /// Defaults to `calibration.json` next to `--results`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Output format for stdout: `text` (default) or `json`.
+    /// The JSON artifact is written to `--output` in both modes.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Exit non-zero with `calibration_optimistic` when the verdict is optimistic.
+    #[arg(long, default_value_t = false)]
+    pub fail_on_optimistic: bool,
 }
 
 #[derive(Debug, Args)]
@@ -351,7 +378,7 @@ pub struct SwebenchCmd {
     #[arg(long, alias = "output-dir")]
     pub output: PathBuf,
 
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
     pub parallel: usize,
 
     /// Run each selected SWE-bench instance N independent times.

@@ -20,7 +20,7 @@ pub struct ArtifactSchemaVersion {
 }
 
 impl ArtifactSchemaVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 2 };
+    pub const CURRENT: Self = Self { major: 1, minor: 3 };
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 
     #[must_use]
@@ -50,6 +50,7 @@ pub enum ArtifactKind {
     SweepResults,
     EvaluationResults,
     ForecastReport,
+    CalibrationReport,
     PreflightReport,
     SwebenchPredictionsMetadata,
 }
@@ -62,6 +63,7 @@ impl ArtifactKind {
             Self::SweepResults => "sweep_results",
             Self::EvaluationResults => "evaluation_results",
             Self::ForecastReport => "forecast_report",
+            Self::CalibrationReport => "calibration_report",
             Self::PreflightReport => "preflight_report",
             Self::SwebenchPredictionsMetadata => "swebench_predictions_metadata",
         }

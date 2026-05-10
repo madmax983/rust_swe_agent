@@ -44,6 +44,9 @@ pub enum ExitCode {
     RegressionGateFailure = 6,
     /// 7 — verification failure (one or more `--verify` checks did not pass).
     VerificationFailure = 7,
+    /// 8 - calibration gate failure (`bench calibrate --fail-on-optimistic`
+    /// found actuals above the forecast interval).
+    CalibrationOptimistic = 8,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -72,6 +75,7 @@ impl ExitCode {
             Self::BudgetHalt => "budget_halt",
             Self::RegressionGateFailure => "regression_gate_failure",
             Self::VerificationFailure => "verification_failure",
+            Self::CalibrationOptimistic => "calibration_optimistic",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
