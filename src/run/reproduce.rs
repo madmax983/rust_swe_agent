@@ -354,7 +354,7 @@ fn compare_patches(
     }
     let orig_patch = existing_patch_path_for_run(source_dir, &orig.instance_id, 1);
     let replay_patch = existing_patch_path_for_run(output_dir, &replay.instance_id, 1);
-    hash_file_sha256(&orig_patch) == hash_file_sha256(&replay_patch)
+    matches!((hash_file_sha256(&orig_patch), hash_file_sha256(&replay_patch)), (Some(a), Some(b)) if a == b)
 }
 
 /// Hash a file's contents with SHA-256, reading it in 8 KiB chunks.

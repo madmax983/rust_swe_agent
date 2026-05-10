@@ -1031,6 +1031,19 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
         ))));
     }
 
+    // Reject output that aliases the source sweep — overwriting it would corrupt
+    // the original artifacts and make patch comparison compare files against
+    // themselves.
+    let from_canon = std::fs::canonicalize(&r.from).unwrap_or_else(|_| r.from.clone());
+    let out_canon = std::fs::canonicalize(&r.output).unwrap_or_else(|_| r.output.clone());
+    if from_canon == out_canon {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "reproduce: --output must differ from --from; \
+             writing replay results into the source sweep directory would overwrite the original artifacts"
+                .into(),
+        )));
+    }
+
     // Load original results to replay.
     let source_results = load_sweep_results(&r.from)?;
     // Snapshot all original instances; will be narrowed to the replayed subset
