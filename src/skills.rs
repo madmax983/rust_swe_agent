@@ -451,9 +451,38 @@ fn ends_with_unescaped_quote(value: &str) -> bool {
 
 fn mentioned_explicitly(normalized_task: &str, manifest: &SkillManifest) -> bool {
     let normalized_name = &manifest.normalized_name;
-    normalized_task.contains(&format!("${normalized_name}"))
-        || normalized_task.contains(&format!("@{normalized_name}"))
-        || normalized_task.contains(&format!("/{normalized_name}"))
+    ["$", "@", "/"].iter().any(|marker| {
+        contains_explicit_mention(normalized_task, &format!("{marker}{normalized_name}"))
+    })
+}
+
+fn contains_explicit_mention(normalized_task: &str, needle: &str) -> bool {
+    let mut search_from = 0;
+    while let Some(offset) = normalized_task[search_from..].find(needle) {
+        let start = search_from + offset;
+        let end = start + needle.len();
+        if is_explicit_mention_start_boundary(normalized_task[..start].chars().next_back())
+            && is_explicit_mention_end_boundary(normalized_task[end..].chars().next())
+        {
+            return true;
+        }
+        search_from = end;
+    }
+    false
+}
+
+fn is_explicit_mention_start_boundary(previous: Option<char>) -> bool {
+    match previous {
+        None => true,
+        Some(ch) => ch.is_whitespace(),
+    }
+}
+
+fn is_explicit_mention_end_boundary(next: Option<char>) -> bool {
+    match next {
+        None => true,
+        Some(ch) => ch.is_whitespace(),
+    }
 }
 
 fn match_score(task_tokens: &BTreeSet<String>, manifest: &SkillManifest) -> usize {

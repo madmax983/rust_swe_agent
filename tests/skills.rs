@@ -207,6 +207,60 @@ GO_BODY
 }
 
 #[test]
+fn explicit_mentions_require_boundary_after_skill_name() {
+    let temp = tempfile::tempdir().unwrap();
+    write_skill(
+        temp.path(),
+        "go",
+        r#"---
+name: go
+description: Use for Go code.
+---
+
+# Go
+
+GO_BODY
+"#,
+    );
+
+    let registry = SkillRegistry::scan_paths([temp.path().to_path_buf()]).unwrap();
+
+    for task in [
+        "Review /goals before planning.",
+        "Open /google in the browser.",
+        "Audit $governance settings.",
+        "Inspect @golang ownership.",
+        "Visit https://example.com/google?q=1.",
+        "Visit https://example.com/go?q=1.",
+        "Email person@go.dev for details.",
+    ] {
+        let active = registry
+            .resolve(SkillResolveRequest {
+                task,
+                auto_load: false,
+                max_active: 8,
+            })
+            .unwrap();
+        assert!(
+            active.skills.is_empty(),
+            "task `{task}` should not explicitly activate go"
+        );
+    }
+
+    for task in ["Use /go for this task.", "Use $go.", "Ask @go now."] {
+        let active = registry
+            .resolve(SkillResolveRequest {
+                task,
+                auto_load: false,
+                max_active: 8,
+            })
+            .unwrap();
+        assert_eq!(active.skills.len(), 1, "task `{task}` should activate go");
+        assert_eq!(active.skills[0].name, "go");
+    }
+}
+
+#[test]
 fn active_skill_context_appends_after_operator_extra_context() {
     let active = ActiveSkillSet {
         skills: vec![ActiveSkill {
