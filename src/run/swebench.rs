@@ -28,7 +28,7 @@ pub use crate::cost::{
     ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL,
     CostSource, SONNET_INPUT_USD_PER_MTOK, SONNET_OUTPUT_USD_PER_MTOK, estimate_cost_usd,
 };
-use crate::error::{ConfigError, EnvError, Error};
+use crate::error::{EnvError, Error};
 use crate::model::{Model, ModelUsage};
 use crate::redaction::{Redactor, surface};
 use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
@@ -2174,7 +2174,7 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
             }
             #[cfg(not(feature = "docker"))]
             {
-                return Err(Error::Config(ConfigError::Invalid(
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
                     "environment.kind=docker requires the binary to be built with the `docker` feature"
                         .into(),
                 )));
@@ -6032,7 +6032,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 2})
+            serde_json::json!({"major": 1, "minor": 3})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());

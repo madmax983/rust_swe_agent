@@ -1,0 +1,86 @@
+{
+  "artifact_kind": "calibration_report",
+  "schema_version": {"major": 1, "minor": 3},
+  "forecast_path": "forecast.json",
+  "results_path": "results.json",
+  "forecast_artifact": "forecast_report@1.3",
+  "results_artifact": "sweep_results@1.3",
+  "verdict": "well_calibrated",
+  "comparability": "matched",
+  "forecast_target_n": 4,
+  "actual_instance_count": 4,
+  "metrics": {
+    "total_usd": {
+      "forecast": {"point": 10.0, "lower": 8.0, "upper": 12.0},
+      "actual": 10.5,
+      "status": "within_interval",
+      "absolute_error": 0.5,
+      "relative_error": 0.05
+    },
+    "total_input_tokens": {
+      "forecast": {"point": 1000.0, "lower": 800.0, "upper": 1200.0},
+      "actual": 1050.0,
+      "status": "within_interval",
+      "absolute_error": 50.0,
+      "relative_error": 0.05
+    },
+    "total_output_tokens": {
+      "forecast": {"point": 100.0, "lower": 80.0, "upper": 120.0},
+      "actual": 105.0,
+      "status": "within_interval",
+      "absolute_error": 5.0,
+      "relative_error": 0.05
+    },
+    "wall_clock_seconds": {
+      "forecast": {"point": 100.0, "lower": 80.0, "upper": 120.0},
+      "actual": 105.0,
+      "status": "within_interval",
+      "absolute_error": 5.0,
+      "relative_error": 0.05
+    },
+    "resolution_rate": {
+      "forecast": {"point": 0.5, "lower": 0.0, "upper": 1.0},
+      "actual": 0.5,
+      "status": "within_interval",
+      "absolute_error": 0.0,
+      "relative_error": 0.0
+    }
+  },
+  "per_instance": {
+    "input_tokens": {
+      "forecast": {"p10": 200.0, "median": 250.0, "p90": 300.0},
+      "actual": {"p10": 250.0, "median": 250.0, "p90": 250.0},
+      "status": "within_interval",
+      "absolute_error": 0.0,
+      "relative_error": 0.0
+    },
+    "output_tokens": {
+      "forecast": {"p10": 20.0, "median": 25.0, "p90": 30.0},
+      "actual": {"p10": 25.0, "median": 25.0, "p90": 25.0},
+      "status": "within_interval",
+      "absolute_error": 0.0,
+      "relative_error": 0.0
+    },
+    "usd_cost": {
+      "forecast": {"p10": 2.0, "median": 2.5, "p90": 3.0},
+      "actual": {"p10": 2.625, "median": 2.625, "p90": 2.625},
+      "status": "within_interval",
+      "absolute_error": 0.125,
+      "relative_error": 0.05
+    },
+    "step_count": {
+      "forecast": {"p10": 1.0, "median": 2.0, "p90": 3.0},
+      "actual": {"p10": 1.0, "median": 1.0, "p90": 1.0},
+      "status": "within_interval",
+      "absolute_error": 1.0,
+      "relative_error": -0.5
+    },
+    "wall_clock_seconds": {
+      "forecast": {"p10": 20.0, "median": 25.0, "p90": 30.0},
+      "actual": {"p10": 26.25, "median": 26.25, "p90": 26.25},
+      "status": "within_interval",
+      "absolute_error": 1.25,
+      "relative_error": 0.05
+    }
+  }
+}
