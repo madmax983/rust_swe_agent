@@ -170,7 +170,7 @@ impl RateLimitGovernor {
             .await
     }
 
-    async fn acquire_inner(
+    pub async fn acquire_inner(
         &self,
         input_token_estimate: u64,
         mut cancellation: Option<CancellationToken>,
@@ -217,7 +217,7 @@ impl RateLimitGovernor {
 
     /// Single check-and-consume pass. Returns the duration to sleep before
     /// retrying, or `None` if the call may proceed (tokens consumed atomically).
-    async fn check_and_maybe_consume(&self, input_token_estimate: u64) -> Option<Duration> {
+    pub async fn check_and_maybe_consume(&self, input_token_estimate: u64) -> Option<Duration> {
         let mut inner = self.inner.lock().await;
 
         // Refill buckets based on time elapsed since last call.
@@ -245,7 +245,8 @@ impl RateLimitGovernor {
                 let deficit = 1.0 - inner.rpm_tokens;
                 let rate = f64::from(rpm) / 60.0;
                 inner.events.throttled_calls += 1;
-                return Some(Duration::from_secs_f64(deficit / rate));
+                let secs = (deficit / rate).min(100_000_000.0);
+                return Some(Duration::from_secs_f64(secs));
             }
         }
 
@@ -258,7 +259,8 @@ impl RateLimitGovernor {
                 #[allow(clippy::cast_precision_loss)]
                 let rate = tpm as f64 / 60.0;
                 inner.events.throttled_calls += 1;
-                return Some(Duration::from_secs_f64(deficit / rate));
+                let secs = (deficit / rate).min(100_000_000.0);
+                return Some(Duration::from_secs_f64(secs));
             }
         }
 
@@ -508,5 +510,22 @@ mod tests {
             RateLimitGovernor::parse_retry_after_from_error(msg),
             Some(10)
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod havoc_proptests_final {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_acquire_no_panic(tpm in 1..=1000u64, estimate in any::<u64>()) {
+            let g = RateLimitGovernor::new(None, Some(tpm), 1).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let _ = g.check_and_maybe_consume(estimate).await;
+            });
+        }
     }
 }
