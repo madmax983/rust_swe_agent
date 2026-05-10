@@ -91,8 +91,28 @@ After credentials are set and you are ready to spend a small calibration
 budget, run `forecast` before a full sweep:
 
 ```bash
-cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00
+cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00 --format json > runs/forecast.json
 ```
+
+### 4. Close The Calibration Loop
+
+For paid sweeps, treat the operator loop as `doctor` -> `forecast` ->
+`swebench` -> `calibrate`. The forecast keeps the first spend bounded; the
+calibration report tells you whether that forecast was trustworthy after the
+real sweep completes.
+
+```bash
+cargo run --quiet -- --log error bench doctor --dataset-path ./data/swebench.jsonl --output runs/doctor --limit 5 --skip-model-probe
+cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00 --format json > runs/forecast.json
+cargo run --quiet -- --log info bench swebench --dataset-path ./data/swebench.jsonl --output runs/sweep --limit 5 --sweep-cost-limit-usd 1.00
+cargo run --quiet -- --log error bench calibrate --forecast runs/forecast.json --results runs/sweep/results.json --output runs/sweep/calibration.json --fail-on-optimistic
+```
+
+`bench calibrate` prints a compact summary, writes a versioned
+`calibration_report`, classifies each metric as `within_interval`,
+`over_upper`, or `under_lower`, and exits with `calibration_optimistic` when
+`--fail-on-optimistic` is set and actuals overshot the forecast. The budget
+seance gets a receipt.
 
 ## Live-Model Quickstart
 
@@ -122,7 +142,9 @@ cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --in
 
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your
-budget. This avoids beginning with a multi-instance spendfest. Tiny mercy.
+budget, and finally `bench calibrate` against the completed `results.json`.
+This avoids beginning with a multi-instance spendfest and leaves a durable
+calibration record. Tiny mercy.
 
 ## Troubleshooting
 

@@ -70,6 +70,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Forecast(s),
         } => Box::pin(bench_forecast(s)).await,
         Command::Bench {
+            cmd: args::BenchCmd::Calibrate(c),
+        } => bench_calibrate(c),
+        Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
         } => bench_doctor(s).await,
         Command::Bench {
@@ -412,6 +415,46 @@ fn print_forecast_report(
             "unknown --format `{other}` (expected `text` or `json`)"
         )))),
     }
+}
+
+fn bench_calibrate(c: args::CalibrateCmd) -> Result<(), Error> {
+    let report = crate::run::calibrate::compute(&crate::run::calibrate::CalibrationArgs {
+        forecast_path: c.forecast.clone(),
+        results_path: c.results.clone(),
+    })?;
+    let json = crate::run::calibrate::to_json(&report)?;
+    let output_path = c.output.unwrap_or_else(|| {
+        c.results.parent().map_or_else(
+            || std::path::PathBuf::from("calibration.json"),
+            |parent| parent.join("calibration.json"),
+        )
+    });
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&output_path, &json)?;
+
+    match c.format.as_str() {
+        "text" => print!("{}", crate::run::calibrate::render_text(&report)),
+        "json" => println!("{json}"),
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    }
+
+    if c.fail_on_optimistic
+        && report.verdict == crate::run::calibrate::CalibrationVerdict::Optimistic
+    {
+        exit_with_outcome(
+            ExitCode::CalibrationOptimistic,
+            "calibration verdict is optimistic",
+        );
+    }
+    Ok(())
 }
 
 fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {

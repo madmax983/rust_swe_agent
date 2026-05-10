@@ -1033,6 +1033,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
     let report = expect_forecast_report(outcome);
 
     assert_eq!(report.forecast.target_n, 1);
+    assert_eq!(report.forecast.target_instance_ids, ["a"]);
     assert_eq!(report.calibration.instance_ids, ["a"]);
 }
 

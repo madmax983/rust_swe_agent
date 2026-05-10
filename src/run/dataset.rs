@@ -629,7 +629,10 @@ mod tests {
         assert!(msg.contains("verified"), "{msg}");
         assert!(msg.contains("test"), "{msg}");
         // error message must name the expected cache path
-        assert!(msg.contains("verified/test.jsonl"), "{msg}");
+        assert!(
+            msg.replace('\\', "/").contains("verified/test.jsonl"),
+            "{msg}"
+        );
     }
 
     #[test]

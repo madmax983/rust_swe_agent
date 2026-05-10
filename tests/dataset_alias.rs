@@ -141,7 +141,7 @@ async fn named_alias_cache_miss_errors_before_any_task_launches() {
     assert!(msg.contains("lite"), "error must name alias: {msg}");
     assert!(msg.contains("test"), "error must name split: {msg}");
     assert!(
-        msg.contains("lite/test.jsonl"),
+        msg.replace('\\', "/").contains("lite/test.jsonl"),
         "error must name cache path: {msg}"
     );
 }
