@@ -2015,10 +2015,17 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
                         status: CheckStatus::Warn,
                         name: "dataset.cache",
                         message: format!(
-                            "cache miss: expected file at `{}`",
-                            expected_path.display()
+                            "cache miss: expected file at `{}`\n\
+                            To populate: download the SWE-bench JSONL for `{alias_str}` \
+                            (`{split_str}` split) and place it at `{p}`.\n\
+                            See: https://www.swebench.com/SWE-bench/guides/datasets/",
+                            expected_path.display(),
+                            p = expected_path.display()
                         ),
                     });
+                    if args.preflight_mode == "doctor" {
+                        return Ok(checks);
+                    }
                     return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                         "dataset alias `{alias_str}` split `{split_str}` not in cache: \
                         expected file at `{p}`\n\

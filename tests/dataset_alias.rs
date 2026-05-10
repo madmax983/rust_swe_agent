@@ -417,22 +417,10 @@ async fn doctor_reports_cache_miss_without_launching_tasks() {
     args.skip_preflight = false;
     args.preflight_mode = "doctor".into();
 
-    // doctor with cache miss should return results (non-error) but record the miss
-    // (the check fails gracefully in doctor mode instead of returning Err)
-    let results = run(args).await;
-    // doctor mode may return Ok (with a warn in the preflight) or a structured check result
-    // The important thing is it doesn't launch tasks and gives useful output.
-    // Accept both Ok and Err as long as it doesn't panic.
-    match results {
-        Ok(r) => assert_eq!(r.total, 0, "doctor must not launch tasks even on cache miss"),
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("lite") || msg.contains("cache"),
-                "error must name alias or cache: {msg}"
-            );
-        }
-    }
+    // In doctor mode a cache miss must not return Err — it reports the miss as
+    // a [WARN] check and exits cleanly so the operator can see the full report.
+    let results = run(args).await.expect("doctor cache-miss must return Ok, not Err");
+    assert_eq!(results.total, 0, "doctor must not launch tasks on cache miss");
 }
 
 // ── CLI alias / split arg parsing ─────────────────────────────────────────
@@ -456,4 +444,34 @@ fn dataset_source_from_alias_and_split_strings() {
 fn dataset_source_local_path_kind_is_local() {
     let src = DatasetSource::LocalPath(PathBuf::from("foo.jsonl"));
     assert_eq!(src.kind(), DatasetSourceKind::Local);
+}
+
+// ── AC8: unsupported local file format ────────────────────────────────────
+
+#[tokio::test]
+async fn local_path_non_jsonl_format_produces_distinct_parse_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad_file = dir.path().join("instances.csv");
+    std::fs::write(
+        &bad_file,
+        "instance_id,problem_statement\ntask-1,fix the bug\n",
+    )
+    .unwrap();
+
+    let work = tempfile::tempdir().unwrap();
+    let mut args = base_args(DatasetSource::LocalPath(bad_file), work.path().join("out"));
+    args.skip_preflight = false; // must run preflight so the parse error surfaces
+
+    let err = run(args).await.unwrap_err();
+    let msg = err.to_string();
+    // Must mention a line-level parse problem — distinct from cache-miss or I/O errors.
+    assert!(
+        msg.contains("line") || msg.contains("parse") || msg.contains("json"),
+        "error must describe a parse/format problem, got: {msg}"
+    );
+    // Must NOT contain cache-miss language.
+    assert!(
+        !msg.contains("cache miss") && !msg.contains("not in cache"),
+        "error must not be mistaken for a cache-miss: {msg}"
+    );
 }
