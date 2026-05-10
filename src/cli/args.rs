@@ -246,6 +246,43 @@ pub enum BenchCmd {
     Tail(TailCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
+    /// Replay a saved sweep from its manifest and report reproducibility.
+    Reproduce(ReproduceCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct ReproduceCmd {
+    /// Source sweep directory to reproduce (must contain `results.json`
+    /// with an embedded `ProvenanceManifest`).
+    #[arg(long)]
+    pub from: PathBuf,
+
+    /// Output directory for the new sweep artifacts and `reproducibility.json`.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Drift field names to whitelist. Hard-drift fields not in this list
+    /// abort with a non-zero exit. May be repeated.
+    /// Example: `--allow-drift harness.git_sha`
+    #[arg(long = "allow-drift", value_name = "FIELD")]
+    pub allow_drift: Vec<String>,
+
+    /// Limit replay to at most N instances (partial replay).
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Instance-id filter: comma-separated ids or `@path/to/file.txt`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Override per-task USD ceiling for the replay sweep.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Skip model-endpoint probe during preflight (useful for CI fixtures
+    /// and dry-run modes that don't spend model credits).
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
 }
 
 #[derive(Debug, Args)]

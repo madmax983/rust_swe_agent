@@ -1,0 +1,534 @@
+//! Tests for `bench reproduce`: manifest loading, drift detection,
+//! reproducibility report generation, and CLI arg parsing.
+//!
+//! Red phase: these tests are written before the implementation exists.
+
+#![allow(clippy::unwrap_used)]
+
+use std::path::Path;
+
+use rust_swe_agent::run::reproduce::{
+    DriftSeverity, build_reproducibility_report, compare_manifests, load_manifest_from_sweep,
+    render_summary,
+};
+use rust_swe_agent::run::swebench::{HarnessManifest, InstanceResult, ProvenanceManifest, SweepResults};
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+fn write_results_json(dir: &Path, results: &SweepResults) {
+    let text = serde_json::to_string_pretty(results).unwrap();
+    std::fs::write(dir.join("results.json"), text).unwrap();
+}
+
+fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManifest {
+    ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "rust-swe-agent".into(),
+            version: "0.1.0".into(),
+            git_sha: git_sha.map(str::to_owned),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: rust_swe_agent::run::swebench::DatasetManifest {
+            path: "dataset.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 10,
+            filter_spec: None,
+            source_kind: "local".into(),
+            alias: None,
+            split: None,
+            source_revision: None,
+            cache_path: None,
+            selected_row_count: 10,
+            post_filter_row_count: 10,
+        },
+        prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+            source: "builtin".into(),
+            path: None,
+            sha256: "deadbeef".into(),
+        },
+        config: rust_swe_agent::run::swebench::ConfigManifest {
+            resolved: "[model]\nname = \"claude-opus-4-7\"\n".into(),
+            overlay_paths: vec![],
+        },
+        model: rust_swe_agent::run::swebench::ModelManifest {
+            name: model_name.into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+            started_at_utc: "2026-01-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-01-01T01:00:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("1.85.0".into()),
+        },
+        cli: rust_swe_agent::run::swebench::CliManifest {
+            argv: vec!["rust-swe-agent".into(), "bench".into(), "swebench".into()],
+        },
+    }
+}
+
+fn instance_result(id: &str, resolved: bool) -> InstanceResult {
+    InstanceResult {
+        instance_id: id.into(),
+        exit_reason: if resolved {
+            "submitted".into()
+        } else {
+            "step_limit_reached".into()
+        },
+        outcome: Some(if resolved { "submitted" } else { "step_limit_reached" }.into()),
+        failure_category: if resolved {
+            None
+        } else {
+            Some(rust_swe_agent::trajectory::FailureCategory::StepLimit)
+        },
+        steps: Some(5),
+        cost_usd: Some(0.01),
+        prompt_tokens: Some(100),
+        cache_read_tokens: Some(0),
+        cache_creation_tokens: Some(0),
+        completion_tokens: Some(50),
+        duration_secs: Some(2.0),
+        error: None,
+        github_pr_error: None,
+        patch_present: resolved,
+        non_empty_patch: resolved,
+        attempts: 1,
+        retry_reasons: vec![],
+        runs: 1,
+        resolved_count: u32::from(resolved),
+        pass_at_1: resolved,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
+        fallback_count: None,
+        final_model: None,
+    }
+}
+
+fn minimal_sweep_results(manifest: Option<ProvenanceManifest>) -> SweepResults {
+    SweepResults {
+        total: 0,
+        sweep_status: "completed".into(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 0,
+        in_flight_at_cancel: 0,
+        not_started: 0,
+        submitted: 0,
+        submitted_with_tests: 0,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: Default::default(),
+        budget_halted: 0,
+        with_patch: 0,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
+        github_pr_failures: 0,
+        total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
+        cache_hit_rate: 0.0,
+        retries: 0,
+        retried_instances: 0,
+        pass_at_k: 0.0,
+        filter_spec: Default::default(),
+        manifest,
+        cost_limit_usd: None,
+        instances: vec![],
+        rate_limit_events: None,
+        total_fallbacks: 0,
+        model_mix: Default::default(),
+    }
+}
+
+// ── load_manifest_from_sweep ───────────────────────────────────────────────
+
+#[test]
+fn load_manifest_rejects_missing_results_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = load_manifest_from_sweep(dir.path()).unwrap_err();
+    let msg = err.to_string();
+    // Should fail with an I/O or config error — not panic
+    assert!(
+        msg.contains("results.json") || msg.contains("No such file") || msg.contains("os error"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn load_manifest_rejects_results_without_manifest_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let results = minimal_sweep_results(None);
+    write_results_json(dir.path(), &results);
+
+    let err = load_manifest_from_sweep(dir.path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("manifest") || msg.contains("no provenance"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn load_manifest_returns_manifest_from_valid_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = minimal_manifest("claude-opus-4-7", Some("abc123sha"));
+    let results = minimal_sweep_results(Some(manifest.clone()));
+    write_results_json(dir.path(), &results);
+
+    let loaded = load_manifest_from_sweep(dir.path()).unwrap();
+    assert_eq!(loaded.model.name, "claude-opus-4-7");
+    assert_eq!(loaded.harness.git_sha.as_deref(), Some("abc123sha"));
+}
+
+// ── compare_manifests ──────────────────────────────────────────────────────
+
+#[test]
+fn compare_manifests_finds_no_drift_when_identical() {
+    let m = minimal_manifest("claude-opus-4-7", Some("deadbeef"));
+    let drifts = compare_manifests(&m, &m);
+    assert!(drifts.is_empty(), "expected no drift, got: {drifts:?}");
+}
+
+#[test]
+fn compare_manifests_flags_harness_sha_mismatch_as_hard_drift() {
+    let original = minimal_manifest("claude-opus-4-7", Some("sha-original"));
+    let current = minimal_manifest("claude-opus-4-7", Some("sha-different"));
+    let drifts = compare_manifests(&original, &current);
+
+    let sha_drift = drifts
+        .iter()
+        .find(|d| d.field.contains("git_sha"))
+        .expect("expected a harness.git_sha drift entry");
+
+    assert_eq!(sha_drift.severity, DriftSeverity::Hard);
+    assert!(
+        sha_drift.message.contains("sha-original"),
+        "message should include original SHA"
+    );
+    assert!(
+        sha_drift.message.contains("sha-different"),
+        "message should include current SHA"
+    );
+}
+
+#[test]
+fn compare_manifests_skips_sha_drift_when_either_sha_is_absent() {
+    let original = minimal_manifest("claude-opus-4-7", None);
+    let current = minimal_manifest("claude-opus-4-7", Some("some-sha"));
+    let drifts = compare_manifests(&original, &current);
+    let sha_drifts: Vec<_> = drifts.iter().filter(|d| d.field.contains("git_sha")).collect();
+    assert!(
+        sha_drifts.is_empty(),
+        "should not flag SHA when original has no SHA"
+    );
+}
+
+#[test]
+fn compare_manifests_flags_dataset_hash_mismatch_as_hard_drift() {
+    let original = minimal_manifest("claude-opus-4-7", Some("sha"));
+    let mut current = original.clone();
+    current.dataset.sha256 = "different_hash".into();
+
+    let drifts = compare_manifests(&original, &current);
+    let hash_drift = drifts
+        .iter()
+        .find(|d| d.field.contains("sha256"))
+        .expect("expected a dataset.sha256 drift entry");
+
+    assert_eq!(hash_drift.severity, DriftSeverity::Hard);
+}
+
+#[test]
+fn compare_manifests_flags_model_name_mismatch_as_hard_drift() {
+    let original = minimal_manifest("claude-opus-4-7", Some("sha"));
+    let current = minimal_manifest("claude-sonnet-4-6", Some("sha"));
+    let drifts = compare_manifests(&original, &current);
+
+    let model_drift = drifts
+        .iter()
+        .find(|d| d.field.contains("model"))
+        .expect("expected a model.name drift entry");
+
+    assert_eq!(model_drift.severity, DriftSeverity::Hard);
+    assert!(model_drift.message.contains("claude-opus-4-7"));
+    assert!(model_drift.message.contains("claude-sonnet-4-6"));
+}
+
+#[test]
+fn drift_field_is_whitelisted_when_field_in_allow_list() {
+    use rust_swe_agent::run::reproduce::DriftField;
+
+    let field = DriftField {
+        field: "harness.git_sha".into(),
+        severity: DriftSeverity::Hard,
+        source_value: Some("abc".into()),
+        current_value: Some("def".into()),
+        message: "SHA mismatch".into(),
+    };
+
+    assert!(field.is_whitelisted(&["harness.git_sha".into()]));
+    assert!(!field.is_whitelisted(&["dataset.sha256".into()]));
+    assert!(!field.is_whitelisted(&[]));
+}
+
+// ── build_reproducibility_report ──────────────────────────────────────────
+
+#[test]
+fn build_report_counts_matched_resolved_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_dir = dir.path().to_path_buf();
+
+    let originals = vec![
+        instance_result("task-1", true),
+        instance_result("task-2", false),
+    ];
+    let replays = vec![
+        instance_result("task-1", true),
+        instance_result("task-2", false),
+    ];
+
+    let report = build_reproducibility_report(
+        &source_dir,
+        "sha256:abc".into(),
+        &originals,
+        &replays,
+        &source_dir,
+    );
+
+    assert_eq!(report.instances.len(), 2);
+    // task-1: both resolved → matched
+    assert_eq!(report.aggregate.matched, 1);
+    // task-2: both unresolved, same category → both_unresolved_same_category
+    assert_eq!(report.aggregate.both_unresolved_same_category, 1);
+    assert_eq!(report.aggregate.flipped_to_resolved, 0);
+    assert_eq!(report.aggregate.flipped_to_unresolved, 0);
+}
+
+#[test]
+fn build_report_counts_flipped_to_resolved() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let originals = vec![instance_result("task-1", false)];
+    let replays = vec![instance_result("task-1", true)];
+
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:abc".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
+
+    assert_eq!(report.aggregate.flipped_to_resolved, 1);
+    assert_eq!(report.aggregate.matched, 0);
+}
+
+#[test]
+fn build_report_counts_flipped_to_unresolved() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let originals = vec![instance_result("task-1", true)];
+    let replays = vec![instance_result("task-1", false)];
+
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:abc".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
+
+    assert_eq!(report.aggregate.flipped_to_unresolved, 1);
+    assert_eq!(report.aggregate.matched, 0);
+}
+
+#[test]
+fn build_report_marks_errored_for_missing_replay_instance() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let originals = vec![instance_result("task-1", true), instance_result("task-2", false)];
+    // replay only has task-1; task-2 is missing
+    let replays = vec![instance_result("task-1", true)];
+
+    let report = build_reproducibility_report(
+        dir.path(),
+        "sha256:abc".into(),
+        &originals,
+        &replays,
+        dir.path(),
+    );
+
+    // task-1 matches, task-2 is missing in replay → errored
+    assert_eq!(report.aggregate.matched, 1);
+    assert_eq!(report.aggregate.errored, 1);
+}
+
+#[test]
+fn build_report_records_reproduced_from_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_dir = dir.path().to_path_buf();
+
+    let report = build_reproducibility_report(
+        &source_dir,
+        "sha256:deadbeef".into(),
+        &[],
+        &[],
+        &source_dir,
+    );
+
+    assert_eq!(report.reproduced_from.manifest_hash, "sha256:deadbeef");
+    assert_eq!(
+        report.reproduced_from.sweep_dir,
+        source_dir.display().to_string()
+    );
+}
+
+// ── render_summary ─────────────────────────────────────────────────────────
+
+#[test]
+fn render_summary_includes_total_instance_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let originals = vec![
+        instance_result("t1", true),
+        instance_result("t2", true),
+        instance_result("t3", false),
+    ];
+    let replays = originals.clone();
+    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let summary = render_summary(&report);
+    assert!(
+        summary.contains('3') || summary.contains("3 instance"),
+        "summary should mention total instances: {summary}"
+    );
+}
+
+#[test]
+fn render_summary_includes_percent_matched() {
+    let dir = tempfile::tempdir().unwrap();
+    let originals = vec![
+        instance_result("t1", true),
+        instance_result("t2", true),
+    ];
+    let replays = originals.clone();
+    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let summary = render_summary(&report);
+    // 2/2 both resolved → 100% matched
+    assert!(
+        summary.contains("100") || summary.contains("100.0"),
+        "summary should show 100% match: {summary}"
+    );
+}
+
+#[test]
+fn render_summary_includes_patch_identical_percentage() {
+    let dir = tempfile::tempdir().unwrap();
+    let originals = vec![instance_result("t1", true)];
+    let replays = vec![instance_result("t1", true)];
+    let report = build_reproducibility_report(dir.path(), "sha256:x".into(), &originals, &replays, dir.path());
+    let summary = render_summary(&report);
+    // summary must mention patch-identical percentage
+    assert!(
+        summary.contains("patch"),
+        "summary should mention patch-identical: {summary}"
+    );
+}
+
+// ── CLI arg parsing ────────────────────────────────────────────────────────
+
+#[test]
+fn cli_parses_bench_reproduce_required_args() {
+    use clap::Parser as _;
+    use rust_swe_agent::cli::Cli;
+    use rust_swe_agent::cli::args::BenchCmd;
+
+    let cli = Cli::parse_from([
+        "rust-swe-agent",
+        "bench",
+        "reproduce",
+        "--from",
+        "/tmp/source-sweep",
+        "--output",
+        "/tmp/replay-sweep",
+    ]);
+
+    let rust_swe_agent::cli::Command::Bench {
+        cmd: BenchCmd::Reproduce(cmd),
+    } = cli.command
+    else {
+        panic!("expected bench reproduce command, got something else");
+    };
+
+    assert_eq!(cmd.from.to_str().unwrap(), "/tmp/source-sweep");
+    assert_eq!(cmd.output.to_str().unwrap(), "/tmp/replay-sweep");
+    assert!(cmd.allow_drift.is_empty());
+    assert!(cmd.limit.is_none());
+}
+
+#[test]
+fn cli_parses_bench_reproduce_optional_overrides() {
+    use clap::Parser as _;
+    use rust_swe_agent::cli::Cli;
+    use rust_swe_agent::cli::args::BenchCmd;
+
+    let cli = Cli::parse_from([
+        "rust-swe-agent",
+        "bench",
+        "reproduce",
+        "--from",
+        "/tmp/src",
+        "--output",
+        "/tmp/dst",
+        "--allow-drift",
+        "harness.git_sha",
+        "--limit",
+        "5",
+        "--skip-model-probe",
+    ]);
+
+    let rust_swe_agent::cli::Command::Bench {
+        cmd: BenchCmd::Reproduce(cmd),
+    } = cli.command
+    else {
+        panic!("expected bench reproduce");
+    };
+
+    assert_eq!(cmd.allow_drift, vec!["harness.git_sha"]);
+    assert_eq!(cmd.limit, Some(5));
+    assert!(cmd.skip_model_probe);
+}
+
+// ── hard drift abort logic ─────────────────────────────────────────────────
+
+#[test]
+fn unwhitelisted_hard_drifts_are_reported() {
+    use rust_swe_agent::run::reproduce::filter_hard_drifts;
+    let original = minimal_manifest("claude-opus-4-7", Some("sha-a"));
+    let current = minimal_manifest("claude-opus-4-7", Some("sha-b"));
+    let drifts = compare_manifests(&original, &current);
+
+    let hard = filter_hard_drifts(&drifts, &[]);
+    assert_eq!(hard.len(), 1);
+    assert_eq!(hard[0].field, "harness.git_sha");
+}
+
+#[test]
+fn whitelisted_hard_drifts_are_excluded() {
+    use rust_swe_agent::run::reproduce::filter_hard_drifts;
+    let original = minimal_manifest("claude-opus-4-7", Some("sha-a"));
+    let current = minimal_manifest("claude-opus-4-7", Some("sha-b"));
+    let drifts = compare_manifests(&original, &current);
+
+    let hard = filter_hard_drifts(&drifts, &["harness.git_sha".into()]);
+    assert!(hard.is_empty(), "expected empty after whitelist: {hard:?}");
+}
