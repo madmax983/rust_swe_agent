@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, Error};
 use crate::run::swebench::{
-    InstanceResult, ProvenanceManifest, SweepResults, patch_path_for_run, resolved_count,
+    InstanceResult, ProvenanceManifest, SweepResults, existing_patch_path_for_run, resolved_count,
 };
 
 // ── public args ─────────────────────────────────────────────────────────────
@@ -352,8 +352,8 @@ fn compare_patches(
     if !orig.patch_present || !replay.patch_present {
         return false;
     }
-    let orig_patch = patch_path_for_run(source_dir, &orig.instance_id, 1);
-    let replay_patch = patch_path_for_run(output_dir, &replay.instance_id, 1);
+    let orig_patch = existing_patch_path_for_run(source_dir, &orig.instance_id, 1);
+    let replay_patch = existing_patch_path_for_run(output_dir, &replay.instance_id, 1);
     hash_file_sha256(&orig_patch) == hash_file_sha256(&replay_patch)
 }
 
@@ -385,7 +385,9 @@ pub fn render_summary(report: &ReproducibilityReport) -> String {
     use std::fmt::Write as _;
 
     let total = report.instances.len() + report.aggregate.errored;
-    let status_matched = report.aggregate.matched + report.aggregate.both_unresolved_same_category;
+    let status_matched = report.aggregate.matched
+        + report.aggregate.both_unresolved_same_category
+        + report.aggregate.both_unresolved_different_category;
 
     #[allow(clippy::cast_precision_loss)]
     let pct = |n: usize| -> f64 {

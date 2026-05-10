@@ -1121,7 +1121,7 @@ fn existing_trajectory_path_for_run(
     legacy_trajectory_path_for(output_dir, instance_id)
 }
 
-fn existing_patch_path_for_run(
+pub fn existing_patch_path_for_run(
     output_dir: &std::path::Path,
     instance_id: &str,
     run_index: u32,
