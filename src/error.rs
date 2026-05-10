@@ -14,8 +14,8 @@ pub enum Error {
     #[error(transparent)]
     Config(#[from] ConfigError),
 
-    #[error("template render failed: {0}")]
-    Template(String),
+    #[error(transparent)]
+    Template(#[from] minijinja::Error),
 
     #[error("trajectory io: {0}")]
     Trajectory(String),
