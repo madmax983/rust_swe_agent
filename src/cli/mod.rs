@@ -546,9 +546,10 @@ fn parse_dataset_source(
         (None, None) => Err(Error::Config(crate::error::ConfigError::Invalid(
             "one of --dataset-path or --dataset is required".into(),
         ))),
-        (Some(path), None) => {
-            Ok((crate::run::dataset::DatasetSource::LocalPath(path.clone()), cache_dir))
-        }
+        (Some(path), None) => Ok((
+            crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+            cache_dir,
+        )),
         (None, Some(alias_str)) => {
             let alias = alias_str
                 .parse::<crate::run::dataset::SwebenchAlias>()
@@ -1203,7 +1204,7 @@ mod tests {
         };
 
         let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep")
-            .expect("swebench_args_from_cmd should succeed with --dataset-path");
+            .unwrap();
         assert!(args.install_os_signal_handlers);
         assert!(
             args.cancellation_signals.is_none(),

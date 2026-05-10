@@ -4,17 +4,17 @@
 //! They are written before the implementation is complete; some will fail until
 //! the GREEN phase wires them up.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use rust_swe_agent::Config;
 use rust_swe_agent::run::dataset::{
     CacheStatus, DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit, cache_path_for,
     check_cache, resolve_dataset, write_cache,
 };
 use rust_swe_agent::run::swebench::{DatasetManifest, SwebenchArgs, run};
-use rust_swe_agent::Config;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -365,8 +365,16 @@ async fn named_and_local_datasets_produce_identical_sampling_for_same_seed() {
     .await;
 
     // Both should select the same 3 instances
-    let named_ids: Vec<_> = named_results.instances.iter().map(|i| &i.instance_id).collect();
-    let local_ids: Vec<_> = local_results.instances.iter().map(|i| &i.instance_id).collect();
+    let named_ids: Vec<_> = named_results
+        .instances
+        .iter()
+        .map(|i| &i.instance_id)
+        .collect();
+    let local_ids: Vec<_> = local_results
+        .instances
+        .iter()
+        .map(|i| &i.instance_id)
+        .collect();
     assert_eq!(named_ids, local_ids, "sampling must be identical");
 }
 
@@ -419,8 +427,13 @@ async fn doctor_reports_cache_miss_without_launching_tasks() {
 
     // In doctor mode a cache miss must not return Err — it reports the miss as
     // a [WARN] check and exits cleanly so the operator can see the full report.
-    let results = run(args).await.expect("doctor cache-miss must return Ok, not Err");
-    assert_eq!(results.total, 0, "doctor must not launch tasks on cache miss");
+    let results = run(args)
+        .await
+        .expect("doctor cache-miss must return Ok, not Err");
+    assert_eq!(
+        results.total, 0,
+        "doctor must not launch tasks on cache miss"
+    );
 }
 
 // ── CLI alias / split arg parsing ─────────────────────────────────────────

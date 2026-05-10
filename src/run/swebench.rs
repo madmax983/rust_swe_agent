@@ -368,7 +368,10 @@ pub struct DatasetManifest {
     pub filter_spec: Option<FilterSpec>,
     /// How the dataset was supplied: `"local"` for `--dataset-path`,
     /// `"named"` for `--dataset` alias.
-    #[serde(default = "default_source_kind_local", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        default = "default_source_kind_local",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub source_kind: String,
     /// Named alias (`full`, `lite`, `verified`). `None` for local-path datasets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1989,11 +1992,17 @@ async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
                 "dataset.cache",
                 args.preflight_check_timeout_s,
                 deadline,
-                move || Ok::<_, String>(crate::run::dataset::check_cache(&cache_dir, &alias, &split)),
+                move || {
+                    Ok::<_, String>(crate::run::dataset::check_cache(&cache_dir, &alias, &split))
+                },
             )
             .await?;
             match &cache_status {
-                crate::run::dataset::CacheStatus::Hit { path, instance_count, .. } => {
+                crate::run::dataset::CacheStatus::Hit {
+                    path,
+                    instance_count,
+                    ..
+                } => {
                     checks.push(CheckResult {
                         status: CheckStatus::Ok,
                         name: "dataset.cache",
@@ -5189,9 +5198,9 @@ mod tests {
         cfg.root.agent.step_limit = 7;
         cfg.root.model.name = "override-model".into();
         let args = SwebenchArgs {
-            dataset_source: crate::run::dataset::DatasetSource::LocalPath(
-                PathBuf::from("dataset.jsonl"),
-            ),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
             dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
@@ -5259,9 +5268,9 @@ mod tests {
     #[test]
     fn manifest_records_resume_mode_from_args() {
         let args = SwebenchArgs {
-            dataset_source: crate::run::dataset::DatasetSource::LocalPath(
-                PathBuf::from("dataset.jsonl"),
-            ),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
             dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
@@ -5339,9 +5348,9 @@ instance = "inst"
         )
         .unwrap();
         let args_a = SwebenchArgs {
-            dataset_source: crate::run::dataset::DatasetSource::LocalPath(
-                PathBuf::from("dataset.jsonl"),
-            ),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from(
+                "dataset.jsonl",
+            )),
             dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 1,
@@ -6126,9 +6135,7 @@ instance = "inst"
     #[test]
     fn swebench_args_has_max_rpm_and_max_input_tpm_fields() {
         let args = SwebenchArgs {
-            dataset_source: crate::run::dataset::DatasetSource::LocalPath(
-                PathBuf::from("d.jsonl"),
-            ),
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(PathBuf::from("d.jsonl")),
             dataset_cache_dir: PathBuf::from("/nonexistent"),
             output_dir: PathBuf::from("out"),
             parallel: 4,

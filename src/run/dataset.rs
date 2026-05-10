@@ -226,9 +226,12 @@ pub fn write_cache(
     content: &[u8],
 ) -> Result<PathBuf, Error> {
     let path = cache_path_for(cache_dir, alias, split);
-    let parent = path
-        .parent()
-        .expect("cache path always has a parent directory");
+    let parent = path.parent().ok_or_else(|| {
+        Error::Trajectory(format!(
+            "cache path `{}` has no parent directory",
+            path.display()
+        ))
+    })?;
     std::fs::create_dir_all(parent)?;
     std::fs::write(&path, content)?;
     Ok(path)
@@ -272,27 +275,26 @@ pub fn resolve_dataset(
             };
             Ok((bytes, meta))
         }
-        DatasetSource::Named { alias, split } => {
-            match check_cache(cache_dir, alias, split) {
-                CacheStatus::Hit {
-                    path,
+        DatasetSource::Named { alias, split } => match check_cache(cache_dir, alias, split) {
+            CacheStatus::Hit {
+                path,
+                sha256,
+                instance_count,
+            } => {
+                let bytes = std::fs::read(&path)?;
+                let meta = ResolvedDatasetMeta {
+                    path: path.clone(),
                     sha256,
                     instance_count,
-                } => {
-                    let bytes = std::fs::read(&path)?;
-                    let meta = ResolvedDatasetMeta {
-                        path: path.clone(),
-                        sha256,
-                        instance_count,
-                        alias: Some(alias.clone()),
-                        split: Some(split.clone()),
-                        cache_path: Some(path),
-                    };
-                    Ok((bytes, meta))
-                }
-                CacheStatus::Miss { expected_path } => Err(Error::Config(
-                    crate::error::ConfigError::Invalid(format!(
-                        "dataset alias `{alias}` split `{split}` not in cache: \
+                    alias: Some(alias.clone()),
+                    split: Some(split.clone()),
+                    cache_path: Some(path),
+                };
+                Ok((bytes, meta))
+            }
+            CacheStatus::Miss { expected_path } => {
+                Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "dataset alias `{alias}` split `{split}` not in cache: \
                         expected file at `{path}`\n\
                         \n\
                         To populate the cache, download the SWE-bench JSONL for the \
@@ -301,20 +303,19 @@ pub fn resolve_dataset(
                         \n\
                         See: https://www.swebench.com/SWE-bench/guides/datasets/ for \
                         dataset download instructions.",
-                        path = expected_path.display()
-                    )),
-                )),
-                CacheStatus::Corrupt { path, reason } => Err(Error::Config(
-                    crate::error::ConfigError::Invalid(format!(
-                        "cached dataset `{alias}` split `{split}` at `{p}` is corrupt: {reason}\n\
+                    path = expected_path.display()
+                ))))
+            }
+            CacheStatus::Corrupt { path, reason } => {
+                Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "cached dataset `{alias}` split `{split}` at `{p}` is corrupt: {reason}\n\
                         \n\
                         Delete the file and re-populate the cache:\n\
                         \n  {p}",
-                        p = path.display()
-                    )),
-                )),
+                    p = path.display()
+                ))))
             }
-        }
+        },
     }
 }
 
@@ -327,8 +328,7 @@ fn count_jsonl_lines(bytes: &[u8]) -> Option<usize> {
 /// Parse and count valid JSONL instances; returns an error string on the first
 /// malformed line.
 fn validate_jsonl_bytes(bytes: &[u8]) -> Result<usize, String> {
-    let text =
-        std::str::from_utf8(bytes).map_err(|e| format!("UTF-8 decode error: {e}"))?;
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("UTF-8 decode error: {e}"))?;
     let mut count = 0usize;
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -361,8 +361,14 @@ mod tests {
 
     #[test]
     fn alias_parses_canonical_forms() {
-        assert_eq!(SwebenchAlias::from_str("full").unwrap(), SwebenchAlias::Full);
-        assert_eq!(SwebenchAlias::from_str("lite").unwrap(), SwebenchAlias::Lite);
+        assert_eq!(
+            SwebenchAlias::from_str("full").unwrap(),
+            SwebenchAlias::Full
+        );
+        assert_eq!(
+            SwebenchAlias::from_str("lite").unwrap(),
+            SwebenchAlias::Lite
+        );
         assert_eq!(
             SwebenchAlias::from_str("verified").unwrap(),
             SwebenchAlias::Verified
@@ -410,7 +416,11 @@ mod tests {
 
     #[test]
     fn alias_display_matches_as_str() {
-        for alias in [SwebenchAlias::Full, SwebenchAlias::Lite, SwebenchAlias::Verified] {
+        for alias in [
+            SwebenchAlias::Full,
+            SwebenchAlias::Lite,
+            SwebenchAlias::Verified,
+        ] {
             assert_eq!(alias.to_string(), alias.as_str());
         }
     }
@@ -419,14 +429,23 @@ mod tests {
 
     #[test]
     fn split_parses_canonical_forms() {
-        assert_eq!(SwebenchSplit::from_str("train").unwrap(), SwebenchSplit::Train);
-        assert_eq!(SwebenchSplit::from_str("test").unwrap(), SwebenchSplit::Test);
+        assert_eq!(
+            SwebenchSplit::from_str("train").unwrap(),
+            SwebenchSplit::Train
+        );
+        assert_eq!(
+            SwebenchSplit::from_str("test").unwrap(),
+            SwebenchSplit::Test
+        );
         assert_eq!(SwebenchSplit::from_str("dev").unwrap(), SwebenchSplit::Dev);
     }
 
     #[test]
     fn split_is_case_insensitive() {
-        assert_eq!(SwebenchSplit::from_str("TEST").unwrap(), SwebenchSplit::Test);
+        assert_eq!(
+            SwebenchSplit::from_str("TEST").unwrap(),
+            SwebenchSplit::Test
+        );
         assert_eq!(SwebenchSplit::from_str("Dev").unwrap(), SwebenchSplit::Dev);
     }
 
@@ -439,7 +458,11 @@ mod tests {
 
     #[test]
     fn split_display_matches_as_str() {
-        for split in [SwebenchSplit::Train, SwebenchSplit::Test, SwebenchSplit::Dev] {
+        for split in [
+            SwebenchSplit::Train,
+            SwebenchSplit::Test,
+            SwebenchSplit::Dev,
+        ] {
             assert_eq!(split.to_string(), split.as_str());
         }
     }
@@ -492,7 +515,13 @@ mod tests {
     fn check_cache_hit_when_valid_jsonl_present() {
         let dir = tempfile::tempdir().unwrap();
         let content = b"{\"instance_id\":\"a\",\"problem_statement\":\"fix it\"}\n";
-        write_cache(dir.path(), &SwebenchAlias::Lite, &SwebenchSplit::Test, content).unwrap();
+        write_cache(
+            dir.path(),
+            &SwebenchAlias::Lite,
+            &SwebenchSplit::Test,
+            content,
+        )
+        .unwrap();
 
         let status = check_cache(dir.path(), &SwebenchAlias::Lite, &SwebenchSplit::Test);
         let CacheStatus::Hit {
@@ -532,9 +561,13 @@ mod tests {
     fn write_cache_creates_directories_and_file() {
         let dir = tempfile::tempdir().unwrap();
         let content = b"{}";
-        let written_path =
-            write_cache(dir.path(), &SwebenchAlias::Verified, &SwebenchSplit::Dev, content)
-                .unwrap();
+        let written_path = write_cache(
+            dir.path(),
+            &SwebenchAlias::Verified,
+            &SwebenchSplit::Dev,
+            content,
+        )
+        .unwrap();
         assert!(written_path.exists());
         assert_eq!(std::fs::read(&written_path).unwrap(), content);
     }

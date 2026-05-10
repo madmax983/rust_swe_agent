@@ -3674,7 +3674,7 @@ mod tests {
                     sha256: "x".into(),
                     instance_count: 1,
                     filter_spec: None,
-                ..Default::default()
+                    ..Default::default()
                 },
                 prompt_template: crate::run::swebench::PromptTemplateManifest {
                     source: "builtin".into(),
@@ -3854,7 +3854,7 @@ mod tests {
                     sha256: "x".into(),
                     instance_count: 1,
                     filter_spec: None,
-                ..Default::default()
+                    ..Default::default()
                 },
                 prompt_template: crate::run::swebench::PromptTemplateManifest {
                     source: "builtin".into(),
@@ -3964,7 +3964,7 @@ mod tests {
                     sha256: "x".into(),
                     instance_count: 1,
                     filter_spec: None,
-                ..Default::default()
+                    ..Default::default()
                 },
                 prompt_template: crate::run::swebench::PromptTemplateManifest {
                     source: "builtin".into(),
