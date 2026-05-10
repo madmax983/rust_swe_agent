@@ -176,6 +176,9 @@ a valid trajectory in hand:
   observing runs while they execute.
 - [`secret redaction`](docs/spec-secret-redaction.md): redaction guarantees for
   trajectories, inspect output, streams, and patch artifacts.
+- [`bench reproduce`](docs/spec-reproduce.md): replay a saved sweep from its
+  manifest, detect environment drift, and write a `reproducibility.json`
+  comparison artifact.
 
 ## Nightly E2E smoke
 

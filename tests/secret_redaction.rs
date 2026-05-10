@@ -355,6 +355,7 @@ secret_literals = ["{configured_secret}"]
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();
@@ -456,6 +457,7 @@ name = "scripted-test-model"
         install_os_signal_handlers: false,
         cancellation_signals: None,
         github_pr: None,
+        reproduced_from: None,
     })
     .await
     .unwrap();

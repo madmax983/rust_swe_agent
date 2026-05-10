@@ -90,6 +90,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Frontier(f),
         } => bench_frontier(f),
+        Command::Bench {
+            cmd: args::BenchCmd::Reproduce(r),
+        } => bench_reproduce(r).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -730,6 +733,7 @@ fn swebench_args_from_cmd(
         install_os_signal_handlers: true,
         cancellation_signals: None,
         github_pr,
+        reproduced_from: None,
     })
 }
 
@@ -993,6 +997,261 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
+    use crate::run::reproduce::{
+        compare_manifests, filter_hard_drifts, load_manifest_from_sweep, render_summary,
+        write_report,
+    };
+
+    // Load the source manifest.
+    let source_manifest = load_manifest_from_sweep(&r.from)?;
+
+    // Build a "current" manifest from the CLI environment to detect drift.
+    let current_manifest = build_current_manifest_for_reproduce(&source_manifest);
+
+    let all_drifts = compare_manifests(&source_manifest, &current_manifest);
+
+    // Report soft drifts as warnings.
+    for d in all_drifts
+        .iter()
+        .filter(|d| d.severity == crate::run::reproduce::DriftSeverity::Soft)
+    {
+        tracing::warn!(field = %d.field, "reproduce: soft drift — {}", d.message);
+    }
+
+    // Abort on unwhitelisted hard drifts.
+    let hard_blocking = filter_hard_drifts(&all_drifts, &r.allow_drift);
+    if !hard_blocking.is_empty() {
+        let reasons: Vec<String> = hard_blocking.iter().map(|d| d.message.clone()).collect();
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "reproduce: hard drift detected (use --allow-drift to whitelist):\n  {}",
+            reasons.join("\n  ")
+        ))));
+    }
+
+    // Reject output that aliases the source sweep — overwriting it would corrupt
+    // the original artifacts and make patch comparison compare files against
+    // themselves.
+    let from_canon = std::fs::canonicalize(&r.from).unwrap_or_else(|_| r.from.clone());
+    let out_canon = std::fs::canonicalize(&r.output).unwrap_or_else(|_| r.output.clone());
+    if from_canon == out_canon {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "reproduce: --output must differ from --from; \
+             writing replay results into the source sweep directory would overwrite the original artifacts"
+                .into(),
+        )));
+    }
+
+    // Load original results to replay.
+    let source_results = load_sweep_results(&r.from)?;
+    // Snapshot all original instances; will be narrowed to the replayed subset
+    // after the sweep runs so partial replays (--filter / --limit) don't count
+    // un-requested instances as errors.
+    let all_original_instances = source_results.instances.clone();
+
+    // Compute source manifest hash for provenance.
+    let source_manifest_hash = hash_manifest(&source_manifest);
+
+    // Build the swebench args from the source manifest, applying any overrides.
+    let sweep_args =
+        reproduce_swebench_args(&r, &source_manifest, &source_results, &source_manifest_hash)?;
+
+    // Run the replay sweep.
+    let replay_results = crate::run::swebench::run(sweep_args).await?;
+
+    // For partial replays (--filter / --limit), restrict original instances to
+    // those actually present in the replay so skipped instances aren't counted
+    // as errors in the report.
+    let replayed_ids: std::collections::HashSet<&str> = replay_results
+        .instances
+        .iter()
+        .map(|i| i.instance_id.as_str())
+        .collect();
+    let original_instances: Vec<_> = all_original_instances
+        .iter()
+        .filter(|i| replayed_ids.contains(i.instance_id.as_str()))
+        .cloned()
+        .collect();
+
+    // Build and write the reproducibility report.
+    let report = crate::run::reproduce::build_reproducibility_report(
+        &r.from,
+        source_manifest_hash,
+        &original_instances,
+        &replay_results.instances,
+        &r.output,
+    );
+
+    std::fs::create_dir_all(&r.output).map_err(Error::Io)?;
+    write_report(&report, &r.output)?;
+
+    print!("{}", render_summary(&report));
+
+    Ok(())
+}
+
+/// Build a current-environment manifest for drift comparison by cloning the
+/// source manifest and overwriting every field that reflects the runtime
+/// environment (not the intentional replay settings).
+fn build_current_manifest_for_reproduce(
+    source: &crate::run::swebench::ProvenanceManifest,
+) -> crate::run::swebench::ProvenanceManifest {
+    let mut current = source.clone();
+    current.harness.git_sha = current_git_sha();
+    current.harness.git_dirty = None;
+    current.runtime.started_at_utc = chrono_now_utc();
+    current.runtime.finished_at_utc = None;
+    current.runtime.host_os = std::env::consts::OS.into();
+    current.runtime.rust_version = current_rust_version();
+    current
+}
+
+fn current_git_sha() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn current_rust_version() -> Option<String> {
+    std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
+fn chrono_now_utc() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn load_sweep_results(
+    sweep_dir: &std::path::Path,
+) -> Result<crate::run::swebench::SweepResults, Error> {
+    let path = sweep_dir.join("results.json");
+    let file = std::fs::File::open(&path).map_err(Error::Io)?;
+    serde_json::from_reader(std::io::BufReader::new(file)).map_err(Error::Json)
+}
+
+fn hash_manifest(manifest: &crate::run::swebench::ProvenanceManifest) -> String {
+    use sha2::{Digest, Sha256};
+    let json = serde_json::to_string(manifest).unwrap_or_default();
+    let hash = Sha256::digest(json.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for b in hash {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    format!("sha256:{hex}")
+}
+
+fn reproduce_swebench_args(
+    r: &args::ReproduceCmd,
+    manifest: &crate::run::swebench::ProvenanceManifest,
+    source_results: &crate::run::swebench::SweepResults,
+    source_manifest_hash: &str,
+) -> Result<crate::run::swebench::SwebenchArgs, Error> {
+    use crate::run::dataset::DatasetSource;
+
+    let mut cfg = Config::defaults()?;
+    cfg.root.model.name.clone_from(&manifest.model.name);
+
+    if let Some(budget) = r.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(budget);
+    }
+
+    // Reconstruct dataset source from manifest.
+    let dataset_source = match manifest.dataset.source_kind.as_str() {
+        "named" => {
+            let alias_str = manifest.dataset.alias.as_deref().unwrap_or("verified");
+            let split_str = manifest.dataset.split.as_deref().unwrap_or("test");
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            DatasetSource::Named { alias, split }
+        }
+        _ => {
+            // Local path — use the recorded path as-is.
+            DatasetSource::LocalPath(std::path::PathBuf::from(&manifest.dataset.path))
+        }
+    };
+
+    // Determine the exact instance subset to replay.
+    // Priority: explicit --filter > recorded filter_spec.instance_ids > actual
+    // instance list from the source results. The fallback ensures that sweeps
+    // originally run with --limit or --sample (no explicit instance-id list)
+    // still reproduce only the recorded subset rather than the entire dataset.
+    let instance_ids = if let Some(filter) = &r.filter {
+        Some(filter.clone())
+    } else if let Some(ids) = source_results.filter_spec.instance_ids.as_ref() {
+        Some(ids.join(","))
+    } else {
+        let ids: Vec<&str> = source_results
+            .instances
+            .iter()
+            .map(|i| i.instance_id.as_str())
+            .collect();
+        if ids.is_empty() {
+            None
+        } else {
+            Some(ids.join(","))
+        }
+    };
+
+    Ok(crate::run::swebench::SwebenchArgs {
+        dataset_source,
+        dataset_cache_dir: crate::run::dataset::default_cache_dir(),
+        output_dir: r.output.clone(),
+        parallel: r.parallel,
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: None,
+        task_timeout_secs: None,
+        instance_ids,
+        limit: r.limit,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: crate::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        config_overlay_paths: vec![],
+        dry_run: false,
+        skip_preflight: false,
+        preflight_format: "text".into(),
+        skip_model_probe: r.skip_model_probe,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "sweep".into(),
+        skip_patch_validation: false,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: true,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: Some((
+            source_manifest_hash.to_owned(),
+            r.from.display().to_string(),
+        )),
+    })
 }
 
 fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {

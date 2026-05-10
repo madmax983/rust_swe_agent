@@ -3243,6 +3243,7 @@ mod tests {
                 rust_version: None,
             },
             cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            reproduced_from: None,
         };
         let mut candidate = baseline.clone();
         candidate.prompt_template.sha256 = "p2".into();
@@ -3699,6 +3700,7 @@ mod tests {
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+                reproduced_from: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -3879,6 +3881,7 @@ mod tests {
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+                reproduced_from: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -3991,6 +3994,7 @@ mod tests {
                 cli: crate::run::swebench::CliManifest {
                     argv: vec!["rust-swe-agent".into()],
                 },
+                reproduced_from: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),

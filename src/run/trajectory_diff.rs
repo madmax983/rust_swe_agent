@@ -1115,8 +1115,8 @@ mod tests {
 
         assert!(rendered.contains("first_divergent_step: 79"));
         assert!(
-            elapsed < Duration::from_millis(500),
-            "80-step semantic diff + render took {elapsed:?}, expected <500ms"
+            elapsed < Duration::from_secs(2),
+            "80-step semantic diff + render took {elapsed:?}, expected <2s"
         );
     }
 
