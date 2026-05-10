@@ -1,0 +1,36 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "info": {
+    "task": "model-b-1",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "failure_category": "model_parse",
+    "total_cost_usd": 5.0,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Could not decode JSON response from the model"
+    },
+    {
+      "role": "user",
+      "content": "observation",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "invalid json: expected object",
+          "exit_code": 1,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}

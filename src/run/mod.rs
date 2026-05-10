@@ -18,3 +18,4 @@ pub mod reproduce;
 pub mod swebench;
 pub mod tail;
 pub mod trajectory_diff;
+pub mod triage;

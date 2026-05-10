@@ -1,0 +1,61 @@
+{
+  "sweep": "tests/fixtures/triage/sweep",
+  "generated_at": "2026-05-10T21:46:34Z",
+  "clusters": [
+    {
+      "cluster_id": "1957f5c29ed47b20",
+      "failure_category": "model_parse",
+      "signature_summary": "assistant=\"parser failed in <path> line <num>\" exit=2 stderr=\"syntaxerror: unexpected token <num> in <path>\"",
+      "instance_count": 2,
+      "total_cost_usd": 3.5,
+      "exemplar_instance_id": "model-a-1",
+      "exemplar_trajectory_path": "model-a-1.traj.json",
+      "instance_ids": [
+        "model-a-1",
+        "model-a-2"
+      ]
+    },
+    {
+      "cluster_id": "1e259b28a1bf788d",
+      "failure_category": "env_setup",
+      "signature_summary": "assistant=\"docker image pull failed for python:<num>\" exit=125 stderr=\"daemon unavailable while pulling image python:<num>\"",
+      "instance_count": 1,
+      "total_cost_usd": 6.0,
+      "exemplar_instance_id": "env-1",
+      "exemplar_trajectory_path": "env-1.traj.json",
+      "instance_ids": [
+        "env-1"
+      ]
+    },
+    {
+      "cluster_id": "a65b80aa79e09f90",
+      "failure_category": "model_parse",
+      "signature_summary": "assistant=\"could not decode json response from the model\" exit=1 stderr=\"invalid json: expected object\"",
+      "instance_count": 1,
+      "total_cost_usd": 5.0,
+      "exemplar_instance_id": "model-b-1",
+      "exemplar_trajectory_path": "model-b-1.traj.json",
+      "instance_ids": [
+        "model-b-1"
+      ]
+    },
+    {
+      "cluster_id": "95c283b4b80d88ca",
+      "failure_category": "step_limit",
+      "signature_summary": "assistant=\"i need one more edit before submission\" exit=0 stderr=\"\"",
+      "instance_count": 1,
+      "total_cost_usd": 1.0,
+      "exemplar_instance_id": "step-1",
+      "exemplar_trajectory_path": "step-1.traj.json",
+      "instance_ids": [
+        "step-1"
+      ]
+    }
+  ],
+  "totals": {
+    "clusters": 4,
+    "instances": 5,
+    "unclustered_instances": 0,
+    "unresolved_cost_usd": 15.5
+  }
+}

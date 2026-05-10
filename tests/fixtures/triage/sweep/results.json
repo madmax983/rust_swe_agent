@@ -1,0 +1,87 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "total": 6,
+  "submitted": 1,
+  "skipped": 0,
+  "errored": 5,
+  "total_cost_usd": 24.5,
+  "instances": [
+    {
+      "instance_id": "model-a-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "model_parse",
+      "cost_usd": 2.0,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "model-a-2",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "model_parse",
+      "cost_usd": 1.5,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "model-b-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "model_parse",
+      "cost_usd": 5.0,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "env-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "env_setup",
+      "cost_usd": 6.0,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "step-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "step_limit",
+      "cost_usd": 1.0,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "resolved-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 9.0,
+      "patch_present": true,
+      "non_empty_patch": true,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_run_before_submit": false
+    }
+  ]
+}

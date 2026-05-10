@@ -1,0 +1,36 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "info": {
+    "task": "env-1",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "failure_category": "env_setup",
+    "total_cost_usd": 6.0,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Docker image pull failed for python:3.11"
+    },
+    {
+      "role": "user",
+      "content": "observation",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "daemon unavailable while pulling image python:3.11",
+          "exit_code": 125,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}
