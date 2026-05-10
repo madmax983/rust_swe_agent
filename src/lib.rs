@@ -9,6 +9,7 @@ pub mod config;
 pub mod cost;
 pub mod env;
 pub mod error;
+pub mod exit_code;
 pub mod ids;
 pub mod model;
 pub mod policy;
@@ -30,6 +31,7 @@ pub use config::{Config, McpServerCfg, RedactionCfg, ToolCfg, ToolHookCfg, ToolH
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
 pub use error::{ConfigError, EnvError, Error, ModelError};
+pub use exit_code::ExitCode;
 pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, FallbackAttemptRecord, FallbackModel,
     LitellmBackend, Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, Role,

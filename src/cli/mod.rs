@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::error::Error;
+use crate::exit_code::ExitCode;
 
 pub mod args;
 
@@ -293,7 +294,12 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
     match run_forecast_from_cmd(s).await? {
         crate::run::forecast::ForecastOutcome::Report(report) => {
             print_forecast_report(&report, &output_format)?;
-            crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+            if let Err(e) =
+                crate::run::forecast::validate_fail_over_cap(&report, fail_over_cap)
+            {
+                exit_with_outcome(ExitCode::BudgetHalt, &e.to_string());
+            }
+            Ok(())
         }
         crate::run::forecast::ForecastOutcome::DryRun(results)
         | crate::run::forecast::ForecastOutcome::Cancelled(results) => {
@@ -302,6 +308,16 @@ async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
             Ok(())
         }
     }
+}
+
+/// Print a stable `outcome_class` label followed by the error detail, then exit.
+///
+/// Used for outcomes that are driven by explicit CLI logic (regression gate,
+/// budget-halt forecast, tail abort) rather than propagated `Error` variants.
+fn exit_with_outcome(code: ExitCode, detail: &str) -> ! {
+    eprintln!("outcome_class: {}", code.outcome_class());
+    eprintln!("error: {detail}");
+    std::process::exit(code.as_i32());
 }
 
 fn cancellation_exit_code(results: &crate::run::swebench::SweepResults) -> Option<i32> {
@@ -724,7 +740,14 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 ci_upper = report.resolved_delta_ci95.upper,
                 "compare: regression count exceeds --max-regressions threshold"
             );
-            std::process::exit(1);
+            exit_with_outcome(
+                ExitCode::RegressionGateFailure,
+                &format!(
+                    "compare: {} regression(s) exceed --max-regressions={}",
+                    report.regression_count(),
+                    max
+                ),
+            );
         }
     }
     if let Some(max) = c.max_patch_size_regression {
@@ -735,7 +758,12 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 candidate_mean_lines_changed = report.candidate_mean_lines_changed,
                 "compare: patch size regression exceeds --max-patch-size-regression threshold"
             );
-            std::process::exit(1);
+            exit_with_outcome(
+                ExitCode::RegressionGateFailure,
+                &format!(
+                    "compare: patch size regression exceeds --max-patch-size-regression={max}%"
+                ),
+            );
         }
     }
     Ok(())
@@ -1034,8 +1062,7 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
         stdout.flush()?;
 
         if let Some(reason) = snapshot.abort_reason {
-            eprintln!("bench tail: {reason}");
-            std::process::exit(1);
+            exit_with_outcome(ExitCode::InternalError, &format!("bench tail: {reason}"));
         }
         if t.once || snapshot.is_complete {
             return Ok(());
