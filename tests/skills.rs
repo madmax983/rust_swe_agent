@@ -59,6 +59,36 @@ version: 1.0.0
 }
 
 #[test]
+fn frontmatter_parser_ignores_trailing_comments_outside_quotes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_skill(
+        temp.path(),
+        "commented-skill",
+        r##"---
+name: commented-skill # route by this name
+description: "Use # inside quoted text" # but not this comment
+---
+
+# Commented Skill
+"##,
+    );
+
+    let registry = SkillRegistry::scan_paths([temp.path().to_path_buf()]).unwrap();
+    let manifest = &registry.manifests()[0];
+
+    assert_eq!(manifest.name, "commented-skill");
+    assert_eq!(manifest.description, "Use # inside quoted text");
+    let active = registry
+        .resolve(SkillResolveRequest {
+            task: "Use $commented-skill for this task.",
+            auto_load: false,
+            max_active: 8,
+        })
+        .unwrap();
+    assert_eq!(active.skills[0].name, "commented-skill");
+}
+
+#[test]
 fn resolver_loads_explicit_skill_without_leaking_inactive_metadata() {
     let temp = tempfile::tempdir().unwrap();
     write_skill(
@@ -147,6 +177,36 @@ SECURITY_REVIEW_BODY
 }
 
 #[test]
+fn auto_resolver_matches_short_programming_language_tokens() {
+    let temp = tempfile::tempdir().unwrap();
+    write_skill(
+        temp.path(),
+        "go",
+        r#"---
+name: go
+description: Use for Go code.
+---
+
+# Go
+
+GO_BODY
+"#,
+    );
+
+    let registry = SkillRegistry::scan_paths([temp.path().to_path_buf()]).unwrap();
+    let active = registry
+        .resolve(SkillResolveRequest {
+            task: "Fix this Go code.",
+            auto_load: true,
+            max_active: 8,
+        })
+        .unwrap();
+
+    assert_eq!(active.skills.len(), 1);
+    assert_eq!(active.skills[0].name, "go");
+}
+
+#[test]
 fn active_skill_context_appends_after_operator_extra_context() {
     let active = ActiveSkillSet {
         skills: vec![ActiveSkill {
@@ -165,6 +225,30 @@ fn active_skill_context_appends_after_operator_extra_context() {
     assert!(merged.contains("Operator context"));
     assert!(merged.contains("Active agent skills"));
     assert!(merged.contains("RUST_ROUTER_BODY"));
+}
+
+#[test]
+fn active_skill_context_omits_source_path_and_hash() {
+    let active = ActiveSkillSet {
+        skills: vec![ActiveSkill {
+            name: "rust-router".to_owned(),
+            description: "Use for Rust work.".to_owned(),
+            path: "C:/Users/markm/private/SKILL.md".into(),
+            content: "# Rust Router\n\nRUST_ROUTER_BODY".to_owned(),
+            sha256: "a".repeat(64),
+            activation_reason: SkillActivationReason::ExplicitMention,
+        }],
+    };
+
+    let context = active.render_context();
+
+    assert!(context.contains("Skill: rust-router"));
+    assert!(context.contains("Activation: explicit_mention"));
+    assert!(context.contains("RUST_ROUTER_BODY"));
+    assert!(!context.contains("C:/Users/markm/private/SKILL.md"));
+    assert!(!context.contains(&"a".repeat(64)));
+    assert!(!context.contains("SHA-256"));
+    assert!(!context.contains("Source:"));
 }
 
 #[test]
@@ -327,6 +411,66 @@ paths = ["{skill_path}"]
 
     let first_user_message = trajectory["messages"][1]["content"].as_str().unwrap();
     assert!(first_user_message.contains("SECURITY_REVIEW_BODY"));
+}
+
+#[tokio::test]
+async fn mini_run_redacts_active_skill_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let secret_root = temp.path().join("TOP_SECRET_ROOT");
+    write_skill(
+        &secret_root,
+        "security-review",
+        r#"---
+name: security-review
+description: Use TOP_SECRET_VALUE for security review work.
+---
+
+# Security Review
+
+SECURITY_REVIEW_BODY
+"#,
+    );
+
+    let skill_path = toml_path(&secret_root);
+    let cfg = Config::from_toml_str(&format!(
+        r#"
+[skills]
+enabled = true
+auto_load = true
+paths = ["{skill_path}"]
+
+[redaction]
+secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
+"#,
+    ))
+    .unwrap();
+
+    rust_swe_agent::run::mini::run(rust_swe_agent::run::mini::MiniArgs {
+        task: "Please perform a security review.".to_owned(),
+        extra_context: None,
+        config: cfg,
+        output_dir: output.path().to_path_buf(),
+        trajectory_name: "skill-redaction-run".to_owned(),
+        deterministic_responses: Some(vec![
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".to_owned(),
+        ]),
+        deterministic_usage_per_call: None,
+        task_timeout_secs: None,
+        cancellation: None,
+        stream_addr: None,
+        patch_capture: None,
+        verification_checks: vec![],
+        verification_timeout_secs: 60,
+    })
+    .await
+    .unwrap();
+
+    let trajectory_path = output.path().join("skill-redaction-run.traj.json");
+    let trajectory_text = fs::read_to_string(trajectory_path).unwrap();
+    assert!(!trajectory_text.contains("TOP_SECRET_VALUE"));
+    assert!(!trajectory_text.contains("TOP_SECRET_ROOT"));
+    assert!(trajectory_text.contains("[REDACTED:configured_literal:"));
 }
 
 fn write_skill(root: &Path, dirname: &str, content: &str) {

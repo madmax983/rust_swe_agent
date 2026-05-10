@@ -163,7 +163,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
     .build_with_tool_providers(tool_providers)?;
     agent.cancellation = args.cancellation.clone();
-    record_active_skill_provenance(&mut agent, &resolved_skills.active_skills)?;
+    resolved_skills
+        .active_skills
+        .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
 
     let traj_path = args
         .output_dir
@@ -374,20 +376,6 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if let Some(err) = verification_err {
         return Err(err);
     }
-    Ok(())
-}
-
-fn record_active_skill_provenance(
-    agent: &mut DefaultAgent,
-    active_skills: &crate::skills::ActiveSkillSet,
-) -> Result<(), Error> {
-    if active_skills.is_empty() {
-        return Ok(());
-    }
-    agent.trajectory.info.other.insert(
-        "active_skills".into(),
-        serde_json::to_value(active_skills.provenance())?,
-    );
     Ok(())
 }
 

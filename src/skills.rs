@@ -14,6 +14,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::config::SkillCfg;
 use crate::error::{ConfigError, Error};
+use crate::redaction::{Redactor, surface};
+use crate::trajectory::TrajectoryInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkillManifest {
@@ -22,6 +24,10 @@ pub struct SkillManifest {
     pub path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(skip)]
+    normalized_name: String,
+    #[serde(skip)]
+    search_tokens: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -89,9 +95,13 @@ impl SkillRegistry {
         for path in skill_files {
             let text = std::fs::read_to_string(&path)?;
             let frontmatter = parse_frontmatter(&path, &text)?;
+            let name = required_frontmatter(&path, &frontmatter, "name")?;
+            let description = required_frontmatter(&path, &frontmatter, "description")?;
             let manifest = SkillManifest {
-                name: required_frontmatter(&path, &frontmatter, "name")?,
-                description: required_frontmatter(&path, &frontmatter, "description")?,
+                normalized_name: normalize_search_text(&name),
+                search_tokens: searchable_tokens(&name, &description),
+                name,
+                description,
                 version: frontmatter.get("version").cloned(),
                 path,
             };
@@ -119,9 +129,12 @@ impl SkillRegistry {
         let mut selected = Vec::new();
         let mut seen = BTreeSet::new();
         let normalized_task = normalize_search_text(request.task);
+        let task_tokens = tokenize(&normalized_task)
+            .filter(|token| !is_stopword(token))
+            .collect::<BTreeSet<_>>();
 
         for manifest in &self.manifests {
-            if mentioned_explicitly(&normalized_task, &manifest.name) {
+            if mentioned_explicitly(&normalized_task, manifest) {
                 selected.push(load_active_skill(
                     manifest,
                     SkillActivationReason::ExplicitMention,
@@ -139,7 +152,7 @@ impl SkillRegistry {
                 .iter()
                 .filter(|manifest| !seen.contains(&manifest.name))
                 .filter_map(|manifest| {
-                    let score = match_score(&normalized_task, manifest);
+                    let score = match_score(&task_tokens, manifest);
                     (score >= 2).then_some((score, manifest))
                 })
                 .collect::<Vec<_>>();
@@ -187,12 +200,6 @@ impl ActiveSkillSet {
                 SkillActivationReason::ExplicitMention => "explicit_mention",
                 SkillActivationReason::AutoMatch => "auto_match",
             });
-            rendered.push('\n');
-            rendered.push_str("Source: ");
-            rendered.push_str(&skill.path.display().to_string());
-            rendered.push('\n');
-            rendered.push_str("SHA-256: ");
-            rendered.push_str(&skill.sha256);
             rendered.push_str("\n\n");
             rendered.push_str(skill.content.trim());
             rendered.push('\n');
@@ -222,6 +229,30 @@ impl ActiveSkillSet {
                 activation_reason: skill.activation_reason,
             })
             .collect()
+    }
+
+    pub fn redacted_provenance_value(
+        &self,
+        redactor: &Redactor,
+    ) -> Result<serde_json::Value, Error> {
+        let mut value = serde_json::to_value(self.provenance())?;
+        redactor.redact_json_value(&mut value, surface::TRAJECTORY);
+        Ok(value)
+    }
+
+    pub fn record_redacted_provenance(
+        &self,
+        info: &mut TrajectoryInfo,
+        redactor: &Redactor,
+    ) -> Result<(), Error> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        info.other.insert(
+            "active_skills".into(),
+            self.redacted_provenance_value(redactor)?,
+        );
+        Ok(())
     }
 }
 
@@ -337,12 +368,13 @@ fn parse_frontmatter_fields(frontmatter: &str) -> BTreeMap<String, String> {
             continue;
         };
         let key = key.trim().to_owned();
-        let mut value = raw_value.trim().to_owned();
+        let mut value = strip_trailing_comment(raw_value.trim());
         if value.starts_with('"') && !ends_with_unescaped_quote(&value) {
             while let Some(next) = lines.peek() {
+                let next_value = strip_trailing_comment(next.trim_end());
                 value.push('\n');
-                value.push_str(next);
-                let done = ends_with_unescaped_quote(next.trim());
+                value.push_str(&next_value);
+                let done = ends_with_unescaped_quote(next_value.trim());
                 let _ = lines.next();
                 if done {
                     break;
@@ -353,6 +385,27 @@ fn parse_frontmatter_fields(frontmatter: &str) -> BTreeMap<String, String> {
     }
 
     fields
+}
+
+fn strip_trailing_comment(value: &str) -> String {
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (idx, ch) in value.char_indices() {
+        match (quote, ch) {
+            (Some('"'), '\\') if !escaped => {
+                escaped = true;
+                continue;
+            }
+            (Some(active), _) if ch == active && !escaped => quote = None,
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, '#') => return value[..idx].trim_end().to_owned(),
+            _ => {}
+        }
+        escaped = false;
+    }
+
+    value.trim_end().to_owned()
 }
 
 fn required_frontmatter(
@@ -396,32 +449,26 @@ fn ends_with_unescaped_quote(value: &str) -> bool {
     value.ends_with('"') && backslashes % 2 == 0
 }
 
-fn mentioned_explicitly(normalized_task: &str, skill_name: &str) -> bool {
-    let normalized_name = normalize_search_text(skill_name);
+fn mentioned_explicitly(normalized_task: &str, manifest: &SkillManifest) -> bool {
+    let normalized_name = &manifest.normalized_name;
     normalized_task.contains(&format!("${normalized_name}"))
         || normalized_task.contains(&format!("@{normalized_name}"))
         || normalized_task.contains(&format!("/{normalized_name}"))
 }
 
-fn match_score(normalized_task: &str, manifest: &SkillManifest) -> usize {
-    let task_tokens = tokenize(normalized_task).collect::<BTreeSet<_>>();
-    let search_text = normalize_search_text(&format!("{} {}", manifest.name, manifest.description));
-    let mut matched = BTreeSet::new();
-    for token in tokenize(&search_text) {
-        if is_stopword(&token) {
-            continue;
-        }
-        if task_tokens.contains(&token) {
-            matched.insert(token);
-        }
-    }
-    matched.len()
+fn match_score(task_tokens: &BTreeSet<String>, manifest: &SkillManifest) -> usize {
+    task_tokens.intersection(&manifest.search_tokens).count()
 }
 
 fn tokenize(text: &str) -> impl Iterator<Item = String> + '_ {
-    text.split_whitespace()
-        .map(ToOwned::to_owned)
-        .filter(|token| token.len() >= 3)
+    text.split_whitespace().map(ToOwned::to_owned)
+}
+
+fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
+    let search_text = normalize_search_text(&format!("{name} {description}"));
+    tokenize(&search_text)
+        .filter(|token| !is_stopword(token))
+        .collect()
 }
 
 fn normalize_search_text(text: &str) -> String {

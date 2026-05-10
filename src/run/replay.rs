@@ -72,12 +72,9 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         stream: None,
     }
     .build_with_tool_providers(tool_providers)?;
-    if !resolved_skills.active_skills.is_empty() {
-        agent.trajectory.info.other.insert(
-            "active_skills".into(),
-            serde_json::to_value(resolved_skills.active_skills.provenance())?,
-        );
-    }
+    resolved_skills
+        .active_skills
+        .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
 
     // 4. Run the replay
     tracing::info!(?args.trajectory_path, "starting replay mode");
