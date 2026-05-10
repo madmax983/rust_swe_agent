@@ -73,13 +73,15 @@ coarse sweep-level result.
 
 ```bash
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
+# Run in a conditional so the exit status is captured even under `set -e`.
 rust-swe-agent bench compare \
   --baseline runs/before \
   --candidate runs/after \
-  --max-regressions 0
-exit_code=$?
+  --max-regressions 0 \
+  || exit_code=$?
+exit_code=${exit_code:-0}
 
 case $exit_code in
   0)   echo "Gate passed — no regressions" ;;
@@ -116,8 +118,9 @@ fi
 ### Handling interrupted sweep
 
 ```bash
-# A Ctrl-C during a sweep exits 130; treat as a known outcome, not error
-rust-swe-agent bench swebench --dataset lite --output runs/ || true
+# A Ctrl-C during a sweep exits 130; treat as a known outcome, not error.
+# Capture exit status before || true masks it.
+rust-swe-agent bench swebench --dataset lite --output runs/
 exit_code=$?
 if [ $exit_code -eq 130 ] || [ $exit_code -eq 137 ]; then
   echo "Sweep was cancelled — partial results in runs/"
