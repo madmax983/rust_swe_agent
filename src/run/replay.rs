@@ -57,6 +57,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         .info
         .task
         .unwrap_or_else(|| "Replayed Task".into());
+    let resolved_skills = crate::skills::resolve_for_task(&args.config.root.skills, &task, None)?;
     let traj_name = args
         .trajectory_name
         .unwrap_or_else(|| crate::run::mini::slugify(&task));
@@ -66,11 +67,14 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         model,
         env,
         task,
-        extra_context: None,
+        extra_context: resolved_skills.merged_extra_context,
         renderer: None,
         stream: None,
     }
     .build_with_tool_providers(tool_providers)?;
+    resolved_skills
+        .active_skills
+        .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
 
     // 4. Run the replay
     tracing::info!(?args.trajectory_path, "starting replay mode");

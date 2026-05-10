@@ -118,6 +118,11 @@ pub struct MiniArgs {
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
+    let resolved_skills = crate::skills::resolve_for_task(
+        &args.config.root.skills,
+        &args.task,
+        args.extra_context.clone(),
+    )?;
     let model = build_model(
         &args.config,
         args.deterministic_responses,
@@ -152,12 +157,15 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         model,
         env,
         task: args.task.clone(),
-        extra_context: args.extra_context.clone(),
+        extra_context: resolved_skills.merged_extra_context.clone(),
         renderer: None,
         stream: sink,
     }
     .build_with_tool_providers(tool_providers)?;
     agent.cancellation = args.cancellation.clone();
+    resolved_skills
+        .active_skills
+        .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
 
     let traj_path = args
         .output_dir

@@ -186,6 +186,44 @@ pub struct SweepCfg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillCfg {
+    /// Enable harness-level skill discovery and activation. Disabled by
+    /// default to preserve prompt stability unless a run opts in.
+    #[serde(default)]
+    pub enabled: bool,
+    /// When enabled, allow the harness to activate skills from task/manifests
+    /// without an explicit `$skill-name` mention.
+    #[serde(default = "default_skill_auto_load")]
+    pub auto_load: bool,
+    /// Directories or `SKILL.md` files to scan. Paths are resolved by the
+    /// harness process; `~/...` expands to the user home directory.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Hard cap on active skills injected into a run.
+    #[serde(default = "default_skill_max_active")]
+    pub max_active: usize,
+}
+
+impl Default for SkillCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_load: default_skill_auto_load(),
+            paths: Vec::new(),
+            max_active: default_skill_max_active(),
+        }
+    }
+}
+
+const fn default_skill_auto_load() -> bool {
+    true
+}
+
+const fn default_skill_max_active() -> usize {
+    4
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RedactionCfg {
     /// Enable runtime redaction before observations, trajectories, streams,
     /// exports, and shareable artifacts are persisted or emitted.
@@ -232,6 +270,8 @@ pub struct RootCfg {
     pub prompts: PromptCfg,
     #[serde(default)]
     pub sweep: SweepCfg,
+    #[serde(default)]
+    pub skills: SkillCfg,
     #[serde(default)]
     pub redaction: RedactionCfg,
     #[serde(default)]

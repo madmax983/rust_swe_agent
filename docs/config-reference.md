@@ -80,6 +80,7 @@ Raw secrets must **never** appear in committed config files or TOML examples.
 [environment]  # Execution environment: local shell or Docker
 [prompts]      # System and instance prompt templates
 [sweep]        # Rate-limiting for parallel sweeps
+[skills]       # Harness-level skill discovery and activation
 [redaction]    # Secret redaction policy
 [policy]       # Pre-execution command policy (safe / ask / yolo)
 ```
@@ -202,6 +203,23 @@ opt-in: when unset, no ceiling is applied.
 | `max_input_tpm` | integer \| null | `null` | Any positive integer | Cap aggregate input tokens/minute; maps to `--max-input-tpm` |
 
 CLI values always win over config file values for both fields.
+
+---
+
+## `[skills]`
+
+Harness-level agent skills are optional and disabled by default. When enabled,
+the harness scans configured paths into a private registry, resolves the
+relevant subset for each task, and injects only active skill bodies into the
+run's additional context. Inactive skill names and descriptions are not sent to
+the model.
+
+| Field | Type | Default | Valid values | Notes |
+|---|---|---|---|---|
+| `enabled` | bool | `false` | `true`, `false` | Enables skill discovery and activation for the run |
+| `auto_load` | bool | `true` | `true`, `false` | When `true`, the harness can activate skills from task/manifests; explicit `$skill-name` mentions still work when this is `false` |
+| `paths` | array of strings | `[]` | Directories or `SKILL.md` files | Paths are resolved by the harness process; `~/...` expands to the user home directory |
+| `max_active` | integer | `4` | `1`-`∞` when enabled | Hard cap on selected skills injected into a single run |
 
 ---
 

@@ -15,6 +15,7 @@ pub mod model;
 pub mod policy;
 pub mod redaction;
 pub mod run;
+pub mod skills;
 pub mod stream;
 pub mod template;
 pub mod tool;
@@ -26,7 +27,9 @@ pub use run::dataset::{
 };
 
 pub use agent::{Agent, DefaultAgent, ExitReason, InteractiveAgent, StepOutcome};
-pub use config::{Config, McpServerCfg, RedactionCfg, ToolCfg, ToolHookCfg, ToolHooksCfg};
+pub use config::{
+    Config, McpServerCfg, RedactionCfg, SkillCfg, ToolCfg, ToolHookCfg, ToolHooksCfg,
+};
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
@@ -41,6 +44,10 @@ pub use policy::{
     PolicyRule,
 };
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
+pub use skills::{
+    ActiveSkill, ActiveSkillManifest, ActiveSkillSet, ResolvedSkillContext, SkillActivationReason,
+    SkillManifest, SkillRegistry, SkillResolveRequest, resolve_for_task,
+};
 pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
 pub use tool::{
     BASH_TOOL_NAME, CommandTool, McpStdioServer, ToolCall, ToolDefinition, ToolInvocation,
