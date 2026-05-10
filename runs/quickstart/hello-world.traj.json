@@ -1,0 +1,99 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 1
+  },
+  "info": {
+    "task": "Say hello",
+    "model_name": "deterministic",
+    "exit_reason": "submitted",
+    "outcome": "submitted",
+    "final_output": "ok",
+    "total_cost_usd": 0.0,
+    "actual_cost_usd": 0.0,
+    "actual_cost_source": "rate_card_estimate",
+    "baseline_cost_usd": 0.0,
+    "baseline_cost_model": "claude-3-5-sonnet",
+    "token_usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0
+    },
+    "duration_secs": 0.035895444,
+    "redaction": {
+      "enabled": true,
+      "redacted": false
+    },
+    "steps": 1,
+    "test_invocations": [],
+    "tests_run_before_submit": false,
+    "started_at": "2026-05-09T22:55:41.114567190+00:00",
+    "ended_at": "2026-05-09T22:55:41.698680020+00:00",
+    "policy_counts": {
+      "allowed": 1,
+      "asked": 0,
+      "blocked": 0,
+      "yolo_bypassed": 0
+    },
+    "verification_status": "unverified"
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a skilled software engineer working at a terminal. You have\naccess to a bash shell. Each response must contain exactly one action:\neither a single ```bash block to execute, or the literal sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\nfinal output block."
+    },
+    {
+      "role": "user",
+      "content": "Task: Say hello\n"
+    },
+    {
+      "role": "assistant",
+      "content": "```bash\necho hello\n```",
+      "extra": {
+        "actions": [
+          "echo hello"
+        ],
+        "cost": 0.0,
+        "response": {
+          "deterministic": true
+        },
+        "timestamp": "2026-05-09T22:55:41.662845257+00:00"
+      }
+    },
+    {
+      "role": "user",
+      "content": "\nExit code: 0\nOutput:\nhello\n\n\n",
+      "extra": {
+        "timestamp": "2026-05-09T22:55:41.698406914+00:00",
+        "observation_truncated": false,
+        "output_bytes_omitted": 0,
+        "post_tool_use_hooks": [],
+        "pre_tool_use_hooks": [],
+        "run_result": {
+          "exit_code": 0,
+          "stderr": "",
+          "stdout": "hello\n",
+          "timed_out": false
+        },
+        "stderr_bytes_omitted": 0,
+        "stdout_bytes_omitted": 0,
+        "tool_use_blocked": false
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```",
+      "extra": {
+        "actions": [
+          "__SUBMIT__"
+        ],
+        "cost": 0.0,
+        "response": {
+          "deterministic": true
+        },
+        "timestamp": "2026-05-09T22:55:41.698586187+00:00"
+      }
+    }
+  ]
+}
