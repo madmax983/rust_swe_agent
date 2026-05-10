@@ -219,7 +219,11 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         match run_forecast_from_cmd(sweep_cmd.clone()).await? {
             crate::run::forecast::ForecastOutcome::Report(report) => {
                 print_forecast_report(&report, &sweep_cmd.format)?;
-                crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)?;
+                if let Err(e) =
+                    crate::run::forecast::validate_fail_over_cap(&report, sweep_cmd.fail_over_cap)
+                {
+                    exit_with_outcome(ExitCode::BudgetHalt, &e.to_string());
+                }
                 if !crate::run::forecast::forecast_gate_allows_sweep(
                     &report,
                     crate::run::forecast::ForecastGate { yes: sweep_cmd.yes },
@@ -267,6 +271,15 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     );
     print!("{}", results.summary_table());
     exit_if_cancelled_sweep(&results);
+    if results.budget_halted > 0 && results.cost_limit_usd.is_some() {
+        exit_with_outcome(
+            ExitCode::BudgetHalt,
+            &format!(
+                "sweep stopped early: {} task(s) were not dispatched because the sweep cost limit was reached",
+                results.budget_halted
+            ),
+        );
+    }
     let github_pr_failures = github_pr_failure_count(&results);
     if github_pr_failures > 0 {
         return Err(Error::Github(format!(

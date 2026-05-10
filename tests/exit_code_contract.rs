@@ -321,3 +321,107 @@ fn sweep_cancel_codes_align_with_exit_code_contract() {
     assert_eq!(CANCEL_EXIT_CODE_GRACEFUL, ExitCode::Interrupted.as_i32());
     assert_eq!(CANCEL_EXIT_CODE_ESCALATED, ExitCode::Killed.as_i32());
 }
+
+// ── cross-surface: text label agrees with exit code ───────────────────────────
+
+/// For every Error variant, the outcome_class() string from from_error()
+/// and the integer from as_i32() describe the same outcome. This verifies
+/// the text and numeric surfaces agree rather than diverging.
+#[test]
+fn text_and_numeric_surfaces_agree_for_every_error_variant() {
+    let error_cases: Vec<(&str, Error)> = vec![
+        ("usage_error", Error::Config(ConfigError::Invalid("x".into()))),
+        ("verification_failure", Error::VerificationFailed(1, 2)),
+        ("preflight_failure", Error::Env(EnvError::DockerNotInstalled)),
+        (
+            "preflight_failure",
+            Error::Env(EnvError::DockerDaemonUnreachable("down".into())),
+        ),
+        (
+            "preflight_failure",
+            Error::Env(EnvError::ContainerStartFailed("oom".into())),
+        ),
+        (
+            "task_unsuccessful",
+            Error::Env(EnvError::CommandFailed("exit 1".into())),
+        ),
+        (
+            "task_unsuccessful",
+            Error::Env(EnvError::Timeout(std::time::Duration::from_secs(60))),
+        ),
+        (
+            "task_unsuccessful",
+            Error::Model(ModelError::Request("t/o".into())),
+        ),
+        (
+            "task_unsuccessful",
+            Error::Model(ModelError::Malformed("bad".into())),
+        ),
+        ("internal_error", Error::Trajectory("corrupt".into())),
+        ("internal_error", Error::Github("api 500".into())),
+        ("internal_error", Error::Template("render".into())),
+    ];
+
+    for (expected_class, e) in error_cases {
+        let code = ExitCode::from_error(&e);
+        assert_eq!(
+            code.outcome_class(),
+            expected_class,
+            "outcome_class mismatch for {:?}: expected {expected_class}, got {}",
+            e,
+            code.outcome_class()
+        );
+        assert_ne!(
+            code.as_i32(),
+            0,
+            "failure outcome {expected_class} must not exit 0"
+        );
+        // Text surface (outcome_class string) and numeric surface (as_i32)
+        // must describe the same variant — verified by re-deriving class from code.
+        let expected_code = match expected_class {
+            "usage_error" => 2,
+            "verification_failure" => 7,
+            "preflight_failure" => 3,
+            "task_unsuccessful" => 4,
+            "internal_error" => 1,
+            "budget_halt" => 5,
+            "regression_gate_failure" => 6,
+            other => panic!("unexpected class {other} in test table"),
+        };
+        assert_eq!(
+            code.as_i32(),
+            expected_code,
+            "numeric code for {expected_class} should be {expected_code}"
+        );
+    }
+}
+
+/// The budget-halt outcome class (5) is distinct from the usage-error class (2)
+/// so that `bench swebench --sweep-cost-limit-usd` and
+/// `bench forecast --fail-over-cap` can be distinguished from bad invocations.
+#[test]
+fn budget_halt_is_distinct_from_usage_error() {
+    assert_ne!(ExitCode::BudgetHalt.as_i32(), ExitCode::UsageError.as_i32());
+    assert_ne!(
+        ExitCode::BudgetHalt.outcome_class(),
+        ExitCode::UsageError.outcome_class()
+    );
+    assert_eq!(ExitCode::BudgetHalt.as_i32(), 5);
+    assert_eq!(ExitCode::BudgetHalt.outcome_class(), "budget_halt");
+}
+
+/// The regression-gate outcome class (6) is distinct from internal error (1)
+/// so that `bench compare --max-regressions` failures can be distinguished
+/// from infrastructure failures.
+#[test]
+fn regression_gate_is_distinct_from_internal_error() {
+    assert_ne!(
+        ExitCode::RegressionGateFailure.as_i32(),
+        ExitCode::InternalError.as_i32()
+    );
+    assert_eq!(ExitCode::RegressionGateFailure.as_i32(), 6);
+    assert_eq!(
+        ExitCode::RegressionGateFailure.outcome_class(),
+        "regression_gate_failure"
+    );
+}
