@@ -378,7 +378,7 @@ pub struct SwebenchCmd {
     #[arg(long, alias = "output-dir")]
     pub output: PathBuf,
 
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
     pub parallel: usize,
 
     /// Run each selected SWE-bench instance N independent times.

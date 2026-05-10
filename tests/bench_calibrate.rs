@@ -115,6 +115,7 @@ fn actual_below_lower_interval_is_pessimistic() {
             wall_clock_secs: 50.0,
             resolved: 1,
             total: 4,
+            ..ResultsCase::default()
         },
         ManifestCase::default(),
         ManifestCase::default(),
@@ -301,6 +302,40 @@ fn parallel_mismatch_is_detected_from_equals_and_short_manifest_forms() {
 }
 
 #[test]
+fn absent_parallel_arg_defaults_to_cli_parallel_for_comparison() {
+    let work = tempfile::tempdir().unwrap();
+    let (forecast_path, results_path) = write_pair(
+        work.path(),
+        ForecastCase {
+            parallel: 8,
+            ..ForecastCase::default()
+        },
+        ResultsCase::default(),
+        ManifestCase::default(),
+        ManifestCase {
+            parallel: 4,
+            parallel_arg_style: ParallelArgStyle::Absent,
+            ..ManifestCase::default()
+        },
+    );
+
+    let report = compute(&CalibrationArgs {
+        forecast_path,
+        results_path,
+    })
+    .unwrap();
+
+    assert_eq!(report.verdict, CalibrationVerdict::NotComparable);
+    let mismatch = report
+        .mismatches
+        .iter()
+        .find(|mismatch| mismatch.field == "parallel")
+        .unwrap_or_else(|| panic!("{:#?}", report.mismatches));
+    assert_eq!(mismatch.forecast, "8");
+    assert_eq!(mismatch.actual, "4");
+}
+
+#[test]
 fn exact_target_instance_set_mismatch_is_flagged_even_when_counts_match() {
     let work = tempfile::tempdir().unwrap();
     let (forecast_path, results_path) = write_pair(
@@ -329,6 +364,52 @@ fn exact_target_instance_set_mismatch_is_flagged_even_when_counts_match() {
         "{:#?}",
         report.mismatches
     );
+}
+
+#[test]
+fn actual_resolution_rate_uses_pass_at_1_semantics_for_rerun_rows() {
+    let work = tempfile::tempdir().unwrap();
+    let (forecast_path, results_path) = write_pair(
+        work.path(),
+        ForecastCase {
+            total_cost_usd: interval(5.0, 4.0, 6.0),
+            input_tokens: interval(500.0, 400.0, 600.0),
+            output_tokens: interval(50.0, 40.0, 60.0),
+            wall_clock_secs: interval(50.0, 40.0, 60.0),
+            resolution_point: 0.0,
+            resolution_resolved: 0,
+            resolution_total: 2,
+            target_n: 2,
+            target_instance_ids: vec!["a".into(), "b".into()],
+            ..ForecastCase::default()
+        },
+        ResultsCase {
+            total_cost_usd: 5.0,
+            input_tokens: 500,
+            output_tokens: 50,
+            wall_clock_secs: 50.0,
+            resolved: 0,
+            total: 2,
+            runs: 2,
+            resolved_count: Some(1),
+            pass_at_1: Some(false),
+        },
+        ManifestCase::default(),
+        ManifestCase::default(),
+    );
+
+    let report = compute(&CalibrationArgs {
+        forecast_path,
+        results_path,
+    })
+    .unwrap();
+
+    assert_eq!(report.metrics.resolution_rate.actual, 0.0);
+    assert_eq!(
+        report.metrics.resolution_rate.status,
+        CalibrationMetricStatus::WithinInterval
+    );
+    assert_eq!(report.verdict, CalibrationVerdict::WellCalibrated);
 }
 
 #[test]
@@ -557,6 +638,9 @@ struct ResultsCase {
     wall_clock_secs: f64,
     resolved: usize,
     total: usize,
+    runs: u32,
+    resolved_count: Option<u32>,
+    pass_at_1: Option<bool>,
 }
 
 impl Default for ResultsCase {
@@ -568,6 +652,9 @@ impl Default for ResultsCase {
             wall_clock_secs: 105.0,
             resolved: 2,
             total: 4,
+            runs: 1,
+            resolved_count: None,
+            pass_at_1: None,
         }
     }
 }
@@ -593,6 +680,7 @@ impl Default for ManifestCase {
 
 #[derive(Debug, Clone, Copy)]
 enum ParallelArgStyle {
+    Absent,
     LongSeparated,
     LongEquals,
     ShortSeparated,
@@ -601,6 +689,7 @@ enum ParallelArgStyle {
 impl ParallelArgStyle {
     fn argv(self, parallel: usize) -> Vec<String> {
         match self {
+            Self::Absent => vec!["rust-swe-agent".into(), "bench".into(), "swebench".into()],
             Self::LongSeparated => vec![
                 "rust-swe-agent".into(),
                 "bench".into(),
@@ -739,12 +828,16 @@ fn sweep_results(
             } else {
                 case.total_cost_usd / case.total as f64
             };
-            instance(
+            let mut row = instance(
                 id,
                 submitted,
                 per_instance_cost,
                 case.wall_clock_secs / case.total.max(1) as f64,
-            )
+            );
+            row.runs = case.runs;
+            row.resolved_count = case.resolved_count.unwrap_or_else(|| u32::from(submitted));
+            row.pass_at_1 = case.pass_at_1.unwrap_or(submitted);
+            row
         })
         .collect();
     SweepResults {

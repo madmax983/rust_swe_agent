@@ -43,6 +43,7 @@ pub const SWEEP_STATUS_CANCELLING: &str = "cancelling";
 pub const SWEEP_STATUS_CANCELLED: &str = "cancelled";
 pub const CANCEL_EXIT_CODE_GRACEFUL: i32 = 130;
 pub const CANCEL_EXIT_CODE_ESCALATED: i32 = 137;
+pub const DEFAULT_PARALLEL: usize = 4;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenBreakdown {

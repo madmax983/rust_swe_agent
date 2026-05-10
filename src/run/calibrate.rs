@@ -520,9 +520,9 @@ fn build_mismatches(
         );
     }
 
-    if let Some(actual_parallel) = actual_manifest.and_then(parallel_from_manifest) {
+    if let Some(actual_manifest) = actual_manifest {
         let forecast_parallel = forecast.forecast.parallel.to_string();
-        let actual_parallel = actual_parallel.to_string();
+        let actual_parallel = parallel_from_manifest(actual_manifest).to_string();
         compare_field(
             &mut mismatches,
             "parallel",
@@ -616,21 +616,21 @@ fn compare_optional_field(
     }
 }
 
-fn parallel_from_manifest(manifest: &ProvenanceManifest) -> Option<usize> {
+fn parallel_from_manifest(manifest: &ProvenanceManifest) -> usize {
     let argv = &manifest.cli.argv;
     for (idx, arg) in argv.iter().enumerate() {
         if let Some(value) = arg.strip_prefix("--parallel=") {
             if let Ok(parallel) = value.parse() {
-                return Some(parallel);
+                return parallel;
             }
         }
         if (arg == "--parallel" || arg == "-p") && idx + 1 < argv.len() {
             if let Ok(parallel) = argv[idx + 1].parse() {
-                return Some(parallel);
+                return parallel;
             }
         }
     }
-    None
+    swebench::DEFAULT_PARALLEL
 }
 
 fn calibration_verdict(
@@ -718,16 +718,9 @@ fn actual_resolution_rate(results: &SweepResults) -> f64 {
         let resolved = results
             .instances
             .iter()
-            .map(swebench::resolved_count)
-            .fold(0u32, u32::saturating_add);
-        let runs = results
-            .instances
-            .iter()
-            .map(swebench::effective_runs)
-            .fold(0u32, u32::saturating_add);
-        if runs > 0 {
-            return f64::from(resolved) / f64::from(runs);
-        }
+            .filter(|row| swebench::pass_at_1(row))
+            .count();
+        return as_f64_usize(resolved) / as_f64_usize(results.instances.len());
     }
     results.pass_at_k
 }
