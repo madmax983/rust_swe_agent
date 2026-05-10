@@ -313,7 +313,9 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
     let no_retry_output = work.path().join("runs_no_retry");
     std::fs::create_dir_all(&no_retry_output).unwrap();
     let no_retry = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(work.path().join("dataset.jsonl")),
+        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(
+            work.path().join("dataset.jsonl"),
+        ),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: no_retry_output,
         parallel: 1,
