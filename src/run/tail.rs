@@ -321,8 +321,7 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
             (meta.total_fallbacks, std::mem::take(&mut meta.model_mix))
         };
 
-    let circuit_breaker_status =
-        circuit_breaker_status_line(&meta, &failure_counts, completed);
+    let circuit_breaker_status = circuit_breaker_status_line(&meta, &failure_counts, completed);
     Ok(TailSnapshot {
         sweep_dir: sweep_dir.to_path_buf(),
         status,

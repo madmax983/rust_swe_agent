@@ -1860,21 +1860,17 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                     rr.result.exit_reason != "skipped_resume"
                                         && rr.result.exit_reason != EXIT_REASON_BUDGET_HALT
                                 })
-                                .filter_map(|rr| {
-                                    rr.result.failure_category.map(|cat| (cat, true))
-                                })
+                                .filter_map(|rr| rr.result.failure_category.map(|cat| (cat, true)))
                                 .collect();
                             if let Some(cat) = breaker.check(&completed_live) {
                                 systemic_halt_triggered = true;
                                 systemic_halt_category = Some(cat);
                                 systemic_halt_not_started = pending.len();
                                 #[allow(clippy::cast_precision_loss)]
-                                let share_pct = completed_live
-                                    .iter()
-                                    .filter(|(c, _)| *c == cat)
-                                    .count() as f64
-                                    / completed_live.len() as f64
-                                    * 100.0;
+                                let share_pct =
+                                    completed_live.iter().filter(|(c, _)| *c == cat).count() as f64
+                                        / completed_live.len() as f64
+                                        * 100.0;
                                 let first_ids: Vec<String> = results
                                     .iter()
                                     .filter(|rr| rr.result.failure_category == Some(cat))
@@ -2196,11 +2192,7 @@ fn write_halt_report_atomic(output_dir: &Path, report: &SweepHaltReport) -> Resu
     let path = output_dir.join("halt-report.json");
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    crate::artifact::to_writer_pretty(
-        temp.as_file_mut(),
-        ArtifactKind::SweepHaltReport,
-        report,
-    )?;
+    crate::artifact::to_writer_pretty(temp.as_file_mut(), ArtifactKind::SweepHaltReport, report)?;
     writeln!(temp.as_file_mut())?;
     temp.as_file_mut().sync_all()?;
     temp.persist(&path).map_err(|err| err.error)?;
