@@ -180,21 +180,21 @@ fn extract_first_registered_raw_tool_call(raw: &Value, tool_names: &[String]) ->
 
 fn raw_tool_call_arrays(raw: &Value) -> Vec<&[Value]> {
     let mut arrays = Vec::new();
+    if let Some(choices) = raw.get("choices").and_then(Value::as_array) {
+        if let Some(calls) = choices
+            .first()
+            .and_then(|choice| choice.pointer("/message/tool_calls"))
+            .and_then(Value::as_array)
+        {
+            arrays.push(calls.as_slice());
+        }
+        return arrays;
+    }
     if let Some(calls) = raw.get("tool_calls").and_then(Value::as_array) {
         arrays.push(calls.as_slice());
     }
     if let Some(calls) = raw.pointer("/message/tool_calls").and_then(Value::as_array) {
         arrays.push(calls.as_slice());
-    }
-    if let Some(choices) = raw.get("choices").and_then(Value::as_array) {
-        for choice in choices {
-            if let Some(calls) = choice
-                .pointer("/message/tool_calls")
-                .and_then(Value::as_array)
-            {
-                arrays.push(calls.as_slice());
-            }
-        }
     }
     arrays
 }
@@ -407,6 +407,35 @@ mod tests {
 
         assert_eq!(
             extract_action_from_model_response("Let me run that.", &raw, &["bash".into()]),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn raw_tool_calls_from_unselected_choices_are_ignored() {
+        let raw = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "No tool call here."
+                    }
+                },
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "bash",
+                                "arguments": "{\"command\":\"echo unselected\"}"
+                            }
+                        }]
+                    }
+                }
+            ]
+        });
+
+        assert_eq!(
+            extract_action_from_model_response("No tool call here.", &raw, &["bash".into()]),
             Action::None
         );
     }

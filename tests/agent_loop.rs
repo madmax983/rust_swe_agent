@@ -230,6 +230,74 @@ async fn fenced_action_wins_over_conflicting_native_tool_call() {
     assert_eq!(requests[0].0, "echo fenced-call");
 }
 
+#[tokio::test]
+async fn ignores_native_tool_calls_from_unselected_choices() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(RawResponseModel::new([
+        raw_response(
+            "No tool call here.",
+            serde_json::json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": "No tool call here."
+                        }
+                    },
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call-2",
+                                "type": "function",
+                                "function": {
+                                    "name": "bash",
+                                    "arguments": "{\"command\":\"echo unselected-choice\"}"
+                                }
+                            }]
+                        }
+                    }
+                ]
+            }),
+        ),
+        raw_response(
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```",
+            serde_json::json!({"deterministic": true}),
+        ),
+    ]));
+    let env = RecordingCancellationEnv::default();
+    let requests = Arc::clone(&env.requests);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let requests = requests.lock().unwrap().clone();
+    assert!(
+        requests.is_empty(),
+        "unselected choice tool_calls must not execute: {requests:#?}"
+    );
+    assert!(
+        agent
+            .history
+            .iter()
+            .any(|m| m.content.contains("did not include a valid tool call")),
+        "selected choice without an action should follow format-error recovery: {:#?}",
+        agent.history
+    );
+}
+
 #[test]
 fn default_system_prompt_discourages_dependency_install_detours() {
     let cfg = Config::defaults().unwrap();
