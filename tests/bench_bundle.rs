@@ -521,6 +521,84 @@ fn bundle_instance_scope_uses_rerun_slots_for_scoped_aggregates() {
 }
 
 #[test]
+fn bundle_instance_scope_ignores_stale_nested_run_artifacts_for_single_run_row() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    write_bundle_rerun_trajectory(
+        &sweep,
+        "alpha",
+        1,
+        RerunTrajectorySpec {
+            outcome: "submitted",
+            exit_reason: "submitted",
+            failure_category: None,
+            tests_run_before_submit: true,
+            patch: Some("diff --git a/current b/current\n+current run\n"),
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            final_model: "single-model",
+        },
+    );
+    write_bundle_rerun_trajectory(
+        &sweep,
+        "alpha",
+        2,
+        RerunTrajectorySpec {
+            outcome: "submitted",
+            exit_reason: "submitted",
+            failure_category: None,
+            tests_run_before_submit: true,
+            patch: Some("diff --git a/stale b/stale\n+stale run\n"),
+            prompt_tokens: 20,
+            completion_tokens: 2,
+            final_model: "stale-model",
+        },
+    );
+
+    let results_path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&results_path).unwrap()).unwrap();
+    let alpha = results["instances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["instance_id"] == "alpha")
+        .unwrap();
+    alpha.as_object_mut().unwrap().remove("runs");
+    alpha["outcome"] = serde_json::json!("submitted");
+    alpha["exit_reason"] = serde_json::json!("submitted");
+    alpha["resolved_count"] = serde_json::json!(1);
+    alpha["pass_at_1"] = serde_json::json!(true);
+    alpha["tests_run_before_submit"] = serde_json::json!(true);
+    alpha["patch_present"] = serde_json::json!(true);
+    alpha["non_empty_patch"] = serde_json::json!(true);
+    alpha["total_input_tokens"] = serde_json::json!(10);
+    alpha["total_completion_tokens"] = serde_json::json!(1);
+    alpha["final_model"] = serde_json::json!("single-model");
+    fs::write(
+        &results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+
+    let archive = work.path().join("alpha-single-run.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, Some("alpha")));
+    assert_success(&bundle_verify(&archive));
+
+    let entries = tar_list(&archive);
+    assert!(entries.contains(&"alpha/run-1.traj.json".to_owned()));
+    assert!(entries.contains(&"alpha/run-1.patch".to_owned()));
+    assert!(
+        !entries.contains(&"alpha/run-2.traj.json".to_owned()),
+        "{entries:?}"
+    );
+    assert!(
+        !entries.contains(&"alpha/run-2.patch".to_owned()),
+        "{entries:?}"
+    );
+}
+
+#[test]
 fn bundle_instance_scope_rejects_missing_rerun_trajectory() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());

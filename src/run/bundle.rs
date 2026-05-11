@@ -260,7 +260,9 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
             files.push(workspace.prepare_bytes(trajectory_dest, trajectory)?);
         }
 
-        for (patch_src, patch_dest) in find_patch_paths_for_bundle(&args.sweep_dir, instance_id) {
+        for (patch_src, patch_dest) in
+            find_patch_paths_for_bundle(&args.sweep_dir, instance_id, row)
+        {
             let patch = normalized_text_file(&patch_src, &normalizer)?;
             strict_redaction_check(&patch_dest, &patch, &redactor)?;
             patch_files.push(workspace.prepare_bytes(patch_dest, patch)?);
@@ -1055,6 +1057,14 @@ fn find_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> 
     find_trajectory_path_for_run(sweep_dir, instance_id, 1)
 }
 
+fn find_single_run_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
+    let nested = sweep_dir.join(instance_id).join("run-1.traj.json");
+    nested
+        .exists()
+        .then_some(nested)
+        .or_else(|| find_trajectory_path(sweep_dir, instance_id))
+}
+
 fn required_rerun_trajectory_path(
     sweep_dir: &Path,
     instance_id: &str,
@@ -1094,10 +1104,6 @@ fn find_trajectory_path_for_run(
     .find(|path| path.exists())
 }
 
-fn find_patch_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
-    find_patch_path_for_run(sweep_dir, instance_id, 1)
-}
-
 fn find_patch_path_for_run(sweep_dir: &Path, instance_id: &str, run_index: u32) -> Option<PathBuf> {
     let run_file = format!("run-{run_index}.patch");
     if run_index > 1 {
@@ -1133,18 +1139,11 @@ fn find_trajectory_paths_for_bundle(
         return Ok(out);
     }
 
-    let nested = sorted_nested_run_files(&sweep_dir.join(instance_id), ".traj.json");
-    if !nested.is_empty() {
-        return Ok(nested
-            .into_iter()
-            .filter_map(|path| {
-                let file_name = path.file_name()?.to_string_lossy();
-                Some((path.clone(), format!("{instance_id}/{file_name}")))
-            })
-            .collect());
-    }
-    find_trajectory_path(sweep_dir, instance_id)
-        .map(|path| (path, format!("trajectories/{instance_id}.traj.json")))
+    find_single_run_trajectory_path(sweep_dir, instance_id)
+        .map(|path| {
+            let archive_path = trajectory_archive_path_for_run(sweep_dir, instance_id, 1, &path);
+            (path, archive_path)
+        })
         .into_iter()
         .next()
         .map(|entry| vec![entry])
@@ -1156,53 +1155,52 @@ fn find_trajectory_paths_for_bundle(
         })
 }
 
-fn find_patch_paths_for_bundle(sweep_dir: &Path, instance_id: &str) -> Vec<(PathBuf, String)> {
-    let nested = sorted_nested_run_files(&sweep_dir.join(instance_id), ".patch");
-    if !nested.is_empty() {
-        return nested
-            .into_iter()
-            .filter_map(|path| {
-                let file_name = path.file_name()?.to_string_lossy();
-                Some((path.clone(), format!("{instance_id}/{file_name}")))
-            })
-            .collect();
+fn find_patch_paths_for_bundle(
+    sweep_dir: &Path,
+    instance_id: &str,
+    row: &serde_json::Value,
+) -> Vec<(PathBuf, String)> {
+    if is_never_started_budget_halt(row) {
+        return Vec::new();
     }
-    find_patch_path(sweep_dir, instance_id)
-        .map(|path| (path, format!("patches/{instance_id}.patch")))
-        .into_iter()
+
+    (1..=effective_runs_value(row))
+        .filter_map(|run_index| {
+            find_patch_path_for_run(sweep_dir, instance_id, run_index).map(|path| {
+                let archive_path =
+                    patch_archive_path_for_run(sweep_dir, instance_id, run_index, &path);
+                (path, archive_path)
+            })
+        })
         .collect()
 }
 
-fn sorted_nested_run_files(dir: &Path, suffix: &str) -> Vec<PathBuf> {
-    let mut files = std::fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            if !file_type.is_file() {
-                return None;
-            }
-            let file_name = entry.file_name();
-            let file_name = file_name.to_string_lossy();
-            (file_name.starts_with("run-") && file_name.ends_with(suffix)).then_some(entry.path())
-        })
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| {
-        let left_key = run_file_sort_key(left);
-        let right_key = run_file_sort_key(right);
-        left_key.cmp(&right_key).then_with(|| left.cmp(right))
-    });
-    files
+fn trajectory_archive_path_for_run(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+    path: &Path,
+) -> String {
+    let file_name = format!("run-{run_index}.traj.json");
+    if path == sweep_dir.join(instance_id).join(&file_name) {
+        format!("{instance_id}/{file_name}")
+    } else {
+        format!("trajectories/{instance_id}.traj.json")
+    }
 }
 
-fn run_file_sort_key(path: &Path) -> u32 {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("run-"))
-        .and_then(|name| name.split('.').next())
-        .and_then(|index| index.parse::<u32>().ok())
-        .unwrap_or(u32::MAX)
+fn patch_archive_path_for_run(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+    path: &Path,
+) -> String {
+    let file_name = format!("run-{run_index}.patch");
+    if path == sweep_dir.join(instance_id).join(&file_name) {
+        format!("{instance_id}/{file_name}")
+    } else {
+        format!("patches/{instance_id}.patch")
+    }
 }
 
 fn read_required_text(path: &Path, label: &str) -> Result<String, BundleError> {
