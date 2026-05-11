@@ -29,6 +29,7 @@ use crate::env::{Environment, LocalEnvironment};
 use crate::error::{Error, ModelError};
 use crate::fingerprint::{canonical_json, cap_canonical, compute_input_fingerprint};
 use crate::model::{DeterministicModel, Message, Model, ModelResponse, QueryOpts};
+use crate::redaction::{Redactor, surface};
 use crate::trajectory::Trajectory;
 
 /// Filename written to `output_dir` when drift is detected.
@@ -174,9 +175,19 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         .unwrap_or_else(|| crate::run::mini::slugify(&task));
 
     // 3. Build fingerprint-checking model.
+    // A dedicated Redactor (same config as the agent's) applies TRAJECTORY
+    // redaction before fingerprinting — needed so secrets still present in
+    // extra_context/skills at replay time are hashed identically to how they
+    // were hashed during recording.
+    let fp_redactor = Redactor::from_config(&args.config.root.redaction).map_err(|err| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Invalid redaction config: {err}"
+        )))
+    })?;
     let drift_steps: Arc<Mutex<Vec<DriftStep>>> = Arc::new(Mutex::new(Vec::new()));
     let model: Arc<dyn Model> = Arc::new(FingerprintCheckingModel {
         inner: DeterministicModel::new(responses),
+        redactor: fp_redactor,
         expected_fps,
         expected_canonicals,
         step: Mutex::new(0),
@@ -352,6 +363,11 @@ fn make_unified_diff(
 /// scripted response is consumed.
 struct FingerprintCheckingModel {
     inner: DeterministicModel,
+    /// Redactor used to apply TRAJECTORY-surface redaction to messages before
+    /// fingerprinting — mirrors the same redaction applied on the recording side
+    /// so that raw secrets in extra_context/skills produce the same canonical
+    /// form as they did when the trajectory was recorded.
+    redactor: Redactor,
     /// Stored fingerprints from the cassette trajectory, one per assistant
     /// message in order. `None` means the original was recorded without
     /// fingerprints (legacy trajectory).
@@ -382,15 +398,16 @@ impl Model for FingerprintCheckingModel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // Normalize redaction markers before fingerprinting so the actual hash
-        // matches the stored hash regardless of which per-run Redactor salt was
-        // used (recording and replay produce different [REDACTED:k:s:HASH] forms
-        // for the same underlying secret; strip the hash segment for both sides).
+        // Mirror the recording-side fingerprinting: apply TRAJECTORY-surface
+        // redaction first (so raw secrets in extra_context/skills hash the same
+        // as the recorded [REDACTED:...] markers), then normalize the per-run
+        // salt from every marker so hashes are stable across runs.
         let normalized: Vec<Message> = messages
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                m2.content = crate::fingerprint::normalize_redaction_markers(&m.content);
+                let redacted = self.redactor.redact_text(&m.content, surface::TRAJECTORY).text;
+                m2.content = crate::fingerprint::normalize_redaction_markers(&redacted);
                 m2
             })
             .collect();
