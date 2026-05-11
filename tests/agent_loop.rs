@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -11,9 +12,50 @@ use rust_swe_agent::env::CancellationToken;
 use rust_swe_agent::error::EnvError;
 use rust_swe_agent::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
-    McpServerCfg, McpStdioServer, Message, Role, RunRequest, RunResult, ToolDefinition,
-    ToolHookCfg, ToolInvocation, ToolOutput, ToolProvider,
+    McpServerCfg, McpStdioServer, Message, Model, ModelResponse, ModelUsage, QueryOpts, Role,
+    RunRequest, RunResult, ToolDefinition, ToolHookCfg, ToolInvocation, ToolOutput, ToolProvider,
 };
+
+struct RawResponseModel {
+    responses: Mutex<VecDeque<ModelResponse>>,
+}
+
+impl RawResponseModel {
+    fn new(responses: impl IntoIterator<Item = ModelResponse>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+        }
+    }
+}
+
+#[async_trait]
+impl Model for RawResponseModel {
+    fn name(&self) -> &'static str {
+        "raw-response"
+    }
+
+    async fn query(
+        &self,
+        _messages: &[Message],
+        _opts: &QueryOpts,
+    ) -> Result<ModelResponse, rust_swe_agent::ModelError> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| rust_swe_agent::ModelError::Malformed("no scripted response".into()))
+    }
+}
+
+fn raw_response(content: impl Into<String>, raw: serde_json::Value) -> ModelResponse {
+    ModelResponse {
+        content: content.into(),
+        usage: ModelUsage::default(),
+        raw,
+        responding_model: None,
+        fallback_attempts: Vec::new(),
+    }
+}
 
 #[tokio::test]
 async fn two_turn_echo_submit_produces_well_formed_trajectory() {
@@ -66,6 +108,80 @@ async fn two_turn_echo_submit_produces_well_formed_trajectory() {
 
     // Model saw 2 calls.
     assert_eq!(model.call_count(), 2);
+}
+
+#[tokio::test]
+async fn provider_native_bash_tool_call_executes_without_format_error_turn() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(RawResponseModel::new([
+        raw_response(
+            "Let me inspect the repository.",
+            serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": "Let me inspect the repository.",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": "{\"command\":\"echo native-call\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+        ),
+        raw_response(
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```",
+            serde_json::json!({"deterministic": true}),
+        ),
+    ]));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+    assert!(
+        agent
+            .history
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("native-call")),
+        "native bash tool_call should execute and produce an observation: {:#?}",
+        agent.history
+    );
+    assert!(
+        !agent
+            .history
+            .iter()
+            .any(|m| m.content.contains("did not include a valid tool call")),
+        "native tool_call should not trigger format-error recovery: {:#?}",
+        agent.history
+    );
+}
+
+#[test]
+fn default_system_prompt_discourages_dependency_install_detours() {
+    let cfg = Config::defaults().unwrap();
+    assert!(
+        cfg.root
+            .prompts
+            .system
+            .contains("Do not install dependencies"),
+        "default system prompt should keep smoke runs out of dependency-install detours"
+    );
 }
 
 #[tokio::test]

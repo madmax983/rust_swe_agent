@@ -4,7 +4,7 @@
 //!   1. Limit check → Terminate if exceeded
 //!   2. Retag cache hints on history
 //!   3. model.query
-//!   4. parse::extract_action_for_tools
+//!   4. parse::extract_action_from_model_response
 //!   5. tool dispatch through env.run
 //!   6. observation template → push as user message, record in trajectory
 //!   7. bump steps, Continue
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{Action, Agent, ExitReason, StepOutcome, extract_action_for_tools};
+use super::{Action, Agent, ExitReason, StepOutcome, extract_action_from_model_response};
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
@@ -36,6 +36,26 @@ use crate::trajectory::{
 };
 
 const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
+const WALLCLOCK_WARNING_BEFORE_SECS: u64 = 30;
+
+#[derive(Debug, Clone)]
+struct WallclockDeadline {
+    deadline: Instant,
+    timeout: Duration,
+    warn_before: Duration,
+    warned: bool,
+}
+
+fn wallclock_warning_before(timeout: Duration) -> Duration {
+    let default = Duration::from_secs(WALLCLOCK_WARNING_BEFORE_SECS);
+    if timeout > default {
+        default
+    } else if timeout.is_zero() {
+        Duration::ZERO
+    } else {
+        Duration::from_secs((timeout.as_secs() / 2).max(1))
+    }
+}
 
 #[derive(Debug, Clone)]
 struct TruncateResult {
@@ -126,6 +146,7 @@ pub struct DefaultAgent {
     pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
+    wallclock_deadline: Option<WallclockDeadline>,
     /// Accumulated uncached input tokens across every model call in this run.
     pub prompt_tokens: u64,
     /// Accumulated prompt-cache reads across every model call in this run.
@@ -253,6 +274,7 @@ impl DefaultAgentBuilder {
             total_cost_usd: 0.0,
             actual_cost_source: None,
             started_at_instant: Instant::now(),
+            wallclock_deadline: None,
             prompt_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
@@ -406,6 +428,7 @@ impl Agent for DefaultAgent {
                 }));
             }
         }
+        self.maybe_warn_wallclock_deadline();
 
         // 2. Retag cache hints (one line; backend handles capping).
         retag_cache_hints(&mut self.history);
@@ -478,7 +501,11 @@ impl Agent for DefaultAgent {
         });
 
         // 4. Parse action.
-        let action = extract_action_for_tools(&resp.content, &self.tool_registry.tool_names());
+        let action = extract_action_from_model_response(
+            &resp.content,
+            &resp.raw,
+            &self.tool_registry.tool_names(),
+        );
         match &action {
             Action::Submit(output) => {
                 asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
@@ -872,6 +899,66 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    pub fn set_wallclock_deadline(&mut self, timeout: Duration) {
+        self.wallclock_deadline = Some(WallclockDeadline {
+            deadline: Instant::now() + timeout,
+            timeout,
+            warn_before: wallclock_warning_before(timeout),
+            warned: false,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_wallclock_deadline_for_test(&mut self, deadline: Instant, timeout: Duration) {
+        self.wallclock_deadline = Some(WallclockDeadline {
+            deadline,
+            timeout,
+            warn_before: wallclock_warning_before(timeout),
+            warned: false,
+        });
+    }
+
+    fn maybe_warn_wallclock_deadline(&mut self) {
+        let Some(deadline) = self.wallclock_deadline.as_ref() else {
+            return;
+        };
+        if deadline.warned {
+            return;
+        }
+        let remaining = deadline.deadline.saturating_duration_since(Instant::now());
+        if remaining > deadline.warn_before {
+            return;
+        }
+        let timeout = deadline.timeout;
+        if let Some(deadline) = &mut self.wallclock_deadline {
+            deadline.warned = true;
+        }
+        self.push_wallclock_deadline_warning(timeout, remaining);
+    }
+
+    fn push_wallclock_deadline_warning(&mut self, timeout: Duration, remaining: Duration) {
+        let remaining_secs = remaining.as_secs();
+        let timeout_secs = timeout.as_secs();
+        let content = format!(
+            "The task wallclock deadline is near: about {remaining_secs}s remain from the \
+             {timeout_secs}s task budget. If you already have a useful patch, stop exploratory \
+             work and submit now with COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT. Do not install \
+             dependencies unless they are strictly required to produce the final patch."
+        );
+        let msg = Message::user(
+            self.redactor
+                .redact_text(&content, surface::MODEL_OBSERVATION)
+                .text,
+        );
+        self.history.push(msg.clone());
+        let mut extra = MessageExtra::default();
+        extra.other.insert(
+            "wallclock_deadline_warning".into(),
+            serde_json::Value::Bool(true),
+        );
+        record_redacted_message(&mut self.trajectory, &msg, extra, &self.redactor);
+    }
+
     fn record_model_cost(&mut self, cost_usd: Option<f64>) {
         let source = match cost_usd {
             Some(cost) => {
@@ -1806,6 +1893,56 @@ mod tests {
             a.history
                 .iter()
                 .any(|m| m.content.contains("did not include a valid tool call"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wallclock_deadline_warning_is_visible_before_model_query() {
+        let model = Arc::new(DeterministicModel::new([
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```".into(),
+        ]));
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        let mut agent = DefaultAgentBuilder {
+            config: cfg,
+            model: model.clone(),
+            env: Box::new(LocalEnvironment::new()),
+            task: "test".into(),
+            extra_context: None,
+            renderer: None,
+            stream: None,
+        }
+        .build()
+        .unwrap();
+
+        agent.set_wallclock_deadline_for_test(
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            Duration::from_secs(300),
+        );
+
+        let exit = agent.step().await.unwrap();
+        assert!(matches!(
+            exit,
+            StepOutcome::Terminate(ExitReason::Submitted { .. })
+        ));
+
+        let recorded = model.recorded_inputs();
+        let first_query = recorded.first().unwrap();
+        assert!(
+            first_query.iter().any(|m| {
+                m.role == Role::User
+                    && m.content.contains("wallclock deadline")
+                    && m.content.contains("submit")
+            }),
+            "deadline warning should be model-visible before the query: {first_query:#?}"
+        );
+        assert!(
+            agent
+                .trajectory
+                .messages
+                .iter()
+                .any(|m| m.content.contains("wallclock deadline")),
+            "deadline warning should be recorded in the trajectory"
         );
     }
 

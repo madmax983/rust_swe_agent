@@ -13,6 +13,7 @@
 pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 
 use crate::tool::{BASH_TOOL_NAME, ToolCall};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -110,6 +111,29 @@ pub fn extract_action(content: &str) -> Action {
     extract_action_for_tools(content, &[BASH_TOOL_NAME.to_owned()])
 }
 
+/// Extracts an action from model text plus the raw provider response.
+///
+/// Some OpenAI-compatible providers return native `tool_calls` even when the
+/// prompt asks for fenced tool blocks. Submit text still wins, but otherwise
+/// structured tool calls are normalized into the same action path as fences.
+pub fn extract_action_from_model_response(
+    content: &str,
+    raw: &Value,
+    tool_names: &[String],
+) -> Action {
+    let text_action = extract_action_for_tools(content, tool_names);
+    if matches!(text_action, Action::Submit(_)) {
+        return text_action;
+    }
+    if let Some(call) = extract_first_registered_raw_tool_call(raw, tool_names) {
+        if call.name == BASH_TOOL_NAME {
+            return Action::Bash(call.input);
+        }
+        return Action::Tool(call);
+    }
+    text_action
+}
+
 /// Extracts the intended action using the supplied runtime tool names.
 pub fn extract_action_for_tools(content: &str, tool_names: &[String]) -> Action {
     // 1) Submit wins if the sentinel appears on its own line.
@@ -141,6 +165,82 @@ pub fn extract_action_for_tools(content: &str, tool_names: &[String]) -> Action 
     }
 
     Action::None
+}
+
+fn extract_first_registered_raw_tool_call(raw: &Value, tool_names: &[String]) -> Option<ToolCall> {
+    for calls in raw_tool_call_arrays(raw) {
+        for call in calls {
+            if let Some(tool_call) = raw_tool_call_to_tool_call(call, tool_names) {
+                return Some(tool_call);
+            }
+        }
+    }
+    None
+}
+
+fn raw_tool_call_arrays(raw: &Value) -> Vec<&[Value]> {
+    let mut arrays = Vec::new();
+    if let Some(calls) = raw.get("tool_calls").and_then(Value::as_array) {
+        arrays.push(calls.as_slice());
+    }
+    if let Some(calls) = raw.pointer("/message/tool_calls").and_then(Value::as_array) {
+        arrays.push(calls.as_slice());
+    }
+    if let Some(choices) = raw.get("choices").and_then(Value::as_array) {
+        for choice in choices {
+            if let Some(calls) = choice
+                .pointer("/message/tool_calls")
+                .and_then(Value::as_array)
+            {
+                arrays.push(calls.as_slice());
+            }
+        }
+    }
+    arrays
+}
+
+fn raw_tool_call_to_tool_call(call: &Value, tool_names: &[String]) -> Option<ToolCall> {
+    let name = call
+        .pointer("/function/name")
+        .or_else(|| call.get("name"))
+        .and_then(Value::as_str)?;
+    if !tool_names.iter().any(|tool_name| tool_name == name) {
+        return None;
+    }
+    let arguments = call
+        .pointer("/function/arguments")
+        .or_else(|| call.get("arguments"))?;
+    let input = raw_tool_arguments_to_input(name, arguments)?;
+    if input.trim().is_empty() {
+        return None;
+    }
+    Some(ToolCall {
+        name: name.to_owned(),
+        input,
+    })
+}
+
+fn raw_tool_arguments_to_input(tool_name: &str, arguments: &Value) -> Option<String> {
+    match arguments {
+        Value::String(s) => {
+            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                raw_tool_arguments_to_input(tool_name, &parsed)
+            } else {
+                Some(s.clone())
+            }
+        }
+        Value::Object(map) if tool_name == BASH_TOOL_NAME => map
+            .get("command")
+            .or_else(|| map.get("cmd"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        Value::Object(map) => map
+            .get("input")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| serde_json::to_string(arguments).ok()),
+        _ => serde_json::to_string(arguments).ok(),
+    }
 }
 
 #[cfg(test)]
@@ -215,5 +315,55 @@ mod tests {
     fn ignores_unregistered_tool_fence() {
         let s = "```diagnose\ncheck flaky test\n```";
         assert_eq!(extract_action_for_tools(s, &["bash".into()]), Action::None);
+    }
+
+    #[test]
+    fn extracts_openai_style_bash_tool_call_from_raw_response() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "Let me inspect the repository.",
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"pwd && ls -la\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_action_from_model_response(
+                "Let me inspect the repository.",
+                &raw,
+                &["bash".into()]
+            ),
+            Action::Bash("pwd && ls -la".into())
+        );
+    }
+
+    #[test]
+    fn submit_text_wins_over_raw_tool_call() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"echo should-not-run\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let content = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```";
+
+        assert_eq!(
+            extract_action_from_model_response(content, &raw, &["bash".into()]),
+            Action::Submit("final".into())
+        );
     }
 }
