@@ -716,6 +716,31 @@ fn collect_env_assignment_matches(
 }
 
 #[cfg(test)]
+mod redaction_unsafe_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn should_return_true_when_unsafe_allow_secret_leaks_is_true() {
+        let cfg = RedactionCfg {
+            unsafe_allow_secret_leaks: true,
+            ..RedactionCfg::default()
+        };
+        let redactor = Redactor::from_config(&cfg).unwrap();
+        assert!(redactor.unsafe_allow_secret_leaks());
+    }
+
+    #[test]
+    fn should_return_false_when_unsafe_allow_secret_leaks_is_false() {
+        let cfg = RedactionCfg {
+            unsafe_allow_secret_leaks: false,
+            ..RedactionCfg::default()
+        };
+        let redactor = Redactor::from_config(&cfg).unwrap();
+        assert!(!redactor.unsafe_allow_secret_leaks());
+    }
+}
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
