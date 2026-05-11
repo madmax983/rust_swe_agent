@@ -13,6 +13,62 @@ use sha2::{Digest, Sha256};
 
 use crate::model::Message;
 
+/// Normalize per-run salted redaction markers so fingerprints are stable
+/// across recording and replay sessions.
+///
+/// The `Redactor` embeds a run-specific salt in every marker:
+/// `[REDACTED:{kind}:{size_class}:{salt_hash}]`
+///
+/// Stripping the `:{salt_hash}` suffix produces a canonical form that is
+/// identical for any run redacting the same secret, preventing false
+/// prompt-drift reports when tool observations contain secrets.
+pub fn normalize_redaction_markers(s: &str) -> String {
+    const PREFIX: &str = "[REDACTED:";
+    if !s.contains(PREFIX) {
+        return s.to_owned();
+    }
+    let mut result = String::with_capacity(s.len());
+    let mut remaining = s;
+    while let Some(offset) = remaining.find(PREFIX) {
+        result.push_str(&remaining[..offset]);
+        let after_prefix = &remaining[offset + PREFIX.len()..];
+        if let Some(close) = after_prefix.find(']') {
+            let inner = &after_prefix[..close];
+            // Format: kind:size_class:hash — build normalized form if all
+            // three colon-separated segments are present; keep as-is otherwise.
+            let mut parts = inner.splitn(3, ':');
+            let kind = parts.next().unwrap_or(inner);
+            let normalized = parts.next().and_then(|sz| {
+                // Third segment present → strip it (the salt-bearing hash).
+                parts.next().map(|_| {
+                    let mut s = String::with_capacity(PREFIX.len() + kind.len() + 1 + sz.len() + 1);
+                    s.push_str(PREFIX);
+                    s.push_str(kind);
+                    s.push(':');
+                    s.push_str(sz);
+                    s.push(']');
+                    s
+                })
+            });
+            if let Some(norm) = normalized {
+                result.push_str(&norm);
+            } else {
+                result.push_str(PREFIX);
+                result.push_str(inner);
+                result.push(']');
+            }
+            remaining = &after_prefix[close + 1..];
+        } else {
+            // No closing ']' — keep the rest verbatim.
+            result.push_str(PREFIX);
+            result.push_str(after_prefix);
+            remaining = "";
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Fingerprint of a model-query input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputFingerprint {
@@ -164,5 +220,29 @@ mod tests {
             let json = canonical_json(&[m]);
             assert!(json.contains("\"role\""), "role field missing for {role:?}");
         }
+    }
+
+    #[test]
+    fn normalize_redaction_markers_strips_hash_segment() {
+        let s = "token=[REDACTED:api_key:medium:a1b2c3d4e5f6] ok";
+        let normalized = normalize_redaction_markers(s);
+        assert_eq!(normalized, "token=[REDACTED:api_key:medium] ok");
+    }
+
+    #[test]
+    fn normalize_redaction_markers_different_salts_produce_same_result() {
+        let s1 = "x=[REDACTED:token:small:aabbccddee11] y";
+        let s2 = "x=[REDACTED:token:small:ffeeddccbb00] y";
+        assert_eq!(
+            normalize_redaction_markers(s1),
+            normalize_redaction_markers(s2),
+            "different salts must normalize to same form"
+        );
+    }
+
+    #[test]
+    fn normalize_redaction_markers_leaves_non_redacted_text_unchanged() {
+        let s = "no secrets here";
+        assert_eq!(normalize_redaction_markers(s), s);
     }
 }

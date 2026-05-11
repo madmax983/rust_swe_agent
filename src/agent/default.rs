@@ -471,22 +471,23 @@ impl Agent for DefaultAgent {
         asst.extra.timestamp = Some(asst_ts.clone());
 
         // Store input fingerprint + canonical for replay drift detection (issue #155).
-        // Fingerprint the TRAJECTORY-redacted view of history so that replay — which
-        // reconstructs the initial prompt from the redacted cassette — computes the
-        // same hash even when the original task or extra context contained secrets.
-        // Subsequent messages in self.history are already redacted (observations and
-        // assistant responses go through surface::MODEL_OBSERVATION before being
-        // pushed), so redacting again is a no-op for those; only the initial system
-        // and user messages (built before the Redactor was constructed) are affected.
+        // Fingerprint the TRAJECTORY-redacted, marker-normalized view of history so
+        // that replay computes the same hash even when:
+        //   (a) the initial task/context contained secrets (redacted before hashing), or
+        //   (b) tool observations contained secrets that were redacted with a per-run
+        //       salt; normalize_redaction_markers strips the salt-bearing hash segment
+        //       from [REDACTED:kind:size:hash] → [REDACTED:kind:size] so recording and
+        //       replay produce identical canonical JSON for the same logical content.
         let redacted_history: Vec<crate::model::Message> = self
             .history
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                m2.content = self
+                let redacted = self
                     .redactor
                     .redact_text(&m.content, surface::TRAJECTORY)
                     .text;
+                m2.content = crate::fingerprint::normalize_redaction_markers(&redacted);
                 m2
             })
             .collect();
