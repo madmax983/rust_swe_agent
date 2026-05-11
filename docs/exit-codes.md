@@ -16,7 +16,9 @@ parsing human-oriented output.
 | 5    | `budget_halt`            | Cost ceiling triggered: `bench forecast --fail-over-cap` projected an over-cap run, or the sweep stopped because `--sweep-cost-limit-usd` was reached and no new tasks were dispatched. |
 | 6    | `regression_gate_failure`| `bench compare --max-regressions` or `--max-patch-size-regression` threshold was exceeded. |
 | 7    | `verification_failure`   | One or more `--verify NAME:COMMAND` checks did not pass after a `mini` run, or `bench bundle` detected a redaction retrigger / archive verification mismatch. |
-| 8    | `calibration_optimistic` | `bench calibrate --fail-on-optimistic` found actual sweep metrics above the forecast interval. |
+| 8    | `calibration_optimistic`     | `bench calibrate --fail-on-optimistic` found actual sweep metrics above the forecast interval. |
+| 9    | `replay_prompt_drift`        | `bench replay` detected that at least one input fingerprint does not match the cassette. |
+| 10   | `replay_response_exhausted`  | `bench replay` ran out of scripted responses before the agent finished (structural drift). |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -52,6 +54,7 @@ coarse sweep-level result.
 | Command                         | Possible outcome classes |
 |---------------------------------|--------------------------|
 | `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `internal_error` |
+| `replay`                        | `success`, `usage_error`, `replay_prompt_drift`, `replay_response_exhausted`, `task_unsuccessful`, `internal_error` |
 | `bench swebench`                | `success`, `usage_error`, `preflight_failure`, `budget_halt`, `internal_error`, `interrupted`, `killed` |
 | `bench forecast`                | `success`, `usage_error`, `budget_halt`, `internal_error`, `interrupted` |
 | `bench calibrate`               | `success`, `usage_error`, `calibration_optimistic`, `internal_error` |
@@ -64,9 +67,8 @@ coarse sweep-level result.
 | `bench frontier`                | `success`, `usage_error`, `internal_error` |
 | `bench bundle`                  | `success`, `usage_error`, `verification_failure`, `internal_error` |
 
-> **Legacy note:** `hello-world` and `replay` do not yet produce distinct
-> outcome classes beyond `success` / `internal_error`; they are interactive or
-> debugging surfaces not intended for CI automation.
+> **Note:** `hello-world` does not produce distinct outcome classes beyond
+> `success` / `internal_error`; it is an interactive debugging surface.
 >
 > **Future surfaces:** `doctor` (standalone) and verification surfaces must
 > extend this table before merging.

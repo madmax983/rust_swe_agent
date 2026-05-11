@@ -88,6 +88,15 @@ impl Model for ErrModel {
             ModelError::AllCandidatesFailed(s, _) => {
                 Err(ModelError::AllCandidatesFailed(s.clone(), Vec::new()))
             }
+            // Scripted/replay errors never appear in a fallback-model test harness.
+            ModelError::ResponsesExhausted(n) => Err(ModelError::ResponsesExhausted(*n)),
+            ModelError::ReplayDrift(n) => Err(ModelError::ReplayDrift(*n)),
+            ModelError::ScriptedResponsesExhausted(n) => {
+                Err(ModelError::ScriptedResponsesExhausted(*n))
+            }
+            ModelError::ReplayUnfingerprintedLegacy(n) => {
+                Err(ModelError::ReplayUnfingerprintedLegacy(*n))
+            }
         }
     }
 }

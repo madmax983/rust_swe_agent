@@ -47,6 +47,12 @@ pub enum ExitCode {
     /// 8 - calibration gate failure (`bench calibrate --fail-on-optimistic`
     /// found actuals above the forecast interval).
     CalibrationOptimistic = 8,
+    /// 9 — replay prompt-drift detected: the agent's current input messages do
+    /// not match the fingerprint stored in the cassette trajectory.
+    ReplayPromptDrift = 9,
+    /// 10 — replay response exhausted: the scripted-response queue ran out
+    /// before the agent finished (trajectory is structurally incompatible).
+    ReplayResponseExhausted = 10,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -76,6 +82,8 @@ impl ExitCode {
             Self::RegressionGateFailure => "regression_gate_failure",
             Self::VerificationFailure => "verification_failure",
             Self::CalibrationOptimistic => "calibration_optimistic",
+            Self::ReplayPromptDrift => "replay_prompt_drift",
+            Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -92,7 +100,18 @@ impl ExitCode {
             Error::Config(_) => Self::UsageError,
             Error::VerificationFailed(..) => Self::VerificationFailure,
             Error::Env(env_e) => Self::from_env_error(env_e),
-            Error::Model(_) => Self::TaskUnsuccessful,
+            Error::Model(model_e) => match model_e {
+                crate::error::ModelError::ReplayDrift(_) => Self::ReplayPromptDrift,
+                crate::error::ModelError::ScriptedResponsesExhausted(_) => {
+                    Self::ReplayResponseExhausted
+                }
+                crate::error::ModelError::ReplayUnfingerprintedLegacy(_) => Self::UsageError,
+                // ResponsesExhausted (generic DeterministicModel exhaustion used in
+                // non-replay contexts) and all other model errors → task unsuccessful.
+                // Replay translates ResponsesExhausted → ScriptedResponsesExhausted
+                // before this function is called, so exit-10 is replay-only.
+                _ => Self::TaskUnsuccessful,
+            },
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)
@@ -164,6 +183,31 @@ mod tests {
         assert_eq!(
             ExitCode::from_error(&Error::Io(std::io::Error::other("disk full"))),
             ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_replay_response_exhausted() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ScriptedResponsesExhausted(3))),
+            ExitCode::ReplayResponseExhausted
+        );
+    }
+
+    #[test]
+    fn from_error_replay_unfingerprinted_legacy_is_usage_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ReplayUnfingerprintedLegacy(0))),
+            ExitCode::UsageError
+        );
+    }
+
+    #[test]
+    fn from_error_responses_exhausted_is_task_unsuccessful() {
+        // Generic DeterministicModel exhaustion (non-replay) must not exit 10.
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ResponsesExhausted(0))),
+            ExitCode::TaskUnsuccessful
         );
     }
 }

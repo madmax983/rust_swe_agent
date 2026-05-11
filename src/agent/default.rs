@@ -533,6 +533,58 @@ impl Agent for DefaultAgent {
         asst.extra.response = Some(resp.raw.clone());
         asst.extra.timestamp = Some(asst_ts.clone());
 
+        // Store input fingerprint + canonical for replay drift detection (issue #155).
+        // Fingerprint the TRAJECTORY-redacted, marker-normalized view of history so
+        // that replay computes the same hash even when:
+        //   (a) the initial task/context contained secrets (redacted before hashing), or
+        //   (b) tool observations contained secrets that were redacted with a per-run
+        //       salt; normalize_redaction_markers strips the salt-bearing hash segment
+        //       from [REDACTED:kind:size:hash] → [REDACTED:kind:size] so recording and
+        //       replay produce identical canonical JSON for the same logical content.
+        //
+        // Two passes over history:
+        //   1. Redact (TRAJECTORY surface) — produces hashed markers like
+        //      [REDACTED:kind:size:HASH].  This form is stored in the trajectory so
+        //      the canonical doesn't introduce a second, hash-free marker variant
+        //      that would break the "one stable marker per run" invariant.
+        //   2. Normalize (strip the per-run salt hash) — produces stable markers
+        //      like [REDACTED:kind:size].  Used only to compute a run-independent
+        //      fingerprint hash; NOT stored in the trajectory.
+        let redacted_history: Vec<crate::model::Message> = self
+            .history
+            .iter()
+            .map(|m| {
+                let mut m2 = m.clone();
+                m2.content = self.redactor.redact_text_scratch(&m.content);
+                m2
+            })
+            .collect();
+        let normalized_history: Vec<crate::model::Message> = redacted_history
+            .iter()
+            .map(|m| {
+                let mut m2 = m.clone();
+                m2.content = crate::fingerprint::normalize_redaction_markers(&m.content);
+                m2
+            })
+            .collect();
+        let fp = crate::fingerprint::compute_input_fingerprint(&normalized_history);
+        // Store the redacted (hashed-marker) canonical — replay normalizes it
+        // before diffing so per-run salts don't pollute the drift report.
+        let raw_canonical = crate::fingerprint::canonical_json(&redacted_history);
+        let (canonical_stored, canonical_truncated) = crate::fingerprint::cap_canonical(
+            &raw_canonical,
+            crate::run::replay::CANONICAL_CAP_BYTES,
+        );
+        asst.extra.other.insert(
+            "model_call".to_owned(),
+            serde_json::json!({
+                "input_fingerprint": fp.hex,
+                "input_canonical_size": fp.canonical_size,
+                "input_canonical": canonical_stored,
+                "input_canonical_truncated": canonical_truncated
+            }),
+        );
+
         self.stream.emit(StreamEvent::AssistantMessage {
             step: self.steps,
             content: resp.content.clone(),

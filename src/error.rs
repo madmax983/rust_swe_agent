@@ -57,6 +57,33 @@ pub enum ModelError {
     /// The structured attempt records are preserved for trajectory telemetry.
     #[error("all fallback candidates failed: {0}")]
     AllCandidatesFailed(String, Vec<FailedAttempt>),
+
+    /// Replay only: prompt fingerprint drift detected at step {0}.
+    /// Recorded fingerprint and actual fingerprint differ.
+    #[error("replay prompt drift at step {0}: fingerprints do not match")]
+    ReplayDrift(usize),
+
+    /// Generic scripted model exhaustion: the response queue ran out at step {0}.
+    /// Used by `DeterministicModel` in any context (tests, sweeps, replay).
+    /// Replay code translates this into `ScriptedResponsesExhausted` so that
+    /// exit-code routing can distinguish replay-structural failures from ordinary
+    /// test/sweep failures.
+    #[error("scripted responses exhausted at step {0}")]
+    ResponsesExhausted(u32),
+
+    /// Replay only: the scripted-response queue is exhausted at step {0},
+    /// meaning the cassette trajectory is structurally incompatible with the
+    /// current agent (e.g. the agent issued more model calls than were recorded).
+    #[error("replay response exhausted: no scripted response for step {0}")]
+    ScriptedResponsesExhausted(u32),
+
+    /// Replay only: the trajectory has no fingerprint at step {0} and
+    /// `--allow-unfingerprinted` was not passed.
+    #[error(
+        "trajectory has no fingerprint at step {0}; \
+         use --allow-unfingerprinted to permit replaying legacy trajectories"
+    )]
+    ReplayUnfingerprintedLegacy(usize),
 }
 
 /// A single failed attempt record carried inside `AllCandidatesFailed`.

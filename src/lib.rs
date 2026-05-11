@@ -10,6 +10,7 @@ pub mod cost;
 pub mod env;
 pub mod error;
 pub mod exit_code;
+pub mod fingerprint;
 pub mod ids;
 pub mod model;
 pub mod policy;

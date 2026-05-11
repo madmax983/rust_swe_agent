@@ -179,19 +179,26 @@ impl Redactor {
 
     #[must_use]
     pub fn redact_text(&self, input: &str, surface: &str) -> RedactionOutcome {
+        let (text, redacted) = self.apply_redaction(input, Some(surface));
+        RedactionOutcome { text, redacted }
+    }
+
+    /// Redact `input` without updating redaction-count telemetry.
+    ///
+    /// Use only for internal computations (e.g. fingerprinting) where the
+    /// redaction must not be counted as an actual surface write.
+    pub(crate) fn redact_text_scratch(&self, input: &str) -> String {
+        self.apply_redaction(input, None).0
+    }
+
+    fn apply_redaction(&self, input: &str, surface: Option<&str>) -> (String, bool) {
         if !self.inner.enabled || input.is_empty() {
-            return RedactionOutcome {
-                text: input.to_owned(),
-                redacted: false,
-            };
+            return (input.to_owned(), false);
         }
 
         let mut matches = self.collect_matches(input);
         if matches.is_empty() {
-            return RedactionOutcome {
-                text: input.to_owned(),
-                redacted: false,
-            };
+            return (input.to_owned(), false);
         }
 
         matches.sort_by(|a, b| {
@@ -209,14 +216,13 @@ impl Redactor {
             out.push_str(&input[last..matched.start]);
             let marker = self.marker_for(&matched.raw, &matched.kind);
             out.push_str(&marker);
-            self.increment(surface, &matched.kind);
+            if let Some(srf) = surface {
+                self.increment(srf, &matched.kind);
+            }
             last = matched.end;
         }
         out.push_str(&input[last..]);
-        RedactionOutcome {
-            text: out,
-            redacted: true,
-        }
+        (out, true)
     }
 
     fn filter_overlapping_matches(matches: Vec<RedactionMatch>) -> Vec<RedactionMatch> {
