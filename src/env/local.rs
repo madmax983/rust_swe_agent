@@ -236,9 +236,9 @@ async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Res
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    const MAX_OUTPUT: usize = 10 * 1024 * 1024;
     let mut chunk = [0u8; 8192];
     let mut total_read = 0;
-    const MAX_OUTPUT: usize = 10 * 1024 * 1024;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
