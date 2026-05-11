@@ -253,6 +253,19 @@ fn circuit_breaker_trips_when_failures_dominate_mixed_completions() {
 }
 
 #[test]
+fn circuit_breaker_does_not_trip_when_prior_successes_dilute_share_on_resume() {
+    // Simulates a resumed sweep: 100 prior successful completions (None) +
+    // 5 new ModelApi failures.  5/105 ≈ 4.8% << 80% — must not trip.
+    let cb = CircuitBreaker::new(true, 5, 80);
+    let mut completions: Vec<_> = vec![(None, true); 100];
+    completions.extend(vec![(Some(FailureCategory::ModelApi), true); 5]);
+    assert!(
+        cb.check(&completions).is_none(),
+        "5/105 ≈ 4.8% should not trip the 80% threshold on resume"
+    );
+}
+
+#[test]
 fn circuit_breaker_is_deterministic() {
     let cb = CircuitBreaker::new(true, 5, 80);
     let completions = vec![

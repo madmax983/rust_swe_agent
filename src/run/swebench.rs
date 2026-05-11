@@ -1857,12 +1857,14 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         // whether a dominant actionable failure pattern has
                         // emerged. Skip if already halted (cost or systemic).
                         if !systemic_halt_triggered && !halted && cancellation.is_none() {
+                            // Include skipped_resume instances in the denominator so
+                            // previously successful completions dilute the actionable-
+                            // failure share on resumed sweeps.  Exclude only
+                            // EXIT_REASON_BUDGET_HALT because those instances never
+                            // ran and carry no completion evidence.
                             let completed_live: Vec<_> = results
                                 .iter()
-                                .filter(|rr| {
-                                    rr.result.exit_reason != "skipped_resume"
-                                        && rr.result.exit_reason != EXIT_REASON_BUDGET_HALT
-                                })
+                                .filter(|rr| rr.result.exit_reason != EXIT_REASON_BUDGET_HALT)
                                 .map(|rr| (rr.result.failure_category, true))
                                 .collect();
                             if let Some(cat) = breaker.check(&completed_live) {
