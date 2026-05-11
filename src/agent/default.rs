@@ -492,10 +492,7 @@ impl Agent for DefaultAgent {
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                m2.content = self
-                    .redactor
-                    .redact_text(&m.content, surface::TRAJECTORY)
-                    .text;
+                m2.content = self.redactor.redact_text_scratch(&m.content);
                 m2
             })
             .collect();

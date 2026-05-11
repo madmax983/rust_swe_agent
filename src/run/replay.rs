@@ -29,7 +29,7 @@ use crate::env::{Environment, LocalEnvironment};
 use crate::error::{Error, ModelError};
 use crate::fingerprint::{canonical_json, cap_canonical, compute_input_fingerprint};
 use crate::model::{DeterministicModel, Message, Model, ModelResponse, QueryOpts};
-use crate::redaction::{Redactor, surface};
+use crate::redaction::Redactor;
 use crate::trajectory::Trajectory;
 
 /// Filename written to `output_dir` when drift is detected.
@@ -402,14 +402,13 @@ impl Model for FingerprintCheckingModel {
         // redaction first (so raw secrets in extra_context/skills hash the same
         // as the recorded [REDACTED:...] markers), then normalize the per-run
         // salt from every marker so hashes are stable across runs.
+        // Use redact_text_scratch so this pass does not inflate the run's
+        // redaction-count telemetry.
         let normalized: Vec<Message> = messages
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                let redacted = self
-                    .redactor
-                    .redact_text(&m.content, surface::TRAJECTORY)
-                    .text;
+                let redacted = self.redactor.redact_text_scratch(&m.content);
                 m2.content = crate::fingerprint::normalize_redaction_markers(&redacted);
                 m2
             })
