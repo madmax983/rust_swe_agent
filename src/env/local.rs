@@ -237,15 +237,26 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut total_read = 0;
+    const MAX_OUTPUT: usize = 10 * 1024 * 1024;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
+        let space_left = MAX_OUTPUT.saturating_sub(total_read);
+        if space_left == 0 {
+            return Ok(());
+        }
+        let take = std::cmp::min(n, space_left);
         buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+            .extend_from_slice(&chunk[..take]);
+        total_read += take;
+        if take < n {
+            return Ok(());
+        }
     }
 }
 
