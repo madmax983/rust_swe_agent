@@ -516,7 +516,7 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         RedactionRule {
             kind: KIND_BEARER_TOKEN.to_owned(),
             matcher: RuleMatcher::Regex {
-                regex: Regex::new(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{16,})")?,
+                regex: Regex::new(r"(?i)(?-u:\b)Bearer\s+([A-Za-z0-9._~+/=-]{16,})")?,
                 capture_group: Some(1),
             },
         },
@@ -524,7 +524,7 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
             kind: KIND_GITHUB_TOKEN.to_owned(),
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(
-                    r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+                    r"(?-u:\b)(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})(?-u:\b)",
                 )?,
                 capture_group: None,
             },
@@ -533,7 +533,7 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
             kind: KIND_API_KEY.to_owned(),
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(
-                    r"\b(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})\b",
+                    r"(?-u:\b)(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})(?-u:\b)",
                 )?,
                 capture_group: None,
             },
@@ -939,5 +939,13 @@ mod tests {
                 "Failed for input: {input}",
             );
         }
+    }
+
+    #[test]
+    fn test_unicode_boundary_leak() {
+        let redactor = Redactor::default_enabled();
+        let text = "sk-0123456789ABCDEF01234\u{00B5}";
+        let outcome = redactor.redact_text(text, surface::TRAJECTORY);
+        assert!(!outcome.text.contains("sk-0123456789ABCDEF01234"));
     }
 }
