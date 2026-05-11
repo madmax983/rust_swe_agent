@@ -406,7 +406,10 @@ impl Model for FingerprintCheckingModel {
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                let redacted = self.redactor.redact_text(&m.content, surface::TRAJECTORY).text;
+                let redacted = self
+                    .redactor
+                    .redact_text(&m.content, surface::TRAJECTORY)
+                    .text;
                 m2.content = crate::fingerprint::normalize_redaction_markers(&redacted);
                 m2
             })
