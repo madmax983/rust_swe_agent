@@ -166,6 +166,15 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
 
     let (responses, expected_fps, expected_canonicals) = unzip_cassette(cassette);
 
+    // Validate fingerprint coverage before any environment setup so that legacy
+    // cassettes are rejected immediately, without starting Docker containers or
+    // connecting to MCP servers.
+    if !args.allow_unfingerprinted {
+        if let Some(pos) = expected_fps.iter().position(Option::is_none) {
+            return Err(Error::Model(ModelError::ReplayUnfingerprintedLegacy(pos)));
+        }
+    }
+
     let task = orig_trajectory
         .info
         .task
