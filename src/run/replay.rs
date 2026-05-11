@@ -382,7 +382,19 @@ impl Model for FingerprintCheckingModel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let actual_fp = compute_input_fingerprint(messages);
+        // Normalize redaction markers before fingerprinting so the actual hash
+        // matches the stored hash regardless of which per-run Redactor salt was
+        // used (recording and replay produce different [REDACTED:k:s:HASH] forms
+        // for the same underlying secret; strip the hash segment for both sides).
+        let normalized: Vec<Message> = messages
+            .iter()
+            .map(|m| {
+                let mut m2 = m.clone();
+                m2.content = crate::fingerprint::normalize_redaction_markers(&m.content);
+                m2
+            })
+            .collect();
+        let actual_fp = compute_input_fingerprint(&normalized);
 
         match self.expected_fps.get(step) {
             Some(None) => {
@@ -397,7 +409,7 @@ impl Model for FingerprintCheckingModel {
             }
             Some(Some(expected)) if actual_fp.hex != *expected => {
                 // Fingerprint mismatch — prompt drift.
-                let actual_canonical = canonical_json(messages);
+                let actual_canonical = canonical_json(&normalized);
                 let (recorded_canonical, recorded_was_truncated) = self
                     .expected_canonicals
                     .get(step)
