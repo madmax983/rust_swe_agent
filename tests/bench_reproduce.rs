@@ -70,6 +70,7 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
         cli: rust_swe_agent::run::swebench::CliManifest {
             argv: vec!["rust-swe-agent".into(), "bench".into(), "swebench".into()],
         },
+        circuit_breaker: None,
         reproduced_from: None,
     }
 }

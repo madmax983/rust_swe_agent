@@ -3245,6 +3245,7 @@ mod tests {
                 rust_version: None,
             },
             cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            circuit_breaker: None,
             reproduced_from: None,
         };
         let mut candidate = baseline.clone();
@@ -3704,6 +3705,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+            circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -3887,6 +3889,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+            circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -4001,6 +4004,7 @@ mod tests {
                     argv: vec!["rust-swe-agent".into()],
                 },
                 reproduced_from: None,
+            circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),

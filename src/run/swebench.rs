@@ -503,10 +503,20 @@ pub struct ProvenanceManifest {
     pub model: ModelManifest,
     pub runtime: RuntimeManifest,
     pub cli: CliManifest,
+    /// Systemic-failure circuit-breaker configuration used for this sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker: Option<CircuitBreakerManifest>,
     /// Present only when this sweep was produced by `bench reproduce`.
     /// Points back at the source sweep's manifest for full provenance chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reproduced_from: Option<ManifestReproducedFrom>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerManifest {
+    pub enabled: bool,
+    pub min_samples: usize,
+    pub share_pct: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2688,6 +2698,11 @@ fn build_manifest(
         cli: CliManifest {
             argv: redact_argv(std::env::args().collect(), &args.config.root.redaction),
         },
+        circuit_breaker: Some(CircuitBreakerManifest {
+            enabled: args.abort_on_systemic_failure,
+            min_samples: args.systemic_failure_min_samples,
+            share_pct: args.systemic_failure_share_pct,
+        }),
         reproduced_from: args
             .reproduced_from
             .as_ref()

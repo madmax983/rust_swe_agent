@@ -1294,11 +1294,20 @@ fn reproduce_swebench_args(
             source_manifest_hash.to_owned(),
             r.from.display().to_string(),
         )),
-        // Replay sweeps apply the same breaker thresholds as the source sweep.
-        // Per the spec, drift handling is consistent with bench reproduce.
-        abort_on_systemic_failure: true,
-        systemic_failure_min_samples: 5,
-        systemic_failure_share_pct: 80,
+        // Re-apply the source sweep's circuit-breaker config for apples-to-apples
+        // reproducibility; fall back to defaults when the source predates this feature.
+        abort_on_systemic_failure: manifest
+            .circuit_breaker
+            .as_ref()
+            .map_or(true, |cb| cb.enabled),
+        systemic_failure_min_samples: manifest
+            .circuit_breaker
+            .as_ref()
+            .map_or(5, |cb| cb.min_samples),
+        systemic_failure_share_pct: manifest
+            .circuit_breaker
+            .as_ref()
+            .map_or(80, |cb| cb.share_pct),
     })
 }
 

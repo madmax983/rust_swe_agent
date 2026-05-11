@@ -222,6 +222,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
                 rust_version: None,
             },
             cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+            circuit_breaker: None,
             reproduced_from: None,
         }),
         cost_limit_usd: None,
