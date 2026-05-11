@@ -519,12 +519,14 @@ async fn systemic_halt_is_deterministic_across_runs() {
 /// sweep status is systemic_halt.
 #[test]
 fn sweep_results_summary_table_shows_circuit_breaker_status() {
-    let mut results = SweepResults::default();
-    results.total = 10;
-    results.sweep_status = SWEEP_STATUS_SYSTEMIC_HALT.into();
-    results.errored = 5;
-    results.not_started = 5;
-    results.systemic_halt_category = Some(FailureCategory::ModelApi);
+    let results = SweepResults {
+        total: 10,
+        sweep_status: SWEEP_STATUS_SYSTEMIC_HALT.into(),
+        errored: 5,
+        not_started: 5,
+        systemic_halt_category: Some(FailureCategory::ModelApi),
+        ..SweepResults::default()
+    };
 
     let table = results.summary_table();
     assert!(
