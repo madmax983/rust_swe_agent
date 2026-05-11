@@ -162,6 +162,9 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -337,6 +340,9 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -420,6 +426,9 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -506,6 +515,9 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -582,6 +594,9 @@ async fn sweep_without_limit_runs_all_tasks() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -653,6 +668,9 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -786,6 +804,9 @@ async fn resume_skipped_costs_count_against_budget() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -905,6 +926,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         total_fallbacks: 0,
 
         model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -960,6 +982,9 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -1075,6 +1100,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         total_fallbacks: 0,
 
         model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1122,6 +1148,9 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -1216,6 +1245,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         total_fallbacks: 0,
 
         model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1289,6 +1319,9 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -1382,6 +1415,9 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -1482,6 +1518,9 @@ async fn per_task_budget_absent_means_no_enforcement() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();

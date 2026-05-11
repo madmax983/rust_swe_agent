@@ -132,6 +132,23 @@ pub enum FailureCategory {
     Unknown,
 }
 
+impl FailureCategory {
+    /// Returns `true` for operator-actionable failure classes that indicate a
+    /// systemic misconfiguration rather than an expected per-task outcome.
+    ///
+    /// The circuit breaker only trips on actionable categories: a sweep where
+    /// every task hits the step limit is working as designed, but one where
+    /// every task gets a 401 from the API means the key is invalid.
+    ///
+    /// Actionable: `EnvSetup`, `ModelApi`.
+    /// Non-actionable: everything else (expected per-task outcomes, internal
+    /// errors, or conditions already governed by other budget controls).
+    #[must_use]
+    pub fn is_actionable(self) -> bool {
+        matches!(self, Self::EnvSetup | Self::ModelApi)
+    }
+}
+
 pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "pytest",
     "python -m pytest",

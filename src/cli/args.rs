@@ -662,6 +662,21 @@ pub struct SwebenchCmd {
     #[arg(long, default_value_t = 30)]
     pub cancel_deadline: u64,
 
+    /// Enable the systemic-failure circuit breaker (default: true).
+    /// When false, the sweep always runs to completion regardless of failure
+    /// pattern. Pass `--abort-on-systemic-failure=false` to opt out.
+    #[arg(long, default_value_t = true)]
+    pub abort_on_systemic_failure: bool,
+
+    /// Minimum completed instances before the circuit breaker can trip.
+    #[arg(long, default_value_t = 5)]
+    pub systemic_failure_min_samples: usize,
+
+    /// Percentage share (0–100) of completed instances with the dominant
+    /// actionable failure category required to trip the circuit breaker.
+    #[arg(long, default_value_t = 80)]
+    pub systemic_failure_share_pct: u8,
+
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
 }

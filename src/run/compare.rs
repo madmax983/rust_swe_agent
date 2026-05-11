@@ -2912,6 +2912,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -3057,6 +3058,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -3422,6 +3424,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -3709,6 +3712,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3777,6 +3781,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -3890,6 +3895,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4003,6 +4009,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4139,6 +4146,7 @@ mod tests {
             rate_limit_events: Some(events),
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),

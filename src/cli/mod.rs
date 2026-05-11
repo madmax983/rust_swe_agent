@@ -295,6 +295,7 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     );
     print!("{}", results.summary_table());
     exit_if_cancelled_sweep(&results);
+    exit_if_systemic_halt_sweep(&results);
     if results.budget_halted > 0 && results.cost_limit_usd.is_some() {
         exit_with_outcome(
             ExitCode::BudgetHalt,
@@ -374,6 +375,19 @@ fn exit_if_cancelled_sweep(results: &crate::run::swebench::SweepResults) {
             ExitCode::Killed
         };
         exit_with_outcome(outcome, "sweep was cancelled");
+    }
+}
+
+fn exit_if_systemic_halt_sweep(results: &crate::run::swebench::SweepResults) {
+    if results.sweep_status == crate::run::swebench::SWEEP_STATUS_SYSTEMIC_HALT {
+        let category = results
+            .systemic_halt_category
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_else(|| "unknown".to_owned());
+        exit_with_outcome(
+            ExitCode::SystemicHalt,
+            &format!("sweep halted: systemic failure detected (dominant category: {category})"),
+        );
     }
 }
 
@@ -743,6 +757,9 @@ fn swebench_args_from_cmd(
         cancellation_signals: None,
         github_pr,
         reproduced_from: None,
+        abort_on_systemic_failure: s.abort_on_systemic_failure,
+        systemic_failure_min_samples: s.systemic_failure_min_samples,
+        systemic_failure_share_pct: s.systemic_failure_share_pct,
     })
 }
 
@@ -1277,6 +1294,11 @@ fn reproduce_swebench_args(
             source_manifest_hash.to_owned(),
             r.from.display().to_string(),
         )),
+        // Replay sweeps apply the same breaker thresholds as the source sweep.
+        // Per the spec, drift handling is consistent with bench reproduce.
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
 }
 
@@ -1835,6 +1857,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: std::collections::BTreeMap::new(),
+            systemic_halt_category: None,
         }
     }
 

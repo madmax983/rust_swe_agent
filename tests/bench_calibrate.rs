@@ -888,6 +888,7 @@ fn sweep_results(
         rate_limit_events: None,
         total_fallbacks: 0,
         model_mix: BTreeMap::new(),
+        systemic_halt_category: None,
     }
 }
 

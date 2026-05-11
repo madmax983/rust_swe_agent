@@ -78,6 +78,9 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();

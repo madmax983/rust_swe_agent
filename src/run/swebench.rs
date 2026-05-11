@@ -41,9 +41,148 @@ pub const SWEEP_STATUS_RUNNING: &str = "running";
 pub const SWEEP_STATUS_COMPLETED: &str = "completed";
 pub const SWEEP_STATUS_CANCELLING: &str = "cancelling";
 pub const SWEEP_STATUS_CANCELLED: &str = "cancelled";
+pub const SWEEP_STATUS_SYSTEMIC_HALT: &str = "systemic_halt";
 pub const CANCEL_EXIT_CODE_GRACEFUL: i32 = 130;
 pub const CANCEL_EXIT_CODE_ESCALATED: i32 = 137;
+pub const SYSTEMIC_HALT_EXIT_CODE: i32 = 11;
 pub const DEFAULT_PARALLEL: usize = 4;
+
+/// Circuit-breaker logic for detecting systemic sweep failures.
+///
+/// After each instance completes, the sweep runner calls `CircuitBreaker::check`
+/// with the accumulated completion records. If an operator-actionable failure
+/// category dominates at or above the configured share threshold and the minimum
+/// sample count has been reached, the check returns `Some(category)` and the
+/// sweep halts gracefully.
+pub mod circuit_breaker {
+    use crate::trajectory::FailureCategory;
+
+    /// An entry in the completion log fed to the circuit breaker.
+    ///
+    /// The `bool` field is `true` when the category is present (i.e., the
+    /// instance actually failed with this category), `false` is reserved for
+    /// future use but currently unused. The tuple form keeps the API minimal.
+    /// The category field is `Option<FailureCategory>` in the sweep, but the
+    /// circuit breaker only receives completed instances that have a category.
+    pub type CompletionRecord = (FailureCategory, bool);
+
+    /// Stateless circuit-breaker configuration.
+    ///
+    /// Call [`CircuitBreaker::check`] after each instance completes. The check
+    /// is O(n) in the number of completed instances and is called at most once
+    /// per completion, so the total work per sweep is O(n²) worst-case — which
+    /// is fine for the sizes where systemic failures occur (typically n ≤ 10).
+    #[derive(Debug, Clone, Copy)]
+    pub struct CircuitBreaker {
+        enabled: bool,
+        min_samples: usize,
+        share_pct: u8,
+    }
+
+    impl CircuitBreaker {
+        #[must_use]
+        pub fn new(enabled: bool, min_samples: usize, share_pct: u8) -> Self {
+            Self {
+                enabled,
+                min_samples,
+                share_pct,
+            }
+        }
+
+        /// Evaluate the completion record set and return the dominant
+        /// actionable failure category if the breaker should trip, or `None`
+        /// if the sweep should continue.
+        ///
+        /// The denominator is always the total number of completed instances
+        /// (not just the failing ones), so a partial success rate prevents
+        /// false positives.
+        #[must_use]
+        pub fn check(&self, completed: &[CompletionRecord]) -> Option<FailureCategory> {
+            if !self.enabled || completed.len() < self.min_samples {
+                return None;
+            }
+            let total = completed.len();
+            // Count only actionable categories.
+            let mut counts: std::collections::BTreeMap<FailureCategory, usize> =
+                std::collections::BTreeMap::new();
+            for (cat, _) in completed {
+                if cat.is_actionable() {
+                    *counts.entry(*cat).or_insert(0) += 1;
+                }
+            }
+            // Find the dominant actionable category.
+            counts.into_iter().find_map(|(cat, count)| {
+                #[allow(clippy::cast_precision_loss)]
+                let share = count as f64 / total as f64 * 100.0;
+                #[allow(clippy::cast_lossless)]
+                if share >= self.share_pct as f64 {
+                    Some(cat)
+                } else {
+                    None
+                }
+            })
+        }
+    }
+}
+
+/// Artifact written to `halt-report.json` when the systemic-failure circuit
+/// breaker trips. Conforms to the versioned artifact contract
+/// (`artifact_kind: "sweep_halt_report"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SweepHaltReport {
+    /// Human-readable description of why the breaker tripped.
+    pub trip_reason: String,
+    /// The failure category that dominated the completion stream.
+    pub dominant_failure_category: FailureCategory,
+    /// Number of completed instances at the time the breaker tripped.
+    pub sample_size: usize,
+    /// Percentage of completed instances with the dominant category (0–100).
+    pub share_pct: f64,
+    /// Instance IDs of the first (up to 3) failing instances in that category.
+    pub first_failing_instance_ids: Vec<String>,
+    /// Operator-actionable next step to diagnose and fix the root cause.
+    pub next_step: String,
+}
+
+impl SweepHaltReport {
+    fn next_step_for(category: FailureCategory) -> &'static str {
+        match category {
+            FailureCategory::ModelApi => {
+                "Verify ANTHROPIC_API_KEY is set and valid, check model endpoint reachability, \
+                 and confirm the model name is correct."
+            }
+            FailureCategory::EnvSetup => {
+                "Verify Docker daemon is running, the dataset repository path is accessible, \
+                 and the environment image can be pulled."
+            }
+            _ => {
+                "Inspect the first failing trajectories for root cause and check operator \
+                 configuration."
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn new(
+        category: FailureCategory,
+        sample_size: usize,
+        share_pct: f64,
+        first_failing_ids: Vec<String>,
+    ) -> Self {
+        let trip_reason = format!(
+            "{sample_size} completed instances with dominant failure_category \
+             `{category:?}` ({share_pct:.0}% ≥ threshold)"
+        );
+        Self {
+            trip_reason,
+            dominant_failure_category: category,
+            sample_size,
+            share_pct,
+            first_failing_instance_ids: first_failing_ids,
+            next_step: Self::next_step_for(category).to_owned(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenBreakdown {
@@ -302,6 +441,11 @@ pub struct SweepResults {
     /// fallback telemetry was recorded (single-model sweep or legacy artifact).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_mix: BTreeMap<String, usize>,
+    /// Set when the systemic-failure circuit breaker tripped. Records the
+    /// dominant failure category that caused the halt. `None` for normal,
+    /// cancelled, and budget-halted sweeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub systemic_halt_category: Option<FailureCategory>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -599,6 +743,7 @@ impl Default for SweepResults {
             rate_limit_events: None,
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         }
     }
 }
@@ -662,6 +807,16 @@ impl SweepResults {
                     s,
                     "Cancelled:          completed {}, in-flight {}, not-started {}",
                     self.completed, self.in_flight_at_cancel, self.not_started
+                );
+            }
+            if self.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
+                let _ = writeln!(
+                    s,
+                    "Circuit breaker:    tripped — {} not started; dominant category: {}",
+                    self.not_started,
+                    self.systemic_halt_category
+                        .map(|c| format!("{c:?}"))
+                        .unwrap_or_else(|| "unknown".to_owned())
                 );
             }
         }
@@ -1032,6 +1187,17 @@ pub struct SwebenchArgs {
     /// in the new sweep's `ProvenanceManifest`. Tuple of
     /// `(manifest_hash, sweep_dir)` matching the source sweep.
     pub reproduced_from: Option<(String, String)>,
+    /// Enable the systemic-failure circuit breaker (default: `true`).
+    /// When `false`, the sweep always runs to completion regardless of the
+    /// failure pattern. Equivalent to `--abort-on-systemic-failure=false`.
+    pub abort_on_systemic_failure: bool,
+    /// Minimum number of completed instances required before the circuit
+    /// breaker can trip. Default: `5`.
+    pub systemic_failure_min_samples: usize,
+    /// Minimum percentage share (0–100) of completed instances with the
+    /// dominant actionable failure category required to trip the breaker.
+    /// Default: `80`.
+    pub systemic_failure_share_pct: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1294,6 +1460,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1380,6 +1547,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_fallbacks: 0,
 
         model_mix: BTreeMap::new(),
+        systemic_halt_category: None,
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1394,6 +1562,15 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     let mut cumulative_cost = 0.0f64;
     let mut halted = false;
     let limit = args.cost_limit_usd;
+    // Circuit breaker for systemic failure detection.
+    let breaker = circuit_breaker::CircuitBreaker::new(
+        args.abort_on_systemic_failure,
+        args.systemic_failure_min_samples,
+        args.systemic_failure_share_pct,
+    );
+    let mut systemic_halt_triggered = false;
+    let mut systemic_halt_category: Option<FailureCategory> = None;
+    let mut systemic_halt_not_started: usize = 0;
     let model_name = args.config.root.model.name.clone();
     let bump_cost = |cost: f64, cumulative: &mut f64, halted: &mut bool| {
         *cumulative += cost;
@@ -1663,6 +1840,53 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                             }
                         }
                         results.push(r);
+                        // Circuit-breaker check: after each live result, test
+                        // whether a dominant actionable failure pattern has
+                        // emerged. Skip if already halted (cost or systemic).
+                        if !systemic_halt_triggered && !halted && cancellation.is_none() {
+                            let completed_live: Vec<_> = results
+                                .iter()
+                                .filter(|rr| {
+                                    rr.result.exit_reason != "skipped_resume"
+                                        && rr.result.exit_reason != EXIT_REASON_BUDGET_HALT
+                                })
+                                .filter_map(|rr| {
+                                    rr.result.failure_category.map(|cat| (cat, true))
+                                })
+                                .collect();
+                            if let Some(cat) = breaker.check(&completed_live) {
+                                systemic_halt_triggered = true;
+                                systemic_halt_category = Some(cat);
+                                systemic_halt_not_started = pending.len();
+                                #[allow(clippy::cast_precision_loss)]
+                                let share_pct = completed_live
+                                    .iter()
+                                    .filter(|(c, _)| *c == cat)
+                                    .count() as f64
+                                    / completed_live.len() as f64
+                                    * 100.0;
+                                let first_ids: Vec<String> = results
+                                    .iter()
+                                    .filter(|rr| rr.result.failure_category == Some(cat))
+                                    .take(3)
+                                    .map(|rr| rr.result.instance_id.clone())
+                                    .collect();
+                                let report = SweepHaltReport::new(
+                                    cat,
+                                    completed_live.len(),
+                                    share_pct,
+                                    first_ids,
+                                );
+                                tracing::warn!(
+                                    category = ?cat,
+                                    sample_size = completed_live.len(),
+                                    share_pct,
+                                    not_started = systemic_halt_not_started,
+                                    "systemic-failure circuit breaker tripped — halting sweep"
+                                );
+                                write_halt_report_atomic(&args.output_dir, &report)?;
+                            }
+                        }
                     }
                     Err(e) => {
                         errored += 1;
@@ -1733,9 +1957,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             }
         }
 
-        // Decide what to do with the next pending task. Once cancellation
-        // starts, pending work remains unstarted for resume.
-        if cancellation.is_none() {
+        // Decide what to do with the next pending task. Once cancellation or
+        // systemic halt starts, pending work remains unstarted for resume.
+        if cancellation.is_none() && !systemic_halt_triggered {
             if let Some(g) = &governor_arc {
                 if g.tick_aimd().await {
                     tracing::info!(
@@ -1774,7 +1998,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     &force_cancel_tx,
                 )?;
             }
-            if cancellation.is_none() {
+            if cancellation.is_none() && !systemic_halt_triggered {
                 if halted {
                     while let Some(inst) = pending.pop_front() {
                         results.push(RunSlotResult::new(
@@ -1928,6 +2152,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         },
         total_fallbacks,
         model_mix,
+        systemic_halt_category,
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -1937,6 +2162,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         sweep.completed = cancel.completed;
         sweep.in_flight_at_cancel = cancel.in_flight_at_cancel;
         sweep.not_started = cancel.not_started;
+    }
+    if systemic_halt_triggered {
+        sweep.sweep_status = SWEEP_STATUS_SYSTEMIC_HALT.into();
+        sweep.not_started = systemic_halt_not_started;
     }
     write_sweep_results_atomic(&summary_path, &sweep)?;
 
@@ -1950,6 +2179,21 @@ fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(),
     writeln!(temp.as_file_mut())?;
     temp.as_file_mut().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
+    Ok(())
+}
+
+fn write_halt_report_atomic(output_dir: &Path, report: &SweepHaltReport) -> Result<(), Error> {
+    let path = output_dir.join("halt-report.json");
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    crate::artifact::to_writer_pretty(
+        temp.as_file_mut(),
+        ArtifactKind::SweepHaltReport,
+        report,
+    )?;
+    writeln!(temp.as_file_mut())?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(&path).map_err(|err| err.error)?;
     Ok(())
 }
 
@@ -4457,6 +4701,9 @@ mod tests {
             cancellation_signals: Some(signal_rx),
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -4756,6 +5003,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -4836,6 +5084,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
 
         let t = s.summary_table();
@@ -4893,6 +5142,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
 
         let t = s.summary_table();
@@ -4971,6 +5221,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let t = s.summary_table();
         assert!(
@@ -5036,6 +5287,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
 
         let t = s.summary_table();
@@ -5108,6 +5360,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
 
         let t = s.summary_table();
@@ -5168,6 +5421,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -5306,6 +5560,9 @@ mod tests {
             cancellation_signals: None,
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5377,6 +5634,9 @@ mod tests {
             cancellation_signals: None,
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5458,6 +5718,9 @@ instance = "inst"
             cancellation_signals: None,
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5580,6 +5843,9 @@ instance = "inst"
             cancellation_signals: None,
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -6195,6 +6461,7 @@ instance = "inst"
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6245,6 +6512,9 @@ instance = "inst"
             cancellation_signals: None,
             github_pr: None,
             reproduced_from: None,
+            abort_on_systemic_failure: true,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));
@@ -6525,6 +6795,7 @@ instance = "inst"
             }),
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let t = s.summary_table();
         assert!(
@@ -6596,6 +6867,7 @@ instance = "inst"
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let t = s.summary_table();
         assert!(
