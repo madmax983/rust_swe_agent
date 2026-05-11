@@ -47,8 +47,9 @@ fn coarse_reason(e: &ModelError) -> String {
         ModelError::Refused(_) => "refused".into(),
         ModelError::MissingCredentials(_) => "missing_credentials".into(),
         ModelError::AllCandidatesFailed(_, _) => "all_candidates_failed".into(),
-        // Replay-only errors never appear in a live fallback chain.
-        ModelError::ReplayDrift(_)
+        // Scripted/replay errors never appear in a live fallback chain.
+        ModelError::ResponsesExhausted(_)
+        | ModelError::ReplayDrift(_)
         | ModelError::ScriptedResponsesExhausted(_)
         | ModelError::ReplayUnfingerprintedLegacy(_) => "replay_error".into(),
     }

@@ -444,7 +444,13 @@ impl Model for FingerprintCheckingModel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = step + 1;
 
-        self.inner.query(messages, opts).await
+        // Translate the generic scripted-model exhaustion into the
+        // replay-specific variant so that `ExitCode::from_error` maps it to
+        // `ReplayResponseExhausted` (10) only in replay context.
+        self.inner.query(messages, opts).await.map_err(|e| match e {
+            ModelError::ResponsesExhausted(n) => ModelError::ScriptedResponsesExhausted(n),
+            other => other,
+        })
     }
 }
 

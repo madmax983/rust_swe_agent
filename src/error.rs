@@ -63,7 +63,17 @@ pub enum ModelError {
     #[error("replay prompt drift at step {0}: fingerprints do not match")]
     ReplayDrift(usize),
 
-    /// Replay only: the scripted-response queue is exhausted at step {0}.
+    /// Generic scripted model exhaustion: the response queue ran out at step {0}.
+    /// Used by `DeterministicModel` in any context (tests, sweeps, replay).
+    /// Replay code translates this into `ScriptedResponsesExhausted` so that
+    /// exit-code routing can distinguish replay-structural failures from ordinary
+    /// test/sweep failures.
+    #[error("scripted responses exhausted at step {0}")]
+    ResponsesExhausted(u32),
+
+    /// Replay only: the scripted-response queue is exhausted at step {0},
+    /// meaning the cassette trajectory is structurally incompatible with the
+    /// current agent (e.g. the agent issued more model calls than were recorded).
     #[error("replay response exhausted: no scripted response for step {0}")]
     ScriptedResponsesExhausted(u32),
 

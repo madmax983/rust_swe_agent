@@ -102,7 +102,7 @@ impl Model for DeterministicModel {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             q.pop_front()
-                .ok_or(ModelError::ScriptedResponsesExhausted(step_index))?
+                .ok_or(ModelError::ResponsesExhausted(step_index))?
         };
 
         // Sentinel: "__rate_limited__:N" → ModelError::RateLimited with

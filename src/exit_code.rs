@@ -106,6 +106,10 @@ impl ExitCode {
                     Self::ReplayResponseExhausted
                 }
                 crate::error::ModelError::ReplayUnfingerprintedLegacy(_) => Self::UsageError,
+                // ResponsesExhausted (generic DeterministicModel exhaustion used in
+                // non-replay contexts) and all other model errors → task unsuccessful.
+                // Replay translates ResponsesExhausted → ScriptedResponsesExhausted
+                // before this function is called, so exit-10 is replay-only.
                 _ => Self::TaskUnsuccessful,
             },
             Error::Template(_)
@@ -195,6 +199,15 @@ mod tests {
         assert_eq!(
             ExitCode::from_error(&Error::Model(ModelError::ReplayUnfingerprintedLegacy(0))),
             ExitCode::UsageError
+        );
+    }
+
+    #[test]
+    fn from_error_responses_exhausted_is_task_unsuccessful() {
+        // Generic DeterministicModel exhaustion (non-replay) must not exit 10.
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ResponsesExhausted(0))),
+            ExitCode::TaskUnsuccessful
         );
     }
 }
