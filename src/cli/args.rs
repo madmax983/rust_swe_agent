@@ -671,7 +671,7 @@ pub struct SwebenchCmd {
     /// env_setup (Docker daemon down, unreachable image).  Non-actionable
     /// categories (step_limit, patch_empty, etc.) never trip the breaker.
     /// Pass --abort-on-systemic-failure=false to opt out entirely.
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true")]
     pub abort_on_systemic_failure: bool,
 
     /// Minimum number of completed instances required before the circuit
