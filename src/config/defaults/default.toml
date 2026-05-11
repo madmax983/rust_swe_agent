@@ -158,6 +158,12 @@ Each response must contain exactly one action:
 either a single fenced block for one listed tool, or the literal sentinel
 `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a
 final output block.
+
+Do not install dependencies unless they are strictly required to produce the
+final patch. Prefer inspecting code and tests already present in the repository.
+If a local dependency problem blocks validation, explain it briefly and continue
+with the patch. Once you have a useful patch, submit it instead of continuing
+exploratory work.
 '''
 instance = '''
 Task: {{ task }}

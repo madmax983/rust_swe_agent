@@ -441,6 +441,7 @@ async fn run_agent_with_timeout(
     secs: u64,
 ) -> Result<crate::agent::ExitReason, Error> {
     let timeout = Duration::from_secs(secs);
+    agent.set_wallclock_deadline(timeout);
     if let Ok(result) = tokio::time::timeout(timeout, agent.run()).await {
         return result;
     }

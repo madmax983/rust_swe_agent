@@ -15,7 +15,9 @@ pub mod parse;
 
 pub use default::DefaultAgent;
 pub use interactive::InteractiveAgent;
-pub use parse::{Action, extract_action, extract_action_for_tools};
+pub use parse::{
+    Action, extract_action, extract_action_for_tools, extract_action_from_model_response,
+};
 
 /// Represents the typed, successful termination of an agent loop.
 ///
