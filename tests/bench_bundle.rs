@@ -521,6 +521,73 @@ fn bundle_instance_scope_uses_rerun_slots_for_scoped_aggregates() {
 }
 
 #[test]
+fn bundle_full_sweep_allows_budget_halted_row_without_trajectory() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    append_budget_halted_instance(&sweep, "budgeted");
+    let archive = work.path().join("full-budgeted.tar.gz");
+
+    let out = bundle_create(&sweep, &archive, None);
+    assert_success(&out);
+
+    let entries = tar_list(&archive);
+    assert!(entries.contains(&"trajectories/alpha.traj.json".to_owned()));
+    assert!(entries.contains(&"trajectories/beta.traj.json".to_owned()));
+    assert!(
+        !entries.iter().any(|path| path.contains("budgeted")),
+        "{entries:?}"
+    );
+    assert_success(&bundle_verify(&archive));
+
+    let extracted = work.path().join("extracted-full-budgeted");
+    extract_tar(&archive, &extracted);
+    let results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(extracted.join("results.json")).unwrap()).unwrap();
+    assert!(
+        results["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["instance_id"] == "budgeted" && row["exit_reason"] == "budget_halt"),
+        "{results:#}"
+    );
+}
+
+#[test]
+fn bundle_instance_scope_allows_budget_halted_row_without_trajectory() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    append_budget_halted_instance(&sweep, "budgeted");
+    let archive = work.path().join("budgeted-only.tar.gz");
+
+    let out = bundle_create(&sweep, &archive, Some("budgeted"));
+    assert_success(&out);
+
+    let entries = tar_list(&archive);
+    assert!(entries.contains(&"manifest.json".to_owned()));
+    assert!(entries.contains(&"results.json".to_owned()));
+    assert!(
+        !entries.iter().any(|path| path.contains("trajectories/")),
+        "{entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|path| path.contains("patches/")),
+        "{entries:?}"
+    );
+
+    let extracted = work.path().join("extracted-budgeted-only");
+    extract_tar(&archive, &extracted);
+    let results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(extracted.join("results.json")).unwrap()).unwrap();
+    assert_eq!(results["total"], 1);
+    assert_eq!(results["submitted"], 0);
+    assert_eq!(results["errored"], 0);
+    assert_eq!(results["budget_halted"], 1);
+    assert_eq!(results["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(results["instances"][0]["instance_id"], "budgeted");
+}
+
+#[test]
 fn bundle_create_is_identical_modulo_timestamp_without_fixed_epoch() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());
@@ -757,6 +824,37 @@ fn inject_text_into_json_string(path: &Path, pointer: &str, text: &str) {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     *value.pointer_mut(pointer).unwrap() = serde_json::json!(text);
     fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+fn append_budget_halted_instance(sweep: &Path, instance_id: &str) {
+    let path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    results["total"] = serde_json::json!(3);
+    results["completed"] = serde_json::json!(3);
+    results["budget_halted"] = serde_json::json!(1);
+    results["filter_spec"]["selected_count"] = serde_json::json!(3);
+    results["manifest"]["dataset"]["selected_row_count"] = serde_json::json!(3);
+    results["manifest"]["dataset"]["post_filter_row_count"] = serde_json::json!(3);
+    results["instances"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "instance_id": instance_id,
+            "exit_reason": "budget_halt",
+            "outcome": null,
+            "steps": null,
+            "total_input_tokens": 0,
+            "total_completion_tokens": 0,
+            "patch_present": false,
+            "non_empty_patch": false,
+            "attempts": 1,
+            "runs": 1,
+            "resolved_count": 0,
+            "pass_at_1": false,
+            "tests_run_before_submit": false
+        }));
+    fs::write(path, serde_json::to_string_pretty(&results).unwrap()).unwrap();
 }
 
 #[derive(Clone, Copy)]

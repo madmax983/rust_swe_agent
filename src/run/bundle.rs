@@ -246,6 +246,9 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     for instance_id in &included_ids {
         let trajectory_sources = find_trajectory_paths_for_bundle(&args.sweep_dir, instance_id);
         if trajectory_sources.is_empty() {
+            if allows_missing_trajectory(&results_value, instance_id) {
+                continue;
+            }
             return Err(BundleError::MissingSource(format!(
                 "bundle: missing trajectory for instance `{instance_id}` in {}",
                 args.sweep_dir.display()
@@ -996,6 +999,24 @@ fn included_instance_ids(
         }
         None => Ok(all.to_vec()),
     }
+}
+
+fn allows_missing_trajectory(results: &serde_json::Value, instance_id: &str) -> bool {
+    results
+        .get("instances")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|instances| {
+            instances.iter().find(|row| {
+                row.get("instance_id").and_then(serde_json::Value::as_str) == Some(instance_id)
+            })
+        })
+        .is_some_and(is_never_started_budget_halt)
+}
+
+fn is_never_started_budget_halt(row: &serde_json::Value) -> bool {
+    string_field(row, "exit_reason") == Some("budget_halt")
+        && row.get("outcome").is_none_or(serde_json::Value::is_null)
+        && !bool_field(row, "patch_present")
 }
 
 fn validate_instance_scope(instance: Option<&str>) -> Result<(), BundleError> {
