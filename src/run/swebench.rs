@@ -1130,7 +1130,13 @@ pub fn existing_patch_path_for_run(
     if nested.exists() || run_index != 1 {
         return nested;
     }
-    legacy_patch_path_for(output_dir, instance_id)
+    let legacy = legacy_patch_path_for(output_dir, instance_id);
+    if legacy.exists() {
+        return legacy;
+    }
+    output_dir
+        .join("patches")
+        .join(format!("{instance_id}.patch"))
 }
 
 /// Path of the aggregated SWE-bench predictions file written at the end of

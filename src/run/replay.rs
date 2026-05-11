@@ -52,9 +52,9 @@ pub struct ReplayArgs {
     /// assistant messages emits a warning but succeeds. When `false` (default),
     /// an unfingerprinted trajectory causes a non-zero exit.
     pub allow_unfingerprinted: bool,
-    /// When `true`, replay runs to completion despite any fingerprint drift,
-    /// writes a full drift report, and exits 0. When `false` (default), replay
-    /// stops at the first drift and exits with code 9.
+    /// When `true`, replay suppresses only prompt-drift failures, runs to
+    /// completion, writes a full drift report, and exits 0. Configuration
+    /// errors (unfingerprinted legacy, exhausted responses) are still propagated.
     pub report_only: bool,
     /// Maximum bytes of the unified diff string included per drift step.
     pub drift_cap_bytes: usize,
@@ -69,11 +69,12 @@ pub struct DriftStep {
     pub recorded_fingerprint: String,
     /// Fingerprint computed from the actual messages during this replay.
     pub actual_fingerprint: String,
-    /// Unified diff (`-` recorded, `+` actual) of the pretty-printed canonical
-    /// inputs, capped to `drift_cap_bytes` with a `[truncated]` marker if cut.
+    /// Unified diff (`--- recorded` / `+++ actual`) of the pretty-printed
+    /// canonical inputs, capped to `drift_cap_bytes` with a `[truncated]`
+    /// marker if cut. Empty when no stored canonical is available.
     pub unified_diff: String,
-    /// `true` if the diff was truncated OR if the recorded canonical was already
-    /// truncated when stored in the cassette.
+    /// `true` if the diff was truncated **or** if the recorded canonical was
+    /// already truncated when stored in the cassette (best-effort diff).
     pub diff_truncated: bool,
 }
 
@@ -124,18 +125,16 @@ fn extract_cassette(trajectory: &Trajectory) -> Vec<CassetteEntry> {
 }
 
 fn unzip_cassette(cassette: Vec<CassetteEntry>) -> CassetteVecs {
-    cassette
-        .into_iter()
-        .fold(
-            (Vec::new(), Vec::new(), Vec::new()),
-            |(mut rs, mut fps, mut cs), e| {
-                let canon = e.canonical.map(|c| (c, e.canonical_truncated));
-                rs.push(e.response);
-                fps.push(e.fingerprint);
-                cs.push(canon);
-                (rs, fps, cs)
-            },
-        )
+    cassette.into_iter().fold(
+        (Vec::new(), Vec::new(), Vec::new()),
+        |(mut rs, mut fps, mut cs), e| {
+            let canon = e.canonical.map(|c| (c, e.canonical_truncated));
+            rs.push(e.response);
+            fps.push(e.fingerprint);
+            cs.push(canon);
+            (rs, fps, cs)
+        },
+    )
 }
 
 // ── main entry point ──────────────────────────────────────────────────────────
@@ -227,19 +226,27 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         write_drift_report(&args.output_dir, &report)?;
     }
 
-    // 8. In --report-only mode always exit 0 (drift was collected above).
+    // 8. In --report-only mode suppress only prompt-drift failures; propagate
+    //    all other errors (usage errors, exhausted responses, I/O failures, …)
+    //    so operators see an honest exit code for structural problems.
     if args.report_only {
-        // Best-effort trajectory save even when the run had errors.
-        if let Ok(ref exit) = run_result {
-            save_outputs(&agent, &args.output_dir, &traj_name, exit)?;
-        } else {
-            let traj_path = args.output_dir.join(format!("{traj_name}.traj.json"));
-            agent.trajectory.save_pretty(&traj_path)?;
+        let is_drift_only = matches!(
+            &run_result,
+            Err(Error::Model(ModelError::ReplayDrift(_)))
+        );
+        if is_drift_only || run_result.is_ok() {
+            if let Ok(ref exit) = run_result {
+                save_outputs(&agent, &args.output_dir, &traj_name, exit)?;
+            } else {
+                let traj_path = args.output_dir.join(format!("{traj_name}.traj.json"));
+                agent.trajectory.save_pretty(&traj_path)?;
+            }
+            return Ok(());
         }
-        return Ok(());
+        // Non-drift error: fall through and propagate below.
     }
 
-    // 9. Fail-fast mode: propagate errors from the run.
+    // 9. Fail-fast mode (or report-only with a non-drift error): propagate.
     let exit = run_result?;
     save_outputs(&agent, &args.output_dir, &traj_name, &exit)?;
     tracing::info!("replay trajectory written");
@@ -291,11 +298,12 @@ fn pretty_canonical(compact: &str) -> String {
         .unwrap_or_else(|| compact.to_owned())
 }
 
-/// Produce a unified diff (`-` = recorded, `+` = actual) between two pretty-printed
-/// canonical strings, capped to `cap` bytes.
+/// Produce a unified diff (`--- recorded` / `+++ actual`) between two
+/// pretty-printed canonical strings, capped to `cap` bytes.
 ///
-/// `recorded_was_truncated` indicates the cassette stored a truncated form — the
-/// diff is best-effort in that case and `diff_truncated` is set to `true`.
+/// The header is only written when there are actual differences.
+/// `recorded_was_truncated` causes `diff_truncated` to be `true` even if the
+/// diff itself fits within `cap`.
 fn make_unified_diff(
     recorded: &str,
     actual: &str,
@@ -307,7 +315,12 @@ fn make_unified_diff(
 
     let diff = TextDiff::from_lines(&recorded_pretty, &actual_pretty);
     let mut out = String::new();
+    let mut header_written = false;
     for group in diff.grouped_ops(3) {
+        if !header_written {
+            out.push_str("--- recorded\n+++ actual\n");
+            header_written = true;
+        }
         for op in &group {
             for change in diff.iter_changes(op) {
                 let prefix = match change.tag() {
@@ -541,8 +554,10 @@ mod tests {
         let actual = r#"[{"content":"world","role":"user"}]"#;
         let (diff, truncated) = make_unified_diff(recorded, actual, false, DEFAULT_DRIFT_CAP_BYTES);
         assert!(!truncated);
-        assert!(diff.contains('-'), "diff must have deletion lines");
-        assert!(diff.contains('+'), "diff must have insertion lines");
+        assert!(
+            diff.starts_with("--- recorded\n+++ actual\n"),
+            "diff must start with header"
+        );
         assert!(diff.contains("hello"), "diff must show removed text");
         assert!(diff.contains("world"), "diff must show added text");
     }
@@ -561,8 +576,7 @@ mod tests {
         let long = "x".repeat(100);
         let recorded = format!(r#"[{{"content":"{long}","role":"user"}}]"#);
         let actual = format!(r#"[{{"content":"{long}z","role":"user"}}]"#);
-        let (diff, truncated) =
-            make_unified_diff(&recorded, &actual, false, 10);
+        let (diff, truncated) = make_unified_diff(&recorded, &actual, false, 10);
         assert!(truncated, "diff must be marked truncated when over cap");
         assert!(diff.ends_with("[truncated]"));
     }

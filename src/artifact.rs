@@ -53,6 +53,7 @@ pub enum ArtifactKind {
     CalibrationReport,
     PreflightReport,
     SwebenchPredictionsMetadata,
+    BundleManifest,
 }
 
 impl ArtifactKind {
@@ -66,6 +67,7 @@ impl ArtifactKind {
             Self::CalibrationReport => "calibration_report",
             Self::PreflightReport => "preflight_report",
             Self::SwebenchPredictionsMetadata => "swebench_predictions_metadata",
+            Self::BundleManifest => "bundle_manifest",
         }
     }
 }

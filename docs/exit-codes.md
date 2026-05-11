@@ -15,7 +15,7 @@ parsing human-oriented output.
 | 4    | `task_unsuccessful`      | The agent ran but did not produce a usable result: step limit reached, environment command failed, wallclock timeout, or repeated model API errors. |
 | 5    | `budget_halt`            | Cost ceiling triggered: `bench forecast --fail-over-cap` projected an over-cap run, or the sweep stopped because `--sweep-cost-limit-usd` was reached and no new tasks were dispatched. |
 | 6    | `regression_gate_failure`| `bench compare --max-regressions` or `--max-patch-size-regression` threshold was exceeded. |
-| 7    | `verification_failure`   | One or more `--verify NAME:COMMAND` checks did not pass after a `mini` run. |
+| 7    | `verification_failure`   | One or more `--verify NAME:COMMAND` checks did not pass after a `mini` run, or `bench bundle` detected a redaction retrigger / archive verification mismatch. |
 | 8    | `calibration_optimistic`     | `bench calibrate --fail-on-optimistic` found actual sweep metrics above the forecast interval. |
 | 9    | `replay_prompt_drift`        | `bench replay` detected that at least one input fingerprint does not match the cassette. |
 | 10   | `replay_response_exhausted`  | `bench replay` ran out of scripted responses before the agent finished (structural drift). |
@@ -65,6 +65,7 @@ coarse sweep-level result.
 | `bench tail`                    | `success`, `usage_error`, `internal_error` |
 | `bench triage`                  | `success`, `usage_error`, `internal_error` |
 | `bench frontier`                | `success`, `usage_error`, `internal_error` |
+| `bench bundle`                  | `success`, `usage_error`, `verification_failure`, `internal_error` |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.

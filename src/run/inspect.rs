@@ -746,7 +746,13 @@ fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
         return Some(nested_run);
     }
     let flat = sweep.join(format!("{instance_id}.traj.json"));
-    flat.exists().then_some(flat)
+    if flat.exists() {
+        return Some(flat);
+    }
+    let bundled = sweep
+        .join("trajectories")
+        .join(format!("{instance_id}.traj.json"));
+    bundled.exists().then_some(bundled)
 }
 
 #[derive(Debug, Clone)]

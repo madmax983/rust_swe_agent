@@ -29,7 +29,7 @@ rust-swe-agent bench reproduce \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--allow-drift <FIELD>` | *(none)* | Whitelist a hard-drift field. May be repeated. See [Drift Policy](#drift-policy). |
-| `--limit N` | *(all)* | Replay at most N instances (partial replay). |
+| `--limit N` | *(all)* | Replay at most N instances (partial replay). `--limit 0` performs a manifest/drift smoke check and writes an empty `reproducibility.json` without launching tasks. |
 | `--filter SPEC` | *(all)* | Comma-separated instance ids, or `@path/to/ids.txt`. |
 | `--per-task-budget-usd USD` | *(from manifest)* | Override the per-task USD ceiling for the replay sweep. Recorded in the new manifest. |
 | `--skip-model-probe` | `false` | Skip the model-endpoint preflight probe. Useful for CI fixtures and dry-run modes that must not spend model credits. |
@@ -78,6 +78,10 @@ The replay sweep writes a complete, independent artifact set under `--output`:
 ```
 
 The source `--from` directory is never modified.
+
+`--limit 0` writes only `reproducibility.json` under `--output`; it is intended
+for CI checks that need to prove a saved sweep or extracted bundle is readable
+without spending model credits or requiring the original dataset.
 
 ## `reproducibility.json` Schema
 

@@ -113,7 +113,7 @@ When drift is detected the harness writes a structured JSON report to
       "step_index": 0,
       "recorded_fingerprint": "deadbeef00000000",
       "actual_fingerprint":   "a1b2c3d4e5f60718",
-      "unified_diff": "--- recorded\n+++ actual\n-  \"content\": \"Fix the bug\",\n+  \"content\": \"Fix the bug (attempt 2)\",\n",
+      "unified_diff": "--- recorded\n+++ actual\n-  \"content\": \"Fix the bug\"\n+  \"content\": \"Fix the bug (attempt 2)\"\n",
       "diff_truncated": false
     }
   ]

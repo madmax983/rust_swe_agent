@@ -22,6 +22,7 @@ Run artifacts use explicit top-level metadata:
 | `calibration_report` | `bench calibrate` / `calibration.json` | `artifact_kind`, `schema_version`, `forecast_path`, `results_path`, `verdict`, `comparability`, `metrics`, `per_instance` | mismatch details, warnings, future calibration diagnostics |
 | `preflight_report` | `bench doctor/swebench --format json` | `artifact_kind`, `schema_version`, `mode`, `checks` | additional check metadata |
 | `swebench_predictions_metadata` | `all_preds.metadata.json`, `all_preds.run-k.metadata.json` | `artifact_kind`, `schema_version`, `predictions_file`, `aggregate`, `row_count`, `swebench_evaluator_compatible` | `run_index`, future provenance fields |
+| `bundle_manifest` | `BUNDLE.json` inside `bench bundle` archives | `artifact_kind`, `schema_version`, `source_sweep_dir`, `source_manifest_hash`, `harness_git_sha`, `bundle_generated_at`, `instance_scope`, `files` | future integrity metadata |
 
 `all_preds*.jsonl` rows intentionally do not carry artifact metadata. They stay compatible with SWE-bench evaluators; version metadata lives in the companion metadata JSON files.
 

@@ -269,6 +269,8 @@ pub enum BenchCmd {
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
     Reproduce(ReproduceCmd),
+    /// Export or verify a portable, redacted sweep archive.
+    Bundle(BundleCmd),
 }
 
 #[derive(Debug, Args)]
@@ -309,6 +311,39 @@ pub struct ReproduceCmd {
     /// and dry-run modes that don't spend model credits).
     #[arg(long, default_value_t = false)]
     pub skip_model_probe: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BundleCmd {
+    /// Source sweep directory to archive.
+    #[arg(
+        long,
+        value_name = "DIR",
+        conflicts_with = "verify",
+        requires = "output"
+    )]
+    pub sweep: Option<PathBuf>,
+
+    /// Archive path to write (`.tar.gz`).
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "verify",
+        requires = "sweep"
+    )]
+    pub output: Option<PathBuf>,
+
+    /// Restrict the bundle to one instance id.
+    #[arg(long, value_name = "ID", conflicts_with = "verify", requires = "sweep")]
+    pub instance: Option<String>,
+
+    /// Verify an existing bundle archive instead of creating one.
+    #[arg(
+        long,
+        value_name = "ARCHIVE",
+        conflicts_with_all = ["sweep", "output", "instance"]
+    )]
+    pub verify: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
