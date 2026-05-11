@@ -4250,6 +4250,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::BudgetExhausted => "budget_exhausted",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::AgentStagnation => "agent_stagnation",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",

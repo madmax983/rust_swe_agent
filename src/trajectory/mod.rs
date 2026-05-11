@@ -128,6 +128,8 @@ pub enum FailureCategory {
     PatchEmpty,
     /// A configured secret literal was found in a submission artifact.
     SecretLeakDetected,
+    /// The agent repeated the same action without progress and was halted.
+    AgentStagnation,
     /// An unknown or unclassified failure occurred.
     Unknown,
 }

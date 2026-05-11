@@ -58,6 +58,10 @@ pub enum ExitCode {
     /// at or above the configured share threshold (default 80%). See
     /// `docs/spec-systemic-halt.md` for the full contract.
     SystemicHalt = 11,
+    /// 12 — agent stagnation detected: the agent repeated the same action at
+    /// least K times within a trailing window of W steps. See
+    /// `docs/spec-stagnation.md` for the full contract.
+    AgentStagnation = 12,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -90,6 +94,7 @@ impl ExitCode {
             Self::ReplayPromptDrift => "replay_prompt_drift",
             Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::SystemicHalt => "systemic_halt",
+            Self::AgentStagnation => "agent_stagnation",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

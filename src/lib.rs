@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod artifact;
 pub mod cli;
+pub mod stagnation;
 pub mod config;
 pub mod cost;
 pub mod env;
