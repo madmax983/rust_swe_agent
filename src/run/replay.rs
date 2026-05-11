@@ -430,14 +430,19 @@ impl Model for FingerprintCheckingModel {
             Some(Some(expected)) if actual_fp.hex != *expected => {
                 // Fingerprint mismatch — prompt drift.
                 let actual_canonical = canonical_json(&normalized);
-                let (recorded_canonical, recorded_was_truncated) = self
+                let (recorded_canonical_raw, recorded_was_truncated) = self
                     .expected_canonicals
                     .get(step)
                     .and_then(Option::as_ref)
                     .map_or(("", false), |(c, t)| (c.as_str(), *t));
+                // The stored canonical uses hashed markers ([REDACTED:k:s:HASH]).
+                // Normalize it before diffing so per-run salts don't appear as
+                // spurious differences in the drift report.
+                let recorded_canonical_normalized =
+                    crate::fingerprint::normalize_redaction_markers(recorded_canonical_raw);
 
                 let (unified_diff, diff_truncated) = make_unified_diff(
-                    recorded_canonical,
+                    &recorded_canonical_normalized,
                     &actual_canonical,
                     recorded_was_truncated,
                     self.drift_cap_bytes,

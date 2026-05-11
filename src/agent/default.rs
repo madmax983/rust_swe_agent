@@ -478,20 +478,38 @@ impl Agent for DefaultAgent {
         //       salt; normalize_redaction_markers strips the salt-bearing hash segment
         //       from [REDACTED:kind:size:hash] → [REDACTED:kind:size] so recording and
         //       replay produce identical canonical JSON for the same logical content.
+        //
+        // Two passes over history:
+        //   1. Redact (TRAJECTORY surface) — produces hashed markers like
+        //      [REDACTED:kind:size:HASH].  This form is stored in the trajectory so
+        //      the canonical doesn't introduce a second, hash-free marker variant
+        //      that would break the "one stable marker per run" invariant.
+        //   2. Normalize (strip the per-run salt hash) — produces stable markers
+        //      like [REDACTED:kind:size].  Used only to compute a run-independent
+        //      fingerprint hash; NOT stored in the trajectory.
         let redacted_history: Vec<crate::model::Message> = self
             .history
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
-                let redacted = self
+                m2.content = self
                     .redactor
                     .redact_text(&m.content, surface::TRAJECTORY)
                     .text;
-                m2.content = crate::fingerprint::normalize_redaction_markers(&redacted);
                 m2
             })
             .collect();
-        let fp = crate::fingerprint::compute_input_fingerprint(&redacted_history);
+        let normalized_history: Vec<crate::model::Message> = redacted_history
+            .iter()
+            .map(|m| {
+                let mut m2 = m.clone();
+                m2.content = crate::fingerprint::normalize_redaction_markers(&m.content);
+                m2
+            })
+            .collect();
+        let fp = crate::fingerprint::compute_input_fingerprint(&normalized_history);
+        // Store the redacted (hashed-marker) canonical — replay normalizes it
+        // before diffing so per-run salts don't pollute the drift report.
         let raw_canonical = crate::fingerprint::canonical_json(&redacted_history);
         let (canonical_stored, canonical_truncated) = crate::fingerprint::cap_canonical(
             &raw_canonical,
