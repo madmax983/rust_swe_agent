@@ -168,6 +168,7 @@ struct ScopedResultAggregates {
     submitted: usize,
     submitted_with_tests: usize,
     skipped: usize,
+    errored: usize,
     with_patch: usize,
     patch_empty: usize,
     patch_apply_invalid: usize,
@@ -181,10 +182,12 @@ struct ScopedResultAggregates {
     actual_cost_usd: Option<f64>,
     retries: u64,
     retried_instances: usize,
+    drop_retried_instances: bool,
     resolved_count: usize,
     total_fallbacks: u64,
     model_mix: BTreeMap<String, usize>,
     failures: serde_json::Map<String, serde_json::Value>,
+    drop_github_pr_failures: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,7 +230,7 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     let mut files = vec![workspace.prepare_bytes("manifest.json", manifest_bytes)?];
 
     if args.instance.is_some() {
-        filter_results_for_scope(&mut results_value, &included_set);
+        filter_results_for_scope(&mut results_value, &included_set, &args.sweep_dir);
     }
     let results_bytes = normalized_json_bytes(&results_value, &normalizer)?;
     strict_redaction_check("results.json", &results_bytes, &redactor)?;
@@ -241,20 +244,20 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
 
     let mut patch_files = Vec::new();
     for instance_id in &included_ids {
-        let trajectory_src =
-            find_trajectory_path(&args.sweep_dir, instance_id).ok_or_else(|| {
-                BundleError::MissingSource(format!(
-                    "bundle: missing trajectory for instance `{instance_id}` in {}",
-                    args.sweep_dir.display()
-                ))
-            })?;
-        let trajectory_dest = format!("trajectories/{instance_id}.traj.json");
-        let trajectory = normalized_text_file(&trajectory_src, &normalizer)?;
-        strict_redaction_check(&trajectory_dest, &trajectory, &redactor)?;
-        files.push(workspace.prepare_bytes(trajectory_dest, trajectory)?);
+        let trajectory_sources = find_trajectory_paths_for_bundle(&args.sweep_dir, instance_id);
+        if trajectory_sources.is_empty() {
+            return Err(BundleError::MissingSource(format!(
+                "bundle: missing trajectory for instance `{instance_id}` in {}",
+                args.sweep_dir.display()
+            )));
+        }
+        for (trajectory_src, trajectory_dest) in trajectory_sources {
+            let trajectory = normalized_text_file(&trajectory_src, &normalizer)?;
+            strict_redaction_check(&trajectory_dest, &trajectory, &redactor)?;
+            files.push(workspace.prepare_bytes(trajectory_dest, trajectory)?);
+        }
 
-        if let Some(patch_src) = find_patch_path(&args.sweep_dir, instance_id) {
-            let patch_dest = format!("patches/{instance_id}.patch");
+        for (patch_src, patch_dest) in find_patch_paths_for_bundle(&args.sweep_dir, instance_id) {
             let patch = normalized_text_file(&patch_src, &normalizer)?;
             strict_redaction_check(&patch_dest, &patch, &redactor)?;
             patch_files.push(workspace.prepare_bytes(patch_dest, patch)?);
@@ -448,7 +451,11 @@ fn drop_filtered_evaluation_summaries(value: &mut serde_json::Value) {
     }
 }
 
-fn filter_results_for_scope(value: &mut serde_json::Value, included: &BTreeSet<String>) {
+fn filter_results_for_scope(
+    value: &mut serde_json::Value,
+    included: &BTreeSet<String>,
+    sweep_dir: &Path,
+) {
     let Some(aggregates) = value
         .get_mut("instances")
         .and_then(serde_json::Value::as_array_mut)
@@ -459,7 +466,9 @@ fn filter_results_for_scope(value: &mut serde_json::Value, included: &BTreeSet<S
                     .is_some_and(|id| included.contains(id))
             });
 
-            scoped_result_aggregates(instances)
+            let row_aggregates = scoped_result_aggregates(instances);
+            scoped_slot_aggregates_from_run_artifacts(sweep_dir, instances, &row_aggregates)
+                .unwrap_or(row_aggregates)
         })
     else {
         return;
@@ -483,14 +492,7 @@ fn apply_scoped_result_aggregates(
         serde_json::json!(aggregates.submitted_with_tests),
     );
     map.insert("skipped".into(), serde_json::json!(aggregates.skipped));
-    map.insert(
-        "errored".into(),
-        serde_json::json!(
-            aggregates
-                .total
-                .saturating_sub(aggregates.submitted + aggregates.skipped)
-        ),
-    );
+    map.insert("errored".into(), serde_json::json!(aggregates.errored));
     map.insert(
         "with_patch".into(),
         serde_json::json!(aggregates.with_patch),
@@ -503,10 +505,14 @@ fn apply_scoped_result_aggregates(
         "patch_apply_invalid".into(),
         serde_json::json!(aggregates.patch_apply_invalid),
     );
-    map.insert(
-        "github_pr_failures".into(),
-        serde_json::json!(aggregates.github_pr_failures),
-    );
+    if aggregates.drop_github_pr_failures {
+        map.remove("github_pr_failures");
+    } else {
+        map.insert(
+            "github_pr_failures".into(),
+            serde_json::json!(aggregates.github_pr_failures),
+        );
+    }
     map.insert(
         "budget_halted".into(),
         serde_json::json!(aggregates.budget_halted),
@@ -576,10 +582,14 @@ fn apply_scoped_cost_and_token_aggregates(
         serde_json::json!(cache_hit_rate(aggregates)),
     );
     map.insert("retries".into(), serde_json::json!(aggregates.retries));
-    map.insert(
-        "retried_instances".into(),
-        serde_json::json!(aggregates.retried_instances),
-    );
+    if aggregates.drop_retried_instances {
+        map.remove("retried_instances");
+    } else {
+        map.insert(
+            "retried_instances".into(),
+            serde_json::json!(aggregates.retried_instances),
+        );
+    }
     map.insert("pass_at_k".into(), serde_json::json!(pass_at_k(aggregates)));
     map.insert(
         "total_fallbacks".into(),
@@ -596,82 +606,284 @@ fn scoped_result_aggregates(instances: &[serde_json::Value]) -> ScopedResultAggr
         ..ScopedResultAggregates::default()
     };
     for row in instances {
-        let outcome = string_field(row, "outcome");
-        let exit_reason = string_field(row, "exit_reason");
-        if outcome == Some("submitted") {
+        add_result_row_to_aggregates(&mut aggregates, row);
+    }
+    aggregates
+}
+
+fn scoped_slot_aggregates_from_run_artifacts(
+    sweep_dir: &Path,
+    instances: &[serde_json::Value],
+    row_aggregates: &ScopedResultAggregates,
+) -> Option<ScopedResultAggregates> {
+    if !instances.iter().any(|row| effective_runs_value(row) > 1) {
+        return None;
+    }
+
+    let mut aggregates = ScopedResultAggregates {
+        total: row_aggregates.total,
+        ..ScopedResultAggregates::default()
+    };
+    for row in instances {
+        let runs = effective_runs_value(row);
+        if runs <= 1 {
+            add_result_row_to_aggregates(&mut aggregates, row);
+            continue;
+        }
+        let instance_id = string_field(row, "instance_id")?;
+        for run_index in 1..=runs {
+            let slot = run_slot_result_value_from_artifact(sweep_dir, instance_id, run_index)?;
+            add_result_row_to_aggregates(&mut aggregates, &slot);
+        }
+    }
+
+    aggregates.total = row_aggregates.total;
+    aggregates.resolved_count = row_aggregates.resolved_count;
+    aggregates.drop_github_pr_failures = true;
+    aggregates.total_input_tokens = row_aggregates.total_input_tokens;
+    aggregates.total_cache_read_tokens = row_aggregates.total_cache_read_tokens;
+    aggregates.total_cache_creation_tokens = row_aggregates.total_cache_creation_tokens;
+    aggregates.total_completion_tokens = row_aggregates.total_completion_tokens;
+    aggregates.total_cost_usd = row_aggregates.total_cost_usd;
+    aggregates.actual_cost_usd = row_aggregates.actual_cost_usd;
+    aggregates.retries = row_aggregates.retries;
+    aggregates.drop_retried_instances = true;
+    aggregates.total_fallbacks = row_aggregates.total_fallbacks;
+    if aggregates.model_mix.is_empty() {
+        aggregates.model_mix.clone_from(&row_aggregates.model_mix);
+    }
+    Some(aggregates)
+}
+
+fn add_result_row_to_aggregates(aggregates: &mut ScopedResultAggregates, row: &serde_json::Value) {
+    add_outcome_counts_to_aggregates(aggregates, row);
+    add_patch_and_failure_counts_to_aggregates(aggregates, row);
+    add_usage_and_model_counts_to_aggregates(aggregates, row);
+}
+
+fn add_outcome_counts_to_aggregates(
+    aggregates: &mut ScopedResultAggregates,
+    row: &serde_json::Value,
+) {
+    let outcome = string_field(row, "outcome");
+    let exit_reason = string_field(row, "exit_reason");
+    let runs = effective_runs_value(row);
+    if runs > 1 {
+        let submitted_slots = u64_field(row, "resolved_count")
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or_else(|| usize::from(outcome == Some("submitted")))
+            .min(usize::try_from(runs).unwrap_or(usize::MAX));
+        aggregates.submitted = aggregates.submitted.saturating_add(submitted_slots);
+        if submitted_slots > 0 && bool_field(row, "tests_run_before_submit") {
+            aggregates.submitted_with_tests += 1;
+        }
+        let skipped_slots =
+            usize::from(outcome == Some("skipped") || exit_reason == Some("skipped"));
+        aggregates.skipped = aggregates.skipped.saturating_add(skipped_slots);
+        let budget_slots = usize::from(exit_reason == Some("budget_halt"));
+        aggregates.budget_halted = aggregates.budget_halted.saturating_add(budget_slots);
+        aggregates.errored = aggregates.errored.saturating_add(
+            usize::try_from(runs)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(submitted_slots)
+                .saturating_sub(skipped_slots)
+                .saturating_sub(budget_slots),
+        );
+    } else {
+        let submitted = outcome == Some("submitted");
+        let skipped = outcome == Some("skipped") || exit_reason == Some("skipped");
+        let budget_halted = exit_reason == Some("budget_halt");
+        if submitted {
             aggregates.submitted += 1;
             if bool_field(row, "tests_run_before_submit") {
                 aggregates.submitted_with_tests += 1;
             }
         }
-        if outcome == Some("skipped") || exit_reason == Some("skipped") {
+        if skipped {
             aggregates.skipped += 1;
         }
-        if bool_field(row, "patch_present") {
-            aggregates.with_patch += 1;
-            if !bool_field(row, "non_empty_patch") {
-                aggregates.patch_empty += 1;
-            }
-        }
-        if bool_field(row, "patch_apply_invalid")
-            || string_field(row, "failure_category") == Some("patch_apply_invalid")
-        {
-            aggregates.patch_apply_invalid += 1;
-        }
-        if row
-            .get("github_pr_error")
-            .is_some_and(|value| !value.is_null())
-        {
-            aggregates.github_pr_failures += 1;
-        }
-        if exit_reason == Some("budget_halt") {
+        if budget_halted {
             aggregates.budget_halted += 1;
         }
-        if let Some(category) = string_field(row, "failure_category") {
-            let next = aggregates
-                .failures
-                .get(category)
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default()
-                .saturating_add(1);
-            aggregates
-                .failures
-                .insert(category.to_owned(), serde_json::json!(next));
-        }
-
-        aggregates.total_input_tokens = aggregates
-            .total_input_tokens
-            .saturating_add(u64_field(row, "total_input_tokens").unwrap_or_default());
-        aggregates.total_cache_read_tokens = aggregates
-            .total_cache_read_tokens
-            .saturating_add(u64_field(row, "total_cache_read_tokens").unwrap_or_default());
-        aggregates.total_cache_creation_tokens = aggregates
-            .total_cache_creation_tokens
-            .saturating_add(u64_field(row, "total_cache_creation_tokens").unwrap_or_default());
-        aggregates.total_completion_tokens = aggregates
-            .total_completion_tokens
-            .saturating_add(u64_field(row, "total_completion_tokens").unwrap_or_default());
-        aggregates.total_cost_usd =
-            sum_optional_f64(aggregates.total_cost_usd, instance_cost_usd(row));
-        aggregates.actual_cost_usd =
-            sum_optional_f64(aggregates.actual_cost_usd, instance_actual_cost_usd(row));
-
-        let retries = retry_count(row);
-        aggregates.retries = aggregates.retries.saturating_add(retries);
-        if retries > 0 {
-            aggregates.retried_instances += 1;
-        }
-        if instance_resolved(row) {
-            aggregates.resolved_count += 1;
-        }
-        if let Some(fallback_count) = u64_field(row, "fallback_count") {
-            aggregates.total_fallbacks = aggregates.total_fallbacks.saturating_add(fallback_count);
-        }
-        if let Some(model) = string_field(row, "final_model") {
-            *aggregates.model_mix.entry(model.to_owned()).or_default() += 1;
+        if !submitted && !skipped && !budget_halted {
+            aggregates.errored += 1;
         }
     }
-    aggregates
+}
+
+fn add_patch_and_failure_counts_to_aggregates(
+    aggregates: &mut ScopedResultAggregates,
+    row: &serde_json::Value,
+) {
+    let outcome = string_field(row, "outcome");
+    if bool_field(row, "patch_present") {
+        if bool_field(row, "non_empty_patch") && outcome == Some("submitted") {
+            aggregates.with_patch += 1;
+        } else if !bool_field(row, "non_empty_patch") {
+            aggregates.patch_empty += 1;
+        }
+    }
+    if bool_field(row, "patch_apply_invalid")
+        || string_field(row, "failure_category") == Some("patch_apply_invalid")
+    {
+        aggregates.patch_apply_invalid += 1;
+    }
+    if row
+        .get("github_pr_error")
+        .is_some_and(|value| !value.is_null())
+    {
+        aggregates.github_pr_failures += 1;
+    }
+    if let Some(category) = string_field(row, "failure_category") {
+        let next = aggregates
+            .failures
+            .get(category)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default()
+            .saturating_add(1);
+        aggregates
+            .failures
+            .insert(category.to_owned(), serde_json::json!(next));
+    }
+}
+
+fn add_usage_and_model_counts_to_aggregates(
+    aggregates: &mut ScopedResultAggregates,
+    row: &serde_json::Value,
+) {
+    aggregates.total_input_tokens = aggregates
+        .total_input_tokens
+        .saturating_add(u64_field(row, "total_input_tokens").unwrap_or_default());
+    aggregates.total_cache_read_tokens = aggregates
+        .total_cache_read_tokens
+        .saturating_add(u64_field(row, "total_cache_read_tokens").unwrap_or_default());
+    aggregates.total_cache_creation_tokens = aggregates
+        .total_cache_creation_tokens
+        .saturating_add(u64_field(row, "total_cache_creation_tokens").unwrap_or_default());
+    aggregates.total_completion_tokens = aggregates
+        .total_completion_tokens
+        .saturating_add(u64_field(row, "total_completion_tokens").unwrap_or_default());
+    aggregates.total_cost_usd = sum_optional_f64(aggregates.total_cost_usd, instance_cost_usd(row));
+    aggregates.actual_cost_usd =
+        sum_optional_f64(aggregates.actual_cost_usd, instance_actual_cost_usd(row));
+
+    let retries = retry_count(row);
+    aggregates.retries = aggregates.retries.saturating_add(retries);
+    if retries > 0 {
+        aggregates.retried_instances += 1;
+    }
+    if instance_resolved(row) {
+        aggregates.resolved_count += 1;
+    }
+    if let Some(fallback_count) = u64_field(row, "fallback_count") {
+        aggregates.total_fallbacks = aggregates.total_fallbacks.saturating_add(fallback_count);
+    }
+    if let Some(model) = string_field(row, "final_model") {
+        *aggregates.model_mix.entry(model.to_owned()).or_default() += 1;
+    }
+}
+
+fn run_slot_result_value_from_artifact(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Option<serde_json::Value> {
+    let path = find_trajectory_path_for_run(sweep_dir, instance_id, run_index)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let trajectory: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let info = trajectory.get("info")?;
+
+    let mut row = serde_json::Map::new();
+    row.insert(
+        "instance_id".into(),
+        serde_json::Value::String(instance_id.to_owned()),
+    );
+    for key in [
+        "outcome",
+        "exit_reason",
+        "failure_category",
+        "steps",
+        "duration_secs",
+        "tests_run_before_submit",
+        "last_tests_passed",
+    ] {
+        if let Some(value) = info.get(key) {
+            row.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(value) = info.get("total_cost_usd") {
+        row.insert("cost_usd".into(), value.clone());
+    }
+    if let Some(value) = info.get("actual_cost_usd") {
+        row.insert("actual_cost_usd".into(), value.clone());
+    }
+    if let Some(tokens) = info.get("token_usage") {
+        copy_token_field(tokens, &mut row, "prompt_tokens", "total_input_tokens");
+        copy_token_field(
+            tokens,
+            &mut row,
+            "cache_read_tokens",
+            "total_cache_read_tokens",
+        );
+        copy_token_field(
+            tokens,
+            &mut row,
+            "cache_creation_tokens",
+            "total_cache_creation_tokens",
+        );
+        copy_token_field(
+            tokens,
+            &mut row,
+            "completion_tokens",
+            "total_completion_tokens",
+        );
+    }
+    if let Some(summary) = info.get("fallback_summary") {
+        let all_failed = summary
+            .get("all_failed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !all_failed {
+            if let Some(value) = summary.get("final_model") {
+                row.insert("final_model".into(), value.clone());
+            }
+        }
+        if let Some(value) = summary.get("fallback_count") {
+            row.insert("fallback_count".into(), value.clone());
+        }
+    }
+    if let Some(non_empty) =
+        find_patch_path_for_run(sweep_dir, instance_id, run_index).and_then(|path| {
+            std::fs::metadata(path)
+                .ok()
+                .map(|metadata| metadata.len() > 0)
+        })
+    {
+        row.insert("patch_present".into(), serde_json::Value::Bool(true));
+        row.insert("non_empty_patch".into(), serde_json::Value::Bool(non_empty));
+    } else {
+        row.insert("patch_present".into(), serde_json::Value::Bool(false));
+        row.insert("non_empty_patch".into(), serde_json::Value::Bool(false));
+    }
+    Some(serde_json::Value::Object(row))
+}
+
+fn copy_token_field(
+    tokens: &serde_json::Value,
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    source: &str,
+    dest: &str,
+) {
+    if let Some(value) = tokens.get(source) {
+        row.insert(dest.to_owned(), value.clone());
+    }
+}
+
+fn effective_runs_value(value: &serde_json::Value) -> u32 {
+    u64_field(value, "runs")
+        .and_then(|runs| u32::try_from(runs).ok())
+        .filter(|runs| *runs > 0)
+        .unwrap_or(1)
 }
 
 fn u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
@@ -716,26 +928,22 @@ fn cache_hit_rate(aggregates: &ScopedResultAggregates) -> f64 {
         .saturating_add(aggregates.total_cache_read_tokens)
         .saturating_add(aggregates.total_cache_creation_tokens);
     if prompt == 0 {
-        return 0.0;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    {
-        aggregates.total_cache_read_tokens as f64 / prompt as f64
+        0.0
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        {
+            aggregates.total_cache_read_tokens as f64 / prompt as f64
+        }
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn pass_at_k(aggregates: &ScopedResultAggregates) -> f64 {
     if aggregates.total == 0 {
-        return 0.0;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    {
+        0.0
+    } else {
         aggregates.resolved_count as f64 / aggregates.total as f64
     }
-}
-
-fn string_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-    value.get(key).and_then(serde_json::Value::as_str)
 }
 
 fn bool_field(value: &serde_json::Value, key: &str) -> bool {
@@ -743,6 +951,10 @@ fn bool_field(value: &serde_json::Value, key: &str) -> bool {
         .get(key)
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn string_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
 }
 
 fn instance_ids_from_results(value: &serde_json::Value) -> Result<Vec<String>, BundleError> {
@@ -805,9 +1017,22 @@ fn validate_instance_scope(instance: Option<&str>) -> Result<(), BundleError> {
 }
 
 fn find_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
+    find_trajectory_path_for_run(sweep_dir, instance_id, 1)
+}
+
+fn find_trajectory_path_for_run(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Option<PathBuf> {
+    let run_file = format!("run-{run_index}.traj.json");
+    if run_index > 1 {
+        let path = sweep_dir.join(instance_id).join(run_file);
+        return path.exists().then_some(path);
+    }
     [
         sweep_dir.join(instance_id).join("trajectory.json"),
-        sweep_dir.join(instance_id).join("run-1.traj.json"),
+        sweep_dir.join(instance_id).join(run_file),
         sweep_dir.join(format!("{instance_id}.traj.json")),
         sweep_dir
             .join("trajectories")
@@ -818,8 +1043,17 @@ fn find_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> 
 }
 
 fn find_patch_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
+    find_patch_path_for_run(sweep_dir, instance_id, 1)
+}
+
+fn find_patch_path_for_run(sweep_dir: &Path, instance_id: &str, run_index: u32) -> Option<PathBuf> {
+    let run_file = format!("run-{run_index}.patch");
+    if run_index > 1 {
+        let path = sweep_dir.join(instance_id).join(run_file);
+        return path.exists().then_some(path);
+    }
     [
-        sweep_dir.join(instance_id).join("run-1.patch"),
+        sweep_dir.join(instance_id).join(run_file),
         sweep_dir.join(format!("{instance_id}.patch")),
         sweep_dir
             .join("patches")
@@ -827,6 +1061,72 @@ fn find_patch_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|path| path.exists())
+}
+
+fn find_trajectory_paths_for_bundle(sweep_dir: &Path, instance_id: &str) -> Vec<(PathBuf, String)> {
+    let nested = sorted_nested_run_files(&sweep_dir.join(instance_id), ".traj.json");
+    if !nested.is_empty() {
+        return nested
+            .into_iter()
+            .filter_map(|path| {
+                let file_name = path.file_name()?.to_string_lossy();
+                Some((path.clone(), format!("{instance_id}/{file_name}")))
+            })
+            .collect();
+    }
+    find_trajectory_path(sweep_dir, instance_id)
+        .map(|path| (path, format!("trajectories/{instance_id}.traj.json")))
+        .into_iter()
+        .collect()
+}
+
+fn find_patch_paths_for_bundle(sweep_dir: &Path, instance_id: &str) -> Vec<(PathBuf, String)> {
+    let nested = sorted_nested_run_files(&sweep_dir.join(instance_id), ".patch");
+    if !nested.is_empty() {
+        return nested
+            .into_iter()
+            .filter_map(|path| {
+                let file_name = path.file_name()?.to_string_lossy();
+                Some((path.clone(), format!("{instance_id}/{file_name}")))
+            })
+            .collect();
+    }
+    find_patch_path(sweep_dir, instance_id)
+        .map(|path| (path, format!("patches/{instance_id}.patch")))
+        .into_iter()
+        .collect()
+}
+
+fn sorted_nested_run_files(dir: &Path, suffix: &str) -> Vec<PathBuf> {
+    let mut files = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_file() {
+                return None;
+            }
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            (file_name.starts_with("run-") && file_name.ends_with(suffix)).then_some(entry.path())
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        let left_key = run_file_sort_key(left);
+        let right_key = run_file_sort_key(right);
+        left_key.cmp(&right_key).then_with(|| left.cmp(right))
+    });
+    files
+}
+
+fn run_file_sort_key(path: &Path) -> u32 {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("run-"))
+        .and_then(|name| name.split('.').next())
+        .and_then(|index| index.parse::<u32>().ok())
+        .unwrap_or(u32::MAX)
 }
 
 fn read_required_text(path: &Path, label: &str) -> Result<String, BundleError> {

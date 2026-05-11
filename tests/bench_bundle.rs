@@ -421,6 +421,106 @@ fn bundle_instance_scope_drops_filtered_evaluation_summaries() {
 }
 
 #[test]
+fn bundle_instance_scope_uses_rerun_slots_for_scoped_aggregates() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    write_bundle_rerun_trajectory(
+        &sweep,
+        "alpha",
+        1,
+        RerunTrajectorySpec {
+            outcome: "error",
+            exit_reason: "error",
+            failure_category: Some("step_limit"),
+            tests_run_before_submit: false,
+            patch: None,
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            final_model: "first-model",
+        },
+    );
+    write_bundle_rerun_trajectory(
+        &sweep,
+        "alpha",
+        2,
+        RerunTrajectorySpec {
+            outcome: "submitted",
+            exit_reason: "submitted",
+            failure_category: None,
+            tests_run_before_submit: true,
+            patch: Some("diff --git a/file b/file\n+later run\n"),
+            prompt_tokens: 20,
+            completion_tokens: 2,
+            final_model: "later-model",
+        },
+    );
+
+    let results_path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&results_path).unwrap()).unwrap();
+    results["submitted"] = serde_json::json!(2);
+    results["submitted_with_tests"] = serde_json::json!(2);
+    results["errored"] = serde_json::json!(1);
+    results["failures_by_category"] = serde_json::json!({ "step_limit": 1 });
+    results["model_mix"] =
+        serde_json::json!({ "beta-model": 1, "first-model": 1, "later-model": 1 });
+
+    let alpha = results["instances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["instance_id"] == "alpha")
+        .unwrap();
+    alpha["exit_reason"] = serde_json::json!("error");
+    alpha["outcome"] = serde_json::json!("error");
+    alpha["failure_category"] = serde_json::json!("step_limit");
+    alpha["runs"] = serde_json::json!(2);
+    alpha["resolved_count"] = serde_json::json!(1);
+    alpha["pass_at_1"] = serde_json::json!(false);
+    alpha["tests_run_before_submit"] = serde_json::json!(true);
+    alpha["total_input_tokens"] = serde_json::json!(30);
+    alpha["total_completion_tokens"] = serde_json::json!(3);
+    alpha["patch_present"] = serde_json::json!(true);
+    alpha["non_empty_patch"] = serde_json::json!(true);
+    alpha["final_model"] = serde_json::json!("first-model");
+    fs::write(
+        &results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+
+    let archive = work.path().join("alpha-rerun.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, Some("alpha")));
+
+    let extracted = work.path().join("extracted-alpha-rerun");
+    extract_tar(&archive, &extracted);
+    let scoped: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(extracted.join("results.json")).unwrap()).unwrap();
+    assert_eq!(scoped["total"], 1);
+    assert_eq!(scoped["submitted"], 1);
+    assert_eq!(scoped["submitted_with_tests"], 1);
+    assert_eq!(scoped["errored"], 1);
+    assert_eq!(scoped["failures_by_category"]["step_limit"], 1);
+    assert_eq!(scoped["with_patch"], 1);
+    assert_eq!(scoped["patch_empty"], 0);
+    assert_eq!(scoped["pass_at_k"], 1.0);
+    assert_eq!(scoped["model_mix"]["first-model"], 1);
+    assert_eq!(scoped["model_mix"]["later-model"], 1);
+    assert!(scoped["model_mix"].get("beta-model").is_none());
+    assert!(scoped.get("github_pr_failures").is_none());
+    assert!(scoped.get("retried_instances").is_none());
+
+    let entries = tar_list(&archive);
+    assert!(entries.contains(&"alpha/run-1.traj.json".to_owned()));
+    assert!(entries.contains(&"alpha/run-2.traj.json".to_owned()));
+    assert!(entries.contains(&"alpha/run-2.patch".to_owned()));
+    assert!(
+        !entries.iter().any(|path| path.contains("beta")),
+        "{entries:?}"
+    );
+}
+
+#[test]
 fn bundle_create_is_identical_modulo_timestamp_without_fixed_epoch() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());
@@ -657,6 +757,76 @@ fn inject_text_into_json_string(path: &Path, pointer: &str, text: &str) {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     *value.pointer_mut(pointer).unwrap() = serde_json::json!(text);
     fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+#[derive(Clone, Copy)]
+struct RerunTrajectorySpec<'a> {
+    outcome: &'a str,
+    exit_reason: &'a str,
+    failure_category: Option<&'a str>,
+    tests_run_before_submit: bool,
+    patch: Option<&'a str>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    final_model: &'a str,
+}
+
+fn write_bundle_rerun_trajectory(
+    sweep: &Path,
+    instance_id: &str,
+    run_index: u32,
+    spec: RerunTrajectorySpec<'_>,
+) {
+    let dir = sweep.join(instance_id);
+    fs::create_dir_all(&dir).unwrap();
+    let mut info = serde_json::json!({
+        "task": instance_id,
+        "model_name": "deterministic",
+        "outcome": spec.outcome,
+        "exit_reason": spec.exit_reason,
+        "final_output": "rerun-slot",
+        "total_cost_usd": 0.0,
+        "token_usage": {
+            "prompt_tokens": spec.prompt_tokens,
+            "completion_tokens": spec.completion_tokens
+        },
+        "redaction": {
+            "enabled": true,
+            "redacted": false
+        },
+        "steps": 1,
+        "test_invocations": [],
+        "tests_run_before_submit": spec.tests_run_before_submit,
+        "fallback_summary": {
+            "primary_model": "primary-model",
+            "final_model": spec.final_model,
+            "fallback_happened": false,
+            "fallback_count": 0,
+            "attempted_models": [spec.final_model],
+            "failed_attempts": []
+        }
+    });
+    if let Some(category) = spec.failure_category {
+        info["failure_category"] = serde_json::json!(category);
+    }
+    let trajectory = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.1",
+        "artifact_kind": "trajectory",
+        "schema_version": {
+            "major": 1,
+            "minor": 3
+        },
+        "info": info,
+        "messages": []
+    });
+    fs::write(
+        dir.join(format!("run-{run_index}.traj.json")),
+        serde_json::to_string_pretty(&trajectory).unwrap(),
+    )
+    .unwrap();
+    if let Some(patch) = spec.patch {
+        fs::write(dir.join(format!("run-{run_index}.patch")), patch).unwrap();
+    }
 }
 
 fn json_escaped_path(path: &Path) -> String {
