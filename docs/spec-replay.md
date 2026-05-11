@@ -51,19 +51,29 @@ bytes, encoded as 16 lowercase hex characters.
 ```json
 "model_call": {
   "input_fingerprint": "a1b2c3d4e5f60718",
-  "input_canonical_size": 1234
+  "input_canonical_size": 1234,
+  "input_canonical": "[{\"content\":\"…\",\"role\":\"user\"},…]",
+  "input_canonical_truncated": false
 }
 ```
+
+`input_canonical` stores the compact canonical JSON string up to 64 KiB per step
+(capped with a `[truncated]` marker). It is used by `bench replay` to produce a
+human-readable unified diff when a fingerprint mismatch is detected — the diff
+shows exactly which messages changed and how.
+
+`input_canonical_truncated` is `true` when the canonical was larger than the 64 KiB
+cap; in that case the unified diff in the drift report is best-effort.
 
 ---
 
 ## Schema version
 
-The `input_fingerprint` and `input_canonical_size` fields were introduced in
-trajectory schema version **1.4**. Reader code is forward-compatible:
-trajectories without these fields (schema < 1.4 or pre-versioning) are
-classified as _legacy_ and handled according to the `--allow-unfingerprinted`
-flag.
+The `input_fingerprint`, `input_canonical_size`, `input_canonical`, and
+`input_canonical_truncated` fields were introduced in trajectory schema version
+**1.4**. Reader code is forward-compatible: trajectories without these fields
+(schema < 1.4 or pre-versioning) are classified as _legacy_ and handled
+according to the `--allow-unfingerprinted` flag.
 
 ---
 
@@ -84,8 +94,8 @@ prompt refactor.
 
 ### `--drift-cap-bytes <N>` (default: 8192)
 
-Maximum bytes of the actual canonical input JSON to include per divergent step
-in the drift report. Excess is replaced with `[truncated]`.
+Maximum bytes of the unified diff string to include per divergent step in the
+drift report. Excess is replaced with `[truncated]`.
 
 ---
 
@@ -103,8 +113,8 @@ When drift is detected the harness writes a structured JSON report to
       "step_index": 0,
       "recorded_fingerprint": "deadbeef00000000",
       "actual_fingerprint":   "a1b2c3d4e5f60718",
-      "actual_canonical_snippet": "[{\"content\":\"…\",\"role\":\"user\"}]",
-      "truncated": false
+      "unified_diff": "--- recorded\n+++ actual\n-  \"content\": \"Fix the bug\",\n+  \"content\": \"Fix the bug (attempt 2)\",\n",
+      "diff_truncated": false
     }
   ]
 }
@@ -115,12 +125,8 @@ When drift is detected the harness writes a structured JSON report to
 | `step_index` | 0-based model-query index where drift was detected. |
 | `recorded_fingerprint` | Hash stored in the cassette trajectory. |
 | `actual_fingerprint` | Hash computed from the actual replay input. |
-| `actual_canonical_snippet` | First `drift_cap_bytes` of the actual canonical JSON (full input to the model during replay). Helps pinpoint which message changed. |
-| `truncated` | `true` when `actual_canonical_snippet` was capped. |
-
-> **Note:** The recorded canonical JSON is not stored in the trajectory (only
-> the hash and byte count are). The `actual_canonical_snippet` shows what the
-> model was actually asked during the replay run.
+| `unified_diff` | Line-level unified diff (`-` = recorded, `+` = actual) of the pretty-printed canonical inputs, capped to `drift_cap_bytes` with a `[truncated]` marker if cut. |
+| `diff_truncated` | `true` when the diff was capped **or** when the recorded canonical was already truncated in the cassette (best-effort diff). |
 
 ---
 

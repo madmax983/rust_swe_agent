@@ -221,9 +221,14 @@ async fn prompt_drift_exits_drift_code_at_step_zero() {
         tampered
     );
     assert!(!steps[0]["actual_fingerprint"].as_str().unwrap().is_empty());
+    // unified_diff must be present (may be empty string if no stored canonical)
     assert!(
-        steps[0]["actual_canonical_snippet"].as_str().is_some(),
-        "actual canonical snippet must be present"
+        steps[0]["unified_diff"].as_str().is_some(),
+        "unified_diff field must be present in drift step"
+    );
+    assert!(
+        steps[0]["diff_truncated"].as_bool().is_some(),
+        "diff_truncated field must be present"
     );
 }
 

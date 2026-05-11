@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 
 use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
 use crate::config::{Config, EnvKind};
@@ -26,15 +27,19 @@ use crate::config::{Config, EnvKind};
 use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment};
 use crate::error::{Error, ModelError};
-use crate::fingerprint::{canonical_json, compute_input_fingerprint};
+use crate::fingerprint::{canonical_json, cap_canonical, compute_input_fingerprint};
 use crate::model::{DeterministicModel, Message, Model, ModelResponse, QueryOpts};
 use crate::trajectory::Trajectory;
 
 /// Filename written to `output_dir` when drift is detected.
 pub const DRIFT_REPORT_FILENAME: &str = "replay-drift.json";
 
-/// Default byte cap for the actual-canonical snippet in a drift report.
+/// Default byte cap applied to the unified diff string in each drift step.
 pub const DEFAULT_DRIFT_CAP_BYTES: usize = 8 * 1024;
+
+/// Byte cap applied when storing `input_canonical` in trajectory assistant messages.
+/// Exported so `DefaultAgent` can reference a single source of truth.
+pub const CANONICAL_CAP_BYTES: usize = 64 * 1024;
 
 // ── public API ────────────────────────────────────────────────────────────────
 
@@ -51,7 +56,7 @@ pub struct ReplayArgs {
     /// writes a full drift report, and exits 0. When `false` (default), replay
     /// stops at the first drift and exits with code 9.
     pub report_only: bool,
-    /// Maximum bytes of the actual canonical JSON to include per drift step.
+    /// Maximum bytes of the unified diff string included per drift step.
     pub drift_cap_bytes: usize,
 }
 
@@ -64,16 +69,73 @@ pub struct DriftStep {
     pub recorded_fingerprint: String,
     /// Fingerprint computed from the actual messages during this replay.
     pub actual_fingerprint: String,
-    /// First `drift_cap_bytes` of the actual canonical input JSON.
-    pub actual_canonical_snippet: String,
-    /// `true` if `actual_canonical_snippet` was truncated.
-    pub truncated: bool,
+    /// Unified diff (`-` recorded, `+` actual) of the pretty-printed canonical
+    /// inputs, capped to `drift_cap_bytes` with a `[truncated]` marker if cut.
+    pub unified_diff: String,
+    /// `true` if the diff was truncated OR if the recorded canonical was already
+    /// truncated when stored in the cassette.
+    pub diff_truncated: bool,
 }
 
 /// Structured drift report written to `{output_dir}/replay-drift.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftReport {
     pub steps: Vec<DriftStep>,
+}
+
+// ── cassette extraction ───────────────────────────────────────────────────────
+
+struct CassetteEntry {
+    response: String,
+    fingerprint: Option<String>,
+    canonical: Option<String>,
+    canonical_truncated: bool,
+}
+
+type CassetteVecs = (Vec<String>, Vec<Option<String>>, Vec<Option<(String, bool)>>);
+
+fn extract_cassette(trajectory: &Trajectory) -> Vec<CassetteEntry> {
+    trajectory
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .map(|m| {
+            let mc = m.extra.other.get("model_call");
+            let fingerprint = mc
+                .and_then(|v| v.get("input_fingerprint"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let canonical = mc
+                .and_then(|v| v.get("input_canonical"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            let canonical_truncated = mc
+                .and_then(|v| v.get("input_canonical_truncated"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            CassetteEntry {
+                response: m.content.clone(),
+                fingerprint,
+                canonical,
+                canonical_truncated,
+            }
+        })
+        .collect()
+}
+
+fn unzip_cassette(cassette: Vec<CassetteEntry>) -> CassetteVecs {
+    cassette
+        .into_iter()
+        .fold(
+            (Vec::new(), Vec::new(), Vec::new()),
+            |(mut rs, mut fps, mut cs), e| {
+                let canon = e.canonical.map(|c| (c, e.canonical_truncated));
+                rs.push(e.response);
+                fps.push(e.fingerprint);
+                cs.push(canon);
+                (rs, fps, cs)
+            },
+        )
 }
 
 // ── main entry point ──────────────────────────────────────────────────────────
@@ -89,29 +151,16 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         )))
     })?;
 
-    // 2. Extract assistant messages — responses + expected fingerprints.
-    let (responses, expected_fps): (Vec<String>, Vec<Option<String>>) = orig_trajectory
-        .messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .map(|m| {
-            let content = m.content.clone();
-            let fp = m
-                .extra
-                .other
-                .get("model_call")
-                .and_then(|mc| mc.get("input_fingerprint"))
-                .and_then(|v| v.as_str())
-                .map(str::to_owned);
-            (content, fp)
-        })
-        .unzip();
+    // 2. Extract assistant messages — responses, expected fingerprints, recorded canonicals.
+    let cassette = extract_cassette(&orig_trajectory);
 
-    if responses.is_empty() {
+    if cassette.is_empty() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "No assistant messages found in trajectory to replay".into(),
         )));
     }
+
+    let (responses, expected_fps, expected_canonicals) = unzip_cassette(cassette);
 
     let task = orig_trajectory
         .info
@@ -126,6 +175,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
     let model: Arc<dyn Model> = Arc::new(FingerprintCheckingModel {
         inner: DeterministicModel::new(responses),
         expected_fps,
+        expected_canonicals,
         step: Mutex::new(0),
         allow_unfingerprinted: args.allow_unfingerprinted,
         report_only: args.report_only,
@@ -183,7 +233,6 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         if let Ok(ref exit) = run_result {
             save_outputs(&agent, &args.output_dir, &traj_name, exit)?;
         } else {
-            // Save whatever trajectory we managed to produce.
             let traj_path = args.output_dir.join(format!("{traj_name}.traj.json"));
             agent.trajectory.save_pretty(&traj_path)?;
         }
@@ -233,18 +282,50 @@ fn write_drift_report(output_dir: &Path, report: &DriftReport) -> Result<(), Err
     Ok(())
 }
 
-fn truncate_canonical(canonical: &str, cap: usize) -> (String, bool) {
-    if canonical.len() <= cap {
-        return (canonical.to_owned(), false);
+/// Pretty-print a compact canonical JSON string for human-readable diffing.
+/// Falls back to the raw string if parsing fails.
+fn pretty_canonical(compact: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(compact)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| compact.to_owned())
+}
+
+/// Produce a unified diff (`-` = recorded, `+` = actual) between two pretty-printed
+/// canonical strings, capped to `cap` bytes.
+///
+/// `recorded_was_truncated` indicates the cassette stored a truncated form — the
+/// diff is best-effort in that case and `diff_truncated` is set to `true`.
+fn make_unified_diff(
+    recorded: &str,
+    actual: &str,
+    recorded_was_truncated: bool,
+    cap: usize,
+) -> (String, bool) {
+    let recorded_pretty = pretty_canonical(recorded);
+    let actual_pretty = pretty_canonical(actual);
+
+    let diff = TextDiff::from_lines(&recorded_pretty, &actual_pretty);
+    let mut out = String::new();
+    for group in diff.grouped_ops(3) {
+        for op in &group {
+            for change in diff.iter_changes(op) {
+                let prefix = match change.tag() {
+                    ChangeTag::Delete => "-",
+                    ChangeTag::Insert => "+",
+                    ChangeTag::Equal => " ",
+                };
+                out.push_str(prefix);
+                out.push_str(change.value());
+                if change.missing_newline() {
+                    out.push('\n');
+                }
+            }
+        }
     }
-    let mut end = cap;
-    while end > 0 && !canonical.is_char_boundary(end) {
-        end -= 1;
-    }
-    (
-        format!("{}[truncated]", &canonical[..end]),
-        true,
-    )
+
+    let (capped, diff_cap_hit) = cap_canonical(&out, cap);
+    (capped, diff_cap_hit || recorded_was_truncated)
 }
 
 // ── FingerprintCheckingModel ──────────────────────────────────────────────────
@@ -257,6 +338,9 @@ struct FingerprintCheckingModel {
     /// message in order. `None` means the original was recorded without
     /// fingerprints (legacy trajectory).
     expected_fps: Vec<Option<String>>,
+    /// Stored canonical JSON from the cassette, paired with a truncation flag.
+    /// `None` means the original was recorded without canonical storage (legacy).
+    expected_canonicals: Vec<Option<(String, bool)>>,
     step: Mutex<usize>,
     allow_unfingerprinted: bool,
     report_only: bool,
@@ -295,9 +379,20 @@ impl Model for FingerprintCheckingModel {
             }
             Some(Some(expected)) if actual_fp.hex != *expected => {
                 // Fingerprint mismatch — prompt drift.
-                let canonical = canonical_json(messages);
-                let (snippet, truncated) =
-                    truncate_canonical(&canonical, self.drift_cap_bytes);
+                let actual_canonical = canonical_json(messages);
+                let (recorded_canonical, recorded_was_truncated) = self
+                    .expected_canonicals
+                    .get(step)
+                    .and_then(Option::as_ref)
+                    .map_or(("", false), |(c, t)| (c.as_str(), *t));
+
+                let (unified_diff, diff_truncated) = make_unified_diff(
+                    recorded_canonical,
+                    &actual_canonical,
+                    recorded_was_truncated,
+                    self.drift_cap_bytes,
+                );
+
                 {
                     let mut guard = self
                         .drift_steps
@@ -307,8 +402,8 @@ impl Model for FingerprintCheckingModel {
                         step_index: step,
                         recorded_fingerprint: expected.clone(),
                         actual_fingerprint: actual_fp.hex.clone(),
-                        actual_canonical_snippet: snippet,
-                        truncated,
+                        unified_diff,
+                        diff_truncated,
                     });
                 }
 
@@ -441,16 +536,44 @@ mod tests {
     }
 
     #[test]
-    fn truncate_canonical_under_cap_is_unchanged() {
-        let (s, truncated) = truncate_canonical("hello", 10);
-        assert_eq!(s, "hello");
+    fn make_unified_diff_shows_changes() {
+        let recorded = r#"[{"content":"hello","role":"user"}]"#;
+        let actual = r#"[{"content":"world","role":"user"}]"#;
+        let (diff, truncated) = make_unified_diff(recorded, actual, false, DEFAULT_DRIFT_CAP_BYTES);
         assert!(!truncated);
+        assert!(diff.contains('-'), "diff must have deletion lines");
+        assert!(diff.contains('+'), "diff must have insertion lines");
+        assert!(diff.contains("hello"), "diff must show removed text");
+        assert!(diff.contains("world"), "diff must show added text");
     }
 
     #[test]
-    fn truncate_canonical_over_cap_adds_marker() {
-        let (s, truncated) = truncate_canonical("hello world", 5);
-        assert!(s.ends_with("[truncated]"));
-        assert!(truncated);
+    fn make_unified_diff_identical_inputs_is_empty() {
+        let canon = r#"[{"content":"hi","role":"user"}]"#;
+        let (diff, truncated) = make_unified_diff(canon, canon, false, DEFAULT_DRIFT_CAP_BYTES);
+        assert!(!truncated);
+        // All lines are equal — grouped_ops(3) produces no hunks for identical input.
+        assert!(diff.is_empty(), "no diff expected for identical inputs");
+    }
+
+    #[test]
+    fn make_unified_diff_truncates_when_over_cap() {
+        let long = "x".repeat(100);
+        let recorded = format!(r#"[{{"content":"{long}","role":"user"}}]"#);
+        let actual = format!(r#"[{{"content":"{long}z","role":"user"}}]"#);
+        let (diff, truncated) =
+            make_unified_diff(&recorded, &actual, false, 10);
+        assert!(truncated, "diff must be marked truncated when over cap");
+        assert!(diff.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn make_unified_diff_recorded_truncated_flag_propagates() {
+        let canon = r#"[{"content":"hi","role":"user"}]"#;
+        let (_, truncated) = make_unified_diff(canon, canon, true, DEFAULT_DRIFT_CAP_BYTES);
+        assert!(
+            truncated,
+            "diff_truncated must be true when recorded canonical was truncated"
+        );
     }
 }

@@ -470,14 +470,19 @@ impl Agent for DefaultAgent {
         asst.extra.response = Some(resp.raw.clone());
         asst.extra.timestamp = Some(asst_ts.clone());
 
-        // Store input fingerprint for replay drift detection (issue #155).
+        // Store input fingerprint + canonical for replay drift detection (issue #155).
         // `self.history` is the exact message slice that was sent to the model.
         let fp = crate::fingerprint::compute_input_fingerprint(&self.history);
+        let raw_canonical = crate::fingerprint::canonical_json(&self.history);
+        let (canonical_stored, canonical_truncated) =
+            crate::fingerprint::cap_canonical(&raw_canonical, crate::run::replay::CANONICAL_CAP_BYTES);
         asst.extra.other.insert(
             "model_call".to_owned(),
             serde_json::json!({
                 "input_fingerprint": fp.hex,
-                "input_canonical_size": fp.canonical_size
+                "input_canonical_size": fp.canonical_size,
+                "input_canonical": canonical_stored,
+                "input_canonical_truncated": canonical_truncated
             }),
         );
 

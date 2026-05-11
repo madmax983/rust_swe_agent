@@ -67,6 +67,20 @@ pub fn canonical_json(messages: &[Message]) -> String {
         .unwrap_or_else(|_| "[]".to_owned())
 }
 
+/// Cap a canonical JSON string to `cap` bytes, appending `[truncated]` if cut.
+///
+/// Returns the (possibly truncated) string and a bool indicating truncation.
+pub fn cap_canonical(s: &str, cap: usize) -> (String, bool) {
+    if s.len() <= cap {
+        return (s.to_owned(), false);
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}[truncated]", &s[..end]), true)
+}
+
 fn role_to_json_str(role: crate::model::Role) -> serde_json::Value {
     use crate::model::Role;
     serde_json::Value::String(
