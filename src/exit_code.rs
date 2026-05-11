@@ -181,4 +181,20 @@ mod tests {
             ExitCode::InternalError
         );
     }
+
+    #[test]
+    fn from_error_replay_response_exhausted() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ScriptedResponsesExhausted(3))),
+            ExitCode::ReplayResponseExhausted
+        );
+    }
+
+    #[test]
+    fn from_error_replay_unfingerprinted_legacy_is_usage_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ReplayUnfingerprintedLegacy(0))),
+            ExitCode::UsageError
+        );
+    }
 }
