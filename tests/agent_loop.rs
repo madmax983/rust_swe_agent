@@ -163,6 +163,13 @@ async fn provider_native_bash_tool_call_executes_without_format_error_turn() {
         agent.history
     );
     assert!(
+        agent.history.iter().any(|m| {
+            m.role == Role::Assistant && m.content.contains("```bash\necho native-call\n```")
+        }),
+        "native bash tool_call should be normalized into assistant history: {:#?}",
+        agent.history
+    );
+    assert!(
         !agent
             .history
             .iter()
@@ -170,6 +177,57 @@ async fn provider_native_bash_tool_call_executes_without_format_error_turn() {
         "native tool_call should not trigger format-error recovery: {:#?}",
         agent.history
     );
+}
+
+#[tokio::test]
+async fn fenced_action_wins_over_conflicting_native_tool_call() {
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+
+    let model = Arc::new(RawResponseModel::new([
+        raw_response(
+            "```bash\necho fenced-call\n```",
+            serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": "```bash\necho fenced-call\n```",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": "{\"command\":\"echo raw-call\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+        ),
+        raw_response(
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfinal\n```",
+            serde_json::json!({"deterministic": true}),
+        ),
+    ]));
+    let env = RecordingCancellationEnv::default();
+    let requests = Arc::clone(&env.requests);
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env: Box::new(env),
+        task: "round trip".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+
+    let exit = agent.run().await.unwrap();
+    assert!(matches!(exit, ExitReason::Submitted { .. }));
+
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "echo fenced-call");
 }
 
 #[test]

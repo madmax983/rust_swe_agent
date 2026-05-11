@@ -15,7 +15,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{Action, Agent, ExitReason, StepOutcome, extract_action_from_model_response};
+use super::{
+    Action, Agent, ExitReason, StepOutcome, extract_action_for_tools,
+    extract_action_from_model_response,
+};
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
@@ -369,6 +372,37 @@ fn redact_message_extra(
     extra
 }
 
+fn assistant_content_with_normalized_action(
+    provider_content: &str,
+    action: &Action,
+    tool_names: &[String],
+) -> String {
+    if !matches!(
+        extract_action_for_tools(provider_content, tool_names),
+        Action::None
+    ) {
+        return provider_content.to_owned();
+    }
+
+    let Some(fenced_action) = action_as_fenced_block(action) else {
+        return provider_content.to_owned();
+    };
+
+    if provider_content.trim().is_empty() {
+        fenced_action
+    } else {
+        format!("{}\n{}", provider_content.trim_end(), fenced_action)
+    }
+}
+
+fn action_as_fenced_block(action: &Action) -> Option<String> {
+    match action {
+        Action::Bash(cmd) => Some(format!("```bash\n{cmd}\n```")),
+        Action::Tool(call) => Some(format!("```{}\n{}\n```", call.name, call.input)),
+        Action::Submit(_) | Action::None => None,
+    }
+}
+
 #[async_trait]
 impl Agent for DefaultAgent {
     // The step body walks through 7 sequential phases (limit checks →
@@ -486,9 +520,15 @@ impl Agent for DefaultAgent {
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
 
+        // 4. Parse action.
+        let tool_names = self.tool_registry.tool_names();
+        let action = extract_action_from_model_response(&resp.content, &resp.raw, &tool_names);
+        let assistant_content =
+            assistant_content_with_normalized_action(&resp.content, &action, &tool_names);
+
         // Record assistant message in trajectory with raw + cost.
         let asst_ts = chrono::Utc::now().to_rfc3339();
-        let mut asst = Message::assistant(resp.content.clone());
+        let mut asst = Message::assistant(assistant_content.clone());
         asst.extra.cost = resp.usage.cost_usd;
         asst.extra.response = Some(resp.raw.clone());
         asst.extra.timestamp = Some(asst_ts.clone());
@@ -500,18 +540,12 @@ impl Agent for DefaultAgent {
             timestamp: asst_ts,
         });
 
-        // 4. Parse action.
-        let action = extract_action_from_model_response(
-            &resp.content,
-            &resp.raw,
-            &self.tool_registry.tool_names(),
-        );
         match &action {
             Action::Submit(output) => {
                 asst.extra.actions = Some(vec!["__SUBMIT__".into()]);
                 self.history.push(Message::assistant(
                     self.redactor
-                        .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                        .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
                         .text,
                 ));
                 record_redacted_message(
@@ -550,7 +584,7 @@ impl Agent for DefaultAgent {
                     .get_or_insert(FailureCategory::ModelParse);
                 self.history.push(Message::assistant(
                     self.redactor
-                        .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                        .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
                         .text,
                 ));
                 record_redacted_message(
@@ -607,7 +641,7 @@ impl Agent for DefaultAgent {
         // gating decision so blocked attempts are still audited.
         self.history.push(Message::assistant(
             self.redactor
-                .redact_text(&resp.content, surface::MODEL_OBSERVATION)
+                .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
                 .text,
         ));
         record_redacted_message(
@@ -919,20 +953,19 @@ impl DefaultAgent {
     }
 
     fn maybe_warn_wallclock_deadline(&mut self) {
-        let Some(deadline) = self.wallclock_deadline.as_ref() else {
+        let Some((timeout, remaining)) = self.wallclock_deadline.as_mut().and_then(|deadline| {
+            if deadline.warned {
+                return None;
+            }
+            let remaining = deadline.deadline.saturating_duration_since(Instant::now());
+            if remaining > deadline.warn_before {
+                return None;
+            }
+            deadline.warned = true;
+            Some((deadline.timeout, remaining))
+        }) else {
             return;
         };
-        if deadline.warned {
-            return;
-        }
-        let remaining = deadline.deadline.saturating_duration_since(Instant::now());
-        if remaining > deadline.warn_before {
-            return;
-        }
-        let timeout = deadline.timeout;
-        if let Some(deadline) = &mut self.wallclock_deadline {
-            deadline.warned = true;
-        }
         self.push_wallclock_deadline_warning(timeout, remaining);
     }
 

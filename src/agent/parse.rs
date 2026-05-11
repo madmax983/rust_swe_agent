@@ -122,7 +122,7 @@ pub fn extract_action_from_model_response(
     tool_names: &[String],
 ) -> Action {
     let text_action = extract_action_for_tools(content, tool_names);
-    if matches!(text_action, Action::Submit(_)) {
+    if !matches!(text_action, Action::None) {
         return text_action;
     }
     if let Some(call) = extract_first_registered_raw_tool_call(raw, tool_names) {
@@ -232,6 +232,7 @@ fn raw_tool_arguments_to_input(tool_name: &str, arguments: &Value) -> Option<Str
         Value::Object(map) if tool_name == BASH_TOOL_NAME => map
             .get("command")
             .or_else(|| map.get("cmd"))
+            .or_else(|| map.get("input"))
             .and_then(Value::as_str)
             .map(str::to_owned),
         Value::Object(map) => map
@@ -239,6 +240,7 @@ fn raw_tool_arguments_to_input(tool_name: &str, arguments: &Value) -> Option<Str
             .and_then(Value::as_str)
             .map(str::to_owned)
             .or_else(|| serde_json::to_string(arguments).ok()),
+        Value::Null => None,
         _ => serde_json::to_string(arguments).ok(),
     }
 }
@@ -342,6 +344,70 @@ mod tests {
                 &["bash".into()]
             ),
             Action::Bash("pwd && ls -la".into())
+        );
+    }
+
+    #[test]
+    fn fenced_bash_wins_over_conflicting_raw_tool_call() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"command\":\"echo raw\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let content = "```bash\necho fenced\n```";
+
+        assert_eq!(
+            extract_action_from_model_response(content, &raw, &["bash".into()]),
+            Action::Bash("echo fenced".into())
+        );
+    }
+
+    #[test]
+    fn raw_bash_tool_call_accepts_generic_input_argument() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "bash",
+                            "arguments": "{\"input\":\"echo from-input\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_action_from_model_response("Let me run that.", &raw, &["bash".into()]),
+            Action::Bash("echo from-input".into())
+        );
+    }
+
+    #[test]
+    fn raw_null_tool_call_arguments_are_ignored() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "bash",
+                            "arguments": null
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_action_from_model_response("Let me run that.", &raw, &["bash".into()]),
+            Action::None
         );
     }
 
