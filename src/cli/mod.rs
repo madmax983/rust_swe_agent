@@ -1204,7 +1204,7 @@ fn reproduce_swebench_args(
         _ => {
             // Local path — use the recorded path as-is.
             DatasetSource::LocalPath(
-                bundle_reproduce_dataset_path(r, manifest, source_results)?
+                bundle_reproduce_dataset_path(r, manifest)?
                     .unwrap_or_else(|| std::path::PathBuf::from(&manifest.dataset.path)),
             )
         }
@@ -1280,7 +1280,6 @@ fn reproduce_swebench_args(
 fn bundle_reproduce_dataset_path(
     r: &args::ReproduceCmd,
     manifest: &crate::run::swebench::ProvenanceManifest,
-    source_results: &crate::run::swebench::SweepResults,
 ) -> Result<Option<std::path::PathBuf>, Error> {
     if !r
         .from
@@ -1290,28 +1289,20 @@ fn bundle_reproduce_dataset_path(
         return Ok(None);
     }
     let recorded = std::path::PathBuf::from(&manifest.dataset.path);
-    let recorded_exists = if recorded.is_absolute() {
-        recorded.exists()
-    } else {
-        recorded.exists() || r.from.join(&recorded).exists()
-    };
-    if recorded_exists {
-        return Ok(None);
+    if !recorded.is_absolute() {
+        let bundled_relative = r.from.join(&recorded);
+        if bundled_relative.exists() {
+            return Ok(Some(bundled_relative));
+        }
     }
-    std::fs::create_dir_all(&r.output).map_err(Error::Io)?;
-    let path = r.output.join("bundle-reproduce.instances.jsonl");
-    let mut text = String::new();
-    for instance in &source_results.instances {
-        let row = serde_json::json!({
-            "instance_id": instance.instance_id,
-            "problem_statement": format!("bundle replay placeholder for {}", instance.instance_id),
-            "base_commit": "HEAD"
-        });
-        text.push_str(&serde_json::to_string(&row)?);
-        text.push('\n');
+    if recorded.exists() {
+        return Ok(Some(recorded));
     }
-    std::fs::write(&path, text).map_err(Error::Io)?;
-    Ok(Some(path))
+    Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+        "bundle reproduce requires the original local dataset `{}` for positive replays; \
+         use --limit 0 for bundle readability smoke checks or make the recorded dataset path available",
+        manifest.dataset.path
+    ))))
 }
 
 fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {

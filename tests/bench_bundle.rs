@@ -239,6 +239,44 @@ fn extracted_bundle_runs_bench_reproduce_manifest_smoke_without_layout_rewrite()
 }
 
 #[test]
+fn extracted_bundle_reproduce_with_positive_limit_requires_real_local_dataset() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    let archive = work.path().join("reproduce-positive.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, None));
+    let extracted = work.path().join("extracted-reproduce-positive");
+    extract_tar(&archive, &extracted);
+    let output = work.path().join("replay-positive");
+
+    let out = Command::new(binary_path())
+        .args(["bench", "reproduce", "--from"])
+        .arg(&extracted)
+        .arg("--output")
+        .arg(&output)
+        .args([
+            "--allow-drift",
+            "harness.git_sha",
+            "--limit",
+            "1",
+            "--skip-model-probe",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("bundle reproduce requires the original local dataset"),
+        "stderr:\n{stderr}\nstdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !output.join("bundle-reproduce.instances.jsonl").exists(),
+        "positive replay must not synthesize runnable SWE-bench rows"
+    );
+}
+
+#[test]
 fn bundle_instance_scope_includes_only_requested_instance_artifacts() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());
@@ -362,6 +400,33 @@ fn extracted_bundle_contains_no_known_secret_shapes() {
     extract_tar(&archive, &extracted);
 
     assert_no_known_secret_shapes(&extracted);
+}
+
+#[test]
+fn bundle_verify_reports_duplicate_manifest_paths() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    let archive = work.path().join("clean.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, None));
+
+    let duplicate_dir = work.path().join("duplicate-manifest-path");
+    extract_tar(&archive, &duplicate_dir);
+    let bundle_path = duplicate_dir.join("BUNDLE.json");
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&bundle_path).unwrap()).unwrap();
+    let first_file = bundle["files"].as_array().unwrap()[0].clone();
+    bundle["files"].as_array_mut().unwrap().push(first_file);
+    fs::write(&bundle_path, serde_json::to_string_pretty(&bundle).unwrap()).unwrap();
+    let duplicate_archive = work.path().join("duplicate-manifest-path.tar.gz");
+    pack_dir(&duplicate_dir, &duplicate_archive);
+
+    let out = bundle_verify(&duplicate_archive);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("duplicate:manifest.json"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]

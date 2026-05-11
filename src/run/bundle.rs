@@ -314,11 +314,12 @@ pub fn verify_bundle(archive_path: &Path) -> Result<BundleVerifyReport, BundleEr
         )));
     }
 
-    let expected = bundle
-        .files
-        .iter()
-        .map(|entry| (entry.path.clone(), entry))
-        .collect::<BTreeMap<_, _>>();
+    let mut expected = BTreeMap::new();
+    for entry in &bundle.files {
+        if expected.insert(entry.path.clone(), entry).is_some() {
+            problems.push(format!("duplicate:{}", entry.path));
+        }
+    }
 
     for (path, entry) in &expected {
         match actual.get(path) {
