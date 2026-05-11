@@ -382,8 +382,7 @@ fn exit_if_systemic_halt_sweep(results: &crate::run::swebench::SweepResults) {
     if results.sweep_status == crate::run::swebench::SWEEP_STATUS_SYSTEMIC_HALT {
         let category = results
             .systemic_halt_category
-            .map(|c| format!("{c:?}"))
-            .unwrap_or_else(|| "unknown".to_owned());
+            .map_or_else(|| "unknown".to_owned(), |c| format!("{c:?}"));
         exit_with_outcome(
             ExitCode::SystemicHalt,
             &format!("sweep halted: systemic failure detected (dominant category: {category})"),
@@ -1299,7 +1298,7 @@ fn reproduce_swebench_args(
         abort_on_systemic_failure: manifest
             .circuit_breaker
             .as_ref()
-            .map_or(true, |cb| cb.enabled),
+            .is_none_or(|cb| cb.enabled),
         systemic_failure_min_samples: manifest
             .circuit_breaker
             .as_ref()

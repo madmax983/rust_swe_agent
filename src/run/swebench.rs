@@ -59,12 +59,12 @@ pub mod circuit_breaker {
 
     /// An entry in the completion log fed to the circuit breaker.
     ///
-    /// The `bool` field is `true` when the category is present (i.e., the
-    /// instance actually failed with this category), `false` is reserved for
-    /// future use but currently unused. The tuple form keeps the API minimal.
-    /// The category field is `Option<FailureCategory>` in the sweep, but the
-    /// circuit breaker only receives completed instances that have a category.
-    pub type CompletionRecord = (FailureCategory, bool);
+    /// `None` category represents a successful or uncategorised completion and
+    /// counts toward the denominator but never toward an actionable category's
+    /// share.  Including all completed instances (successes and failures) in
+    /// the slice ensures the share percentage is relative to the full completion
+    /// count, not just the failing subset.
+    pub type CompletionRecord = (Option<FailureCategory>, bool);
 
     /// Stateless circuit-breaker configuration.
     ///
@@ -102,12 +102,16 @@ pub mod circuit_breaker {
                 return None;
             }
             let total = completed.len();
-            // Count only actionable categories.
+            // Count only actionable categories; None (success) adds to total but
+            // not to any category count — this is what prevents premature trips
+            // when successful completions dilute the actionable-failure share.
             let mut counts: std::collections::BTreeMap<FailureCategory, usize> =
                 std::collections::BTreeMap::new();
-            for (cat, _) in completed {
-                if cat.is_actionable() {
-                    *counts.entry(*cat).or_insert(0) += 1;
+            for (maybe_cat, _) in completed {
+                if let Some(cat) = maybe_cat {
+                    if cat.is_actionable() {
+                        *counts.entry(*cat).or_insert(0) += 1;
+                    }
                 }
             }
             // Find the dominant actionable category.
@@ -825,8 +829,7 @@ impl SweepResults {
                     "Circuit breaker:    tripped — {} not started; dominant category: {}",
                     self.not_started,
                     self.systemic_halt_category
-                        .map(|c| format!("{c:?}"))
-                        .unwrap_or_else(|| "unknown".to_owned())
+                        .map_or_else(|| "unknown".to_owned(), |c| format!("{c:?}"))
                 );
             }
         }
@@ -1860,17 +1863,19 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                     rr.result.exit_reason != "skipped_resume"
                                         && rr.result.exit_reason != EXIT_REASON_BUDGET_HALT
                                 })
-                                .filter_map(|rr| rr.result.failure_category.map(|cat| (cat, true)))
+                                .map(|rr| (rr.result.failure_category, true))
                                 .collect();
                             if let Some(cat) = breaker.check(&completed_live) {
                                 systemic_halt_triggered = true;
                                 systemic_halt_category = Some(cat);
                                 systemic_halt_not_started = pending.len();
                                 #[allow(clippy::cast_precision_loss)]
-                                let share_pct =
-                                    completed_live.iter().filter(|(c, _)| *c == cat).count() as f64
-                                        / completed_live.len() as f64
-                                        * 100.0;
+                                let share_pct = completed_live
+                                    .iter()
+                                    .filter(|(c, _)| *c == Some(cat))
+                                    .count() as f64
+                                    / completed_live.len() as f64
+                                    * 100.0;
                                 let first_ids: Vec<String> = results
                                     .iter()
                                     .filter(|rr| rr.result.failure_category == Some(cat))
