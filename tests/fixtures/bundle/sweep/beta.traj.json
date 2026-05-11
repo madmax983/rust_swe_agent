@@ -1,0 +1,47 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "info": {
+    "task": "beta",
+    "model_name": "deterministic",
+    "outcome": "error",
+    "exit_reason": "step_limit",
+    "failure_category": "step_limit",
+    "total_cost_usd": 0.0,
+    "token_usage": {
+      "prompt_tokens": 20,
+      "completion_tokens": 2
+    },
+    "redaction": {
+      "enabled": true,
+      "redacted": false
+    },
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "```bash\necho beta\n```"
+    },
+    {
+      "role": "user",
+      "content": "Exit code: 0\nOutput:\nbeta\n",
+      "extra": {
+        "other": {
+          "run_result": {
+            "stdout": "beta\n",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+          }
+        }
+      }
+    }
+  ]
+}

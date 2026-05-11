@@ -1,0 +1,122 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "total": 2,
+  "sweep_status": "completed",
+  "completed": 2,
+  "in_flight_at_cancel": 0,
+  "not_started": 0,
+  "submitted": 1,
+  "submitted_with_tests": 1,
+  "skipped": 0,
+  "errored": 1,
+  "failures_by_category": {
+    "step_limit": 1
+  },
+  "budget_halted": 0,
+  "with_patch": 1,
+  "patch_empty": 0,
+  "patch_apply_invalid": 0,
+  "github_pr_failures": 0,
+  "total_input_tokens": 30,
+  "total_cache_read_tokens": 0,
+  "total_cache_creation_tokens": 0,
+  "total_completion_tokens": 4,
+  "total_cost_usd": 0.0,
+  "cache_hit_rate": 0.0,
+  "retries": 0,
+  "retried_instances": 0,
+  "pass_at_k": 0.5,
+  "filter_spec": {
+    "original_count": 2,
+    "selected_count": 2
+  },
+  "manifest": {
+    "purpose": "fixture",
+    "harness": {
+      "name": "rust_swe_agent",
+      "version": "fixture",
+      "git_sha": "fixture-sha-bundle",
+      "git_dirty": false,
+      "git_resolution": "fixture"
+    },
+    "dataset": {
+      "path": "dataset.jsonl",
+      "sha256": "fixture-dataset-hash",
+      "instance_count": 2,
+      "source_kind": "local",
+      "selected_row_count": 2,
+      "post_filter_row_count": 2
+    },
+    "prompt_template": {
+      "source": "inline",
+      "sha256": "fixture-template-hash"
+    },
+    "config": {
+      "resolved": "[model]\nname = \"deterministic\"\n",
+      "overlay_paths": []
+    },
+    "model": {
+      "name": "deterministic",
+      "backend": "deterministic"
+    },
+    "runtime": {
+      "started_at_utc": "2026-05-01T00:00:00Z",
+      "finished_at_utc": "2026-05-01T00:00:01Z",
+      "host_os": "fixture",
+      "resume_mode": false,
+      "rust_version": "fixture"
+    },
+    "cli": {
+      "argv": [
+        "rust-swe-agent",
+        "bench",
+        "swebench",
+        "--dataset-path",
+        "dataset.jsonl",
+        "--output",
+        "runs"
+      ]
+    }
+  },
+  "instances": [
+    {
+      "instance_id": "alpha",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "steps": 1,
+      "cost_usd": 0.0,
+      "total_input_tokens": 10,
+      "total_completion_tokens": 2,
+      "duration_secs": 1.0,
+      "patch_present": true,
+      "non_empty_patch": true,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_run_before_submit": true
+    },
+    {
+      "instance_id": "beta",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "step_limit",
+      "steps": 2,
+      "cost_usd": 0.0,
+      "total_input_tokens": 20,
+      "total_completion_tokens": 2,
+      "duration_secs": 2.0,
+      "patch_present": false,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}

@@ -15,7 +15,7 @@ parsing human-oriented output.
 | 4    | `task_unsuccessful`      | The agent ran but did not produce a usable result: step limit reached, environment command failed, wallclock timeout, or repeated model API errors. |
 | 5    | `budget_halt`            | Cost ceiling triggered: `bench forecast --fail-over-cap` projected an over-cap run, or the sweep stopped because `--sweep-cost-limit-usd` was reached and no new tasks were dispatched. |
 | 6    | `regression_gate_failure`| `bench compare --max-regressions` or `--max-patch-size-regression` threshold was exceeded. |
-| 7    | `verification_failure`   | One or more `--verify NAME:COMMAND` checks did not pass after a `mini` run. |
+| 7    | `verification_failure`   | One or more `--verify NAME:COMMAND` checks did not pass after a `mini` run, or `bench bundle` detected a redaction retrigger / archive verification mismatch. |
 | 8    | `calibration_optimistic` | `bench calibrate --fail-on-optimistic` found actual sweep metrics above the forecast interval. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
@@ -62,6 +62,7 @@ coarse sweep-level result.
 | `bench tail`                    | `success`, `usage_error`, `internal_error` |
 | `bench triage`                  | `success`, `usage_error`, `internal_error` |
 | `bench frontier`                | `success`, `usage_error`, `internal_error` |
+| `bench bundle`                  | `success`, `usage_error`, `verification_failure`, `internal_error` |
 
 > **Legacy note:** `hello-world` and `replay` do not yet produce distinct
 > outcome classes beyond `success` / `internal_error`; they are interactive or
