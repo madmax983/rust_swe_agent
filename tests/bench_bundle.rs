@@ -319,6 +319,108 @@ fn bundle_instance_scope_includes_only_requested_instance_artifacts() {
 }
 
 #[test]
+fn bundle_instance_scope_zeroes_existing_cost_totals_without_selected_cost_telemetry() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    let results_path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&results_path).unwrap()).unwrap();
+    results["total_cost_usd"] = serde_json::json!(42.0);
+    results["actual_cost_usd"] = serde_json::json!(13.0);
+    let beta = results["instances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["instance_id"] == "beta")
+        .unwrap();
+    let beta = beta.as_object_mut().unwrap();
+    beta.insert("exit_reason".into(), serde_json::json!("skipped"));
+    beta.insert("outcome".into(), serde_json::json!("skipped"));
+    beta.remove("cost_usd");
+    beta.remove("total_cost_usd");
+    beta.remove("actual_cost_usd");
+    fs::write(
+        &results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+
+    let archive = work.path().join("beta-no-cost.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, Some("beta")));
+
+    let extracted = work.path().join("extracted-beta-no-cost");
+    extract_tar(&archive, &extracted);
+    let scoped: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(extracted.join("results.json")).unwrap()).unwrap();
+    assert_eq!(scoped["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["instances"][0]["instance_id"], "beta");
+    assert_eq!(scoped["total_cost_usd"], serde_json::json!(0.0));
+    assert_eq!(scoped["actual_cost_usd"], serde_json::json!(0.0));
+}
+
+#[test]
+fn bundle_instance_scope_drops_filtered_evaluation_summaries() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    let evaluation_path = sweep.join("evaluation.json");
+    let mut evaluation: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&evaluation_path).unwrap()).unwrap();
+    evaluation["behavioral"] = serde_json::json!({
+        "tests_run_before_submit_rate": 0.5,
+        "resolved_rate_when_tests_run": 0.5,
+        "resolved_rate_when_tests_skipped": 0.5
+    });
+    evaluation["breakdown"] = serde_json::json!([{
+        "axis": "repo",
+        "bucket": "full-sweep",
+        "instances": 2,
+        "resolved": 1,
+        "resolved_rate": 0.5
+    }]);
+    evaluation["cost_attribution"] = serde_json::json!([{
+        "bucket": "full-sweep",
+        "instances": 2,
+        "total_cost_usd": 9.0,
+        "mean_cost_usd": 4.5,
+        "cost_share": 1.0
+    }]);
+    evaluation["model_mix_summary"] = serde_json::json!([{
+        "model": "full-model",
+        "runs": 2,
+        "resolved": 1,
+        "resolved_rate": 0.5,
+        "total_cost_usd": 9.0
+    }]);
+    fs::write(
+        &evaluation_path,
+        serde_json::to_string_pretty(&evaluation).unwrap(),
+    )
+    .unwrap();
+
+    let archive = work.path().join("alpha-eval-summary.tar.gz");
+    assert_success(&bundle_create(&sweep, &archive, Some("alpha")));
+
+    let extracted = work.path().join("extracted-alpha-eval-summary");
+    extract_tar(&archive, &extracted);
+    let scoped: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(extracted.join("evaluation.json")).unwrap())
+            .unwrap();
+    assert_eq!(scoped["instances"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["instances"][0]["instance_id"], "alpha");
+    for field in [
+        "breakdown",
+        "cost_attribution",
+        "model_mix_summary",
+        "behavioral",
+    ] {
+        assert!(
+            scoped.get(field).is_none(),
+            "{field} remained in {scoped:#}"
+        );
+    }
+}
+
+#[test]
 fn bundle_create_is_identical_modulo_timestamp_without_fixed_epoch() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());

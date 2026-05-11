@@ -421,13 +421,31 @@ fn load_optional_evaluation(
         .get_mut("instances")
         .and_then(serde_json::Value::as_array_mut)
     {
+        let original_len = instances.len();
         instances.retain(|row| {
             row.get("instance_id")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|id| included.contains(id))
         });
+        if instances.len() != original_len {
+            drop_filtered_evaluation_summaries(&mut value);
+        }
     }
     normalized_json_bytes(&value, normalizer).map(Some)
+}
+
+fn drop_filtered_evaluation_summaries(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "behavioral",
+        "breakdown",
+        "cost_attribution",
+        "model_mix_summary",
+    ] {
+        map.remove(key);
+    }
 }
 
 fn filter_results_for_scope(value: &mut serde_json::Value, included: &BTreeSet<String>) {
@@ -535,13 +553,22 @@ fn apply_scoped_cost_and_token_aggregates(
         "total_completion_tokens".into(),
         serde_json::json!(aggregates.total_completion_tokens),
     );
-    if let Some(cost) = aggregates.total_cost_usd {
-        map.insert("total_cost_usd".into(), serde_json::json!(cost));
+    if aggregates.total_cost_usd.is_some() || map.contains_key("total_cost_usd") {
+        map.insert(
+            "total_cost_usd".into(),
+            serde_json::json!(aggregates.total_cost_usd.unwrap_or(0.0)),
+        );
+    }
+    if map.contains_key("estimated_cost_usd") {
+        map.insert(
+            "estimated_cost_usd".into(),
+            serde_json::json!(aggregates.total_cost_usd.unwrap_or(0.0)),
+        );
     }
     if map.contains_key("actual_cost_usd") {
         map.insert(
             "actual_cost_usd".into(),
-            serde_json::json!(aggregates.actual_cost_usd),
+            serde_json::json!(aggregates.actual_cost_usd.unwrap_or(0.0)),
         );
     }
     map.insert(
