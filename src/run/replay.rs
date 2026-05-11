@@ -224,10 +224,14 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
             .clone()
     };
 
-    // 7. Write drift report to disk and stderr when there is drift.
+    // 7. Write drift report when there is drift; remove any stale report when
+    //    there is none, so reused CI output directories don't show old results.
+    let drift_report_path = args.output_dir.join(DRIFT_REPORT_FILENAME);
     if !collected.is_empty() {
         let report = DriftReport { steps: collected };
         write_drift_report(&args.output_dir, &report)?;
+    } else if drift_report_path.exists() {
+        std::fs::remove_file(&drift_report_path)?;
     }
 
     // 8. In --report-only mode suppress only prompt-drift failures; propagate
@@ -551,6 +555,36 @@ mod tests {
                 .any(|e| e.file_name().to_string_lossy() == "replayed-run.output.txt")
         );
         assert!(!dir.path().join(DRIFT_REPORT_FILENAME).exists());
+    }
+
+    #[tokio::test]
+    async fn clean_replay_removes_stale_drift_report() {
+        let dir = tempdir().unwrap();
+        let traj = make_simple_traj();
+        let dummy_path = dir.path().join("input.traj.json");
+        traj.save_pretty(&dummy_path).unwrap();
+
+        // Pre-plant a stale drift report from a previous run.
+        let stale_path = dir.path().join(DRIFT_REPORT_FILENAME);
+        std::fs::write(&stale_path, r#"{"steps":[]}"#).unwrap();
+        assert!(stale_path.exists(), "precondition: stale report exists");
+
+        let cfg = Config::defaults().unwrap();
+        let args = ReplayArgs {
+            trajectory_path: dummy_path,
+            config: cfg,
+            output_dir: dir.path().to_path_buf(),
+            trajectory_name: Some("clean-run".into()),
+            allow_unfingerprinted: true,
+            report_only: false,
+            drift_cap_bytes: DEFAULT_DRIFT_CAP_BYTES,
+        };
+        run(args).await.unwrap();
+
+        assert!(
+            !stale_path.exists(),
+            "clean replay must remove the stale drift report"
+        );
     }
 
     #[test]
