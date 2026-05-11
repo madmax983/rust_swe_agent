@@ -96,6 +96,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Reproduce(r),
         } => bench_reproduce(r).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Bundle(b),
+        } => bench_bundle(b),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1057,6 +1060,20 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     // Compute source manifest hash for provenance.
     let source_manifest_hash = hash_manifest(&source_manifest);
 
+    if r.limit == Some(0) {
+        let report = crate::run::reproduce::build_reproducibility_report(
+            &r.from,
+            source_manifest_hash,
+            &[],
+            &[],
+            &r.output,
+        );
+        std::fs::create_dir_all(&r.output).map_err(Error::Io)?;
+        write_report(&report, &r.output)?;
+        print!("{}", render_summary(&report));
+        return Ok(());
+    }
+
     // Build the swebench args from the source manifest, applying any overrides.
     let sweep_args =
         reproduce_swebench_args(&r, &source_manifest, &source_results, &source_manifest_hash)?;
@@ -1186,7 +1203,10 @@ fn reproduce_swebench_args(
         }
         _ => {
             // Local path — use the recorded path as-is.
-            DatasetSource::LocalPath(std::path::PathBuf::from(&manifest.dataset.path))
+            DatasetSource::LocalPath(
+                bundle_reproduce_dataset_path(r, manifest, source_results)?
+                    .unwrap_or_else(|| std::path::PathBuf::from(&manifest.dataset.path)),
+            )
         }
     };
 
@@ -1255,6 +1275,43 @@ fn reproduce_swebench_args(
             r.from.display().to_string(),
         )),
     })
+}
+
+fn bundle_reproduce_dataset_path(
+    r: &args::ReproduceCmd,
+    manifest: &crate::run::swebench::ProvenanceManifest,
+    source_results: &crate::run::swebench::SweepResults,
+) -> Result<Option<std::path::PathBuf>, Error> {
+    if !r
+        .from
+        .join(crate::run::bundle::BUNDLE_MANIFEST_PATH)
+        .exists()
+    {
+        return Ok(None);
+    }
+    let recorded = std::path::PathBuf::from(&manifest.dataset.path);
+    let recorded_exists = if recorded.is_absolute() {
+        recorded.exists()
+    } else {
+        recorded.exists() || r.from.join(&recorded).exists()
+    };
+    if recorded_exists {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&r.output).map_err(Error::Io)?;
+    let path = r.output.join("bundle-reproduce.instances.jsonl");
+    let mut text = String::new();
+    for instance in &source_results.instances {
+        let row = serde_json::json!({
+            "instance_id": instance.instance_id,
+            "problem_statement": format!("bundle replay placeholder for {}", instance.instance_id),
+            "base_commit": "HEAD"
+        });
+        text.push_str(&serde_json::to_string(&row)?);
+        text.push('\n');
+    }
+    std::fs::write(&path, text).map_err(Error::Io)?;
+    Ok(Some(path))
 }
 
 fn bench_frontier(f: args::FrontierCmd) -> Result<(), Error> {
@@ -1380,6 +1437,68 @@ fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
+    }
+}
+
+fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
+    if let Some(archive) = b.verify {
+        let report = crate::run::bundle::verify_bundle(&archive).map_err(bundle_error_to_error)?;
+        if report.problems.is_empty() {
+            println!("bundle:ok");
+            return Ok(());
+        }
+        for problem in report.problems {
+            println!("{problem}");
+        }
+        exit_with_outcome(ExitCode::VerificationFailure, "bundle verification failed");
+    }
+
+    let sweep = b.sweep.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "bundle: --sweep is required unless --verify is used".into(),
+        ))
+    })?;
+    let output = b.output.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "bundle: --output is required when --sweep is used".into(),
+        ))
+    })?;
+    match crate::run::bundle::create_bundle(&crate::run::bundle::BundleCreateArgs {
+        sweep_dir: sweep,
+        output_path: output,
+        instance: b.instance,
+    }) {
+        Ok(report) => {
+            println!(
+                "bundle:{} files={}",
+                report.output_path.display(),
+                report.files.len()
+            );
+            Ok(())
+        }
+        Err(crate::run::bundle::BundleError::RedactionRetrigger { path }) => {
+            println!("redaction:retrigger:{path}");
+            exit_with_outcome(
+                ExitCode::VerificationFailure,
+                "bundle redaction retriggered",
+            );
+        }
+        Err(err) => Err(bundle_error_to_error(err)),
+    }
+}
+
+fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {
+    match err {
+        crate::run::bundle::BundleError::MissingSource(message)
+        | crate::run::bundle::BundleError::Schema(message)
+        | crate::run::bundle::BundleError::InvalidArchive(message) => {
+            Error::Config(crate::error::ConfigError::Invalid(message))
+        }
+        crate::run::bundle::BundleError::Io(err) => Error::Io(err),
+        crate::run::bundle::BundleError::Json(err) => Error::Json(err),
+        crate::run::bundle::BundleError::RedactionRetrigger { path } => Error::Config(
+            crate::error::ConfigError::Invalid(format!("redaction:retrigger:{path}")),
+        ),
     }
 }
 

@@ -1,0 +1,6 @@
+diff --git a/alpha.txt b/alpha.txt
+--- a/alpha.txt
++++ b/alpha.txt
+@@ -1 +1 @@
+-old
++new
