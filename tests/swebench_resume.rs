@@ -177,6 +177,9 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -282,6 +285,9 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -356,6 +362,9 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -430,6 +439,9 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -531,6 +543,9 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -606,6 +621,9 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -718,6 +736,9 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
             branch_prefix: "rust-swe-agent".into(),
         }),
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -818,6 +839,9 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
             branch_prefix: "rust-swe-agent".into(),
         }),
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();

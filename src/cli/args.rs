@@ -662,6 +662,29 @@ pub struct SwebenchCmd {
     #[arg(long, default_value_t = 30)]
     pub cancel_deadline: u64,
 
+    /// Enable the mid-sweep circuit breaker that halts when a systemic failure
+    /// pattern emerges (default: true).  When >= --systemic-failure-min-samples
+    /// instances have completed and >= --systemic-failure-share-pct% share the
+    /// same actionable failure category, the sweep stops dispatching new work,
+    /// drains in-flight tasks, and exits with code 11.  Actionable categories
+    /// are: model_api (bad API key, quota exhausted, wrong model name) and
+    /// env_setup (Docker daemon down, unreachable image).  Non-actionable
+    /// categories (step_limit, patch_empty, etc.) never trip the breaker.
+    /// Pass --abort-on-systemic-failure=false to opt out entirely.
+    #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true")]
+    pub abort_on_systemic_failure: bool,
+
+    /// Minimum number of completed instances required before the circuit
+    /// breaker is eligible to trip.  Raise this for large sweeps where a few
+    /// early failures are expected noise.
+    #[arg(long, default_value_t = 5)]
+    pub systemic_failure_min_samples: usize,
+
+    /// Percentage share (0–100) of completed instances that must share the
+    /// same actionable failure category for the circuit breaker to trip.
+    #[arg(long, default_value_t = 80)]
+    pub systemic_failure_share_pct: u8,
+
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
 }

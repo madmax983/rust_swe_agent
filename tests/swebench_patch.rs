@@ -139,6 +139,9 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -243,6 +246,9 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -340,6 +346,9 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();
@@ -434,6 +443,9 @@ async fn missing_workdir_marks_outcome_as_error() {
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     })
     .await
     .unwrap();

@@ -118,6 +118,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         rate_limit_events: None,
         total_fallbacks: 0,
         model_mix: BTreeMap::new(),
+        systemic_halt_category: None,
         cost_limit_usd: None,
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();

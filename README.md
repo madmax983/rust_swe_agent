@@ -144,7 +144,11 @@ For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your
 budget, and finally `bench calibrate` against the completed `results.json`.
 This avoids beginning with a multi-instance spendfest and leaves a durable
-calibration record. Tiny mercy.
+calibration record. The built-in
+[systemic-failure circuit breaker](docs/spec-systemic-halt.md) halts the sweep
+early if the first N instances all fail with the same operator-actionable cause
+(bad API key, broken Docker daemon), so a misconfigured run costs cents to abort
+instead of dollars to ride out. Tiny mercy.
 
 ## Troubleshooting
 
@@ -183,6 +187,10 @@ a valid trajectory in hand:
 - [`bench reproduce`](docs/spec-reproduce.md): replay a saved sweep from its
   manifest, detect environment drift, and write a `reproducibility.json`
   comparison artifact.
+- [`systemic-failure circuit breaker`](docs/spec-systemic-halt.md): halt
+  sweeps early when all instances fail with the same operator-actionable cause;
+  exit code 11, `halt-report.json` artifact, actionable-category whitelist, and
+  `bench reproduce` drift handling.
 
 ## Nightly E2E smoke
 

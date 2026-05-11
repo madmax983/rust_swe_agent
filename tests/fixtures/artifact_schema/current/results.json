@@ -1,6 +1,9 @@
 {
   "artifact_kind": "sweep_results",
-  "schema_version": {"major": 1, "minor": 4},
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
   "total": 1,
   "sweep_status": "completed",
   "completed": 1,
@@ -23,7 +26,7 @@
   "total_cost_usd": 0.0,
   "actual_cost_usd": 0.0,
   "actual_cost_source": "rate_card_estimate",
-  "baseline_cost_usd": 0.00006,
+  "baseline_cost_usd": 6e-05,
   "baseline_cost_model": "claude-3-5-sonnet",
   "cache_hit_rate": 0.0,
   "retries": 0,
@@ -75,7 +78,14 @@
       "rust_version": "fixture"
     },
     "cli": {
-      "argv": ["fixture"]
+      "argv": [
+        "fixture"
+      ]
+    },
+    "circuit_breaker": {
+      "enabled": true,
+      "min_samples": 5,
+      "share_pct": 80
     }
   },
   "instances": [

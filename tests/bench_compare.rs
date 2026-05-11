@@ -214,6 +214,7 @@ fn write_results_with_filter_spec_and_model(
                 rust_version: None,
             },
             cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+            circuit_breaker: None,
             reproduced_from: None,
         }),
         cost_limit_usd: None,
@@ -223,6 +224,7 @@ fn write_results_with_filter_spec_and_model(
         total_fallbacks: 0,
 
         model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
     };
     std::fs::write(
         dir.join("results.json"),

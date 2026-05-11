@@ -888,6 +888,7 @@ fn sweep_results(
         rate_limit_events: None,
         total_fallbacks: 0,
         model_mix: BTreeMap::new(),
+        systemic_halt_category: None,
     }
 }
 
@@ -978,6 +979,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
         cli: CliManifest {
             argv: case.parallel_arg_style.argv(case.parallel),
         },
+        circuit_breaker: None,
         reproduced_from: None,
     }
 }

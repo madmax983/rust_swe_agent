@@ -97,6 +97,9 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
     }
 }
 

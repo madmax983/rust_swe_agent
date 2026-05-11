@@ -2912,6 +2912,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -3057,6 +3058,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -3243,6 +3245,7 @@ mod tests {
                 rust_version: None,
             },
             cli: crate::run::swebench::CliManifest { argv: Vec::new() },
+            circuit_breaker: None,
             reproduced_from: None,
         };
         let mut candidate = baseline.clone();
@@ -3422,6 +3425,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -3701,6 +3705,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -3709,6 +3714,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3777,6 +3783,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -3882,6 +3889,7 @@ mod tests {
                 },
                 cli: crate::run::swebench::CliManifest { argv: Vec::new() },
                 reproduced_from: None,
+                circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -3890,6 +3898,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3995,6 +4004,7 @@ mod tests {
                     argv: vec!["rust-swe-agent".into()],
                 },
                 reproduced_from: None,
+                circuit_breaker: None,
             }),
             cost_limit_usd: None,
             instances: Vec::new(),
@@ -4003,6 +4013,7 @@ mod tests {
             total_fallbacks: 0,
 
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4139,6 +4150,7 @@ mod tests {
             rate_limit_events: Some(events),
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
+            systemic_halt_category: None,
         };
         std::fs::write(
             dir.path().join("results.json"),

@@ -52,6 +52,8 @@ pub struct TailSnapshot {
     pub warnings: Vec<String>,
     pub total_fallbacks: u64,
     pub model_mix: BTreeMap<String, usize>,
+    /// Non-None when actionable failures are building up or the breaker tripped.
+    pub circuit_breaker_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -319,6 +321,7 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
             (meta.total_fallbacks, std::mem::take(&mut meta.model_mix))
         };
 
+    let circuit_breaker_status = circuit_breaker_status_line(&meta, &failure_counts, completed);
     Ok(TailSnapshot {
         sweep_dir: sweep_dir.to_path_buf(),
         status,
@@ -341,6 +344,7 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         warnings,
         total_fallbacks,
         model_mix,
+        circuit_breaker_status,
     })
 }
 
@@ -710,6 +714,16 @@ fn abort_reason(
     if let Some(reason) = &meta.abort_reason {
         return Some(reason.clone());
     }
+    if meta
+        .status
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("systemic_halt"))
+    {
+        return Some(format!(
+            "circuit breaker tripped: {} instance(s) not started",
+            meta.not_started.unwrap_or(0)
+        ));
+    }
     if let Some(status) = meta.status.as_deref() {
         if matches!(
             status.to_ascii_lowercase().as_str(),
@@ -732,6 +746,48 @@ fn abort_reason(
         }
     }
     None
+}
+
+/// Returns a one-line circuit-breaker status string for display in `bench tail`.
+///
+/// Shows progress toward a trip during a live sweep and the tripped state for
+/// a completed one.  Returns `None` when there are no actionable failures and
+/// the sweep did not end as `systemic_halt`.
+fn circuit_breaker_status_line(
+    meta: &SweepMeta,
+    failure_counts: &BTreeMap<FailureCategory, usize>,
+    completed: usize,
+) -> Option<String> {
+    if meta
+        .status
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("systemic_halt"))
+    {
+        return Some("tripped — sweep halted early".to_owned());
+    }
+
+    // Find the dominant actionable category, if any.
+    let actionable: Vec<(FailureCategory, usize)> = failure_counts
+        .iter()
+        .filter(|(cat, _)| cat.is_actionable())
+        .map(|(cat, count)| (*cat, *count))
+        .collect();
+    if actionable.is_empty() || completed == 0 {
+        return None;
+    }
+    let total_actionable: usize = actionable.iter().map(|(_, n)| n).sum();
+    let (dominant_cat, dominant_count) = actionable
+        .iter()
+        .max_by_key(|(_, n)| n)
+        .copied()
+        .unwrap_or(actionable[0]);
+    #[allow(clippy::cast_precision_loss)]
+    let share_pct = dominant_count as f64 / completed as f64 * 100.0;
+    Some(format!(
+        "armed — {total_actionable}/{completed} actionable failure(s), \
+         dominant: {} ({share_pct:.0}%)",
+        failure_label(dominant_cat),
+    ))
 }
 
 fn burn_rate<'a>(
@@ -826,6 +882,9 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
             let _ = writeln!(out, "  - {}: {count}", failure_label(*category));
         }
     }
+    if let Some(cb) = &snapshot.circuit_breaker_status {
+        let _ = writeln!(out, "Circuit breaker: {cb}");
+    }
     if let Some(reason) = &snapshot.abort_reason {
         let _ = writeln!(out, "Abort:       {reason}");
     } else if snapshot.status == "cancelling" {
@@ -835,6 +894,8 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         let _ = writeln!(out, "Status:      cancelling ({left} left)");
     } else if snapshot.status == "cancelled" {
         out.push_str("Status:      cancelled\n");
+    } else if snapshot.status == "systemic_halt" {
+        out.push_str("Status:      systemic halt (circuit breaker tripped)\n");
     } else if snapshot.is_complete {
         out.push_str("Status:      completed\n");
     } else {

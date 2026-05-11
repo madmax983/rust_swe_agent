@@ -53,6 +53,11 @@ pub enum ExitCode {
     /// 10 — replay response exhausted: the scripted-response queue ran out
     /// before the agent finished (trajectory is structurally incompatible).
     ReplayResponseExhausted = 10,
+    /// 11 — sweep halted by the systemic-failure circuit breaker: at least N
+    /// completed instances shared the same operator-actionable failure category
+    /// at or above the configured share threshold (default 80%). See
+    /// `docs/spec-systemic-halt.md` for the full contract.
+    SystemicHalt = 11,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -84,6 +89,7 @@ impl ExitCode {
             Self::CalibrationOptimistic => "calibration_optimistic",
             Self::ReplayPromptDrift => "replay_prompt_drift",
             Self::ReplayResponseExhausted => "replay_response_exhausted",
+            Self::SystemicHalt => "systemic_halt",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
