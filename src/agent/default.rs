@@ -470,6 +470,17 @@ impl Agent for DefaultAgent {
         asst.extra.response = Some(resp.raw.clone());
         asst.extra.timestamp = Some(asst_ts.clone());
 
+        // Store input fingerprint for replay drift detection (issue #155).
+        // `self.history` is the exact message slice that was sent to the model.
+        let fp = crate::fingerprint::compute_input_fingerprint(&self.history);
+        asst.extra.other.insert(
+            "model_call".to_owned(),
+            serde_json::json!({
+                "input_fingerprint": fp.hex,
+                "input_canonical_size": fp.canonical_size
+            }),
+        );
+
         self.stream.emit(StreamEvent::AssistantMessage {
             step: self.steps,
             content: resp.content.clone(),

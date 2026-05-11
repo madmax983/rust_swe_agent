@@ -342,7 +342,7 @@ fn inject_results_only_errored_instance(sweep: &Path) {
         serde_json::to_string_pretty(&json!({
             "trajectory_format": "mini-swe-agent-1.1",
             "artifact_kind": "trajectory",
-            "schema_version": {"major": 1, "minor": 3},
+            "schema_version": {"major": 1, "minor": 4},
             "info": {
                 "task": "eval-missing-error",
                 "model_name": "fixture-model",
@@ -424,7 +424,7 @@ fn inject_resolved_rerun_aggregate_with_run1_failure(sweep: &Path) {
         serde_json::to_string_pretty(&json!({
             "trajectory_format": "mini-swe-agent-1.1",
             "artifact_kind": "trajectory",
-            "schema_version": {"major": 1, "minor": 3},
+            "schema_version": {"major": 1, "minor": 4},
             "info": {
                 "task": "resolved-rerun",
                 "model_name": "fixture-model",

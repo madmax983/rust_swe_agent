@@ -226,6 +226,9 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
         config: cfg,
         output_dir: r.output,
         trajectory_name: r.trajectory_name,
+        allow_unfingerprinted: r.allow_unfingerprinted,
+        report_only: r.report_only,
+        drift_cap_bytes: r.drift_cap_bytes,
     };
     crate::run::replay::run(args).await
 }

@@ -87,14 +87,22 @@ impl Model for DeterministicModel {
             *count += 1;
         }
 
+        // call_count was just incremented above; subtract 1 for 0-indexed step.
+        let step_index = {
+            let count = self
+                .call_count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            count.saturating_sub(1)
+        };
+
         let content = {
             let mut q = self
                 .responses
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            q.pop_front().ok_or_else(|| {
-                ModelError::Malformed("deterministic model: no scripted response left".into())
-            })?
+            q.pop_front()
+                .ok_or(ModelError::ScriptedResponsesExhausted(step_index))?
         };
 
         // Sentinel: "__rate_limited__:N" → ModelError::RateLimited with

@@ -47,6 +47,12 @@ pub enum ExitCode {
     /// 8 - calibration gate failure (`bench calibrate --fail-on-optimistic`
     /// found actuals above the forecast interval).
     CalibrationOptimistic = 8,
+    /// 9 — replay prompt-drift detected: the agent's current input messages do
+    /// not match the fingerprint stored in the cassette trajectory.
+    ReplayPromptDrift = 9,
+    /// 10 — replay response exhausted: the scripted-response queue ran out
+    /// before the agent finished (trajectory is structurally incompatible).
+    ReplayResponseExhausted = 10,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -76,6 +82,8 @@ impl ExitCode {
             Self::RegressionGateFailure => "regression_gate_failure",
             Self::VerificationFailure => "verification_failure",
             Self::CalibrationOptimistic => "calibration_optimistic",
+            Self::ReplayPromptDrift => "replay_prompt_drift",
+            Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -92,7 +100,14 @@ impl ExitCode {
             Error::Config(_) => Self::UsageError,
             Error::VerificationFailed(..) => Self::VerificationFailure,
             Error::Env(env_e) => Self::from_env_error(env_e),
-            Error::Model(_) => Self::TaskUnsuccessful,
+            Error::Model(model_e) => match model_e {
+                crate::error::ModelError::ReplayDrift(_) => Self::ReplayPromptDrift,
+                crate::error::ModelError::ScriptedResponsesExhausted(_) => {
+                    Self::ReplayResponseExhausted
+                }
+                crate::error::ModelError::ReplayUnfingerprintedLegacy(_) => Self::UsageError,
+                _ => Self::TaskUnsuccessful,
+            },
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)

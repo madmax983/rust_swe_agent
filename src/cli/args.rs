@@ -225,6 +225,23 @@ pub struct ReplayCmd {
     /// Override trajectory filename (default: derived from task).
     #[arg(long)]
     pub trajectory_name: Option<String>,
+
+    /// Allow replaying trajectories that have no stored input fingerprints
+    /// (pre-feature "legacy" trajectories). A warning is emitted to stderr.
+    /// Without this flag, an unfingerprinted trajectory causes a non-zero exit.
+    #[arg(long, default_value_t = false)]
+    pub allow_unfingerprinted: bool,
+
+    /// Run to completion despite prompt drift, collect all divergent steps into
+    /// `replay-drift.json`, and exit 0. Useful for "show me everything that
+    /// changed" diagnostics. Without this flag replay stops at the first drift.
+    #[arg(long, default_value_t = false)]
+    pub report_only: bool,
+
+    /// Maximum bytes of the actual canonical input JSON to include per drift
+    /// step in the drift report. Excess is replaced with `[truncated]`.
+    #[arg(long, default_value_t = crate::run::replay::DEFAULT_DRIFT_CAP_BYTES)]
+    pub drift_cap_bytes: usize,
 }
 
 #[derive(Debug, Subcommand)]
