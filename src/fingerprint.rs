@@ -39,7 +39,10 @@ pub fn compute_input_fingerprint(messages: &[Message]) -> InputFingerprint {
         use std::fmt::Write as _;
         let _ = write!(hex, "{b:02x}");
     }
-    InputFingerprint { hex, canonical_size }
+    InputFingerprint {
+        hex,
+        canonical_size,
+    }
 }
 
 /// Produce the canonical JSON string for a slice of messages.
@@ -63,8 +66,7 @@ pub fn canonical_json(messages: &[Message]) -> String {
         })
         .collect();
     // serde_json::to_string on a Vec<Value> produces compact JSON.
-    serde_json::to_string(&Value::Array(arr))
-        .unwrap_or_else(|_| "[]".to_owned())
+    serde_json::to_string(&Value::Array(arr)).unwrap_or_else(|_| "[]".to_owned())
 }
 
 /// Cap a canonical JSON string to `cap` bytes, appending `[truncated]` if cut.

@@ -474,8 +474,10 @@ impl Agent for DefaultAgent {
         // `self.history` is the exact message slice that was sent to the model.
         let fp = crate::fingerprint::compute_input_fingerprint(&self.history);
         let raw_canonical = crate::fingerprint::canonical_json(&self.history);
-        let (canonical_stored, canonical_truncated) =
-            crate::fingerprint::cap_canonical(&raw_canonical, crate::run::replay::CANONICAL_CAP_BYTES);
+        let (canonical_stored, canonical_truncated) = crate::fingerprint::cap_canonical(
+            &raw_canonical,
+            crate::run::replay::CANONICAL_CAP_BYTES,
+        );
         asst.extra.other.insert(
             "model_call".to_owned(),
             serde_json::json!({

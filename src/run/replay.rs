@@ -93,7 +93,11 @@ struct CassetteEntry {
     canonical_truncated: bool,
 }
 
-type CassetteVecs = (Vec<String>, Vec<Option<String>>, Vec<Option<(String, bool)>>);
+type CassetteVecs = (
+    Vec<String>,
+    Vec<Option<String>>,
+    Vec<Option<(String, bool)>>,
+);
 
 fn extract_cassette(trajectory: &Trajectory) -> Vec<CassetteEntry> {
     trajectory
@@ -230,10 +234,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
     //    all other errors (usage errors, exhausted responses, I/O failures, …)
     //    so operators see an honest exit code for structural problems.
     if args.report_only {
-        let is_drift_only = matches!(
-            &run_result,
-            Err(Error::Model(ModelError::ReplayDrift(_)))
-        );
+        let is_drift_only = matches!(&run_result, Err(Error::Model(ModelError::ReplayDrift(_))));
         if is_drift_only || run_result.is_ok() {
             if let Ok(ref exit) = run_result {
                 save_outputs(&agent, &args.output_dir, &traj_name, exit)?;
@@ -539,12 +540,16 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        assert!(entries
-            .iter()
-            .any(|e| e.file_name().to_string_lossy() == "replayed-run.traj.json"));
-        assert!(entries
-            .iter()
-            .any(|e| e.file_name().to_string_lossy() == "replayed-run.output.txt"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.file_name().to_string_lossy() == "replayed-run.traj.json")
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.file_name().to_string_lossy() == "replayed-run.output.txt")
+        );
         assert!(!dir.path().join(DRIFT_REPORT_FILENAME).exists());
     }
 
