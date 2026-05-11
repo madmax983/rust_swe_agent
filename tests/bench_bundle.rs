@@ -264,6 +264,12 @@ fn bundle_instance_scope_includes_only_requested_instance_artifacts() {
     let results: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(extracted.join("results.json")).unwrap()).unwrap();
     assert_eq!(results["total"], 1);
+    assert_eq!(results["completed"], 1);
+    assert_eq!(results["submitted"], 1);
+    assert_eq!(results["errored"], 0);
+    assert_eq!(results["total_input_tokens"], 10);
+    assert_eq!(results["total_completion_tokens"], 2);
+    assert_eq!(results["pass_at_k"], 1.0);
     assert_eq!(results["instances"].as_array().unwrap().len(), 1);
     assert_eq!(results["instances"][0]["instance_id"], "alpha");
 
@@ -404,6 +410,18 @@ fn bundle_verify_reports_extra_missing_and_hash_mismatch() {
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("hash_mismatch:trajectories/alpha.traj.json"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let symlink_dir = work.path().join("symlink");
+    extract_tar(&archive, &symlink_dir);
+    let symlink_archive = work.path().join("symlink.tar.gz");
+    pack_dir_with_extra_symlink(&symlink_dir, &symlink_archive);
+    let out = bundle_verify(&symlink_archive);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("extra:links/outside"),
         "stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -575,6 +593,34 @@ fn pack_explicit_files_uncompressed(src: &Path, archive: &Path) {
     }
     let out = cmd.output().unwrap();
     assert_success(&out);
+}
+
+fn pack_dir_with_extra_symlink(src: &Path, archive: &Path) {
+    let file = fs::File::create(archive).unwrap();
+    let encoder = flate2::GzBuilder::new()
+        .mtime(0)
+        .write(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    let mut files = relative_files(src);
+    files.sort();
+    for path in files {
+        builder
+            .append_path_with_name(src.join(&path), path)
+            .unwrap();
+    }
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Symlink);
+    header.set_size(0);
+    header.set_mode(0o777);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_cksum();
+    builder
+        .append_link(&mut header, "links/outside", "../outside")
+        .unwrap();
+    let encoder = builder.into_inner().unwrap();
+    encoder.finish().unwrap();
 }
 
 fn canonical_archive_entries_modulo_timestamp(archive: &Path) -> Vec<(String, Vec<u8>)> {

@@ -71,7 +71,45 @@ pub struct BundleManifest {
 #[derive(Debug, Clone)]
 struct PreparedFile {
     archive_path: String,
-    bytes: Vec<u8>,
+    source_path: PathBuf,
+    sha256: String,
+    bytes: u64,
+}
+
+struct BundleWorkspace {
+    dir: tempfile::TempDir,
+    next_id: usize,
+}
+
+impl BundleWorkspace {
+    fn new() -> Result<Self, BundleError> {
+        Ok(Self {
+            dir: tempfile::tempdir()?,
+            next_id: 0,
+        })
+    }
+
+    fn prepare_bytes(
+        &mut self,
+        archive_path: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Result<PreparedFile, BundleError> {
+        let archive_path = archive_path.into();
+        let source_path = self
+            .dir
+            .path()
+            .join(format!("bundle-entry-{}", self.next_id));
+        self.next_id = self.next_id.saturating_add(1);
+        let sha256 = sha256_hex(&bytes);
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        std::fs::write(&source_path, bytes)?;
+        Ok(PreparedFile {
+            archive_path,
+            source_path,
+            sha256,
+            bytes: len,
+        })
+    }
 }
 
 struct PathNormalizer {
@@ -88,10 +126,7 @@ impl PathNormalizer {
             push_path_needles(&mut needles, &canonical.display().to_string());
         }
         Self {
-            needles: needles
-                .into_iter()
-                .filter(|value| !value.is_empty() && value != ".")
-                .collect(),
+            needles: sorted_path_needles(needles),
             windows_abs: Regex::new(r#"[A-Za-z]:(?:\\\\|\\|/)[^"'\r\n\s,}\]]+"#).ok(),
             unix_abs: Regex::new(r#"(^|[\s"'\[({:=,])/(?:[^\s/"'\]\[{}(),]+/)+[^\s/"'\]\[{}(),]+"#)
                 .ok(),
@@ -112,6 +147,44 @@ impl PathNormalizer {
             |regex| regex.replace_all(&normalized, "${1}.").into_owned(),
         )
     }
+}
+
+#[derive(Debug, Clone)]
+struct ArchiveEntryInfo {
+    sha256: Option<String>,
+    bytes: u64,
+    regular_file: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ArchiveInventory {
+    bundle_bytes: Option<Vec<u8>>,
+    entries: BTreeMap<String, ArchiveEntryInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScopedResultAggregates {
+    total: usize,
+    submitted: usize,
+    submitted_with_tests: usize,
+    skipped: usize,
+    with_patch: usize,
+    patch_empty: usize,
+    patch_apply_invalid: usize,
+    github_pr_failures: usize,
+    budget_halted: usize,
+    total_input_tokens: u64,
+    total_cache_read_tokens: u64,
+    total_cache_creation_tokens: u64,
+    total_completion_tokens: u64,
+    total_cost_usd: Option<f64>,
+    actual_cost_usd: Option<f64>,
+    retries: u64,
+    retried_instances: usize,
+    resolved_count: usize,
+    total_fallbacks: u64,
+    model_mix: BTreeMap<String, usize>,
+    failures: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,30 +223,20 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     let source_manifest_hash = format!("sha256:{}", sha256_hex(&manifest_bytes));
     strict_redaction_check("manifest.json", &manifest_bytes, &redactor)?;
 
+    let mut workspace = BundleWorkspace::new()?;
+    let mut files = vec![workspace.prepare_bytes("manifest.json", manifest_bytes)?];
+
     if args.instance.is_some() {
         filter_results_for_scope(&mut results_value, &included_set);
     }
     let results_bytes = normalized_json_bytes(&results_value, &normalizer)?;
     strict_redaction_check("results.json", &results_bytes, &redactor)?;
-
-    let mut files = vec![
-        PreparedFile {
-            archive_path: "manifest.json".into(),
-            bytes: manifest_bytes,
-        },
-        PreparedFile {
-            archive_path: "results.json".into(),
-            bytes: results_bytes,
-        },
-    ];
+    files.push(workspace.prepare_bytes("results.json", results_bytes)?);
 
     if let Some(evaluation) = load_optional_evaluation(&args.sweep_dir, &included_set, &normalizer)?
     {
         strict_redaction_check("evaluation.json", &evaluation, &redactor)?;
-        files.push(PreparedFile {
-            archive_path: "evaluation.json".into(),
-            bytes: evaluation,
-        });
+        files.push(workspace.prepare_bytes("evaluation.json", evaluation)?);
     }
 
     let mut patch_files = Vec::new();
@@ -188,19 +251,13 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
         let trajectory_dest = format!("trajectories/{instance_id}.traj.json");
         let trajectory = normalized_text_file(&trajectory_src, &normalizer)?;
         strict_redaction_check(&trajectory_dest, &trajectory, &redactor)?;
-        files.push(PreparedFile {
-            archive_path: trajectory_dest,
-            bytes: trajectory,
-        });
+        files.push(workspace.prepare_bytes(trajectory_dest, trajectory)?);
 
         if let Some(patch_src) = find_patch_path(&args.sweep_dir, instance_id) {
             let patch_dest = format!("patches/{instance_id}.patch");
             let patch = normalized_text_file(&patch_src, &normalizer)?;
             strict_redaction_check(&patch_dest, &patch, &redactor)?;
-            patch_files.push(PreparedFile {
-                archive_path: patch_dest,
-                bytes: patch,
-            });
+            patch_files.push(workspace.prepare_bytes(patch_dest, patch)?);
         }
     }
     files.extend(patch_files);
@@ -209,8 +266,8 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
         .iter()
         .map(|file| BundleFileEntry {
             path: file.archive_path.clone(),
-            sha256: sha256_hex(&file.bytes),
-            bytes: u64::try_from(file.bytes.len()).unwrap_or(u64::MAX),
+            sha256: file.sha256.clone(),
+            bytes: file.bytes,
         })
         .collect::<Vec<_>>();
 
@@ -235,9 +292,10 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
 }
 
 pub fn verify_bundle(archive_path: &Path) -> Result<BundleVerifyReport, BundleError> {
-    let mut actual = read_archive_files(archive_path)?;
+    let inventory = read_archive_inventory(archive_path)?;
+    let actual = inventory.entries;
     let mut problems = Vec::new();
-    let Some(bundle_bytes) = actual.remove(BUNDLE_MANIFEST_PATH) else {
+    let Some(bundle_bytes) = inventory.bundle_bytes else {
         return Ok(BundleVerifyReport {
             problems: vec![format!("missing:{BUNDLE_MANIFEST_PATH}")],
         });
@@ -264,13 +322,11 @@ pub fn verify_bundle(archive_path: &Path) -> Result<BundleVerifyReport, BundleEr
 
     for (path, entry) in &expected {
         match actual.get(path) {
-            Some(bytes) => {
-                if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != entry.bytes {
-                    problems.push(format!("hash_mismatch:{path}"));
-                    continue;
-                }
-                let digest = sha256_hex(bytes);
-                if digest != entry.sha256 {
+            Some(actual_entry) => {
+                if !actual_entry.regular_file
+                    || actual_entry.bytes != entry.bytes
+                    || actual_entry.sha256.as_deref() != Some(entry.sha256.as_str())
+                {
                     problems.push(format!("hash_mismatch:{path}"));
                 }
             }
@@ -374,7 +430,7 @@ fn load_optional_evaluation(
 }
 
 fn filter_results_for_scope(value: &mut serde_json::Value, included: &BTreeSet<String>) {
-    let Some((total, submitted, skipped, with_patch, patch_empty, budget_halted, failures)) = value
+    let Some(aggregates) = value
         .get_mut("instances")
         .and_then(serde_json::Value::as_array_mut)
         .map(|instances| {
@@ -384,89 +440,269 @@ fn filter_results_for_scope(value: &mut serde_json::Value, included: &BTreeSet<S
                     .is_some_and(|id| included.contains(id))
             });
 
-            let total = instances.len();
-            let submitted = instances
-                .iter()
-                .filter(|row| string_field(row, "outcome") == Some("submitted"))
-                .count();
-            let skipped = instances
-                .iter()
-                .filter(|row| {
-                    string_field(row, "outcome") == Some("skipped")
-                        || string_field(row, "exit_reason") == Some("skipped")
-                })
-                .count();
-            let with_patch = instances
-                .iter()
-                .filter(|row| bool_field(row, "patch_present"))
-                .count();
-            let patch_empty = instances
-                .iter()
-                .filter(|row| {
-                    bool_field(row, "patch_present") && !bool_field(row, "non_empty_patch")
-                })
-                .count();
-            let budget_halted = instances
-                .iter()
-                .filter(|row| string_field(row, "exit_reason") == Some("budget_halt"))
-                .count();
-            let mut failures = serde_json::Map::new();
-            for category in instances
-                .iter()
-                .filter_map(|row| string_field(row, "failure_category"))
-            {
-                let next = failures
-                    .get(category)
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default()
-                    .saturating_add(1);
-                failures.insert(category.to_owned(), serde_json::json!(next));
-            }
-            (
-                total,
-                submitted,
-                skipped,
-                with_patch,
-                patch_empty,
-                budget_halted,
-                failures,
-            )
+            scoped_result_aggregates(instances)
         })
     else {
         return;
     };
 
     if let serde_json::Value::Object(map) = value {
-        map.insert("total".into(), serde_json::json!(total));
-        map.insert("completed".into(), serde_json::json!(total));
-        map.insert("submitted".into(), serde_json::json!(submitted));
-        map.insert("skipped".into(), serde_json::json!(skipped));
-        map.insert(
-            "errored".into(),
-            serde_json::json!(total.saturating_sub(submitted + skipped)),
+        apply_scoped_result_aggregates(map, &aggregates, included);
+    }
+}
+
+fn apply_scoped_result_aggregates(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    aggregates: &ScopedResultAggregates,
+    included: &BTreeSet<String>,
+) {
+    map.insert("total".into(), serde_json::json!(aggregates.total));
+    map.insert("completed".into(), serde_json::json!(aggregates.total));
+    map.insert("submitted".into(), serde_json::json!(aggregates.submitted));
+    map.insert(
+        "submitted_with_tests".into(),
+        serde_json::json!(aggregates.submitted_with_tests),
+    );
+    map.insert("skipped".into(), serde_json::json!(aggregates.skipped));
+    map.insert(
+        "errored".into(),
+        serde_json::json!(
+            aggregates
+                .total
+                .saturating_sub(aggregates.submitted + aggregates.skipped)
+        ),
+    );
+    map.insert(
+        "with_patch".into(),
+        serde_json::json!(aggregates.with_patch),
+    );
+    map.insert(
+        "patch_empty".into(),
+        serde_json::json!(aggregates.patch_empty),
+    );
+    map.insert(
+        "patch_apply_invalid".into(),
+        serde_json::json!(aggregates.patch_apply_invalid),
+    );
+    map.insert(
+        "github_pr_failures".into(),
+        serde_json::json!(aggregates.github_pr_failures),
+    );
+    map.insert(
+        "budget_halted".into(),
+        serde_json::json!(aggregates.budget_halted),
+    );
+    map.insert(
+        "failures_by_category".into(),
+        serde_json::Value::Object(aggregates.failures.clone()),
+    );
+    apply_scoped_cost_and_token_aggregates(map, aggregates);
+    if let Some(filter_spec) = map
+        .get_mut("filter_spec")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        filter_spec.insert("selected_count".into(), serde_json::json!(aggregates.total));
+        filter_spec.insert(
+            "instance_ids".into(),
+            serde_json::Value::Array(
+                included
+                    .iter()
+                    .map(|id| serde_json::Value::String(id.clone()))
+                    .collect(),
+            ),
         );
-        map.insert("with_patch".into(), serde_json::json!(with_patch));
-        map.insert("patch_empty".into(), serde_json::json!(patch_empty));
-        map.insert("budget_halted".into(), serde_json::json!(budget_halted));
+    }
+}
+
+fn apply_scoped_cost_and_token_aggregates(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    aggregates: &ScopedResultAggregates,
+) {
+    map.insert(
+        "total_input_tokens".into(),
+        serde_json::json!(aggregates.total_input_tokens),
+    );
+    map.insert(
+        "total_cache_read_tokens".into(),
+        serde_json::json!(aggregates.total_cache_read_tokens),
+    );
+    map.insert(
+        "total_cache_creation_tokens".into(),
+        serde_json::json!(aggregates.total_cache_creation_tokens),
+    );
+    map.insert(
+        "total_completion_tokens".into(),
+        serde_json::json!(aggregates.total_completion_tokens),
+    );
+    if let Some(cost) = aggregates.total_cost_usd {
+        map.insert("total_cost_usd".into(), serde_json::json!(cost));
+    }
+    if map.contains_key("actual_cost_usd") {
         map.insert(
-            "failures_by_category".into(),
-            serde_json::Value::Object(failures),
+            "actual_cost_usd".into(),
+            serde_json::json!(aggregates.actual_cost_usd),
         );
-        if let Some(filter_spec) = map
-            .get_mut("filter_spec")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            filter_spec.insert("selected_count".into(), serde_json::json!(total));
-            filter_spec.insert(
-                "instance_ids".into(),
-                serde_json::Value::Array(
-                    included
-                        .iter()
-                        .map(|id| serde_json::Value::String(id.clone()))
-                        .collect(),
-                ),
-            );
+    }
+    map.insert(
+        "cache_hit_rate".into(),
+        serde_json::json!(cache_hit_rate(aggregates)),
+    );
+    map.insert("retries".into(), serde_json::json!(aggregates.retries));
+    map.insert(
+        "retried_instances".into(),
+        serde_json::json!(aggregates.retried_instances),
+    );
+    map.insert("pass_at_k".into(), serde_json::json!(pass_at_k(aggregates)));
+    map.insert(
+        "total_fallbacks".into(),
+        serde_json::json!(aggregates.total_fallbacks),
+    );
+    if !aggregates.model_mix.is_empty() || map.contains_key("model_mix") {
+        map.insert("model_mix".into(), serde_json::json!(aggregates.model_mix));
+    }
+}
+
+fn scoped_result_aggregates(instances: &[serde_json::Value]) -> ScopedResultAggregates {
+    let mut aggregates = ScopedResultAggregates {
+        total: instances.len(),
+        ..ScopedResultAggregates::default()
+    };
+    for row in instances {
+        let outcome = string_field(row, "outcome");
+        let exit_reason = string_field(row, "exit_reason");
+        if outcome == Some("submitted") {
+            aggregates.submitted += 1;
+            if bool_field(row, "tests_run_before_submit") {
+                aggregates.submitted_with_tests += 1;
+            }
         }
+        if outcome == Some("skipped") || exit_reason == Some("skipped") {
+            aggregates.skipped += 1;
+        }
+        if bool_field(row, "patch_present") {
+            aggregates.with_patch += 1;
+            if !bool_field(row, "non_empty_patch") {
+                aggregates.patch_empty += 1;
+            }
+        }
+        if bool_field(row, "patch_apply_invalid")
+            || string_field(row, "failure_category") == Some("patch_apply_invalid")
+        {
+            aggregates.patch_apply_invalid += 1;
+        }
+        if row
+            .get("github_pr_error")
+            .is_some_and(|value| !value.is_null())
+        {
+            aggregates.github_pr_failures += 1;
+        }
+        if exit_reason == Some("budget_halt") {
+            aggregates.budget_halted += 1;
+        }
+        if let Some(category) = string_field(row, "failure_category") {
+            let next = aggregates
+                .failures
+                .get(category)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .saturating_add(1);
+            aggregates
+                .failures
+                .insert(category.to_owned(), serde_json::json!(next));
+        }
+
+        aggregates.total_input_tokens = aggregates
+            .total_input_tokens
+            .saturating_add(u64_field(row, "total_input_tokens").unwrap_or_default());
+        aggregates.total_cache_read_tokens = aggregates
+            .total_cache_read_tokens
+            .saturating_add(u64_field(row, "total_cache_read_tokens").unwrap_or_default());
+        aggregates.total_cache_creation_tokens = aggregates
+            .total_cache_creation_tokens
+            .saturating_add(u64_field(row, "total_cache_creation_tokens").unwrap_or_default());
+        aggregates.total_completion_tokens = aggregates
+            .total_completion_tokens
+            .saturating_add(u64_field(row, "total_completion_tokens").unwrap_or_default());
+        aggregates.total_cost_usd =
+            sum_optional_f64(aggregates.total_cost_usd, instance_cost_usd(row));
+        aggregates.actual_cost_usd =
+            sum_optional_f64(aggregates.actual_cost_usd, instance_actual_cost_usd(row));
+
+        let retries = retry_count(row);
+        aggregates.retries = aggregates.retries.saturating_add(retries);
+        if retries > 0 {
+            aggregates.retried_instances += 1;
+        }
+        if instance_resolved(row) {
+            aggregates.resolved_count += 1;
+        }
+        if let Some(fallback_count) = u64_field(row, "fallback_count") {
+            aggregates.total_fallbacks = aggregates.total_fallbacks.saturating_add(fallback_count);
+        }
+        if let Some(model) = string_field(row, "final_model") {
+            *aggregates.model_mix.entry(model.to_owned()).or_default() += 1;
+        }
+    }
+    aggregates
+}
+
+fn u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn f64_field(value: &serde_json::Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(serde_json::Value::as_f64)
+}
+
+fn instance_cost_usd(value: &serde_json::Value) -> Option<f64> {
+    f64_field(value, "cost_usd").or_else(|| f64_field(value, "total_cost_usd"))
+}
+
+fn instance_actual_cost_usd(value: &serde_json::Value) -> Option<f64> {
+    f64_field(value, "actual_cost_usd").or_else(|| f64_field(value, "cost_usd"))
+}
+
+fn sum_optional_f64(current: Option<f64>, next: Option<f64>) -> Option<f64> {
+    match (current, next) {
+        (Some(current), Some(next)) => Some(current + next),
+        (Some(current), None) => Some(current),
+        (None, Some(next)) => Some(next),
+        (None, None) => None,
+    }
+}
+
+fn retry_count(value: &serde_json::Value) -> u64 {
+    u64_field(value, "retries")
+        .unwrap_or_else(|| u64_field(value, "attempts").unwrap_or(1).saturating_sub(1))
+}
+
+fn instance_resolved(value: &serde_json::Value) -> bool {
+    bool_field(value, "pass_at_1")
+        || u64_field(value, "resolved_count").unwrap_or_default() > 0
+        || string_field(value, "outcome") == Some("resolved")
+}
+
+fn cache_hit_rate(aggregates: &ScopedResultAggregates) -> f64 {
+    let prompt = aggregates
+        .total_input_tokens
+        .saturating_add(aggregates.total_cache_read_tokens)
+        .saturating_add(aggregates.total_cache_creation_tokens);
+    if prompt == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        aggregates.total_cache_read_tokens as f64 / prompt as f64
+    }
+}
+
+fn pass_at_k(aggregates: &ScopedResultAggregates) -> f64 {
+    if aggregates.total == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    {
+        aggregates.resolved_count as f64 / aggregates.total as f64
     }
 }
 
@@ -622,9 +858,6 @@ fn write_archive_atomically(
         let _ = std::fs::remove_file(&tmp);
         return Err(err);
     }
-    if output_path.exists() {
-        std::fs::remove_file(output_path)?;
-    }
     std::fs::rename(&tmp, output_path)?;
     Ok(())
 }
@@ -640,11 +873,36 @@ fn write_archive(
         .write(file, Compression::default());
     let mut builder = tar::Builder::new(encoder);
     for file in files {
-        append_tar_file(&mut builder, &file.archive_path, &file.bytes)?;
+        append_tar_file_from_path(
+            &mut builder,
+            &file.archive_path,
+            &file.source_path,
+            file.bytes,
+        )?;
     }
     append_tar_file(&mut builder, BUNDLE_MANIFEST_PATH, bundle_bytes)?;
     let encoder = builder.into_inner()?;
     encoder.finish()?;
+    Ok(())
+}
+
+fn append_tar_file_from_path<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    archive_path: &str,
+    source_path: &Path,
+    bytes: u64,
+) -> Result<(), BundleError> {
+    validate_archive_path(archive_path)?;
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes);
+    header.set_mode(0o644);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    let mut file = std::fs::File::open(source_path)?;
+    builder.append_data(&mut header, archive_path, &mut file)?;
     Ok(())
 }
 
@@ -675,27 +933,70 @@ fn temporary_output_path(output_path: &Path) -> PathBuf {
     output_path.with_file_name(format!(".{file_name}.{pid}.tmp"))
 }
 
-fn read_archive_files(archive_path: &Path) -> Result<BTreeMap<String, Vec<u8>>, BundleError> {
+fn read_archive_inventory(archive_path: &Path) -> Result<ArchiveInventory, BundleError> {
     let file = std::fs::File::open(archive_path)?;
     let decoder = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
-    let mut out = BTreeMap::new();
+    let mut inventory = ArchiveInventory {
+        bundle_bytes: None,
+        entries: BTreeMap::new(),
+    };
     for entry in archive.entries()? {
         let mut entry = entry?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
         let raw_path = entry.path()?;
         let path = normalize_archive_path(&raw_path)?;
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes)?;
-        if out.insert(path.clone(), bytes).is_some() {
-            return Err(BundleError::InvalidArchive(format!(
-                "bundle: duplicate archive entry {path}"
-            )));
+        if entry.header().entry_type().is_file() {
+            if path == BUNDLE_MANIFEST_PATH {
+                if inventory.bundle_bytes.is_some() {
+                    return Err(BundleError::InvalidArchive(format!(
+                        "bundle: duplicate archive entry {path}"
+                    )));
+                }
+                let mut bundle_bytes = Vec::new();
+                entry.read_to_end(&mut bundle_bytes)?;
+                inventory.bundle_bytes = Some(bundle_bytes);
+                continue;
+            }
+            let (digest, bytes) = hash_reader(&mut entry)?;
+            let info = ArchiveEntryInfo {
+                sha256: Some(digest),
+                bytes,
+                regular_file: true,
+            };
+            if inventory.entries.insert(path.clone(), info).is_some() {
+                return Err(BundleError::InvalidArchive(format!(
+                    "bundle: duplicate archive entry {path}"
+                )));
+            }
+        } else {
+            let info = ArchiveEntryInfo {
+                sha256: None,
+                bytes: 0,
+                regular_file: false,
+            };
+            if inventory.entries.insert(path.clone(), info).is_some() {
+                return Err(BundleError::InvalidArchive(format!(
+                    "bundle: duplicate archive entry {path}"
+                )));
+            }
         }
     }
-    Ok(out)
+    Ok(inventory)
+}
+
+fn hash_reader<R: std::io::Read>(reader: &mut R) -> Result<(String, u64), std::io::Error> {
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
+    Ok((format!("{:x}", hasher.finalize()), total))
 }
 
 fn validate_archive_path(path: &str) -> Result<(), BundleError> {
@@ -776,5 +1077,36 @@ fn push_path_needles(out: &mut BTreeSet<String>, raw: &str) {
     for value in [raw.to_owned(), slash, backslash] {
         out.insert(value.clone());
         out.insert(value.replace('\\', "\\\\"));
+    }
+}
+
+fn sorted_path_needles<I>(needles: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut needles = needles
+        .into_iter()
+        .filter(|value| !value.is_empty() && value != ".")
+        .collect::<Vec<_>>();
+    needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    needles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PathNormalizer, sorted_path_needles};
+
+    #[test]
+    fn path_normalizer_prefers_longest_needle_first() {
+        let normalizer = PathNormalizer {
+            needles: sorted_path_needles(vec!["/tmp/a".into(), "/tmp/a/b".into()]),
+            windows_abs: None,
+            unix_abs: None,
+        };
+
+        assert_eq!(
+            normalizer.normalize_text("path=/tmp/a/b/file"),
+            "path=./file"
+        );
     }
 }
