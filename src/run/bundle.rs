@@ -230,7 +230,7 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     let mut files = vec![workspace.prepare_bytes("manifest.json", manifest_bytes)?];
 
     if args.instance.is_some() {
-        filter_results_for_scope(&mut results_value, &included_set, &args.sweep_dir);
+        filter_results_for_scope(&mut results_value, &included_set, &args.sweep_dir)?;
     }
     let results_bytes = normalized_json_bytes(&results_value, &normalizer)?;
     strict_redaction_check("results.json", &results_bytes, &redactor)?;
@@ -244,15 +244,15 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
 
     let mut patch_files = Vec::new();
     for instance_id in &included_ids {
-        let trajectory_sources = find_trajectory_paths_for_bundle(&args.sweep_dir, instance_id);
+        let row = result_row_for_instance(&results_value, instance_id).ok_or_else(|| {
+            BundleError::MissingSource(format!(
+                "bundle: instance `{instance_id}` not found in results.json"
+            ))
+        })?;
+        let trajectory_sources =
+            find_trajectory_paths_for_bundle(&args.sweep_dir, instance_id, row)?;
         if trajectory_sources.is_empty() {
-            if allows_missing_trajectory(&results_value, instance_id) {
-                continue;
-            }
-            return Err(BundleError::MissingSource(format!(
-                "bundle: missing trajectory for instance `{instance_id}` in {}",
-                args.sweep_dir.display()
-            )));
+            continue;
         }
         for (trajectory_src, trajectory_dest) in trajectory_sources {
             let trajectory = normalized_text_file(&trajectory_src, &normalizer)?;
@@ -458,7 +458,7 @@ fn filter_results_for_scope(
     value: &mut serde_json::Value,
     included: &BTreeSet<String>,
     sweep_dir: &Path,
-) {
+) -> Result<(), BundleError> {
     let Some(aggregates) = value
         .get_mut("instances")
         .and_then(serde_json::Value::as_array_mut)
@@ -470,16 +470,20 @@ fn filter_results_for_scope(
             });
 
             let row_aggregates = scoped_result_aggregates(instances);
-            scoped_slot_aggregates_from_run_artifacts(sweep_dir, instances, &row_aggregates)
-                .unwrap_or(row_aggregates)
+            Ok::<ScopedResultAggregates, BundleError>(
+                scoped_slot_aggregates_from_run_artifacts(sweep_dir, instances, &row_aggregates)?
+                    .unwrap_or(row_aggregates),
+            )
         })
     else {
-        return;
+        return Ok(());
     };
+    let aggregates = aggregates?;
 
     if let serde_json::Value::Object(map) = value {
         apply_scoped_result_aggregates(map, &aggregates, included);
     }
+    Ok(())
 }
 
 fn apply_scoped_result_aggregates(
@@ -618,9 +622,9 @@ fn scoped_slot_aggregates_from_run_artifacts(
     sweep_dir: &Path,
     instances: &[serde_json::Value],
     row_aggregates: &ScopedResultAggregates,
-) -> Option<ScopedResultAggregates> {
+) -> Result<Option<ScopedResultAggregates>, BundleError> {
     if !instances.iter().any(|row| effective_runs_value(row) > 1) {
-        return None;
+        return Ok(None);
     }
 
     let mut aggregates = ScopedResultAggregates {
@@ -629,11 +633,13 @@ fn scoped_slot_aggregates_from_run_artifacts(
     };
     for row in instances {
         let runs = effective_runs_value(row);
-        if runs <= 1 {
+        if runs <= 1 || is_never_started_budget_halt(row) {
             add_result_row_to_aggregates(&mut aggregates, row);
             continue;
         }
-        let instance_id = string_field(row, "instance_id")?;
+        let instance_id = string_field(row, "instance_id").ok_or_else(|| {
+            BundleError::MissingSource("bundle: results.json instance missing instance_id".into())
+        })?;
         for run_index in 1..=runs {
             let slot = run_slot_result_value_from_artifact(sweep_dir, instance_id, run_index)?;
             add_result_row_to_aggregates(&mut aggregates, &slot);
@@ -655,7 +661,7 @@ fn scoped_slot_aggregates_from_run_artifacts(
     if aggregates.model_mix.is_empty() {
         aggregates.model_mix.clone_from(&row_aggregates.model_mix);
     }
-    Some(aggregates)
+    Ok(Some(aggregates))
 }
 
 fn add_result_row_to_aggregates(aggregates: &mut ScopedResultAggregates, row: &serde_json::Value) {
@@ -668,6 +674,10 @@ fn add_outcome_counts_to_aggregates(
     aggregates: &mut ScopedResultAggregates,
     row: &serde_json::Value,
 ) {
+    if is_never_started_budget_halt(row) {
+        aggregates.budget_halted += 1;
+        return;
+    }
     let outcome = string_field(row, "outcome");
     let exit_reason = string_field(row, "exit_reason");
     let runs = effective_runs_value(row);
@@ -790,11 +800,13 @@ fn run_slot_result_value_from_artifact(
     sweep_dir: &Path,
     instance_id: &str,
     run_index: u32,
-) -> Option<serde_json::Value> {
-    let path = find_trajectory_path_for_run(sweep_dir, instance_id, run_index)?;
-    let text = std::fs::read_to_string(path).ok()?;
-    let trajectory: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let info = trajectory.get("info")?;
+) -> Result<serde_json::Value, BundleError> {
+    let path = required_rerun_trajectory_path(sweep_dir, instance_id, run_index)?;
+    let text = std::fs::read_to_string(path)?;
+    let trajectory: serde_json::Value = serde_json::from_str(&text)?;
+    let info = trajectory
+        .get("info")
+        .ok_or_else(|| BundleError::Schema("trajectory missing info block".into()))?;
 
     let mut row = serde_json::Map::new();
     row.insert(
@@ -868,7 +880,7 @@ fn run_slot_result_value_from_artifact(
         row.insert("patch_present".into(), serde_json::Value::Bool(false));
         row.insert("non_empty_patch".into(), serde_json::Value::Bool(false));
     }
-    Some(serde_json::Value::Object(row))
+    Ok(serde_json::Value::Object(row))
 }
 
 fn copy_token_field(
@@ -1001,16 +1013,18 @@ fn included_instance_ids(
     }
 }
 
-fn allows_missing_trajectory(results: &serde_json::Value, instance_id: &str) -> bool {
+fn result_row_for_instance<'a>(
+    results: &'a serde_json::Value,
+    instance_id: &str,
+) -> Option<&'a serde_json::Value> {
     results
         .get("instances")
         .and_then(serde_json::Value::as_array)
         .and_then(|instances| {
-            instances.iter().find(|row| {
-                row.get("instance_id").and_then(serde_json::Value::as_str) == Some(instance_id)
-            })
+            instances
+                .iter()
+                .find(|row| string_field(row, "instance_id") == Some(instance_id))
         })
-        .is_some_and(is_never_started_budget_halt)
 }
 
 fn is_never_started_budget_halt(row: &serde_json::Value) -> bool {
@@ -1039,6 +1053,23 @@ fn validate_instance_scope(instance: Option<&str>) -> Result<(), BundleError> {
 
 fn find_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
     find_trajectory_path_for_run(sweep_dir, instance_id, 1)
+}
+
+fn required_rerun_trajectory_path(
+    sweep_dir: &Path,
+    instance_id: &str,
+    run_index: u32,
+) -> Result<PathBuf, BundleError> {
+    let path = sweep_dir
+        .join(instance_id)
+        .join(format!("run-{run_index}.traj.json"));
+    if path.exists() {
+        return Ok(path);
+    }
+    Err(BundleError::MissingSource(format!(
+        "bundle: missing trajectory for rerun slot `{instance_id}/run-{run_index}.traj.json` in {}",
+        sweep_dir.display()
+    )))
 }
 
 fn find_trajectory_path_for_run(
@@ -1084,21 +1115,45 @@ fn find_patch_path_for_run(sweep_dir: &Path, instance_id: &str, run_index: u32) 
     .find(|path| path.exists())
 }
 
-fn find_trajectory_paths_for_bundle(sweep_dir: &Path, instance_id: &str) -> Vec<(PathBuf, String)> {
+fn find_trajectory_paths_for_bundle(
+    sweep_dir: &Path,
+    instance_id: &str,
+    row: &serde_json::Value,
+) -> Result<Vec<(PathBuf, String)>, BundleError> {
+    if is_never_started_budget_halt(row) {
+        return Ok(Vec::new());
+    }
+    let runs = effective_runs_value(row);
+    if runs > 1 {
+        let mut out = Vec::new();
+        for run_index in 1..=runs {
+            let path = required_rerun_trajectory_path(sweep_dir, instance_id, run_index)?;
+            out.push((path, format!("{instance_id}/run-{run_index}.traj.json")));
+        }
+        return Ok(out);
+    }
+
     let nested = sorted_nested_run_files(&sweep_dir.join(instance_id), ".traj.json");
     if !nested.is_empty() {
-        return nested
+        return Ok(nested
             .into_iter()
             .filter_map(|path| {
                 let file_name = path.file_name()?.to_string_lossy();
                 Some((path.clone(), format!("{instance_id}/{file_name}")))
             })
-            .collect();
+            .collect());
     }
     find_trajectory_path(sweep_dir, instance_id)
         .map(|path| (path, format!("trajectories/{instance_id}.traj.json")))
         .into_iter()
-        .collect()
+        .next()
+        .map(|entry| vec![entry])
+        .ok_or_else(|| {
+            BundleError::MissingSource(format!(
+                "bundle: missing trajectory for instance `{instance_id}` in {}",
+                sweep_dir.display()
+            ))
+        })
 }
 
 fn find_patch_paths_for_bundle(sweep_dir: &Path, instance_id: &str) -> Vec<(PathBuf, String)> {

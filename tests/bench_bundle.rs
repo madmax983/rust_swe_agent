@@ -521,6 +521,57 @@ fn bundle_instance_scope_uses_rerun_slots_for_scoped_aggregates() {
 }
 
 #[test]
+fn bundle_instance_scope_rejects_missing_rerun_trajectory() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = copy_fixture_sweep(work.path());
+    write_bundle_rerun_trajectory(
+        &sweep,
+        "alpha",
+        1,
+        RerunTrajectorySpec {
+            outcome: "error",
+            exit_reason: "error",
+            failure_category: Some("step_limit"),
+            tests_run_before_submit: false,
+            patch: None,
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            final_model: "first-model",
+        },
+    );
+
+    let results_path = sweep.join("results.json");
+    let mut results: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&results_path).unwrap()).unwrap();
+    let alpha = results["instances"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["instance_id"] == "alpha")
+        .unwrap();
+    alpha["runs"] = serde_json::json!(2);
+    alpha["resolved_count"] = serde_json::json!(0);
+    alpha["pass_at_1"] = serde_json::json!(false);
+    fs::write(
+        &results_path,
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+
+    let archive = work.path().join("alpha-incomplete-rerun.tar.gz");
+    let out = bundle_create(&sweep, &archive, Some("alpha"));
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("missing trajectory"), "{stderr}");
+    assert!(stderr.contains("alpha/run-2.traj.json"), "{stderr}");
+    assert!(
+        !archive.exists(),
+        "incomplete rerun bundle must fail closed"
+    );
+}
+
+#[test]
 fn bundle_full_sweep_allows_budget_halted_row_without_trajectory() {
     let work = tempfile::tempdir().unwrap();
     let sweep = copy_fixture_sweep(work.path());
