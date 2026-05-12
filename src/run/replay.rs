@@ -399,6 +399,14 @@ impl Model for FingerprintCheckingModel {
         "fingerprint-checking-replay"
     }
 
+    fn skip_latency_telemetry(&self) -> bool {
+        // Replay drives a `DeterministicModel` for responses; the wall-clock
+        // here reflects fingerprint-checking + scripted lookup, not real
+        // model latency. Omit `model_latency_ms` so inspect/evaluate can't
+        // mistake replay runs for fast real-model runs (#159).
+        true
+    }
+
     async fn query(
         &self,
         messages: &[Message],
