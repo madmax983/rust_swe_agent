@@ -50,6 +50,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -165,6 +168,71 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut html = String::new();
+
+        html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\">\n<title>Trajectory Export</title>\n");
+        html.push_str("<style>\nbody { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n");
+        html.push_str(".message { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 5px; }\n");
+        html.push_str(".system { background-color: #f9f9f9; }\n");
+        html.push_str(".user { background-color: #e6f2ff; }\n");
+        html.push_str(".assistant { background-color: #e6ffe6; }\n");
+        html.push_str(".tool { background-color: #ffffe6; }\n");
+        html.push_str("pre { white-space: pre-wrap; word-wrap: break-word; }\n");
+        html.push_str("</style>\n</head>\n<body>\n");
+
+        html.push_str("<h1>Trajectory Export</h1>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = write!(html, "<h2>Task</h2>\n<p>{safe_task}</p>\n");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let safe_outcome = outcome
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = write!(html, "<h2>Outcome</h2>\n<p>{safe_outcome}</p>\n");
+        }
+
+        html.push_str("<h2>Messages</h2>\n");
+
+        for msg in &trajectory.messages {
+            let role_class = msg.role.as_str();
+            let role_title = match role_class {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+
+            let _ = write!(
+                html,
+                "<div class=\"message {role_class}\">\n<h3>{role_title}</h3>\n<pre>{safe_content}</pre>\n</div>\n"
+            );
+        }
+
+        html.push_str("</body>\n</html>\n");
+
+        html
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +307,36 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature & <test>".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt <1>"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\" & friend"));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<title>Trajectory Export</title>"));
+        assert!(html.contains("<h2>Task</h2>"));
+        assert!(html.contains("<p>Add a feature &amp; &lt;test&gt;</p>"));
+        assert!(html.contains("<h2>Outcome</h2>"));
+        assert!(html.contains("<p>submitted</p>"));
+        assert!(html.contains("<div class=\"message system\">"));
+        assert!(html.contains("<h3>System</h3>"));
+        assert!(html.contains("<pre>System prompt &lt;1&gt;</pre>"));
+        assert!(html.contains("<div class=\"message user\">"));
+        assert!(html.contains("<h3>User</h3>"));
+        assert!(html.contains("<pre>Hello agent\nMulti-line</pre>"));
+        assert!(html.contains("<div class=\"message assistant\">"));
+        assert!(html.contains("<h3>Assistant</h3>"));
+        assert!(html.contains("<pre>Hello \"user\" &amp; friend</pre>"));
+        assert!(html.ends_with("</html>\n"));
     }
 }
