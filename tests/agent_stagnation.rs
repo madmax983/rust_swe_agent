@@ -3,7 +3,7 @@
 //! Tests drive the full default-agent loop using DeterministicModel and
 //! LocalEnvironment. All tests must be deterministic and reproduce reliably.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 
@@ -188,7 +188,7 @@ async fn stagnation_trajectory_is_coherent_after_earlier_work() {
         Some(FailureCategory::AgentStagnation)
     );
     assert!(
-        agent.trajectory.info.other.get("stagnation").is_some(),
+        agent.trajectory.info.other.contains_key("stagnation"),
         "stagnation info must be present"
     );
     // No panic, no corruption — the trajectory is usable for patch capture.

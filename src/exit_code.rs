@@ -123,6 +123,7 @@ impl ExitCode {
                 // before this function is called, so exit-10 is replay-only.
                 _ => Self::TaskUnsuccessful,
             },
+            Error::AgentStagnation { .. } => Self::AgentStagnation,
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)

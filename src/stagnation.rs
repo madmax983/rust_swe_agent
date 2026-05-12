@@ -39,7 +39,7 @@ fn collapse_internal_whitespace(s: &str) -> String {
     let mut in_space = false;
     for ch in s.chars() {
         if ch.is_ascii_whitespace() {
-            if !in_space && !result.is_empty() {
+            if !in_space {
                 result.push(' ');
                 in_space = true;
             }
@@ -47,11 +47,6 @@ fn collapse_internal_whitespace(s: &str) -> String {
             in_space = false;
             result.push(ch);
         }
-    }
-    // Trim any trailing space introduced by the collapse (edge case: input ends with whitespace
-    // that was only partially handled by outer trim for non-ASCII).
-    if result.ends_with(' ') {
-        result.pop();
     }
     result
 }
@@ -164,6 +159,7 @@ impl StagnationDetector {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]

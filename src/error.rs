@@ -33,6 +33,15 @@ pub enum Error {
     /// `(failed_count, total_count)`.
     #[error("verification failed: {0} of {1} check(s) did not pass")]
     VerificationFailed(usize, usize),
+
+    /// Agent stagnation detected: the same bash action was repeated at least K
+    /// times within the trailing W-step window. The trajectory is already
+    /// finalized on disk with `failure_category = "agent_stagnation"` before
+    /// this error is returned. Callers that aggregate results (e.g. the sweep
+    /// runner) should read failure metadata from the trajectory; this error
+    /// exists only so the CLI can exit with code 12.
+    #[error("agent stagnation detected: action repeated {count} times in {window}-step window")]
+    AgentStagnation { count: u32, window: u32 },
 }
 
 #[derive(Debug, Error)]

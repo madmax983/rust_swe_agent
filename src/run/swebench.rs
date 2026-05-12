@@ -4221,6 +4221,9 @@ fn classify_error(err: &Error) -> FailureCategory {
             }
         }
         Error::Model(_) => FailureCategory::ModelApi,
+        // Stagnation is fully recorded in the trajectory; this arm is a
+        // robustness fallback for cases where trajectory loading fails.
+        Error::AgentStagnation { .. } => FailureCategory::AgentStagnation,
         // Any remaining typed error in the runner/agent.
         _ => FailureCategory::AgentInternal,
     }
