@@ -684,6 +684,10 @@ fn render_instance_text(report: &InspectReport) -> String {
             s,
             "latency:          model_ms={model_ms} tool_ms={tool_ms} harness_ms={harness_ms}{share}",
         );
+    } else {
+        // Legacy trajectory pre-1.5: no stage attribution recorded.
+        // Surface explicitly so operators don't misread silence as zero.
+        let _ = writeln!(s, "latency:          unknown (pre-1.5 trajectory)");
     }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");

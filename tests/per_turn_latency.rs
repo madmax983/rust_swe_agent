@@ -16,7 +16,7 @@ use rust_swe_agent::run::inspect::{InspectReport, render_text};
 use rust_swe_agent::trajectory::Trajectory;
 use rust_swe_agent::{
     Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment, Message,
-    MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts,
+    MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, ToolHookCfg,
 };
 
 // -- 1. Schema: MessageExtra carries the three latency fields.
@@ -288,6 +288,64 @@ async fn per_turn_stage_times_reconcile_to_duration_within_5_percent() {
     );
 }
 
+#[tokio::test]
+async fn slow_pre_tool_hook_makes_harness_overhead_dominate_observation_turn() {
+    // A slow pre-tool hook simulates harness-side time (rate-limit waits,
+    // retries, redaction, env setup). The tool itself runs instantly and
+    // the model is near-instant — so the observation turn's
+    // harness_overhead_ms should outweigh both.
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
+        name: "slow-stub".into(),
+        command: "sleep 0.1".into(),
+        timeout_secs: Some(5),
+    }];
+
+    let model = Arc::new(SlowModel::new(
+        vec![
+            "```bash\necho hi\n```".into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ],
+        Duration::from_millis(2),
+    ));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "harness-dominant".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+    agent.run().await.unwrap();
+
+    let dominated_obs = agent
+        .trajectory
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .find(|m| {
+            let h = m.extra.harness_overhead_ms.unwrap_or(0);
+            let t = m.extra.tool_latency_ms.unwrap_or(0);
+            h >= 80 && h > t
+        });
+    assert!(
+        dominated_obs.is_some(),
+        "expected an observation turn where harness_overhead_ms (≥80) dominates tool_latency_ms; got {:?}",
+        agent
+            .trajectory
+            .messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| (m.extra.harness_overhead_ms, m.extra.tool_latency_ms))
+            .collect::<Vec<_>>(),
+    );
+}
+
 // -- 4. `bench inspect` exposes per-stage totals and shares.
 
 #[test]
@@ -330,6 +388,37 @@ fn inspect_report_aggregates_stage_totals() {
     assert!(text.contains("model_ms"), "{text}");
     assert!(text.contains("tool_ms"), "{text}");
     assert!(text.contains("harness_ms"), "{text}");
+}
+
+#[test]
+fn legacy_trajectory_inspect_renders_latency_unknown() {
+    // A trajectory with no per-turn latency fields (pre-1.5) must render an
+    // explicit `latency: unknown` marker in the inspect text header so
+    // operators don't misread silence as zero.
+    let traj_json = r#"{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "info": {"task": "legacy", "duration_secs": 1.0},
+  "messages": [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": "task"}
+  ]
+}"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let sweep = tmp.path();
+    std::fs::write(sweep.join("legacy.traj.json"), traj_json).unwrap();
+
+    let args = rust_swe_agent::run::inspect::InspectArgs {
+        sweep: sweep.to_path_buf(),
+        instance: Some("legacy".into()),
+        filter: None,
+        full: true,
+    };
+    let out = rust_swe_agent::run::inspect::run(&args).unwrap();
+    let text = render_text(&out);
+    assert!(
+        text.contains("latency:") && text.contains("unknown"),
+        "expected `latency: unknown` line on legacy trajectory, got:\n{text}"
+    );
 }
 
 // -- 5. `bench evaluate` exposes per-stage p50/p95 in EvaluationResults JSON.
