@@ -28,12 +28,12 @@ use crate::model::{
 };
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
+use crate::stagnation::StagnationDetector;
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::tool::{
     BASH_TOOL_NAME, CommandTool, ToolCall, ToolInvocation, ToolProvider, ToolRegistry,
 };
-use crate::stagnation::StagnationDetector;
 use crate::trajectory::{
     FailureCategory, FallbackSummary, TestCommandPattern, TestInvocation, TokenUsage, Trajectory,
     detect_test_command, effective_test_command_patterns, exit_reason, outcome,
@@ -1221,10 +1221,7 @@ impl DefaultAgent {
         );
     }
 
-    fn terminate_stagnation(
-        &mut self,
-        trip: crate::stagnation::StagnationTrip,
-    ) -> StepOutcome {
+    fn terminate_stagnation(&mut self, trip: crate::stagnation::StagnationTrip) -> StepOutcome {
         self.trajectory.info.exit_reason = Some("agent_stagnation".into());
         self.trajectory.info.failure_category = Some(FailureCategory::AgentStagnation);
         self.trajectory.info.steps = Some(self.steps);

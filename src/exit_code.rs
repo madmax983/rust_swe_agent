@@ -225,6 +225,9 @@ mod tests {
     #[test]
     fn agent_stagnation_exit_code_is_12() {
         assert_eq!(ExitCode::AgentStagnation.as_i32(), 12);
-        assert_eq!(ExitCode::AgentStagnation.outcome_class(), "agent_stagnation");
+        assert_eq!(
+            ExitCode::AgentStagnation.outcome_class(),
+            "agent_stagnation"
+        );
     }
 }

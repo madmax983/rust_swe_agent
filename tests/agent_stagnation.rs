@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use rust_swe_agent::agent::default::DefaultAgentBuilder;
 use rust_swe_agent::trajectory::FailureCategory;
-use rust_swe_agent::{Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment};
+use rust_swe_agent::{
+    Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,7 +78,9 @@ async fn stagnation_trips_at_step_4_for_repeated_ls() {
         serde_json::from_value(info["step_indices"].clone()).expect("step_indices must be array");
     assert_eq!(indices, vec![0, 1, 2, 3]);
 
-    let hash = info["action_hash"].as_str().expect("action_hash must be string");
+    let hash = info["action_hash"]
+        .as_str()
+        .expect("action_hash must be string");
     assert!(!hash.is_empty(), "hash must not be empty");
     assert!(
         hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -175,7 +179,10 @@ async fn stagnation_trajectory_is_coherent_after_earlier_work() {
         "expected AgentStagnation, got: {exit:?}"
     );
     // Trajectory is fully finalized: steps, failure_category, and stagnation info present.
-    assert!(agent.trajectory.info.steps.is_some(), "steps must be recorded");
+    assert!(
+        agent.trajectory.info.steps.is_some(),
+        "steps must be recorded"
+    );
     assert_eq!(
         agent.trajectory.info.failure_category,
         Some(FailureCategory::AgentStagnation)
