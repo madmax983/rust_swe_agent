@@ -3803,6 +3803,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
         "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "secret_leak_detected" => Ok(FailureCategory::SecretLeakDetected),
+        "agent_stagnation" => Ok(FailureCategory::AgentStagnation),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
