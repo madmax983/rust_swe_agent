@@ -247,6 +247,28 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         .map(|i| i.instance_id.clone())
         .collect();
 
+    if args.matrix_parallelism == 0 {
+        return Err(Error::Config(ConfigError::Invalid(
+            "--matrix-parallelism must be at least 1".into(),
+        )));
+    }
+
+    // With parallelism > 1 and a budget cap, up to `matrix_parallelism` arms
+    // can be in-flight simultaneously against the same pre-completion
+    // `cumulative_cost`, so the ceiling may be overrun by that many arms before
+    // any completion updates the running total.  The effective overshoot is
+    // bounded to one arm's cost per slot, not per sweep.
+    if args.matrix_parallelism > 1 && args.sweep_cost_limit_usd.is_some() {
+        tracing::warn!(
+            matrix_parallelism = args.matrix_parallelism,
+            "bench matrix: --sweep-cost-limit-usd with --matrix-parallelism > 1 \
+             enforces the shared budget against completed-arm costs only; \
+             up to {} arms may be in flight simultaneously before the ceiling \
+             is re-checked",
+            args.matrix_parallelism,
+        );
+    }
+
     std::fs::create_dir_all(&args.output_dir)?;
     let state_path = args.output_dir.join("matrix.json");
 
@@ -330,7 +352,15 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
 
     loop {
         // Fill available parallelism slots with new arms.
-        while !cancelled && join_set.len() < args.matrix_parallelism {
+        // When a budget cap is active, only launch one new arm per cycle so
+        // that `cumulative_cost` is updated between launches and the ceiling
+        // is not overrun by more than one arm's cost.
+        let fill_limit = if args.sweep_cost_limit_usd.is_some() {
+            join_set.len().saturating_add(1)
+        } else {
+            args.matrix_parallelism
+        };
+        while !cancelled && join_set.len() < fill_limit {
             // Advance past arms already in a terminal state (resume or prior iteration).
             while next_to_launch < manifest.arms.len()
                 && matches!(

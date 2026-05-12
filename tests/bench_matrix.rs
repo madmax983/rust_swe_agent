@@ -388,6 +388,28 @@ async fn matrix_run_creates_per_arm_dirs_and_results() {
 }
 
 #[tokio::test]
+async fn matrix_parallelism_zero_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let dataset = minimal_dataset(dir.path(), &["inst-1"]);
+    let config = write_matrix_toml(dir.path(), &[("arm-a", "scripted")]);
+    let output = dir.path().join("out");
+
+    let mut args = default_matrix_args(config, dataset, output);
+    args.matrix_parallelism = 0;
+
+    let result = matrix_run(args).await;
+    assert!(
+        result.is_err(),
+        "matrix_parallelism=0 should return an error, got Ok"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("matrix-parallelism"),
+        "error should mention --matrix-parallelism, got: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn matrix_all_arms_see_the_same_instances() {
     let tmp = tempfile::tempdir().unwrap();
     let dataset = minimal_dataset(tmp.path(), &["inst-1", "inst-2", "inst-3"]);
