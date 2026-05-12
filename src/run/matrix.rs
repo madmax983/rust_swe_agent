@@ -202,6 +202,7 @@ pub fn validate_arms(arms: &[ArmDef]) -> Result<(), Error> {
 }
 
 /// Run the full matrix experiment and return a ranked summary.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
     // Load and validate manifest.
     let manifest_text = std::fs::read_to_string(&args.config_path)?;
@@ -225,8 +226,10 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         },
     )?;
 
-    let instance_ids: Vec<String> =
-        selected_instances.iter().map(|i| i.instance_id.clone()).collect();
+    let instance_ids: Vec<String> = selected_instances
+        .iter()
+        .map(|i| i.instance_id.clone())
+        .collect();
     let instance_ids_csv = instance_ids.join(",");
 
     std::fs::create_dir_all(&args.output_dir)?;
@@ -291,8 +294,7 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         state.arms[i].state = ArmState::Running;
         write_matrix_state(&state_path, &state)?;
 
-        let arm_results =
-            run_arm(arm_def, &arm_sweep_dir, &instance_ids_csv, &args).await?;
+        let arm_results = run_arm(arm_def, &arm_sweep_dir, &instance_ids_csv, &args).await?;
 
         let resolved: usize = arm_results
             .instances
@@ -313,7 +315,10 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
     let summary = build_summary(&state);
 
     let summary_json = serde_json::to_string_pretty(&summary)?;
-    atomic_write(&args.output_dir.join("matrix-summary.json"), summary_json.as_bytes())?;
+    atomic_write(
+        &args.output_dir.join("matrix-summary.json"),
+        summary_json.as_bytes(),
+    )?;
 
     let summary_txt = render_summary_text(&summary, &state);
     atomic_write(
@@ -481,13 +486,7 @@ fn render_summary_text(summary: &MatrixSummary, state: &MatrixState) -> String {
         let _ = writeln!(
             s,
             "{:<4} {:<24} {:<24} {:<14} {:>8} {:>10} {:>10.4}",
-            row.rank,
-            row.name,
-            row.model,
-            row.state,
-            row.resolved,
-            rate_pct,
-            row.total_cost_usd
+            row.rank, row.name, row.model, row.state, row.resolved, rate_pct, row.total_cost_usd
         );
     }
     s
