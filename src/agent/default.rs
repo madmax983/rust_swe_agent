@@ -835,15 +835,12 @@ impl Agent for DefaultAgent {
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
 
-        // Harness overhead from the end of the model query to just before
-        // the tool starts executing: policy gate, pre-hooks, message
-        // construction.
-        let obs_harness_ms = elapsed_ms_since(self.last_measurement_end);
+        // Don't compute harness yet — we want post-tool hooks and
+        // observation rendering inside *this* turn's harness, not leaked to
+        // the next turn (and lost entirely if the run terminates here).
+        // We compute obs_harness_ms = (total elapsed since prior boundary)
+        // − tool_latency at record time, just below.
         let (result, post_hook_results, tool_latency_recorded) = if tool_use_blocked {
-            // No tool exec, but obs_harness_ms above already captured time
-            // up to this point. Bump the measurement boundary so the next
-            // turn's harness doesn't re-count this same wall-clock window.
-            self.last_measurement_end = Instant::now();
             (blocked_run_result(&pre_hook_results), Vec::new(), None)
         } else {
             let tool_start = Instant::now();
@@ -875,7 +872,6 @@ impl Agent for DefaultAgent {
                 self.run_non_bash_tool(&tool_name, &tool_input).await?
             };
             let tool_latency = elapsed_ms_since(tool_start);
-            self.last_measurement_end = Instant::now();
             let post_hook_results = self
                 .run_tool_hooks(
                     ToolHookPhase::PostToolUse,
@@ -1037,7 +1033,16 @@ impl Agent for DefaultAgent {
         );
         obs_extra.timestamp = Some(obs_ts.clone());
         obs_extra.tool_latency_ms = tool_latency_recorded;
+        // Total elapsed since the prior measurement boundary (end of model
+        // query) minus the measured tool window = everything else this turn
+        // spent in the harness: pre-hooks, policy gate, env wrappers,
+        // post-hooks, redaction, observation rendering. Bumping the
+        // boundary here keeps post-hook + render time in the *current*
+        // turn so it can't be lost if the run terminates this step.
+        let obs_harness_ms = elapsed_ms_since(self.last_measurement_end)
+            .saturating_sub(tool_latency_recorded.unwrap_or(0));
         obs_extra.harness_overhead_ms = Some(obs_harness_ms);
+        self.last_measurement_end = Instant::now();
         record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
 
         self.stream.emit(StreamEvent::Observation {

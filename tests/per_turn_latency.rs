@@ -289,6 +289,60 @@ async fn per_turn_stage_times_reconcile_to_duration_within_5_percent() {
 }
 
 #[tokio::test]
+async fn slow_post_tool_hook_time_is_attributed_to_current_obs_turn() {
+    // A slow post_tool_use hook runs *after* tool exec but before the
+    // observation is recorded. Its wall-clock must land in the current
+    // obs turn's harness_overhead_ms — not leak to the next turn (and
+    // get lost entirely if the run terminates here).
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.step_limit = 5;
+    cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
+        name: "slow-post".into(),
+        command: "sleep 0.1".into(),
+        timeout_secs: Some(5),
+    }];
+
+    let model = Arc::new(SlowModel::new(
+        vec![
+            "```bash\necho hi\n```".into(),
+            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+        ],
+        Duration::from_millis(2),
+    ));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let mut agent = DefaultAgentBuilder {
+        config: cfg,
+        model,
+        env,
+        task: "post-hook".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build()
+    .unwrap();
+    agent.run().await.unwrap();
+
+    let obs_with_post_hook_time = agent
+        .trajectory
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .find(|m| m.extra.harness_overhead_ms.unwrap_or(0) >= 80);
+    assert!(
+        obs_with_post_hook_time.is_some(),
+        "slow post-hook (≥100ms) must show up as harness_overhead_ms (≥80) on the current obs turn; got {:?}",
+        agent
+            .trajectory
+            .messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| (m.extra.harness_overhead_ms, m.extra.tool_latency_ms))
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[tokio::test]
 async fn slow_pre_tool_hook_makes_harness_overhead_dominate_observation_turn() {
     // A slow pre-tool hook simulates harness-side time (rate-limit waits,
     // retries, redaction, env setup). The tool itself runs instantly and
