@@ -323,7 +323,13 @@ impl Drop for ProcessTreeGuard {
             return;
         }
         if let Some(pid) = self.pid {
-            terminate_process_tree_blocking(pid);
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let _task = handle.spawn_blocking(move || {
+                    terminate_process_tree_blocking(pid);
+                });
+            } else {
+                terminate_process_tree_blocking(pid);
+            }
         }
     }
 }
