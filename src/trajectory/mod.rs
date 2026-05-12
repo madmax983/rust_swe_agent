@@ -496,6 +496,9 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.cost.is_none()
         && e.response.is_none()
         && e.timestamp.is_none()
+        && e.model_latency_ms.is_none()
+        && e.tool_latency_ms.is_none()
+        && e.harness_overhead_ms.is_none()
         && e.other.is_empty()
 }
 

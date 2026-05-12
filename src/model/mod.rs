@@ -63,6 +63,25 @@ pub struct MessageExtra {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timestamp: Option<String>,
 
+    /// Wall-clock spent inside the model provider call that produced this
+    /// assistant turn. Absent on turns where the model produced no
+    /// measurable latency (deterministic fixtures, replay).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_latency_ms: Option<u64>,
+
+    /// Wall-clock spent executing the tool/bash command for the
+    /// observation turn that follows the assistant proposal. Absent on
+    /// turns that did not run a tool (format error, policy block, etc.).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_latency_ms: Option<u64>,
+
+    /// Harness-side wall-clock between the previous turn's measurement
+    /// boundary and this turn's measurement boundary: rate-limit waits,
+    /// retries, redaction, file IO, template rendering. Always recorded
+    /// for live runs; absent on replays where it cannot be reconstructed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub harness_overhead_ms: Option<u64>,
+
     #[serde(flatten, default)]
     pub other: BTreeMap<String, serde_json::Value>,
 }
@@ -87,6 +106,9 @@ fn message_extra_is_empty(e: &MessageExtra) -> bool {
         && e.cost.is_none()
         && e.response.is_none()
         && e.timestamp.is_none()
+        && e.model_latency_ms.is_none()
+        && e.tool_latency_ms.is_none()
+        && e.harness_overhead_ms.is_none()
         && e.other.is_empty()
 }
 
@@ -170,6 +192,15 @@ pub trait Model: Send + Sync {
     /// Does this backend/model honor explicit cache breakpoints? Used by
     /// `InteractiveAgent` for the status display — zero behavioral effect.
     fn supports_explicit_cache(&self) -> bool {
+        false
+    }
+
+    /// Signals that wall-clock measurements of `query` are not meaningful
+    /// for this backend (deterministic fixtures, in-memory replay). The
+    /// agent loop uses this to *omit* `MessageExtra.model_latency_ms`
+    /// instead of writing a near-zero value that would be indistinguishable
+    /// from a fast real backend on inspection.
+    fn skip_latency_telemetry(&self) -> bool {
         false
     }
 

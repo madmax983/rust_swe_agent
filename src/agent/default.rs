@@ -122,6 +122,11 @@ fn truncate_observation_text(input: &str, max_bytes: usize, head_ratio: f64) -> 
     }
 }
 
+/// Wall-clock elapsed since `since` in milliseconds, saturating to `u64::MAX`.
+fn elapsed_ms_since(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn floor_char_boundary(input: &str, idx: usize) -> usize {
     let mut i = idx.min(input.len());
     while i > 0 && !input.is_char_boundary(i) {
@@ -150,6 +155,10 @@ pub struct DefaultAgent {
     pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
+    /// End of the most recently measured stage (model query or tool exec).
+    /// `harness_overhead_ms` for the next recorded turn is `Instant::now() -
+    /// last_measurement_end`. Initialized to `started_at_instant`.
+    last_measurement_end: Instant,
     wallclock_deadline: Option<WallclockDeadline>,
     /// Accumulated uncached input tokens across every model call in this run.
     pub prompt_tokens: u64,
@@ -295,6 +304,7 @@ impl DefaultAgentBuilder {
             started_at,
         });
 
+        let started_at_instant = Instant::now();
         Ok(DefaultAgent {
             config: self.config,
             model: self.model,
@@ -305,7 +315,8 @@ impl DefaultAgentBuilder {
             steps: 0,
             total_cost_usd: 0.0,
             actual_cost_source: None,
-            started_at_instant: Instant::now(),
+            started_at_instant,
+            last_measurement_end: started_at_instant,
             wallclock_deadline: None,
             prompt_tokens: 0,
             cache_read_tokens: 0,
@@ -503,6 +514,12 @@ impl Agent for DefaultAgent {
             max_tokens: Some(self.config.root.model.max_tokens),
             extra: serde_json::Map::new(),
         };
+        // Harness overhead leading up to this assistant turn = time since
+        // the previous measurement boundary (start of run or end of the
+        // previous tool exec). Captured BEFORE model.query so the harness
+        // bucket does not double-count model wall-clock.
+        let assistant_harness_ms = elapsed_ms_since(self.last_measurement_end);
+        let model_query_start = Instant::now();
         let query_result = query_model_until_cancelled(
             self.model.as_ref(),
             &self.history,
@@ -510,6 +527,13 @@ impl Agent for DefaultAgent {
             self.cancellation.clone(),
         )
         .await;
+        let model_latency_ms_value = elapsed_ms_since(model_query_start);
+        let model_latency_recorded = if self.model.skip_latency_telemetry() {
+            None
+        } else {
+            Some(model_latency_ms_value)
+        };
+        self.last_measurement_end = Instant::now();
         // When every model in a fallback chain fails transiently the error
         // carries the structured attempt records. Capture them before
         // propagating so finalize_run_metadata can still emit a summary.
@@ -562,6 +586,8 @@ impl Agent for DefaultAgent {
         asst.extra.cost = resp.usage.cost_usd;
         asst.extra.response = Some(resp.raw.clone());
         asst.extra.timestamp = Some(asst_ts.clone());
+        asst.extra.model_latency_ms = model_latency_recorded;
+        asst.extra.harness_overhead_ms = Some(assistant_harness_ms);
 
         // Store input fingerprint + canonical for replay drift detection (issue #155).
         // Fingerprint the TRAJECTORY-redacted, marker-normalized view of history so
@@ -687,18 +713,22 @@ impl Agent for DefaultAgent {
                     content: err.clone(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 });
-                let obs = Message::user(
+                let mut obs = Message::user(
                     self.redactor
                         .redact_text(&err, surface::MODEL_OBSERVATION)
                         .text,
                 );
+                obs.extra.harness_overhead_ms =
+                    Some(elapsed_ms_since(self.last_measurement_end));
                 self.history.push(obs.clone());
+                let obs_extra = obs.extra.clone();
                 record_redacted_message(
                     &mut self.trajectory,
                     &obs,
-                    obs.extra.clone(),
+                    obs_extra,
                     &self.redactor,
                 );
+                self.last_measurement_end = Instant::now();
                 self.steps += 1;
                 return Ok(StepOutcome::Continue);
             }
@@ -759,7 +789,10 @@ impl Agent for DefaultAgent {
                 );
                 let obs_msg = Message::user(rejection.clone());
                 self.history.push(obs_msg.clone());
-                let mut obs_extra = crate::model::MessageExtra::default();
+                let mut obs_extra = crate::model::MessageExtra {
+                    harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
+                    ..crate::model::MessageExtra::default()
+                };
                 obs_extra
                     .other
                     .insert("policy_blocked".into(), serde_json::Value::Bool(true));
@@ -781,6 +814,7 @@ impl Agent for DefaultAgent {
                     content: rejection,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 });
+                self.last_measurement_end = Instant::now();
                 self.steps += 1;
                 return Ok(StepOutcome::Continue);
             }
@@ -807,9 +841,14 @@ impl Agent for DefaultAgent {
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
 
-        let (result, post_hook_results) = if tool_use_blocked {
-            (blocked_run_result(&pre_hook_results), Vec::new())
+        // Harness overhead from the end of the model query to just before
+        // the tool starts executing: policy gate, pre-hooks, message
+        // construction.
+        let obs_harness_ms = elapsed_ms_since(self.last_measurement_end);
+        let (result, post_hook_results, tool_latency_recorded) = if tool_use_blocked {
+            (blocked_run_result(&pre_hook_results), Vec::new(), None)
         } else {
+            let tool_start = Instant::now();
             let result = if is_bash {
                 self.stream.emit(StreamEvent::BashStart {
                     step: self.steps,
@@ -837,6 +876,8 @@ impl Agent for DefaultAgent {
             } else {
                 self.run_non_bash_tool(&tool_name, &tool_input).await?
             };
+            let tool_latency = elapsed_ms_since(tool_start);
+            self.last_measurement_end = Instant::now();
             let post_hook_results = self
                 .run_tool_hooks(
                     ToolHookPhase::PostToolUse,
@@ -846,7 +887,7 @@ impl Agent for DefaultAgent {
                     Some(&result),
                 )
                 .await?;
-            (result, post_hook_results)
+            (result, post_hook_results, Some(tool_latency))
         };
 
         if is_bash && !tool_use_blocked {
@@ -997,6 +1038,8 @@ impl Agent for DefaultAgent {
             serde_json::json!(trunc_output.bytes_omitted),
         );
         obs_extra.timestamp = Some(obs_ts.clone());
+        obs_extra.tool_latency_ms = tool_latency_recorded;
+        obs_extra.harness_overhead_ms = Some(obs_harness_ms);
         record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
 
         self.stream.emit(StreamEvent::Observation {

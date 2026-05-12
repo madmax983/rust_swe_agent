@@ -3457,6 +3457,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
@@ -3476,6 +3477,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
 
@@ -3531,6 +3533,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         std::fs::write(

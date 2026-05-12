@@ -20,7 +20,7 @@ pub struct ArtifactSchemaVersion {
 }
 
 impl ArtifactSchemaVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 4 };
+    pub const CURRENT: Self = Self { major: 1, minor: 5 };
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 
     #[must_use]

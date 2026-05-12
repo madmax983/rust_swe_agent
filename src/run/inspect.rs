@@ -103,10 +103,31 @@ pub struct InspectReport {
     pub verification_status: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification_results: Vec<VerificationResult>,
+    /// Sum of `model_latency_ms` over all messages. `None` when no turn
+    /// recorded model latency (legacy trajectory or deterministic fixture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_latency_ms_total: Option<u64>,
+    /// Sum of `tool_latency_ms` over all messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_latency_ms_total: Option<u64>,
+    /// Sum of `harness_overhead_ms` over all messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_overhead_ms_total: Option<u64>,
+    /// Each stage's share of `duration_secs`, rounded to whole percent.
+    /// Empty when `duration_secs` is missing or zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_share_pct: Option<LatencySharePct>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
     pub steps: Vec<InspectStep>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct LatencySharePct {
+    pub model_pct: u32,
+    pub tool_pct: u32,
+    pub harness_pct: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -266,6 +287,10 @@ fn build_instance_report(
                 fallback_summary: None,
                 verification_status: None,
                 verification_results: vec![],
+                model_latency_ms_total: None,
+                tool_latency_ms_total: None,
+                harness_overhead_ms_total: None,
+                latency_share_pct: None,
                 warnings,
                 steps: vec![],
             });
@@ -287,6 +312,14 @@ fn build_instance_report(
     }
 
     let steps = build_inspect_steps(&traj, full);
+    let (model_latency_ms_total, tool_latency_ms_total, harness_overhead_ms_total) =
+        sum_stage_latencies(&traj);
+    let latency_share_pct = compute_latency_share(
+        traj.info.duration_secs,
+        model_latency_ms_total,
+        tool_latency_ms_total,
+        harness_overhead_ms_total,
+    );
 
     let token_usage = traj.info.token_usage.as_ref();
     Ok(InspectReport {
@@ -322,8 +355,62 @@ fn build_instance_report(
         fallback_summary: traj.info.fallback_summary,
         verification_status: traj.info.verification_status,
         verification_results: traj.info.verification_results,
+        model_latency_ms_total,
+        tool_latency_ms_total,
+        harness_overhead_ms_total,
+        latency_share_pct,
         warnings,
         steps,
+    })
+}
+
+/// Returns `(model_total, tool_total, harness_total)` summed across messages.
+/// Each component is `None` when no message recorded that stage. Recording
+/// `Some(0)` is preserved as a measured zero (e.g., a fast tool turn).
+fn sum_stage_latencies(traj: &Trajectory) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let mut model = None::<u64>;
+    let mut tool = None::<u64>;
+    let mut harness = None::<u64>;
+    for m in &traj.messages {
+        if let Some(v) = m.extra.model_latency_ms {
+            model = Some(model.unwrap_or(0).saturating_add(v));
+        }
+        if let Some(v) = m.extra.tool_latency_ms {
+            tool = Some(tool.unwrap_or(0).saturating_add(v));
+        }
+        if let Some(v) = m.extra.harness_overhead_ms {
+            harness = Some(harness.unwrap_or(0).saturating_add(v));
+        }
+    }
+    (model, tool, harness)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn compute_latency_share(
+    duration_secs: Option<f64>,
+    model_ms: Option<u64>,
+    tool_ms: Option<u64>,
+    harness_ms: Option<u64>,
+) -> Option<LatencySharePct> {
+    let dur_ms = duration_secs? * 1000.0;
+    if dur_ms <= 0.0 {
+        return None;
+    }
+    if model_ms.is_none() && tool_ms.is_none() && harness_ms.is_none() {
+        return None;
+    }
+    let pct = |ms: Option<u64>| -> u32 {
+        let v = ms.unwrap_or(0) as f64;
+        ((v / dur_ms) * 100.0).round() as u32
+    };
+    Some(LatencySharePct {
+        model_pct: pct(model_ms),
+        tool_pct: pct(tool_ms),
+        harness_pct: pct(harness_ms),
     })
 }
 
@@ -575,6 +662,28 @@ fn render_instance_text(report: &InspectReport) -> String {
                 r.name, r.passed, r.exit_code, r.duration_ms, timeout_note,
             );
         }
+    }
+    if report.model_latency_ms_total.is_some()
+        || report.tool_latency_ms_total.is_some()
+        || report.harness_overhead_ms_total.is_some()
+    {
+        let model_ms = report
+            .model_latency_ms_total
+            .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
+        let tool_ms = report
+            .tool_latency_ms_total
+            .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
+        let harness_ms = report
+            .harness_overhead_ms_total
+            .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
+        let share = report.latency_share_pct.map_or_else(
+            String::new,
+            |s| format!(" ({}% / {}% / {}%)", s.model_pct, s.tool_pct, s.harness_pct),
+        );
+        let _ = writeln!(
+            s,
+            "latency:          model_ms={model_ms} tool_ms={tool_ms} harness_ms={harness_ms}{share}",
+        );
     }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");

@@ -72,6 +72,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
         breakdown: vec![],
         cost_attribution: vec![],
         model_mix_summary: vec![],
+        latency_summary: None,
         provenance: None,
     }
 }
