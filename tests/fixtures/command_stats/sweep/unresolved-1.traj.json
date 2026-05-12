@@ -1,0 +1,76 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "unresolved-1",
+    "model_name": "fixture-model",
+    "outcome": "step_limit_reached",
+    "total_cost_usd": 0.03,
+    "steps": 3,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Let me look at the files.",
+      "extra": {
+        "actions": ["cat main.py"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "cat: main.py: No such file or directory",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "cat: main.py: No such file or directory",
+          "exit_code": 1,
+          "timed_out": false
+        }
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Let me find the file.",
+      "extra": {
+        "actions": ["grep -r 'def main' ."],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "",
+          "exit_code": 1,
+          "timed_out": false
+        }
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Try listing files.",
+      "extra": {
+        "actions": ["cat setup.py"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "cat: setup.py: No such file or directory",
+      "extra": {
+        "run_result": {
+          "stdout": "",
+          "stderr": "cat: setup.py: No such file or directory",
+          "exit_code": 1,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}

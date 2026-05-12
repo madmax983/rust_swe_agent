@@ -91,6 +91,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Triage(t),
         } => bench_triage(t),
         Command::Bench {
+            cmd: args::BenchCmd::CommandStats(c),
+        } => bench_command_stats(c),
+        Command::Bench {
             cmd: args::BenchCmd::Frontier(f),
         } => bench_frontier(f),
         Command::Bench {
@@ -1436,6 +1439,35 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
+    let format = match c.format.as_str() {
+        "text" => CommandStatsFormat::Text,
+        "json" => CommandStatsFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::command_stats::run(&crate::run::command_stats::CommandStatsArgs {
+        sweep_dir: c.sweep,
+        bucket: c.bucket,
+        min_invocations: c.min_invocations,
+        top: c.top,
+        compare: c.compare,
+        filter: c.filter,
+    })?;
+    match format {
+        CommandStatsFormat::Text => {
+            print!("{}", crate::run::command_stats::render_text(&report, c.top));
+        }
+        CommandStatsFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+    }
+    Ok(())
+}
+
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
@@ -1613,6 +1645,12 @@ enum TailFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TriageFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandStatsFormat {
     Text,
     Json,
 }
