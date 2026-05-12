@@ -188,7 +188,7 @@ pub struct MiniCmd {
 
     /// Enable in-loop agent stagnation detection (default: on). Pass
     /// `--detect-stagnation=false` to disable.
-    #[arg(long = "detect-stagnation", default_value_t = true)]
+    #[arg(long = "detect-stagnation", default_value_t = true, num_args = 0..=1, default_missing_value = "true")]
     pub detect_stagnation: bool,
 
     /// Number of times the same action must appear in the trailing window

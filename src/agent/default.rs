@@ -995,20 +995,22 @@ impl Agent for DefaultAgent {
             timestamp: obs_ts,
         });
 
-        // Check for stagnation before incrementing so step_index = self.steps.
-        if is_bash && !tool_use_blocked {
-            if let Some(detector) = &mut self.stagnation_detector {
-                if let Some(trip) = detector.observe(self.steps, &tool_input) {
-                    self.steps += 1;
-                    return Ok(self.terminate_stagnation(trip));
-                }
-            }
-        }
-
         self.steps += 1;
+        // Cancellation takes priority: if the operator interrupted during the
+        // Kth repeated command we must record UserInterrupt (exit 130), not
+        // agent_stagnation (exit 12).
         if self.cancellation_requested() {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
+
+        // Check for stagnation after cancellation so step_index = self.steps - 1.
+        if is_bash && !tool_use_blocked {
+            if let Some(detector) = &mut self.stagnation_detector {
+                if let Some(trip) = detector.observe(self.steps - 1, &tool_input) {
+                    return Ok(self.terminate_stagnation(trip));
+                }
+            }
         }
         Ok(StepOutcome::Continue)
     }
