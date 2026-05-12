@@ -1,6 +1,6 @@
 //! `bench command-stats`: surface shell-command behavior by outcome.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
 use std::process::Command;
@@ -20,7 +20,10 @@ fn head_extraction_simple_command() {
 
 #[test]
 fn head_extraction_strips_sudo() {
-    assert_eq!(extract_command_heads("sudo apt-get install python3"), vec!["apt-get"]);
+    assert_eq!(
+        extract_command_heads("sudo apt-get install python3"),
+        vec!["apt-get"]
+    );
 }
 
 #[test]
@@ -30,12 +33,18 @@ fn head_extraction_strips_time() {
 
 #[test]
 fn head_extraction_strips_env_prefix() {
-    assert_eq!(extract_command_heads("env RUST_LOG=debug cargo build"), vec!["cargo"]);
+    assert_eq!(
+        extract_command_heads("env RUST_LOG=debug cargo build"),
+        vec!["cargo"]
+    );
 }
 
 #[test]
 fn head_extraction_strips_inline_var_assignment() {
-    assert_eq!(extract_command_heads("RUST_LOG=debug cargo build"), vec!["cargo"]);
+    assert_eq!(
+        extract_command_heads("RUST_LOG=debug cargo build"),
+        vec!["cargo"]
+    );
 }
 
 #[test]
@@ -160,15 +169,22 @@ fn cli_writes_command_stats_json_artifact() {
         report["totals"]["bash_steps"].as_u64().unwrap() > 0,
         "should have bash steps"
     );
-    assert!(
-        report["totals"]["unique_command_heads"].as_u64().unwrap() > 0
-    );
+    assert!(report["totals"]["unique_command_heads"].as_u64().unwrap() > 0);
 
     // by_outcome buckets
     let by_outcome = report["by_outcome"].as_object().unwrap();
-    assert!(by_outcome.contains_key("resolved"), "resolved bucket required");
-    assert!(by_outcome.contains_key("unresolved"), "unresolved bucket required");
-    assert!(by_outcome.contains_key("errored"), "errored bucket required");
+    assert!(
+        by_outcome.contains_key("resolved"),
+        "resolved bucket required"
+    );
+    assert!(
+        by_outcome.contains_key("unresolved"),
+        "unresolved bucket required"
+    );
+    assert!(
+        by_outcome.contains_key("errored"),
+        "errored bucket required"
+    );
     assert!(by_outcome.contains_key("all"), "all bucket required");
 }
 
@@ -226,11 +242,20 @@ fn cli_row_fields_have_correct_types() {
 
     // Check resolved bucket rows
     let resolved_rows = report["by_outcome"]["resolved"].as_array().unwrap();
-    assert!(!resolved_rows.is_empty(), "resolved bucket should have rows");
+    assert!(
+        !resolved_rows.is_empty(),
+        "resolved bucket should have rows"
+    );
     let row = &resolved_rows[0];
-    assert!(row["command_head"].is_string(), "command_head must be string");
+    assert!(
+        row["command_head"].is_string(),
+        "command_head must be string"
+    );
     assert!(row["instance_count"].is_u64(), "instance_count must be int");
-    assert!(row["invocation_count"].is_u64(), "invocation_count must be int");
+    assert!(
+        row["invocation_count"].is_u64(),
+        "invocation_count must be int"
+    );
     assert!(row["mean_calls_per_instance"].is_f64() || row["mean_calls_per_instance"].is_u64());
     assert!(row["nonzero_exit_rate"].is_f64() || row["nonzero_exit_rate"].is_u64());
     assert!(row["attributed_cost_usd"].is_f64() || row["attributed_cost_usd"].is_u64());
@@ -276,7 +301,10 @@ fn cli_rows_ordered_by_invocation_count_descending() {
     }
 
     // cat should be first (most invocations: 4 total across all instances)
-    assert_eq!(all_rows[0]["command_head"], "cat", "cat has most invocations");
+    assert_eq!(
+        all_rows[0]["command_head"], "cat",
+        "cat has most invocations"
+    );
 }
 
 #[test]
@@ -475,14 +503,12 @@ fn cli_output_is_deterministic_except_generated_at() {
     copy_command_stats_fixture(sweep.path());
 
     let first = run_command_stats_json(sweep.path());
-    let first_file =
-        std::fs::read_to_string(sweep.path().join("command-stats.json")).unwrap();
+    let first_file = std::fs::read_to_string(sweep.path().join("command-stats.json")).unwrap();
 
     std::thread::sleep(Duration::from_secs(1));
 
     let second = run_command_stats_json(sweep.path());
-    let second_file =
-        std::fs::read_to_string(sweep.path().join("command-stats.json")).unwrap();
+    let second_file = std::fs::read_to_string(sweep.path().join("command-stats.json")).unwrap();
 
     assert_eq!(
         redact_generated_at(&first),
@@ -659,7 +685,8 @@ fn cli_json_output_matches_golden_snapshot_byte_for_byte() {
     let golden_pretty = serde_json::to_string_pretty(&golden).unwrap();
 
     assert_eq!(
-        actual_pretty, golden_pretty,
+        actual_pretty,
+        golden_pretty,
         "JSON output does not match golden snapshot.\n\
          If the change is intentional, update tests/fixtures/command_stats/golden-command-stats.json.\n\
          Diff (actual vs golden):\n{}\n",
@@ -823,8 +850,7 @@ fn cli_filter_resolved_bad_value_exits_nonzero() {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn copy_command_stats_fixture(dir: &Path) {
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/command_stats/sweep");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/command_stats/sweep");
     copy_dir(&fixture, dir);
 }
 

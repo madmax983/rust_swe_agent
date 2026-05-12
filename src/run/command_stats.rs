@@ -84,9 +84,7 @@ pub fn render_text(report: &CommandStatsReport, top: usize) -> String {
     let _ = writeln!(
         out,
         "Trajectories: {}  bash_steps: {}  unique_command_heads: {}",
-        report.totals.trajectories,
-        report.totals.bash_steps,
-        report.totals.unique_command_heads
+        report.totals.trajectories, report.totals.bash_steps, report.totals.unique_command_heads
     );
     out.push('\n');
 
@@ -424,8 +422,7 @@ fn matches_filter(
 ) -> Result<bool, Error> {
     let Some((key, value)) = filter.split_once('=') else {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
-            "command-stats: --filter expects key=value (e.g. failure_category=model_parse)"
-                .into(),
+            "command-stats: --filter expects key=value (e.g. failure_category=model_parse)".into(),
         )));
     };
     let (key, value) = (key.trim(), value.trim());
@@ -439,9 +436,9 @@ fn matches_filter(
             let expected = value == "true";
             Ok(resolved == Some(expected))
         }
-        "failure_category" => Ok(instance.failure_category.is_some_and(|fc| {
-            failure_category_label(fc) == value
-        })),
+        "failure_category" => Ok(instance
+            .failure_category
+            .is_some_and(|fc| failure_category_label(fc) == value)),
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "command-stats: unsupported filter key `{other}`; supported: `resolved`, `failure_category`"
         )))),
@@ -571,10 +568,7 @@ fn extract_segment_head(segment: &str) -> String {
         if token == "env" {
             i += 1;
             // Skip VAR=val tokens after `env`
-            while i < tokens.len()
-                && tokens[i].contains('=')
-                && !tokens[i].starts_with('-')
-            {
+            while i < tokens.len() && tokens[i].contains('=') && !tokens[i].starts_with('-') {
                 i += 1;
             }
             continue;
