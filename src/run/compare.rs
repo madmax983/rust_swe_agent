@@ -869,7 +869,7 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
             ArtifactKind::SweepResults,
             results_path.display().to_string(),
         )
-        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
         let artifact_warnings = artifact.warnings.clone();
         let filter_spec_present = value.get("filter_spec").is_some();
         let sweep: SweepResults = serde_json::from_value(value)?;
@@ -951,10 +951,12 @@ pub fn load_sweep(dir: &Path) -> Result<LoadedSweep, Error> {
         });
     }
     if !dir.exists() {
-        return Err(Error::Trajectory(format!(
-            "compare: directory does not exist: {}",
-            dir.display()
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "compare: directory does not exist: {}",
+                dir.display()
+            )),
+        ));
     }
 
     let slots = scan_trajectory_run_slots(dir, None)?;
@@ -1116,7 +1118,7 @@ fn instance_result_from_trajectory(
         Err(_) => return Ok(None),
     };
     classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
-        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let traj: Trajectory = match serde_json::from_value(value) {
         Ok(t) => t,
         Err(_) => return Ok(None),
@@ -1462,22 +1464,22 @@ pub fn write_diff_script(report: &CompareReport, out_path: &Path) -> Result<(), 
             &regression.instance_id,
         )
         .ok_or_else(|| {
-            Error::Trajectory(format!(
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
                 "compare: baseline trajectory not found for `{}` in {}",
                 regression.instance_id,
                 report.baseline_dir.display()
-            ))
+            )))
         })?;
         let candidate = crate::run::trajectory_diff::resolve_trajectory_path(
             &report.candidate_dir,
             &regression.instance_id,
         )
         .ok_or_else(|| {
-            Error::Trajectory(format!(
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
                 "compare: candidate trajectory not found for `{}` in {}",
                 regression.instance_id,
                 report.candidate_dir.display()
-            ))
+            )))
         })?;
         let _ = writeln!(
             script,
@@ -2133,7 +2135,7 @@ pub fn load_evaluation_results_checked(
         ArtifactKind::EvaluationResults,
         path.display().to_string(),
     )
-    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let artifact_warnings = artifact.warnings.clone();
     Ok(Some(LoadedEvaluationResults {
         results: serde_json::from_value(value)?,

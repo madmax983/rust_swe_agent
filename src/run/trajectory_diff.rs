@@ -139,10 +139,12 @@ pub fn diff_paths(args: &TrajectoryDiffArgs) -> Result<TrajectoryDiffReport, Err
     let baseline = load_named_trajectory(&args.baseline)?;
     let candidate = load_named_trajectory(&args.candidate)?;
     if baseline.instance_id != candidate.instance_id {
-        return Err(Error::Trajectory(format!(
-            "inspect diff: instance_id mismatch: baseline `{}` candidate `{}`",
-            baseline.instance_id, candidate.instance_id
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "inspect diff: instance_id mismatch: baseline `{}` candidate `{}`",
+                baseline.instance_id, candidate.instance_id
+            )),
+        ));
     }
     Ok(diff_trajectories(&baseline, &candidate, args.show_noise))
 }
@@ -154,16 +156,16 @@ pub fn diff_sweep_instance(
     show_noise: bool,
 ) -> Result<TrajectoryDiffReport, Error> {
     let baseline = resolve_trajectory_path(baseline_sweep, instance_id).ok_or_else(|| {
-        Error::Trajectory(format!(
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
             "inspect diff: baseline trajectory not found for `{instance_id}` in {}",
             baseline_sweep.display()
-        ))
+        )))
     })?;
     let candidate = resolve_trajectory_path(candidate_sweep, instance_id).ok_or_else(|| {
-        Error::Trajectory(format!(
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
             "inspect diff: candidate trajectory not found for `{instance_id}` in {}",
             candidate_sweep.display()
-        ))
+        )))
     })?;
     diff_paths(&TrajectoryDiffArgs {
         baseline,
@@ -454,15 +456,15 @@ fn load_named_trajectory(path: &Path) -> Result<NamedTrajectory, Error> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
-        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let trajectory: Trajectory = serde_json::from_value(value)?;
     let instance_id = explicit_instance_id(&trajectory)
         .or_else(|| derive_instance_id(path))
         .ok_or_else(|| {
-            Error::Trajectory(format!(
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
                 "inspect diff: unable to infer instance_id from {}",
                 path.display()
-            ))
+            )))
         })?;
     Ok(NamedTrajectory {
         path: path.to_path_buf(),

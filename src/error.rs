@@ -17,8 +17,8 @@ pub enum Error {
     #[error(transparent)]
     Template(#[from] minijinja::Error),
 
-    #[error("trajectory io: {0}")]
-    Trajectory(String),
+    #[error(transparent)]
+    Trajectory(#[from] TrajectoryError),
 
     #[error("github pr: {0}")]
     Github(String),
@@ -209,4 +209,19 @@ impl From<toml::de::Error> for ConfigError {
     fn from(e: toml::de::Error) -> Self {
         Self::Toml(e.to_string())
     }
+}
+
+#[derive(Debug, Error)]
+pub enum TrajectoryError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
+    #[error("trajectory format error: {0}")]
+    Format(String),
+
+    #[error("trajectory validation error: {0}")]
+    Validation(String),
 }

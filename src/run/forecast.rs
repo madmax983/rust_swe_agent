@@ -268,7 +268,7 @@ pub fn load_calibration_results(calibration_dir: &Path) -> Result<LoadedCalibrat
         ArtifactKind::SweepResults,
         path.display().to_string(),
     )
-    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let warnings = compatibility.warnings.clone();
     let results: SweepResults = serde_json::from_value(value)?;
     Ok(LoadedCalibrationResults {

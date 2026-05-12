@@ -174,10 +174,12 @@ impl TerminalRecord {
 #[allow(clippy::too_many_lines)]
 pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnapshot, Error> {
     if !sweep_dir.exists() {
-        return Err(Error::Trajectory(format!(
-            "tail: sweep directory does not exist: {}",
-            sweep_dir.display()
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "tail: sweep directory does not exist: {}",
+                sweep_dir.display()
+            )),
+        ));
     }
 
     let mut warnings = Vec::new();
@@ -360,7 +362,9 @@ fn read_json_value(
         Ok(v) => {
             let compat =
                 classify_json_value(&v, ArtifactKind::SweepResults, path.display().to_string())
-                    .map_err(|err| Error::Trajectory(err.to_string()))?;
+                    .map_err(|err| {
+                        Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string()))
+                    })?;
             warnings.extend(compat.warnings);
             Ok(Some(v))
         }
@@ -591,7 +595,11 @@ fn terminal_record_from_trajectory(
     };
     match classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string()) {
         Ok(compat) => warnings.extend(compat.warnings),
-        Err(err) => return Err(Error::Trajectory(err.to_string())),
+        Err(err) => {
+            return Err(Error::Trajectory(crate::error::TrajectoryError::Format(
+                err.to_string(),
+            )));
+        }
     }
     let traj: Trajectory = match serde_json::from_value(value) {
         Ok(traj) => traj,

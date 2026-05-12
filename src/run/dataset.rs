@@ -228,10 +228,10 @@ pub fn write_cache(
 ) -> Result<PathBuf, Error> {
     let path = cache_path_for(cache_dir, alias, split);
     let parent = path.parent().ok_or_else(|| {
-        Error::Trajectory(format!(
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
             "cache path `{}` has no parent directory",
             path.display()
-        ))
+        )))
     })?;
     std::fs::create_dir_all(parent)?;
     std::fs::write(&path, content)?;

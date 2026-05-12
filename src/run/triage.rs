@@ -329,11 +329,11 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
 fn build_report(args: &TriageArgs) -> Result<TriageReport, Error> {
     let sweep = load_sweep(&args.sweep_dir)?;
     let evaluation = load_evaluation_results_checked(&args.sweep_dir)?.ok_or_else(|| {
-        Error::Trajectory(format!(
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
             "bench triage: missing evaluation.json in {}; run `bench evaluate --sweep {}` first",
             args.sweep_dir.display(),
             args.sweep_dir.display()
-        ))
+        )))
     })?;
 
     let candidate_ids = candidate_instance_ids(evaluation.results, &sweep.instances);
@@ -405,15 +405,15 @@ fn build_accumulators(
     let mut accumulators: BTreeMap<String, ClusterAccumulator> = BTreeMap::new();
     for instance_id in candidate_ids {
         let instance = instances.get(&instance_id).ok_or_else(|| {
-            Error::Trajectory(format!(
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
                 "bench triage: evaluation.json references `{instance_id}` but results.json has no matching instance"
-            ))
+            )))
         })?;
         let trajectory_path =
             resolve_trajectory_path(&args.sweep_dir, &instance_id).ok_or_else(|| {
-                Error::Trajectory(format!(
+                Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
                     "bench triage: trajectory not found for unresolved instance `{instance_id}`"
-                ))
+                )))
             })?;
         let trajectory = load_trajectory(&trajectory_path)?;
         let failure_category = instance
@@ -503,7 +503,7 @@ fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
-        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     serde_json::from_value(value).map_err(Into::into)
 }
 

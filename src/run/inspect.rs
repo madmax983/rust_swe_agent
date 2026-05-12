@@ -143,20 +143,26 @@ pub enum InspectOutput {
 
 pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     if !args.sweep.exists() {
-        return Err(Error::Trajectory(format!(
-            "inspect: sweep directory does not exist: {}",
-            args.sweep.display()
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "inspect: sweep directory does not exist: {}",
+                args.sweep.display()
+            )),
+        ));
     }
     match (&args.instance, &args.filter) {
         (Some(_), Some(_)) => {
             return Err(Error::Trajectory(
-                "inspect: pass exactly one of --instance or --filter".into(),
+                crate::error::TrajectoryError::Validation(
+                    "inspect: pass exactly one of --instance or --filter".into(),
+                ),
             ));
         }
         (None, None) => {
             return Err(Error::Trajectory(
-                "inspect: one of --instance or --filter is required".into(),
+                crate::error::TrajectoryError::Validation(
+                    "inspect: one of --instance or --filter is required".into(),
+                ),
             ));
         }
         _ => {}
@@ -215,10 +221,10 @@ fn build_instance_report(
     evaluation_overrides: Option<&HashMap<String, EvaluationOverride>>,
 ) -> Result<InspectReport, Error> {
     let traj_path = resolve_trajectory_path(sweep, instance_id).ok_or_else(|| {
-        Error::Trajectory(format!(
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
             "inspect: trajectory not found for instance `{instance_id}` in {}",
             sweep.display()
-        ))
+        )))
     })?;
     let text = std::fs::read_to_string(&traj_path)?;
     let mut warnings = Vec::new();
@@ -228,7 +234,7 @@ fn build_instance_report(
             ArtifactKind::Trajectory,
             traj_path.display().to_string(),
         )
-        .map_err(|err| Error::Trajectory(err.to_string()))?;
+        .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
         warnings.extend(compat.warnings);
     }
     let mut traj: Trajectory = match serde_json::from_str(&text) {
@@ -775,7 +781,7 @@ fn load_evaluation_overrides(
         ArtifactKind::EvaluationResults,
         eval_path.display().to_string(),
     )
-    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let eval: EvaluationResults = serde_json::from_value(value)?;
     Ok(Some(
         eval.instances
@@ -821,17 +827,23 @@ fn parse_filter(s: &str) -> Result<FilterSpec, Error> {
     let value = it.next().unwrap_or_default().trim().to_owned();
     if key.is_empty() || value.is_empty() {
         return Err(Error::Trajectory(
-            "inspect: --filter expects key=value (e.g. resolved=false)".into(),
+            crate::error::TrajectoryError::Validation(
+                "inspect: --filter expects key=value (e.g. resolved=false)".into(),
+            ),
         ));
     }
     if key != "resolved" && key != "failure_category" {
         return Err(Error::Trajectory(
-            "inspect: supported filters are `resolved` and `failure_category`".into(),
+            crate::error::TrajectoryError::Validation(
+                "inspect: supported filters are `resolved` and `failure_category`".into(),
+            ),
         ));
     }
     if key == "resolved" && value != "true" && value != "false" {
         return Err(Error::Trajectory(
-            "inspect: resolved filter must be true or false".into(),
+            crate::error::TrajectoryError::Validation(
+                "inspect: resolved filter must be true or false".into(),
+            ),
         ));
     }
     Ok(FilterSpec {

@@ -341,7 +341,7 @@ fn load_forecast(path: &Path) -> Result<LoadedForecast, Error> {
         ArtifactKind::ForecastReport,
         path.display().to_string(),
     )
-    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let warnings = artifact.warnings.clone();
     let report: ForecastReport = serde_json::from_value(value)?;
     Ok(LoadedForecast {
@@ -358,7 +358,7 @@ fn load_results(path: &Path, label: &str) -> Result<LoadedResults, Error> {
         ArtifactKind::SweepResults,
         path.display().to_string(),
     )
-    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    .map_err(|err| Error::Trajectory(crate::error::TrajectoryError::Format(err.to_string())))?;
     let warnings = artifact.warnings.clone();
     let results: SweepResults = serde_json::from_value(value)?;
     Ok(LoadedResults {

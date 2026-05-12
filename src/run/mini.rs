@@ -144,7 +144,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         Some(addr) => {
             let bcast = Arc::new(BroadcastSink::default());
             let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
-                Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
+                Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+                    "failed to bind SSE server on {addr}: {e}"
+                )))
             })?;
             tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
             (Some(bcast as Arc<dyn StreamSink>), Some(server))
@@ -453,9 +455,9 @@ async fn run_agent_with_timeout(
             serde_json::Value::String(err.to_string()),
         );
     }
-    Err(Error::Trajectory(format!(
-        "task wallclock timeout after {secs}s"
-    )))
+    Err(Error::Trajectory(
+        crate::error::TrajectoryError::Validation(format!("task wallclock timeout after {secs}s")),
+    ))
 }
 
 fn classify_error(err: &Error) -> FailureCategory {

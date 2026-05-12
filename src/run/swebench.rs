@@ -1371,8 +1371,11 @@ pub fn load_dataset(path: &std::path::Path) -> Result<Vec<SweBenchInstance>, Err
 }
 
 fn load_dataset_from_bytes(bytes: &[u8]) -> Result<Vec<SweBenchInstance>, Error> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|e| Error::Trajectory(format!("dataset utf8 decode: {e}")))?;
+    let text = std::str::from_utf8(bytes).map_err(|e| {
+        Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+            "dataset utf8 decode: {e}"
+        )))
+    })?;
     parse_dataset_lines(text)
 }
 
@@ -1389,8 +1392,12 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
         if line.is_empty() {
             continue;
         }
-        let instance: SweBenchInstance = serde_json::from_str(line)
-            .map_err(|e| Error::Trajectory(format!("dataset line {}: {e}", i + 1)))?;
+        let instance: SweBenchInstance = serde_json::from_str(line).map_err(|e| {
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+                "dataset line {}: {e}",
+                i + 1
+            )))
+        })?;
         if instance.instance_id.contains('/')
             || instance.instance_id.contains('\\')
             || instance.instance_id == ".."
@@ -1398,11 +1405,13 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
             || instance.instance_id.contains(':')
             || instance.instance_id.is_empty()
         {
-            return Err(Error::Trajectory(format!(
-                "dataset line {}: invalid instance_id for path generation: '{}'",
-                i + 1,
-                instance.instance_id
-            )));
+            return Err(Error::Trajectory(
+                crate::error::TrajectoryError::Validation(format!(
+                    "dataset line {}: invalid instance_id for path generation: '{}'",
+                    i + 1,
+                    instance.instance_id
+                )),
+            ));
         }
         out.push(instance);
     }
@@ -2538,8 +2547,13 @@ fn render_preflight_report(
                 })
                 .collect(),
         };
-        return crate::artifact::to_string_pretty(ArtifactKind::PreflightReport, &payload)
-            .map_err(|e| Error::Trajectory(format!("preflight json encode: {e}")));
+        return crate::artifact::to_string_pretty(ArtifactKind::PreflightReport, &payload).map_err(
+            |e| {
+                Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+                    "preflight json encode: {e}"
+                )))
+            },
+        );
     }
     let mut out = String::new();
     for c in checks {
@@ -2607,8 +2621,16 @@ where
                 "preflight: {name}: timeout exceeded"
             )))
         })?
-        .map_err(|e| Error::Trajectory(format!("{name}: join error: {e}")))?
-        .map_err(|e| Error::Trajectory(format!("{name}: {e}")))?;
+        .map_err(|e| {
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+                "{name}: join error: {e}"
+            )))
+        })?
+        .map_err(|e| {
+            Error::Trajectory(crate::error::TrajectoryError::Validation(format!(
+                "{name}: {e}"
+            )))
+        })?;
     ensure_total_deadline(deadline)?;
     Ok(out)
 }

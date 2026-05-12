@@ -254,7 +254,9 @@ fn json_error_maps_to_internal_error() {
 
 #[test]
 fn trajectory_error_maps_to_internal_error() {
-    let e = Error::Trajectory("corrupt file".into());
+    let e = Error::Trajectory(rust_swe_agent::error::TrajectoryError::Format(
+        "corrupt file".into(),
+    ));
     assert_eq!(ExitCode::from_error(&e), ExitCode::InternalError);
 }
 
@@ -385,7 +387,12 @@ fn text_and_numeric_surfaces_agree_for_every_error_variant() {
             "task_unsuccessful",
             Error::Model(ModelError::Malformed("bad".into())),
         ),
-        ("internal_error", Error::Trajectory("corrupt".into())),
+        (
+            "internal_error",
+            Error::Trajectory(rust_swe_agent::error::TrajectoryError::Format(
+                "corrupt".into(),
+            )),
+        ),
         ("internal_error", Error::Github("api 500".into())),
         (
             "internal_error",

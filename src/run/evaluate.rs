@@ -332,7 +332,9 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let model_name = loaded.manifest.as_ref().map(|m| m.model.name.clone());
     if loaded.manifest.as_ref().and_then(|m| m.purpose.as_deref()) == Some("forecast") {
         return Err(Error::Trajectory(
-            "bench evaluate: refusing to evaluate forecast calibration output".into(),
+            crate::error::TrajectoryError::Validation(
+                "bench evaluate: refusing to evaluate forecast calibration output".into(),
+            ),
         ));
     }
     let results = loaded.instances;
@@ -876,10 +878,12 @@ fn run_sb_cli(
 ) -> Result<EvaluateRunOutput, Error> {
     let preds = swebench::predictions_path(&args.sweep_dir);
     if !preds.exists() {
-        return Err(Error::Trajectory(format!(
-            "bench evaluate: missing predictions file at {}",
-            preds.display()
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "bench evaluate: missing predictions file at {}",
+                preds.display()
+            )),
+        ));
     }
 
     let report_dir = args.sweep_dir.join("sb_cli_reports");
@@ -963,21 +967,23 @@ fn submit_sb_cli_predictions(
 
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            Error::Trajectory(
+            Error::Trajectory(crate::error::TrajectoryError::Validation(
                 "bench evaluate: `sb-cli` not found on PATH; install it or run --backend none"
                     .into(),
-            )
+            ))
         } else {
             Error::Io(e)
         }
     })?;
 
     if !output.status.success() {
-        return Err(Error::Trajectory(format!(
-            "bench evaluate: sb-cli submit failed (status={}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )));
+        return Err(Error::Trajectory(
+            crate::error::TrajectoryError::Validation(format!(
+                "bench evaluate: sb-cli submit failed (status={}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            )),
+        ));
     }
 
     let report_path = report_dir.join(format!(
@@ -997,11 +1003,13 @@ fn submit_sb_cli_predictions(
             .arg("1")
             .output()?;
         if !output.status.success() {
-            return Err(Error::Trajectory(format!(
-                "bench evaluate: sb-cli get-report failed (status={}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            return Err(Error::Trajectory(
+                crate::error::TrajectoryError::Validation(format!(
+                    "bench evaluate: sb-cli get-report failed (status={}): {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+            ));
         }
     }
 
