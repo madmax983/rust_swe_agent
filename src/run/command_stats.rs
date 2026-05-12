@@ -149,7 +149,24 @@ pub fn render_text(report: &CommandStatsReport, top: usize) -> String {
     out
 }
 
+const VALID_BUCKETS: &[&str] = &["resolved", "unresolved", "errored", "all"];
+
 fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
+    if let Some(b) = &args.bucket {
+        if !VALID_BUCKETS.contains(&b.as_str()) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "command-stats: unknown --bucket `{b}`; valid values: resolved, unresolved, errored, all"
+            ))));
+        }
+    }
+    if let Some(c) = &args.compare {
+        if c != "resolved-vs-unresolved" {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "command-stats: unknown --compare `{c}`; valid values: resolved-vs-unresolved"
+            ))));
+        }
+    }
+
     let sweep = load_sweep(&args.sweep_dir)?;
     let evaluation = load_evaluation_results_checked(&args.sweep_dir)?;
 
@@ -182,18 +199,17 @@ fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
         instance_buckets.push((id, bucket));
     }
 
-    // Collect bash steps from all trajectories
+    // Collect bash steps from all trajectories (including multiple runs per instance)
     let mut all_steps: Vec<BashStep> = Vec::new();
     for (instance_id, bucket) in &instance_buckets {
         let instance = &sweep.instances[instance_id];
-        let Some(trajectory_path) = resolve_trajectory_path(&args.sweep_dir, instance_id) else {
-            continue;
-        };
-        let Ok(trajectory) = load_trajectory(&trajectory_path) else {
-            continue;
-        };
-        let steps = extract_steps_from_trajectory(&trajectory, instance_id, bucket, instance);
-        all_steps.extend(steps);
+        for trajectory_path in resolve_trajectory_paths(&args.sweep_dir, instance_id) {
+            let Ok(trajectory) = load_trajectory(&trajectory_path) else {
+                continue;
+            };
+            let steps = extract_steps_from_trajectory(&trajectory, instance_id, bucket, instance);
+            all_steps.extend(steps);
+        }
     }
 
     // Bucket filter: when set, restrict which steps contribute to each outcome bucket
@@ -208,9 +224,8 @@ fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
             .iter()
             .filter(|s| {
                 let in_bucket = bucket_name == "all" || s.bucket == bucket_name;
-                let in_filter = active_bucket.map_or(true, |fb| {
-                    fb == "all" || fb == bucket_name || fb == s.bucket
-                });
+                let in_filter = active_bucket
+                    .is_none_or(|fb| fb == "all" || fb == bucket_name || fb == s.bucket);
                 in_bucket && in_filter
             })
             .collect();
@@ -493,6 +508,9 @@ fn extract_steps_from_trajectory(
             .map(|rr| rr.exit_code);
 
         for action in actions {
+            if action == "__SUBMIT__" {
+                continue;
+            }
             for head in extract_command_heads(action) {
                 steps.push(BashStep {
                     command_head: head,
@@ -602,23 +620,46 @@ fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
     serde_json::from_value(value).map_err(Into::into)
 }
 
-fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
+fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
+    // Nested single-trajectory format (legacy / hello-world)
     let nested = sweep.join(instance_id).join("trajectory.json");
     if nested.exists() {
-        return Some(nested);
+        return vec![nested];
     }
-    let nested_run = sweep.join(instance_id).join("run-1.traj.json");
-    if nested_run.exists() {
-        return Some(nested_run);
+
+    // Nested multi-run format: run-1.traj.json, run-2.traj.json, …
+    let instance_dir = sweep.join(instance_id);
+    if instance_dir.is_dir() {
+        let mut run_paths = Vec::new();
+        let mut n = 1usize;
+        loop {
+            let p = instance_dir.join(format!("run-{n}.traj.json"));
+            if !p.exists() {
+                break;
+            }
+            run_paths.push(p);
+            n += 1;
+        }
+        if !run_paths.is_empty() {
+            return run_paths;
+        }
     }
+
+    // Flat layout: <sweep>/<instance_id>.traj.json
     let flat = sweep.join(format!("{instance_id}.traj.json"));
     if flat.exists() {
-        return Some(flat);
+        return vec![flat];
     }
+
+    // Bundled layout: <sweep>/trajectories/<instance_id>.traj.json
     let bundled = sweep
         .join("trajectories")
         .join(format!("{instance_id}.traj.json"));
-    bundled.exists().then_some(bundled)
+    if bundled.exists() {
+        vec![bundled]
+    } else {
+        vec![]
+    }
 }
 
 fn utc_now_iso8601() -> String {

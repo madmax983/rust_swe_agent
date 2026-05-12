@@ -1,6 +1,6 @@
 //! `bench command-stats`: surface shell-command behavior by outcome.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
 use std::path::Path;
 use std::process::Command;
@@ -294,9 +294,7 @@ fn cli_rows_ordered_by_invocation_count_descending() {
         let curr = all_rows[i]["invocation_count"].as_u64().unwrap();
         assert!(
             prev >= curr,
-            "rows should be sorted by invocation_count descending: {} before {}",
-            prev,
-            curr
+            "rows should be sorted by invocation_count descending: {prev} before {curr}"
         );
     }
 
@@ -376,8 +374,7 @@ fn cli_min_invocations_hides_low_frequency_commands() {
     for row in all_rows {
         assert!(
             row["invocation_count"].as_u64().unwrap() >= 3,
-            "all rows should have >= 3 invocations, got {:?}",
-            row
+            "all rows should have >= 3 invocations, got {row:?}"
         );
     }
 }
