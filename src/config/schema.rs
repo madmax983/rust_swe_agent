@@ -64,6 +64,17 @@ pub struct AgentCfg {
     pub tools: Vec<ToolCfg>,
     #[serde(default)]
     pub hooks: ToolHooksCfg,
+    /// Enable in-loop stagnation detection. Default: `true` (opt-out with `false`).
+    #[serde(default = "default_detect_stagnation")]
+    pub detect_stagnation: bool,
+    /// Minimum number of identical canonicalized actions within the window to
+    /// trip the stagnation detector. Default: 4.
+    #[serde(default = "default_stagnation_repeat_threshold")]
+    pub stagnation_repeat_threshold: u32,
+    /// Size of the trailing-steps window examined by the stagnation detector.
+    /// Must be >= `stagnation_repeat_threshold`. Default: 8.
+    #[serde(default = "default_stagnation_window")]
+    pub stagnation_window: u32,
 }
 
 fn default_step_limit() -> u32 {
@@ -92,6 +103,18 @@ fn default_observation_head_ratio() -> f64 {
 
 fn default_tool_hook_timeout_secs() -> u64 {
     10
+}
+
+fn default_detect_stagnation() -> bool {
+    true
+}
+
+fn default_stagnation_repeat_threshold() -> u32 {
+    4
+}
+
+fn default_stagnation_window() -> u32 {
+    8
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

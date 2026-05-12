@@ -326,9 +326,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // returned Err above). Sets `verification_status` on the trajectory so
     // every persisted artifact carries a deterministic verification outcome.
     let skip_verification = run_result.is_err()
-        || run_result
-            .as_ref()
-            .is_ok_and(|r| matches!(r, crate::agent::ExitReason::UserInterrupt));
+        || run_result.as_ref().is_ok_and(|r| {
+            matches!(
+                r,
+                crate::agent::ExitReason::UserInterrupt
+                    | crate::agent::ExitReason::AgentStagnation { .. }
+            )
+        });
     let verification_err = if skip_verification {
         agent.trajectory.info.verification_status =
             Some(crate::trajectory::verification_status::UNVERIFIED.into());
@@ -375,6 +379,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
     if let Some(err) = verification_err {
         return Err(err);
+    }
+    if let crate::agent::ExitReason::AgentStagnation { count, window, .. } = exit {
+        return Err(crate::error::Error::AgentStagnation { count, window });
     }
     Ok(())
 }

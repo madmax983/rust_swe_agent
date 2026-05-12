@@ -102,7 +102,7 @@ fn readme_no_key_smoke_command_writes_documented_artifacts() {
         serde_json::from_str(&std::fs::read_to_string(&trajectory_path).unwrap()).unwrap();
     assert_eq!(
         trajectory["trajectory_format"].as_str(),
-        Some("mini-swe-agent-1.1")
+        Some("mini-swe-agent-1.2")
     );
     assert_eq!(trajectory["info"]["outcome"].as_str(), Some("submitted"));
     assert_eq!(trajectory["info"]["total_cost_usd"].as_f64(), Some(0.0));

@@ -3803,6 +3803,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "patch_apply_invalid" => Ok(FailureCategory::PatchApplyInvalid),
         "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "secret_leak_detected" => Ok(FailureCategory::SecretLeakDetected),
+        "agent_stagnation" => Ok(FailureCategory::AgentStagnation),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
@@ -4221,6 +4222,9 @@ fn classify_error(err: &Error) -> FailureCategory {
             }
         }
         Error::Model(_) => FailureCategory::ModelApi,
+        // Stagnation is fully recorded in the trajectory; this arm is a
+        // robustness fallback for cases where trajectory loading fails.
+        Error::AgentStagnation { .. } => FailureCategory::AgentStagnation,
         // Any remaining typed error in the runner/agent.
         _ => FailureCategory::AgentInternal,
     }
@@ -4250,6 +4254,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::BudgetExhausted => "budget_exhausted",
         FailureCategory::WallclockTimeout => "wallclock_timeout",
         FailureCategory::AgentInternal => "agent_internal",
+        FailureCategory::AgentStagnation => "agent_stagnation",
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",

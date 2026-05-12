@@ -1,5 +1,5 @@
 //! Trajectory serialization — wire-compatible with mini-swe-agent's
-//! `mini-swe-agent-1.1` format.
+//! `mini-swe-agent-1.2` format.
 //!
 //! Field declaration order on structs controls JSON key order in
 //! `serde_json` output, so we match Python's layout exactly: `format`,
@@ -15,7 +15,7 @@ use crate::model::{Message, MessageExtra};
 
 pub use crate::model::FallbackAttemptRecord;
 
-pub const FORMAT_VERSION: &str = "mini-swe-agent-1.1";
+pub const FORMAT_VERSION: &str = "mini-swe-agent-1.2";
 
 /// Trajectory-level summary of fallback behavior for a single agent run.
 ///
@@ -128,6 +128,8 @@ pub enum FailureCategory {
     PatchEmpty,
     /// A configured secret literal was found in a submission artifact.
     SecretLeakDetected,
+    /// The agent repeated the same action without progress and was halted.
+    AgentStagnation,
     /// An unknown or unclassified failure occurred.
     Unknown,
 }
@@ -500,7 +502,7 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 #[derive(Debug, Clone, Deserialize)]
 /// The complete record of an agent's execution, including metadata, telemetry, and all messages.
 ///
-/// This struct is serializeable to the `mini-swe-agent-1.1` JSON format and is the primary artifact
+/// This struct is serializeable to the `mini-swe-agent-1.2` JSON format and is the primary artifact
 /// generated at the end of a run.
 pub struct Trajectory {
     /// The format version of the trajectory schema.
@@ -615,7 +617,7 @@ impl Trajectory {
     /// use rust_swe_agent::trajectory::Trajectory;
     /// let traj = Trajectory::new();
     /// let json = traj.to_json_pretty().unwrap();
-    /// assert!(json.contains("mini-swe-agent-1.1"));
+    /// assert!(json.contains("mini-swe-agent-1.2"));
     /// ```
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
@@ -716,7 +718,7 @@ mod tests {
     #[test]
     fn legacy_token_usage_without_cache_fields_defaults_to_zero() {
         let json = r#"{
-  "trajectory_format": "mini-swe-agent-1.1",
+  "trajectory_format": "mini-swe-agent-1.2",
   "info": {
     "token_usage": {
       "prompt_tokens": 1000,
@@ -749,7 +751,7 @@ mod tests {
     #[test]
     fn unknown_keys_preserved() {
         let json = r#"{
-  "trajectory_format": "mini-swe-agent-1.1",
+  "trajectory_format": "mini-swe-agent-1.2",
   "info": {"task": "x", "future_field": "y"},
   "messages": []
 }"#;

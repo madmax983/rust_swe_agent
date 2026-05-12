@@ -58,6 +58,10 @@ pub enum ExitCode {
     /// at or above the configured share threshold (default 80%). See
     /// `docs/spec-systemic-halt.md` for the full contract.
     SystemicHalt = 11,
+    /// 12 — agent stagnation detected: the agent repeated the same action at
+    /// least K times within a trailing window of W steps. See
+    /// `docs/spec-stagnation.md` for the full contract.
+    AgentStagnation = 12,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -90,6 +94,7 @@ impl ExitCode {
             Self::ReplayPromptDrift => "replay_prompt_drift",
             Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::SystemicHalt => "systemic_halt",
+            Self::AgentStagnation => "agent_stagnation",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -118,6 +123,7 @@ impl ExitCode {
                 // before this function is called, so exit-10 is replay-only.
                 _ => Self::TaskUnsuccessful,
             },
+            Error::AgentStagnation { .. } => Self::AgentStagnation,
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)
@@ -214,6 +220,15 @@ mod tests {
         assert_eq!(
             ExitCode::from_error(&Error::Model(ModelError::ResponsesExhausted(0))),
             ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn agent_stagnation_exit_code_is_12() {
+        assert_eq!(ExitCode::AgentStagnation.as_i32(), 12);
+        assert_eq!(
+            ExitCode::AgentStagnation.outcome_class(),
+            "agent_stagnation"
         );
     }
 }

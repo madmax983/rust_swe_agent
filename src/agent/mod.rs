@@ -51,6 +51,12 @@ pub enum ExitReason {
     UserInterrupt,
     /// The LLM backend refused to complete the prompt (e.g. safety filters).
     ModelRefusal { reason: String },
+    /// The agent was halted because it repeated the same action K times in W steps.
+    AgentStagnation {
+        action_hash: String,
+        count: u32,
+        window: u32,
+    },
 }
 
 impl ExitReason {
@@ -75,6 +81,7 @@ impl ExitReason {
             Self::BudgetExhausted { .. } => "budget_exhausted",
             Self::UserInterrupt => "user_interrupt",
             Self::ModelRefusal { .. } => "model_refusal",
+            Self::AgentStagnation { .. } => "agent_stagnation",
         }
     }
 }

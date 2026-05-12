@@ -44,3 +44,40 @@ Compatibility classes:
 - `unsupported-future`: a version with `major > 1`. Readers fail fast and do not emit resolved-rate, cost, or comparison metrics.
 
 Any future schema change needs either a documented no-bump rationale in the relevant change description or a schema-version bump plus fixture updates under `tests/fixtures/artifact_schema`.
+
+## Trajectory `failure_category` values
+
+The `info.failure_category` field in a trajectory artifact uses a stable string
+taxonomy.  Readers should treat unrecognised values as `unknown`.
+
+| Value              | Meaning                                                                 |
+|--------------------|-------------------------------------------------------------------------|
+| `step_limit`       | Agent exhausted the configured step budget.                             |
+| `patch_empty`      | Agent submitted but the patch was empty or only whitespace.             |
+| `patch_invalid`    | Captured patch failed `git apply --check` validation.                   |
+| `env_setup`        | Environment setup failed (Docker, container, tooling).                  |
+| `model_api`        | Persistent model API error (auth, quota, wrong model name).             |
+| `model_parse`      | Model response could not be parsed.                                     |
+| `wallclock_timeout`| Run exceeded the per-task wallclock timeout.                            |
+| `budget_halt`      | Run was skipped / halted due to a cost cap.                             |
+| `cancelled`        | Run was cancelled by operator (SIGINT / `--cancel-deadline`).           |
+| `agent_stagnation` | Stagnation detector tripped: same action repeated K times in W steps.   |
+| `unknown`          | Catch-all for unclassified failures.                                    |
+
+### `agent_stagnation` diagnostics
+
+When `failure_category` is `agent_stagnation`, `info.other["stagnation"]`
+contains a diagnostic object:
+
+```json
+{
+  "action_hash":   "<32-hex-char SHA-256 prefix of canonical action>",
+  "count":         4,
+  "window":        8,
+  "step_indices":  [2, 4, 6, 8]
+}
+```
+
+This field was introduced in trajectory format `mini-swe-agent-1.2`.
+Older trajectories will not contain it.  See `docs/spec-stagnation.md` for
+the full detection rule and configuration reference.

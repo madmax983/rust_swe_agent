@@ -186,6 +186,25 @@ pub struct MiniCmd {
     #[arg(long = "verify-timeout-secs", default_value_t = 60)]
     pub verify_timeout_secs: u64,
 
+    /// Enable or disable in-loop stagnation detection. Omitting the flag
+    /// preserves the config-file value (default: on). `--detect-stagnation`
+    /// or `--detect-stagnation=true` enables; `--detect-stagnation=false`
+    /// disables, overriding any config-file setting.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Number of times the same action must appear in the trailing window
+    /// before stagnation is declared. Overrides the config-file value when set.
+    /// Schema default: 4.
+    #[arg(long)]
+    pub stagnation_repeat_threshold: Option<u32>,
+
+    /// Size of the trailing-steps window examined by the stagnation detector.
+    /// Must be >= `--stagnation-repeat-threshold`. Overrides the config-file
+    /// value when set. Schema default: 8.
+    #[arg(long)]
+    pub stagnation_window: Option<u32>,
+
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
 }
@@ -684,6 +703,24 @@ pub struct SwebenchCmd {
     /// same actionable failure category for the circuit breaker to trip.
     #[arg(long, default_value_t = 80)]
     pub systemic_failure_share_pct: u8,
+
+    /// Enable or disable in-loop stagnation detection. Omitting the flag
+    /// preserves the config-file value (default: on). `--detect-stagnation`
+    /// or `--detect-stagnation=true` enables; `--detect-stagnation=false`
+    /// disables, overriding any config-file setting.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Number of times the same action must appear within the window before
+    /// the stagnation detector trips. Overrides the config-file value when set.
+    /// Schema default: 4.
+    #[arg(long)]
+    pub stagnation_repeat_threshold: Option<u32>,
+
+    /// Sliding window size (in steps) used by the stagnation detector.
+    /// Overrides the config-file value when set. Schema default: 8.
+    #[arg(long)]
+    pub stagnation_window: Option<u32>,
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,

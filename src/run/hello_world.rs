@@ -60,6 +60,6 @@ mod tests {
             panic!("trajectory file not written");
         };
         let contents = std::fs::read_to_string(traj.path()).unwrap();
-        assert!(contents.contains("mini-swe-agent-1.1"));
+        assert!(contents.contains("mini-swe-agent-1.2"));
     }
 }

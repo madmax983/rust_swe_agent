@@ -28,6 +28,7 @@ use crate::model::{
 };
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
 use crate::redaction::{RedactingSink, Redactor, surface};
+use crate::stagnation::StagnationDetector;
 use crate::stream::{NullSink, StreamEvent, StreamSink};
 use crate::template::Renderer;
 use crate::tool::{
@@ -175,6 +176,8 @@ pub struct DefaultAgent {
     /// Used to build a complete `attempted_models` list even in multi-step runs
     /// where the responding model changes between steps.
     all_step_responders: Vec<String>,
+    /// In-loop stagnation detector; `None` when detection is disabled.
+    stagnation_detector: Option<StagnationDetector>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -192,6 +195,7 @@ impl DefaultAgentBuilder {
         self.build_with_tool_providers(Vec::new())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn build_with_tool_providers(
         self,
         tool_providers: Vec<Arc<dyn ToolProvider>>,
@@ -260,6 +264,31 @@ impl DefaultAgentBuilder {
                 "invalid policy config: {err}"
             )))
         })?;
+        // Validate and build the stagnation detector.
+        let agent_cfg = &self.config.root.agent;
+        let stagnation_detector = if agent_cfg.detect_stagnation {
+            let k = agent_cfg.stagnation_repeat_threshold;
+            let w = agent_cfg.stagnation_window;
+            if k == 0 {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "--stagnation-repeat-threshold must be >= 1".into(),
+                )));
+            }
+            if w == 0 {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "--stagnation-window must be >= 1".into(),
+                )));
+            }
+            if w < k {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--stagnation-window ({w}) must be >= --stagnation-repeat-threshold ({k})"
+                ))));
+            }
+            Some(StagnationDetector::new(k, w))
+        } else {
+            None
+        };
+
         stream.emit(StreamEvent::RunStarted {
             task: self.task.clone(),
             model: self.model.name().to_owned(),
@@ -292,6 +321,7 @@ impl DefaultAgentBuilder {
             fallback_failed_attempts: Vec::new(),
             last_responding_model: None,
             all_step_responders: Vec::new(),
+            stagnation_detector,
         })
     }
 }
@@ -976,9 +1006,21 @@ impl Agent for DefaultAgent {
         });
 
         self.steps += 1;
+        // Cancellation takes priority: if the operator interrupted during the
+        // Kth repeated command we must record UserInterrupt (exit 130), not
+        // agent_stagnation (exit 12).
         if self.cancellation_requested() {
             self.finalize_cancelled();
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
+
+        // Check for stagnation after cancellation so step_index = self.steps - 1.
+        if is_bash && !tool_use_blocked {
+            if let Some(detector) = &mut self.stagnation_detector {
+                if let Some(trip) = detector.observe(self.steps - 1, &tool_input) {
+                    return Ok(self.terminate_stagnation(trip));
+                }
+            }
         }
         Ok(StepOutcome::Continue)
     }
@@ -1189,6 +1231,34 @@ impl DefaultAgent {
             Some(FailureCategory::WallclockTimeout),
             None,
         );
+    }
+
+    fn terminate_stagnation(&mut self, trip: crate::stagnation::StagnationTrip) -> StepOutcome {
+        self.trajectory.info.exit_reason = Some("agent_stagnation".into());
+        self.trajectory.info.failure_category = Some(FailureCategory::AgentStagnation);
+        self.trajectory.info.steps = Some(self.steps);
+        self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+        self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+        self.trajectory.info.other.insert(
+            "stagnation".into(),
+            serde_json::json!({
+                "action_hash": trip.action_hash,
+                "count": trip.count,
+                "window": trip.window,
+                "step_indices": trip.step_indices,
+            }),
+        );
+        self.finalize_run_metadata(outcome::ERROR);
+        self.emit_run_ended(
+            "agent_stagnation",
+            Some(FailureCategory::AgentStagnation),
+            None,
+        );
+        StepOutcome::Terminate(ExitReason::AgentStagnation {
+            action_hash: trip.action_hash,
+            count: trip.count,
+            window: trip.window,
+        })
     }
 
     pub fn finalize_cancelled(&mut self) {

@@ -218,8 +218,10 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
 
     let resolved_skills = crate::skills::resolve_for_task(&args.config.root.skills, &task, None)?;
 
+    let mut replay_config = args.config.clone();
+    replay_config.root.agent.detect_stagnation = false;
     let mut agent: DefaultAgent = DefaultAgentBuilder {
-        config: args.config.clone(),
+        config: replay_config,
         model,
         env,
         task,

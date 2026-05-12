@@ -17,6 +17,7 @@ pub mod policy;
 pub mod redaction;
 pub mod run;
 pub mod skills;
+pub mod stagnation;
 pub mod stream;
 pub mod template;
 pub mod tool;
