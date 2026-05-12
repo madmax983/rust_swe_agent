@@ -149,9 +149,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if m.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
-    cfg.root.agent.detect_stagnation = m.detect_stagnation;
-    cfg.root.agent.stagnation_repeat_threshold = m.stagnation_repeat_threshold;
-    cfg.root.agent.stagnation_window = m.stagnation_window;
+    if !m.detect_stagnation {
+        cfg.root.agent.detect_stagnation = false;
+    }
+    if let Some(v) = m.stagnation_repeat_threshold {
+        cfg.root.agent.stagnation_repeat_threshold = v;
+    }
+    if let Some(v) = m.stagnation_window {
+        cfg.root.agent.stagnation_window = v;
+    }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
     let trajectory_name = m
@@ -521,9 +527,15 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     if s.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
-    cfg.root.agent.detect_stagnation = s.detect_stagnation;
-    cfg.root.agent.stagnation_repeat_threshold = s.stagnation_repeat_threshold;
-    cfg.root.agent.stagnation_window = s.stagnation_window;
+    if !s.detect_stagnation {
+        cfg.root.agent.detect_stagnation = false;
+    }
+    if let Some(v) = s.stagnation_repeat_threshold {
+        cfg.root.agent.stagnation_repeat_threshold = v;
+    }
+    if let Some(v) = s.stagnation_window {
+        cfg.root.agent.stagnation_window = v;
+    }
     apply_mcp_server_overrides(&mut cfg, &s.mcp_servers)?;
     Ok(cfg)
 }
@@ -1806,8 +1818,8 @@ mod tests {
             per_task_budget_usd: None,
             hide_budget_from_agent: false,
             detect_stagnation: true,
-            stagnation_repeat_threshold: 4,
-            stagnation_window: 8,
+            stagnation_repeat_threshold: None,
+            stagnation_window: None,
             mcp_servers: Vec::new(),
             config: None,
             env: None,

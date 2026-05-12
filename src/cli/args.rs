@@ -192,14 +192,16 @@ pub struct MiniCmd {
     pub detect_stagnation: bool,
 
     /// Number of times the same action must appear in the trailing window
-    /// before stagnation is declared. Default: 4.
-    #[arg(long, default_value_t = 4)]
-    pub stagnation_repeat_threshold: u32,
+    /// before stagnation is declared. Overrides the config-file value when set.
+    /// Schema default: 4.
+    #[arg(long)]
+    pub stagnation_repeat_threshold: Option<u32>,
 
     /// Size of the trailing-steps window examined by the stagnation detector.
-    /// Must be >= `--stagnation-repeat-threshold`. Default: 8.
-    #[arg(long, default_value_t = 8)]
-    pub stagnation_window: u32,
+    /// Must be >= `--stagnation-repeat-threshold`. Overrides the config-file
+    /// value when set. Schema default: 8.
+    #[arg(long)]
+    pub stagnation_window: Option<u32>,
 
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
@@ -707,13 +709,15 @@ pub struct SwebenchCmd {
     pub detect_stagnation: bool,
 
     /// Number of times the same action must appear within the window before
-    /// the stagnation detector trips.
-    #[arg(long, default_value_t = 4)]
-    pub stagnation_repeat_threshold: u32,
+    /// the stagnation detector trips. Overrides the config-file value when set.
+    /// Schema default: 4.
+    #[arg(long)]
+    pub stagnation_repeat_threshold: Option<u32>,
 
     /// Sliding window size (in steps) used by the stagnation detector.
-    #[arg(long, default_value_t = 8)]
-    pub stagnation_window: u32,
+    /// Overrides the config-file value when set. Schema default: 8.
+    #[arg(long)]
+    pub stagnation_window: Option<u32>,
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
