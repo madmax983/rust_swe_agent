@@ -17,7 +17,7 @@ use crate::error::{ConfigError, Error};
 use crate::model::ModelUsage;
 use crate::run::dataset::DatasetSource;
 use crate::run::swebench::{
-    ApplySubsetParams, FilterSpec, StratifyBy, StratifyMode, apply_subset,
+    ApplySubsetParams, FilterSpec, SWEEP_STATUS_CANCELLED, StratifyBy, StratifyMode, apply_subset,
     load_dataset_from_bytes_pub,
 };
 
@@ -162,6 +162,22 @@ pub struct MatrixSummary {
     pub arms: Vec<ArmSummaryRow>,
 }
 
+// ── Private arm-run context ───────────────────────────────────────────────────
+
+/// Everything `run_arm` needs; cloneable so concurrent tasks can own their copy.
+#[derive(Clone)]
+struct ArmRunCtx {
+    dataset_source: DatasetSource,
+    dataset_cache_dir: PathBuf,
+    parallel: usize,
+    skip_preflight: bool,
+    skip_model_probe: bool,
+    cancel_deadline_secs: u64,
+    install_os_signal_handlers: bool,
+    deterministic_responses: Option<Vec<String>>,
+    deterministic_usage_per_call: Option<ModelUsage>,
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Validate arm definitions before running.
@@ -234,13 +250,6 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
     let state_path = args.output_dir.join("matrix.json");
 
-    if args.matrix_parallelism > 1 {
-        return Err(Error::Config(ConfigError::Invalid(format!(
-            "--matrix-parallelism {} is not yet supported; use --matrix-parallelism 1 (sequential)",
-            args.matrix_parallelism
-        ))));
-    }
-
     // Load or create matrix state.
     let mut state = if args.resume && state_path.exists() {
         let text = std::fs::read_to_string(&state_path)?;
@@ -291,43 +300,126 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         .map(|a| a.total_cost_usd)
         .sum();
 
-    for i in 0..manifest.arms.len() {
-        // Skip arms that are already in a terminal state.
-        match state.arms[i].state {
-            ArmState::Complete | ArmState::SkippedBudget => continue,
-            _ => {}
+    let ctx = ArmRunCtx {
+        dataset_source: args.dataset_source.clone(),
+        dataset_cache_dir: args.dataset_cache_dir.clone(),
+        parallel: args.parallel,
+        skip_preflight: args.skip_preflight,
+        skip_model_probe: args.skip_model_probe,
+        cancel_deadline_secs: args.cancel_deadline_secs,
+        install_os_signal_handlers: args.install_os_signal_handlers,
+        deterministic_responses: args.deterministic_responses.clone(),
+        deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+    };
+
+    // Run arms with up to `matrix_parallelism` concurrent arm sweeps.
+    //
+    // Each arm task owns its data (cloned from the manifest), so the tasks are
+    // `'static` and safe to spawn into a `JoinSet`.  For N=1 the loop is
+    // effectively sequential; N>1 fills `N` slots concurrently then refills as
+    // completions arrive.  Ctrl-C is handled by each arm's own OS-signal
+    // machinery: when an arm returns with `sweep_status == "cancelled"` the
+    // matrix stops launching new arms, drains any already-in-flight ones, and
+    // marks the remaining pending arms `not_started`.
+    let mut next_to_launch = 0usize;
+    let mut cancelled = false;
+    let mut join_set: tokio::task::JoinSet<(
+        usize,
+        Result<crate::run::swebench::SweepResults, Error>,
+    )> = tokio::task::JoinSet::new();
+
+    loop {
+        // Fill available parallelism slots with new arms.
+        while !cancelled && join_set.len() < args.matrix_parallelism {
+            // Advance past arms already in a terminal state (resume or prior iteration).
+            while next_to_launch < manifest.arms.len()
+                && matches!(
+                    state.arms[next_to_launch].state,
+                    ArmState::Complete | ArmState::SkippedBudget
+                )
+            {
+                next_to_launch += 1;
+            }
+            if next_to_launch >= manifest.arms.len() {
+                break;
+            }
+            let i = next_to_launch;
+            next_to_launch += 1;
+
+            // Budget guard: mark this arm and all remaining pending arms skipped.
+            if let Some(limit) = args.sweep_cost_limit_usd {
+                if cumulative_cost >= limit {
+                    for j in i..manifest.arms.len() {
+                        if state.arms[j].state == ArmState::Pending {
+                            state.arms[j].state = ArmState::SkippedBudget;
+                        }
+                    }
+                    write_matrix_state(&state_path, &state)?;
+                    break;
+                }
+            }
+
+            let arm_def = manifest.arms[i].clone();
+            let arm_sweep_dir = args.output_dir.join(&arm_def.name);
+            std::fs::create_dir_all(&arm_sweep_dir)?;
+
+            state.arms[i].state = ArmState::Running;
+            write_matrix_state(&state_path, &state)?;
+
+            let ids_csv = instance_ids_csv.clone();
+            let ctx_clone = ctx.clone();
+            join_set.spawn(async move {
+                (i, run_arm(arm_def, arm_sweep_dir, ids_csv, ctx_clone).await)
+            });
         }
 
-        // Budget guard: mark remaining arms skipped when limit is exhausted.
-        if let Some(limit) = args.sweep_cost_limit_usd {
-            if cumulative_cost >= limit {
-                state.arms[i].state = ArmState::SkippedBudget;
+        // Nothing running and nothing queued → done.
+        if join_set.is_empty() {
+            break;
+        }
+
+        // Wait for the next arm to finish.
+        match join_set.join_next().await {
+            None => break,
+            Some(Err(join_err)) => {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "arm task panicked: {join_err}"
+                ))));
+            }
+            Some(Ok((_arm_idx, Err(e)))) => return Err(e),
+            Some(Ok((arm_idx, Ok(results)))) => {
+                let resolved: usize = results
+                    .instances
+                    .iter()
+                    .map(|r| r.resolved_count as usize)
+                    .sum();
+                cumulative_cost += results.estimated_cost_usd;
+
+                // An arm reports "cancelled" when it received a Ctrl-C / SIGTERM.
+                // Stop launching new arms; let already-in-flight ones drain.
+                if cancelled || results.sweep_status == SWEEP_STATUS_CANCELLED {
+                    state.arms[arm_idx].state = ArmState::Cancelled;
+                    if results.sweep_status == SWEEP_STATUS_CANCELLED {
+                        cancelled = true;
+                    }
+                } else {
+                    state.arms[arm_idx].state = ArmState::Complete;
+                }
+                state.arms[arm_idx].total_cost_usd = results.estimated_cost_usd;
+                state.arms[arm_idx].submitted = results.submitted;
+                state.arms[arm_idx].resolved = resolved;
                 write_matrix_state(&state_path, &state)?;
-                continue;
             }
         }
+    }
 
-        let arm_def = &manifest.arms[i];
-        let arm_sweep_dir = args.output_dir.join(&arm_def.name);
-        std::fs::create_dir_all(&arm_sweep_dir)?;
-
-        state.arms[i].state = ArmState::Running;
-        write_matrix_state(&state_path, &state)?;
-
-        let arm_results = run_arm(arm_def, &arm_sweep_dir, &instance_ids_csv, &args).await?;
-
-        let resolved: usize = arm_results
-            .instances
-            .iter()
-            .map(|r| r.resolved_count as usize)
-            .sum();
-
-        cumulative_cost += arm_results.estimated_cost_usd;
-        state.arms[i].state = ArmState::Complete;
-        state.arms[i].total_cost_usd = arm_results.estimated_cost_usd;
-        state.arms[i].submitted = arm_results.submitted;
-        state.arms[i].resolved = resolved;
-
+    // Mark arms that were queued but never launched as not_started.
+    if cancelled {
+        for arm_status in &mut state.arms {
+            if arm_status.state == ArmState::Pending {
+                arm_status.state = ArmState::NotStarted;
+            }
+        }
         write_matrix_state(&state_path, &state)?;
     }
 
@@ -352,10 +444,10 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 async fn run_arm(
-    arm: &ArmDef,
-    arm_sweep_dir: &Path,
-    instance_ids_csv: &str,
-    matrix_args: &MatrixArgs,
+    arm: ArmDef,
+    arm_sweep_dir: PathBuf,
+    instance_ids_csv: String,
+    ctx: ArmRunCtx,
 ) -> Result<crate::run::swebench::SweepResults, Error> {
     // Load prompt_file first so explicit arm-manifest fields override it.
     let mut cfg = if let Some(ref prompt_file) = arm.prompt_file {
@@ -373,16 +465,16 @@ async fn run_arm(
     }
 
     let arm_args = crate::run::swebench::SwebenchArgs {
-        dataset_source: matrix_args.dataset_source.clone(),
-        dataset_cache_dir: matrix_args.dataset_cache_dir.clone(),
-        output_dir: arm_sweep_dir.to_path_buf(),
-        parallel: matrix_args.parallel,
+        dataset_source: ctx.dataset_source,
+        dataset_cache_dir: ctx.dataset_cache_dir,
+        output_dir: arm_sweep_dir,
+        parallel: ctx.parallel,
         config: cfg,
         reruns: 1,
         resume: false,
         cost_limit_usd: None,
         task_timeout_secs: None,
-        instance_ids: Some(instance_ids_csv.to_owned()),
+        instance_ids: Some(instance_ids_csv),
         limit: None,
         sample: None,
         seed: None,
@@ -393,21 +485,21 @@ async fn run_arm(
         retry_backoff_base_ms: 1000,
         retry_backoff_cap_s: 60,
         retry_on_resume: false,
-        deterministic_responses: matrix_args.deterministic_responses.clone(),
-        deterministic_usage_per_call: matrix_args.deterministic_usage_per_call.clone(),
+        deterministic_responses: ctx.deterministic_responses,
+        deterministic_usage_per_call: ctx.deterministic_usage_per_call,
         config_overlay_paths: vec![],
         dry_run: false,
-        skip_preflight: matrix_args.skip_preflight,
+        skip_preflight: ctx.skip_preflight,
         preflight_format: "text".into(),
-        skip_model_probe: matrix_args.skip_model_probe,
+        skip_model_probe: ctx.skip_model_probe,
         preflight_check_timeout_s: 30,
         preflight_total_timeout_s: 120,
         preflight_mode: "sweep".into(),
         skip_patch_validation: false,
         max_rpm: None,
         max_input_tpm: None,
-        cancel_deadline_secs: matrix_args.cancel_deadline_secs,
-        install_os_signal_handlers: matrix_args.install_os_signal_handlers,
+        cancel_deadline_secs: ctx.cancel_deadline_secs,
+        install_os_signal_handlers: ctx.install_os_signal_handlers,
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,

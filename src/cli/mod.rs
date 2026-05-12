@@ -1550,8 +1550,16 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
         limit: m.limit,
         sample: m.sample,
         seed: m.seed,
-        stratify_by: None,
-        stratify_mode: crate::run::swebench::StratifyMode::Proportional,
+        stratify_by: m.stratify_by.map(|v| match v {
+            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        }),
+        stratify_mode: match m
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
+            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        },
         sweep_cost_limit_usd: m.sweep_cost_limit_usd,
         matrix_parallelism: m.matrix_parallelism,
         resume: m.resume,

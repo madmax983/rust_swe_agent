@@ -345,6 +345,14 @@ pub struct MatrixCmd {
     #[arg(long)]
     pub seed: Option<u64>,
 
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
     /// Worker parallelism per arm sweep.
     #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
     pub parallel: usize,
