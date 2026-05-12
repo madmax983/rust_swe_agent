@@ -252,7 +252,16 @@ fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
         unique_command_heads,
     };
 
-    let comparisons = build_comparisons(args, &by_outcome);
+    // Pre-filter totals: count invocations per bucket from all_steps so that
+    // --min-invocations doesn't shrink the denominator used for share calculations.
+    let resolved_total_all: usize = all_steps.iter().filter(|s| s.bucket == "resolved").count();
+    let unresolved_total_all: usize = all_steps
+        .iter()
+        .filter(|s| s.bucket == "unresolved")
+        .count();
+
+    let comparisons =
+        build_comparisons(args, &by_outcome, resolved_total_all, unresolved_total_all);
 
     Ok(CommandStatsReport {
         sweep: args.sweep_dir.display().to_string(),
@@ -266,6 +275,8 @@ fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
 fn build_comparisons(
     args: &CommandStatsArgs,
     by_outcome: &BTreeMap<String, Vec<CommandStatRow>>,
+    resolved_total: usize,
+    unresolved_total: usize,
 ) -> Vec<CommandStatsComparison> {
     let Some(compare) = &args.compare else {
         return Vec::new();
@@ -279,16 +290,20 @@ fn build_comparisons(
     let Some(unresolved_rows) = by_outcome.get("unresolved") else {
         return Vec::new();
     };
-    vec![build_resolved_vs_unresolved(resolved_rows, unresolved_rows)]
+    vec![build_resolved_vs_unresolved(
+        resolved_rows,
+        unresolved_rows,
+        resolved_total,
+        unresolved_total,
+    )]
 }
 
 fn build_resolved_vs_unresolved(
     resolved_rows: &[CommandStatRow],
     unresolved_rows: &[CommandStatRow],
+    resolved_total: usize,
+    unresolved_total: usize,
 ) -> CommandStatsComparison {
-    let resolved_total: usize = resolved_rows.iter().map(|r| r.invocation_count).sum();
-    let unresolved_total: usize = unresolved_rows.iter().map(|r| r.invocation_count).sum();
-
     let all_heads: BTreeSet<&str> = resolved_rows
         .iter()
         .map(|r| r.command_head.as_str())
