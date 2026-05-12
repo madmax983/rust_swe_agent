@@ -174,8 +174,9 @@ fn build_report(args: &CommandStatsArgs) -> Result<CommandStatsReport, Error> {
     sorted_ids.sort();
     for id in sorted_ids {
         let instance = &sweep.instances[&id];
+        let is_resolved = resolved_set.contains(&id);
         if let Some(filter) = &args.filter {
-            if !matches_filter(instance, filter) {
+            if !matches_filter(instance, Some(is_resolved), filter)? {
                 continue;
             }
         }
@@ -416,15 +417,34 @@ fn classify_outcome(
     OutcomeBucket::Unresolved
 }
 
-fn matches_filter(instance: &InstanceResult, filter: &str) -> bool {
+fn matches_filter(
+    instance: &InstanceResult,
+    resolved: Option<bool>,
+    filter: &str,
+) -> Result<bool, Error> {
     let Some((key, value)) = filter.split_once('=') else {
-        return true;
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "command-stats: --filter expects key=value (e.g. failure_category=model_parse)"
+                .into(),
+        )));
     };
-    match key.trim() {
-        "failure_category" => instance.failure_category.is_some_and(|fc| {
-            failure_category_label(fc) == value.trim()
-        }),
-        _ => true,
+    let (key, value) = (key.trim(), value.trim());
+    match key {
+        "resolved" => {
+            if value != "true" && value != "false" {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "command-stats: resolved filter must be `true` or `false`".into(),
+                )));
+            }
+            let expected = value == "true";
+            Ok(resolved == Some(expected))
+        }
+        "failure_category" => Ok(instance.failure_category.is_some_and(|fc| {
+            failure_category_label(fc) == value
+        })),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "command-stats: unsupported filter key `{other}`; supported: `resolved`, `failure_category`"
+        )))),
     }
 }
 

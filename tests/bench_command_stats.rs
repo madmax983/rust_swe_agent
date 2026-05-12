@@ -615,6 +615,211 @@ fn cli_nonzero_exit_rate_reflects_failed_commands() {
     );
 }
 
+// ── golden snapshot regression test ──────────────────────────────────────────
+
+#[test]
+fn cli_json_output_matches_golden_snapshot_byte_for_byte() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_command_stats_fixture(sweep.path());
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "command-stats",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--compare",
+            "resolved-vs-unresolved",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "bench command-stats failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Zero out the two fields that legitimately vary between runs
+    actual["sweep"] = serde_json::json!("");
+    actual["generated_at"] = serde_json::json!("");
+
+    let golden_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/command_stats/golden-command-stats.json");
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&golden_path).unwrap()).unwrap();
+
+    let actual_pretty = serde_json::to_string_pretty(&actual).unwrap();
+    let golden_pretty = serde_json::to_string_pretty(&golden).unwrap();
+
+    assert_eq!(
+        actual_pretty, golden_pretty,
+        "JSON output does not match golden snapshot.\n\
+         If the change is intentional, update tests/fixtures/command_stats/golden-command-stats.json.\n\
+         Diff (actual vs golden):\n{}\n",
+        diff_strings(&actual_pretty, &golden_pretty)
+    );
+}
+
+fn diff_strings(actual: &str, expected: &str) -> String {
+    actual
+        .lines()
+        .zip(expected.lines())
+        .enumerate()
+        .filter(|(_, (a, e))| a != e)
+        .take(20)
+        .map(|(i, (a, e))| format!("line {}: actual={a:?} expected={e:?}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── --filter resolved= tests ──────────────────────────────────────────────────
+
+#[test]
+fn cli_filter_resolved_true_restricts_to_resolved_instances() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_command_stats_fixture(sweep.path());
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "command-stats",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--filter",
+            "resolved=true",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "command-stats --filter resolved=true failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Only resolved-1 is in scope, so totals.trajectories == 1
+    assert_eq!(
+        report["totals"]["trajectories"], 1,
+        "only resolved-1 should be in scope with resolved=true"
+    );
+    // pytest only appears in resolved-1 — it must be present
+    let all_rows = report["by_outcome"]["all"].as_array().unwrap();
+    assert!(
+        all_rows.iter().any(|r| r["command_head"] == "pytest"),
+        "pytest should be present when filtering to resolved=true"
+    );
+}
+
+#[test]
+fn cli_filter_resolved_false_excludes_resolved_instances() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_command_stats_fixture(sweep.path());
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "command-stats",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--filter",
+            "resolved=false",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "command-stats --filter resolved=false failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // unresolved-1 and errored-1 are in scope
+    assert_eq!(
+        report["totals"]["trajectories"], 2,
+        "unresolved-1 and errored-1 should be in scope with resolved=false"
+    );
+    // pytest only appears in resolved-1 — it must NOT be present
+    let all_rows = report["by_outcome"]["all"].as_array().unwrap();
+    assert!(
+        !all_rows.iter().any(|r| r["command_head"] == "pytest"),
+        "pytest should be absent when filtering to resolved=false"
+    );
+}
+
+#[test]
+fn cli_filter_invalid_key_exits_nonzero() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_command_stats_fixture(sweep.path());
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "command-stats",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--filter",
+            "bogus_key=foo",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unsupported filter key should cause non-zero exit"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("unsupported filter key") || stderr.contains("bogus_key"),
+        "error message should mention the bad key: {stderr}"
+    );
+}
+
+#[test]
+fn cli_filter_resolved_bad_value_exits_nonzero() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_command_stats_fixture(sweep.path());
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "command-stats",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--filter",
+            "resolved=maybe",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "resolved=<non-bool> should cause non-zero exit"
+    );
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn copy_command_stats_fixture(dir: &Path) {

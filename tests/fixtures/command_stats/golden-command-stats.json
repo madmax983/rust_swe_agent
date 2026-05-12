@@ -1,0 +1,116 @@
+{
+  "sweep": "",
+  "generated_at": "",
+  "totals": {
+    "trajectories": 3,
+    "bash_steps": 9,
+    "unique_command_heads": 3
+  },
+  "by_outcome": {
+    "all": [
+      {
+        "command_head": "cat",
+        "instance_count": 3,
+        "invocation_count": 5,
+        "mean_calls_per_instance": 1.6666666666666667,
+        "nonzero_exit_rate": 0.6,
+        "attributed_cost_usd": 0.05
+      },
+      {
+        "command_head": "grep",
+        "instance_count": 2,
+        "invocation_count": 3,
+        "mean_calls_per_instance": 1.5,
+        "nonzero_exit_rate": 0.3333333333333333,
+        "attributed_cost_usd": 0.03
+      },
+      {
+        "command_head": "pytest",
+        "instance_count": 1,
+        "invocation_count": 1,
+        "mean_calls_per_instance": 1.0,
+        "nonzero_exit_rate": 0.0,
+        "attributed_cost_usd": 0.02
+      }
+    ],
+    "errored": [
+      {
+        "command_head": "cat",
+        "instance_count": 1,
+        "invocation_count": 1,
+        "mean_calls_per_instance": 1.0,
+        "nonzero_exit_rate": 1.0,
+        "attributed_cost_usd": 0.01
+      }
+    ],
+    "resolved": [
+      {
+        "command_head": "cat",
+        "instance_count": 1,
+        "invocation_count": 2,
+        "mean_calls_per_instance": 2.0,
+        "nonzero_exit_rate": 0.0,
+        "attributed_cost_usd": 0.02
+      },
+      {
+        "command_head": "grep",
+        "instance_count": 1,
+        "invocation_count": 2,
+        "mean_calls_per_instance": 2.0,
+        "nonzero_exit_rate": 0.0,
+        "attributed_cost_usd": 0.02
+      },
+      {
+        "command_head": "pytest",
+        "instance_count": 1,
+        "invocation_count": 1,
+        "mean_calls_per_instance": 1.0,
+        "nonzero_exit_rate": 0.0,
+        "attributed_cost_usd": 0.02
+      }
+    ],
+    "unresolved": [
+      {
+        "command_head": "cat",
+        "instance_count": 1,
+        "invocation_count": 2,
+        "mean_calls_per_instance": 2.0,
+        "nonzero_exit_rate": 1.0,
+        "attributed_cost_usd": 0.02
+      },
+      {
+        "command_head": "grep",
+        "instance_count": 1,
+        "invocation_count": 1,
+        "mean_calls_per_instance": 1.0,
+        "nonzero_exit_rate": 1.0,
+        "attributed_cost_usd": 0.01
+      }
+    ]
+  },
+  "comparisons": [
+    {
+      "name": "resolved-vs-unresolved",
+      "rows": [
+        {
+          "command_head": "pytest",
+          "resolved_share": 0.2,
+          "unresolved_share": 0.0,
+          "delta": 0.2
+        },
+        {
+          "command_head": "grep",
+          "resolved_share": 0.4,
+          "unresolved_share": 0.3333333333333333,
+          "delta": 0.06666666666666671
+        },
+        {
+          "command_head": "cat",
+          "resolved_share": 0.4,
+          "unresolved_share": 0.6666666666666666,
+          "delta": -0.2666666666666666
+        }
+      ]
+    }
+  ]
+}
