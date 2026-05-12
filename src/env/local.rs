@@ -232,20 +232,29 @@ where
     (handle, buffer)
 }
 
+const MAX_PIPE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
 async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut total = 0;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
+        let remaining = MAX_PIPE_BUFFER_BYTES.saturating_sub(total);
+        if remaining == 0 {
+            continue;
+        }
+        let to_add = std::cmp::min(n, remaining);
         buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+            .extend_from_slice(&chunk[..to_add]);
+        total += to_add;
     }
 }
 
@@ -645,5 +654,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         !process_is_alive(pid)
+    }
+
+    #[tokio::test]
+    async fn havoc_dos_memory_exhaustion_is_prevented() {
+
+        let pipe = tokio::io::repeat(b'A');
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let task_buffer = std::sync::Arc::clone(&buffer);
+
+        // Let it read for a short time to hit the limit
+        let handle = tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                read_pipe_to_buffer(pipe, task_buffer)
+            ).await;
+        });
+
+        let _ = handle.await;
+
+        let size = buffer.lock().unwrap().len();
+        assert!(size <= MAX_PIPE_BUFFER_BYTES, "Buffer exceeded max size: {size}");
     }
 }
