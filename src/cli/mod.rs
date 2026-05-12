@@ -149,8 +149,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if m.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
-    if !m.detect_stagnation {
-        cfg.root.agent.detect_stagnation = false;
+    if let Some(v) = m.detect_stagnation {
+        cfg.root.agent.detect_stagnation = v;
     }
     if let Some(v) = m.stagnation_repeat_threshold {
         cfg.root.agent.stagnation_repeat_threshold = v;
@@ -527,8 +527,8 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     if s.hide_budget_from_agent {
         cfg.root.agent.hide_budget_from_agent = true;
     }
-    if !s.detect_stagnation {
-        cfg.root.agent.detect_stagnation = false;
+    if let Some(v) = s.detect_stagnation {
+        cfg.root.agent.detect_stagnation = v;
     }
     if let Some(v) = s.stagnation_repeat_threshold {
         cfg.root.agent.stagnation_repeat_threshold = v;
@@ -1817,7 +1817,7 @@ mod tests {
             task_timeout_secs: None,
             per_task_budget_usd: None,
             hide_budget_from_agent: false,
-            detect_stagnation: true,
+            detect_stagnation: None,
             stagnation_repeat_threshold: None,
             stagnation_window: None,
             mcp_servers: Vec::new(),

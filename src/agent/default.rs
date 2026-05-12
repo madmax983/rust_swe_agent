@@ -269,6 +269,16 @@ impl DefaultAgentBuilder {
         let stagnation_detector = if agent_cfg.detect_stagnation {
             let k = agent_cfg.stagnation_repeat_threshold;
             let w = agent_cfg.stagnation_window;
+            if k == 0 {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "--stagnation-repeat-threshold must be >= 1".into(),
+                )));
+            }
+            if w == 0 {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "--stagnation-window must be >= 1".into(),
+                )));
+            }
             if w < k {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                     "--stagnation-window ({w}) must be >= --stagnation-repeat-threshold ({k})"

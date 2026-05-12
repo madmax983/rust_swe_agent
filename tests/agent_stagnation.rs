@@ -262,3 +262,49 @@ fn stagnation_config_rejects_window_smaller_than_threshold() {
 
     assert!(result.is_err(), "should reject W < K config");
 }
+
+// ── config validation: zero threshold/window ──────────────────────────────────
+
+#[test]
+fn stagnation_config_rejects_zero_threshold() {
+    use rust_swe_agent::agent::default::DefaultAgentBuilder;
+
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.stagnation_repeat_threshold = 0; // invalid
+
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let result = DefaultAgentBuilder {
+        config: cfg,
+        model: Arc::new(DeterministicModel::new(vec![])),
+        env,
+        task: "validation test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build();
+
+    assert!(result.is_err(), "should reject threshold = 0");
+}
+
+#[test]
+fn stagnation_config_rejects_zero_window() {
+    use rust_swe_agent::agent::default::DefaultAgentBuilder;
+
+    let mut cfg = Config::defaults().unwrap();
+    cfg.root.agent.stagnation_window = 0; // invalid
+
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let result = DefaultAgentBuilder {
+        config: cfg,
+        model: Arc::new(DeterministicModel::new(vec![])),
+        env,
+        task: "validation test".into(),
+        extra_context: None,
+        renderer: None,
+        stream: None,
+    }
+    .build();
+
+    assert!(result.is_err(), "should reject window = 0");
+}

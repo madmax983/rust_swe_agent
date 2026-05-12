@@ -186,10 +186,12 @@ pub struct MiniCmd {
     #[arg(long = "verify-timeout-secs", default_value_t = 60)]
     pub verify_timeout_secs: u64,
 
-    /// Enable in-loop agent stagnation detection (default: on). Pass
-    /// `--detect-stagnation=false` to disable.
-    #[arg(long = "detect-stagnation", default_value_t = true, num_args = 0..=1, default_missing_value = "true")]
-    pub detect_stagnation: bool,
+    /// Enable or disable in-loop stagnation detection. Omitting the flag
+    /// preserves the config-file value (default: on). `--detect-stagnation`
+    /// or `--detect-stagnation=true` enables; `--detect-stagnation=false`
+    /// disables, overriding any config-file setting.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
 
     /// Number of times the same action must appear in the trailing window
     /// before stagnation is declared. Overrides the config-file value when set.
@@ -702,11 +704,12 @@ pub struct SwebenchCmd {
     #[arg(long, default_value_t = 80)]
     pub systemic_failure_share_pct: u8,
 
-    /// Enable in-loop stagnation detection (default: true). When the agent
-    /// repeats the same bash action K times within the last W steps the run
-    /// is halted with exit code 12 and failure_category "agent_stagnation".
-    #[arg(long, default_value_t = true, num_args = 0..=1, default_missing_value = "true")]
-    pub detect_stagnation: bool,
+    /// Enable or disable in-loop stagnation detection. Omitting the flag
+    /// preserves the config-file value (default: on). `--detect-stagnation`
+    /// or `--detect-stagnation=true` enables; `--detect-stagnation=false`
+    /// disables, overriding any config-file setting.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
 
     /// Number of times the same action must appear within the window before
     /// the stagnation detector trips. Overrides the config-file value when set.
