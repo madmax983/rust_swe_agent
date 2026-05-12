@@ -26,13 +26,14 @@ use tokio::sync::{mpsc, watch};
 use crate::artifact::ArtifactKind;
 use crate::config::Config;
 pub use crate::cost::{
-    ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL,
-    CostSource, SONNET_INPUT_USD_PER_MTOK, SONNET_OUTPUT_USD_PER_MTOK, estimate_cost_usd,
+    estimate_cost_usd, CostSource, ANTHROPIC_CACHE_CREATION_MULTIPLIER,
+    ANTHROPIC_CACHE_READ_MULTIPLIER, BASELINE_COST_MODEL, SONNET_INPUT_USD_PER_MTOK,
+    SONNET_OUTPUT_USD_PER_MTOK,
 };
 use crate::error::{EnvError, Error};
 use crate::model::{Model, ModelUsage};
-use crate::redaction::{Redactor, surface};
-use crate::trajectory::{FailureCategory, TokenUsage, Trajectory, exit_reason, outcome};
+use crate::redaction::{surface, Redactor};
+use crate::trajectory::{exit_reason, outcome, FailureCategory, TokenUsage, Trajectory};
 
 /// Sentinel `exit_reason` for tasks that never started because the
 /// sweep-level USD budget was exhausted. Distinct from `error` and
@@ -1616,96 +1617,103 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         // from a prior sweep. Skip it before we even consider dispatch —
         // no worker slot, no Docker container, no model API call.
         for run_index in 1..=args.reruns {
-            if args.resume {
-                if let Some(info) =
-                    existing_trajectory_info_for_run(&args.output_dir, &inst.instance_id, run_index)
-                {
-                    let patch_path =
-                        existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
-                    let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
-                    let cancelled_resume =
-                        info.exit_reason.as_deref() == Some(exit_reason::CANCELLED);
-                    if cancelled_resume {
-                        tracing::info!(
-                            instance = %inst.instance_id,
-                            run_index,
-                            "resume: cancelled trajectory found — re-running"
-                        );
-                        pending.push_back(SweepRun {
-                            inst: inst.clone(),
-                            run_index,
-                        });
-                        continue;
-                    }
-                    let retryable_resume = args.retry_on_resume
-                        && info
-                            .failure_category
-                            .is_some_and(|cat| retry_policy.is_retry_category(cat));
-                    if retryable_resume {
-                        let prior = resume_snapshot_for_run(
-                            &args.output_dir,
-                            &inst.instance_id,
-                            run_index,
-                            &info,
-                            &patch_path,
-                            &prior_results,
-                        );
-                        bump_cost(
-                            budget_accounting_cost_usd(&prior, &model_name),
-                            &mut cumulative_cost,
-                            &mut halted,
-                        );
-                        if halted {
-                            skipped_results.push(RunSlotResult::new(
-                                run_index,
-                                budget_halt_result(&inst.instance_id),
-                            ));
-                            continue;
-                        }
-                    }
-                    if !retryable_resume && (!needs_patch || patch_path.exists()) {
-                        let mut r = resume_snapshot_for_run(
-                            &args.output_dir,
-                            &inst.instance_id,
-                            run_index,
-                            &info,
-                            &patch_path,
-                            &prior_results,
-                        );
-                        let traj_path = existing_trajectory_path_for_run(
-                            &args.output_dir,
-                            &inst.instance_id,
-                            run_index,
-                        );
-                        if !downgrade_patch_secret_leak_if_needed(&mut r, &patch_path, &redactor)? {
-                            r = publish_github_pr_for_result(
-                                r,
-                                GithubPrPublication {
-                                    config: args.github_pr.as_ref(),
-                                    redaction: &args.config.root.redaction,
-                                    instance_id: &inst.instance_id,
-                                    run_index,
-                                    trajectory_path: &traj_path,
-                                    patch_path: &patch_path,
-                                },
-                            )
-                            .await;
-                        }
-                        bump_cost(
-                            budget_accounting_cost_usd(&r, &model_name),
-                            &mut cumulative_cost,
-                            &mut halted,
-                        );
-                        skipped_results.push(RunSlotResult::new(run_index, r));
-                        continue;
-                    }
-                    tracing::info!(
-                        instance = %inst.instance_id,
+            let info = if args.resume {
+                existing_trajectory_info_for_run(&args.output_dir, &inst.instance_id, run_index)
+            } else {
+                None
+            };
+
+            let Some(info) = info else {
+                pending.push_back(SweepRun {
+                    inst: inst.clone(),
+                    run_index,
+                });
+                continue;
+            };
+
+            let patch_path =
+                existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
+            let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+            let cancelled_resume = info.exit_reason.as_deref() == Some(exit_reason::CANCELLED);
+            if cancelled_resume {
+                tracing::info!(
+                    instance = %inst.instance_id,
+                    run_index,
+                    "resume: cancelled trajectory found — re-running"
+                );
+                pending.push_back(SweepRun {
+                    inst: inst.clone(),
+                    run_index,
+                });
+                continue;
+            }
+            let retryable_resume = args.retry_on_resume
+                && info
+                    .failure_category
+                    .is_some_and(|cat| retry_policy.is_retry_category(cat));
+            if retryable_resume {
+                let prior = resume_snapshot_for_run(
+                    &args.output_dir,
+                    &inst.instance_id,
+                    run_index,
+                    &info,
+                    &patch_path,
+                    &prior_results,
+                );
+                bump_cost(
+                    budget_accounting_cost_usd(&prior, &model_name),
+                    &mut cumulative_cost,
+                    &mut halted,
+                );
+                if halted {
+                    skipped_results.push(RunSlotResult::new(
                         run_index,
-                        "resume: trajectory present but patch missing — re-running"
-                    );
+                        budget_halt_result(&inst.instance_id),
+                    ));
+                    continue;
                 }
             }
+            if !retryable_resume && (!needs_patch || patch_path.exists()) {
+                let mut r = resume_snapshot_for_run(
+                    &args.output_dir,
+                    &inst.instance_id,
+                    run_index,
+                    &info,
+                    &patch_path,
+                    &prior_results,
+                );
+                let traj_path = existing_trajectory_path_for_run(
+                    &args.output_dir,
+                    &inst.instance_id,
+                    run_index,
+                );
+                if !downgrade_patch_secret_leak_if_needed(&mut r, &patch_path, &redactor)? {
+                    r = publish_github_pr_for_result(
+                        r,
+                        GithubPrPublication {
+                            config: args.github_pr.as_ref(),
+                            redaction: &args.config.root.redaction,
+                            instance_id: &inst.instance_id,
+                            run_index,
+                            trajectory_path: &traj_path,
+                            patch_path: &patch_path,
+                        },
+                    )
+                    .await;
+                }
+                bump_cost(
+                    budget_accounting_cost_usd(&r, &model_name),
+                    &mut cumulative_cost,
+                    &mut halted,
+                );
+                skipped_results.push(RunSlotResult::new(run_index, r));
+                continue;
+            }
+            tracing::info!(
+                instance = %inst.instance_id,
+                run_index,
+                "resume: trajectory present but patch missing — re-running"
+            );
             pending.push_back(SweepRun {
                 inst: inst.clone(),
                 run_index,
@@ -3377,7 +3385,11 @@ fn pass_at_k(instances: &[InstanceResult]) -> f64 {
 
 #[must_use]
 pub fn effective_runs(row: &InstanceResult) -> u32 {
-    if row.runs == 0 { 1 } else { row.runs }
+    if row.runs == 0 {
+        1
+    } else {
+        row.runs
+    }
 }
 
 #[must_use]
@@ -5603,12 +5615,10 @@ mod tests {
             None,
         );
         assert!(manifest.config.resolved.contains("step_limit = 7"));
-        assert!(
-            manifest
-                .config
-                .resolved
-                .contains(r#"name = "override-model""#)
-        );
+        assert!(manifest
+            .config
+            .resolved
+            .contains(r#"name = "override-model""#));
     }
 
     #[test]
@@ -5889,15 +5899,13 @@ instance = "inst"
         let text = std::fs::read_to_string(out.join("results.json")).unwrap();
         let parsed: SweepResults = serde_json::from_str(&text).unwrap();
         assert!(parsed.manifest.is_some());
-        assert!(
-            parsed
-                .manifest
-                .as_ref()
-                .unwrap()
-                .runtime
-                .finished_at_utc
-                .is_none()
-        );
+        assert!(parsed
+            .manifest
+            .as_ref()
+            .unwrap()
+            .runtime
+            .finished_at_utc
+            .is_none());
     }
 
     #[test]
@@ -6205,10 +6213,9 @@ instance = "inst"
             },
         )
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("`--stratify-by` requires `--sample`")
-        );
+        assert!(err
+            .to_string()
+            .contains("`--stratify-by` requires `--sample`"));
 
         let err = apply_subset(
             instances,
@@ -6221,10 +6228,9 @@ instance = "inst"
             },
         )
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("`--stratify-by` cannot be combined with `--instance-ids`")
-        );
+        assert!(err
+            .to_string()
+            .contains("`--stratify-by` cannot be combined with `--instance-ids`"));
     }
 
     #[test]
@@ -6247,10 +6253,9 @@ instance = "inst"
             },
         )
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("`--stratify-mode` requires `--stratify-by`")
-        );
+        assert!(err
+            .to_string()
+            .contains("`--stratify-mode` requires `--stratify-by`"));
     }
 
     #[test]
@@ -6696,7 +6701,7 @@ instance = "inst"
 
     #[test]
     fn parse_retry_after_handles_http_date_in_future() {
-        use crate::run::rate_limit::{RateLimitGovernor, civil_to_unix};
+        use crate::run::rate_limit::{civil_to_unix, RateLimitGovernor};
         // Build a date 60 s in the future and verify the parser returns ~60.
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
