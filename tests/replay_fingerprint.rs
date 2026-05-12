@@ -156,6 +156,37 @@ fn replay_response_exhausted_exit_code_is_10() {
 
 // ── integration tests ──────────────────────────────────────────────────────
 
+/// Replay must omit per-turn `model_latency_ms` — the wall-clock spent in
+/// the fingerprint-checking wrapper is not real model latency (#159).
+#[tokio::test]
+async fn replay_omits_model_latency_ms_on_assistant_turns() {
+    let dir = tempdir().unwrap();
+    let fp_traj = record_fingerprinted_trajectory(dir.path()).await;
+    let args = ReplayArgs {
+        trajectory_path: fp_traj,
+        config: Config::defaults().unwrap(),
+        output_dir: dir.path().to_path_buf(),
+        trajectory_name: Some("latency-check".into()),
+        allow_unfingerprinted: false,
+        report_only: false,
+        drift_cap_bytes: 8192,
+    };
+    replay_run(args).await.expect("replay should succeed");
+
+    let traj_path = dir.path().join("latency-check.traj.json");
+    let text = std::fs::read_to_string(&traj_path).unwrap();
+    let traj: rust_swe_agent::trajectory::Trajectory = serde_json::from_str(&text).unwrap();
+    for m in &traj.messages {
+        if m.role == "assistant" {
+            assert!(
+                m.extra.model_latency_ms.is_none(),
+                "replay assistant turns must omit model_latency_ms; got {:?}",
+                m.extra.model_latency_ms,
+            );
+        }
+    }
+}
+
 /// (a) Identical replay → exit 0, no drift file.
 #[tokio::test]
 async fn identical_replay_exits_zero_no_drift_file() {

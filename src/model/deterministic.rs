@@ -67,6 +67,10 @@ impl Model for DeterministicModel {
         &self.name
     }
 
+    fn skip_latency_telemetry(&self) -> bool {
+        true
+    }
+
     async fn query(
         &self,
         messages: &[Message],

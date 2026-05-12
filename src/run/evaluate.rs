@@ -206,10 +206,36 @@ pub struct EvaluationResults {
     pub cost_attribution: Vec<CostAttributionBucket>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_mix_summary: Vec<ModelMixBucket>,
+    /// Per-stage wall-clock distribution across the sweep, computed from the
+    /// `model_latency_ms` / `tool_latency_ms` / `harness_overhead_ms` fields
+    /// on per-turn `MessageExtra`. `None` when no trajectory in the sweep
+    /// recorded latency telemetry (legacy, deterministic-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_summary: Option<LatencySummary>,
     /// Evaluator provenance recorded at evaluation time.
     /// `None` for artifacts produced before this field was added (legacy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<EvaluatorProvenance>,
+}
+
+/// p50 / p95 of each wall-clock stage measured across every trajectory in
+/// the sweep. Each per-stage field is itself optional so that a sweep that
+/// only ran tools deterministically still reports `tool_latency_ms` while
+/// omitting `model_latency_ms`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LatencySummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_latency_ms: Option<LatencyStat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_latency_ms: Option<LatencyStat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_overhead_ms: Option<LatencyStat>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LatencyStat {
+    pub p50: u64,
+    pub p95: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -373,6 +399,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         .rows;
     }
     eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
+    eval.latency_summary = build_latency_summary_from_slots(&args.sweep_dir, &run_slots);
     eval.provenance = Some(provenance);
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
@@ -847,6 +874,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        latency_summary: None,
         provenance: None,
     }
 }
@@ -1203,6 +1231,7 @@ fn merge_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        latency_summary: None,
         provenance: None,
     }
 }
@@ -1312,6 +1341,7 @@ fn merge_rerun_reports_with_results(
         breakdown: Vec::new(),
         cost_attribution: Vec::new(),
         model_mix_summary: Vec::new(),
+        latency_summary: None,
         provenance: None,
     }
 }
@@ -1385,6 +1415,104 @@ fn build_model_mix_summary_from_slots(
             }
         })
         .collect()
+}
+
+/// Walks every trajectory in the sweep, sums each stage's per-turn ms
+/// into one number per instance-run, and returns the p50 / p95 of those
+/// per-instance totals. Each component (model/tool/harness) is omitted
+/// when no instance reported that stage so legacy/deterministic sweeps
+/// stay schema-clean.
+fn build_latency_summary_from_slots(
+    sweep_dir: &Path,
+    slots: &[crate::run::compare::LoadedRunSlot],
+) -> Option<LatencySummary> {
+    let mut model_totals: Vec<u64> = Vec::new();
+    let mut tool_totals: Vec<u64> = Vec::new();
+    let mut harness_totals: Vec<u64> = Vec::new();
+    for slot in slots {
+        let path = swebench::trajectory_path_for_run(sweep_dir, &slot.instance_id, slot.run_index);
+        let path = if path.exists() {
+            path
+        } else {
+            sweep_dir.join(format!("{}.traj.json", slot.instance_id))
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) else {
+            continue;
+        };
+        let mut model = None::<u64>;
+        let mut tool = None::<u64>;
+        let mut harness = None::<u64>;
+        for m in &traj.messages {
+            if let Some(v) = m.extra.model_latency_ms {
+                model = Some(model.unwrap_or(0).saturating_add(v));
+            }
+            if let Some(v) = m.extra.tool_latency_ms {
+                tool = Some(tool.unwrap_or(0).saturating_add(v));
+            }
+            if let Some(v) = m.extra.harness_overhead_ms {
+                harness = Some(harness.unwrap_or(0).saturating_add(v));
+            }
+        }
+        if let Some(v) = model {
+            model_totals.push(v);
+        }
+        if let Some(v) = tool {
+            tool_totals.push(v);
+        }
+        if let Some(v) = harness {
+            harness_totals.push(v);
+        }
+    }
+    let summary = LatencySummary {
+        model_latency_ms: percentile_stat(&mut model_totals),
+        tool_latency_ms: percentile_stat(&mut tool_totals),
+        harness_overhead_ms: percentile_stat(&mut harness_totals),
+    };
+    if summary.model_latency_ms.is_none()
+        && summary.tool_latency_ms.is_none()
+        && summary.harness_overhead_ms.is_none()
+    {
+        None
+    } else {
+        Some(summary)
+    }
+}
+
+fn percentile_stat(values: &mut [u64]) -> Option<LatencyStat> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    Some(LatencyStat {
+        p50: percentile_u64(values, 0.50),
+        p95: percentile_u64(values, 0.95),
+    })
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn percentile_u64(sorted: &[u64], q: f64) -> u64 {
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let span = (sorted.len() - 1) as f64;
+    let pos = q.clamp(0.0, 1.0) * span;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    if lo == hi {
+        sorted[lo]
+    } else {
+        let weight = pos - lo as f64;
+        let lo_v = sorted[lo] as f64;
+        let hi_v = sorted[hi] as f64;
+        lo_v.mul_add(1.0 - weight, hi_v * weight).round() as u64
+    }
 }
 
 fn build_breakdown(
@@ -1696,6 +1824,19 @@ pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
 }
 
 #[must_use]
+pub fn render_latency_summary(summary: &LatencySummary) -> String {
+    let mut out = String::new();
+    let line = |out: &mut String, label: &str, stat: Option<LatencyStat>| {
+        if let Some(s) = stat {
+            let _ = writeln!(out, "{label}_p50_ms: {} {label}_p95_ms: {}", s.p50, s.p95);
+        }
+    };
+    line(&mut out, "model_latency", summary.model_latency_ms);
+    line(&mut out, "tool_latency", summary.tool_latency_ms);
+    line(&mut out, "harness_overhead", summary.harness_overhead_ms);
+    out
+}
+
 pub fn render_summary_table(summary: &EvaluationSummary) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "resolved: {}", summary.resolved);
@@ -1875,6 +2016,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
             behavioral: BehavioralMetrics::default(),
         };
@@ -2057,6 +2199,7 @@ mod tests {
             breakdown: vec![],
             cost_attribution: vec![],
             model_mix_summary: vec![],
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize_with_model(&eval, &results, None);
@@ -2180,6 +2323,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);
@@ -2231,6 +2375,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);
@@ -2264,6 +2409,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);
@@ -2286,6 +2432,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);
@@ -2315,6 +2462,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);
@@ -2342,6 +2490,7 @@ mod tests {
             breakdown: Vec::new(),
             cost_attribution: Vec::new(),
             model_mix_summary: Vec::new(),
+            latency_summary: None,
             provenance: None,
         };
         let summary = summarize(&eval, &results);

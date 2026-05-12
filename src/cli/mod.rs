@@ -972,6 +972,9 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
         "evaluation complete"
     );
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
+    if let Some(latency) = &eval.latency_summary {
+        print!("{}", crate::run::evaluate::render_latency_summary(latency));
+    }
     if let Some(prov) = &eval.provenance {
         println!(
             "evaluator_provenance: backend={} subset={} split={}",
