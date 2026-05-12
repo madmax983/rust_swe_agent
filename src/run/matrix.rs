@@ -235,10 +235,27 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
     let state_path = args.output_dir.join("matrix.json");
 
+    if args.matrix_parallelism > 1 {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "--matrix-parallelism {} is not yet supported; use --matrix-parallelism 1 (sequential)",
+            args.matrix_parallelism
+        ))));
+    }
+
     // Load or create matrix state.
     let mut state = if args.resume && state_path.exists() {
         let text = std::fs::read_to_string(&state_path)?;
-        serde_json::from_str::<MatrixState>(&text)?
+        let loaded: MatrixState = serde_json::from_str(&text)?;
+        // Warn when the resolved instance set differs from the persisted one.
+        if loaded.instance_ids != instance_ids {
+            tracing::warn!(
+                persisted = loaded.instance_ids.len(),
+                resolved = instance_ids.len(),
+                "resume: resolved instance set differs from persisted matrix.json; \
+                 using persisted list to maintain arm consistency"
+            );
+        }
+        loaded
     } else {
         MatrixState {
             artifact_kind: "matrix".into(),
@@ -337,16 +354,19 @@ async fn run_arm(
     instance_ids_csv: &str,
     matrix_args: &MatrixArgs,
 ) -> Result<crate::run::swebench::SweepResults, Error> {
-    let mut cfg = Config::defaults().map_err(Error::Config)?;
+    // Load prompt_file first so explicit arm-manifest fields override it.
+    let mut cfg = if let Some(ref prompt_file) = arm.prompt_file {
+        Config::load(prompt_file).map_err(Error::Config)?
+    } else {
+        Config::defaults().map_err(Error::Config)?
+    };
+    // Arm manifest values take precedence over anything in prompt_file.
     cfg.root.model.name.clone_from(&arm.model);
-    cfg.root.agent.step_limit = arm.step_limit.unwrap_or(cfg.root.agent.step_limit);
+    if let Some(step_limit) = arm.step_limit {
+        cfg.root.agent.step_limit = step_limit;
+    }
     if let Some(budget) = arm.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(budget);
-    }
-    if let Some(ref prompt_file) = arm.prompt_file {
-        let overlay = Config::load(prompt_file).map_err(Error::Config)?;
-        cfg.root.agent = overlay.root.agent;
-        cfg.root.model = overlay.root.model;
     }
 
     let arm_args = crate::run::swebench::SwebenchArgs {

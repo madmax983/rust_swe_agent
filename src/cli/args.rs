@@ -356,6 +356,10 @@ pub struct MatrixCmd {
     /// Skip model-endpoint probe during preflight.
     #[arg(long, default_value_t = false)]
     pub skip_model_probe: bool,
+
+    /// Seconds each arm sweep waits for in-flight tasks after a cancel signal.
+    #[arg(long, default_value_t = 60)]
+    pub cancel_deadline_secs: u64,
 }
 
 #[derive(Debug, Args)]

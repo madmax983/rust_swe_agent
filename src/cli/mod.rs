@@ -1560,7 +1560,7 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
         skip_model_probe: m.skip_model_probe,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        cancel_deadline_secs: 60,
+        cancel_deadline_secs: m.cancel_deadline_secs,
         install_os_signal_handlers: true,
     };
 
