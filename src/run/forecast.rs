@@ -408,11 +408,31 @@ pub fn render_text(report: &ForecastReport) -> String {
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_header(vec!["Metric", "p10", "median", "p90"]);
-    add_quantile_row(&mut table_per_instance, "Input tokens", report.per_instance.input_tokens);
-    add_quantile_row(&mut table_per_instance, "Output tokens", report.per_instance.output_tokens);
-    add_quantile_row(&mut table_per_instance, "USD cost", report.per_instance.usd_cost);
-    add_quantile_row(&mut table_per_instance, "Steps", report.per_instance.step_count);
-    add_quantile_row(&mut table_per_instance, "Wall-clock sec", report.per_instance.wall_clock_seconds);
+    add_quantile_row(
+        &mut table_per_instance,
+        "Input tokens",
+        report.per_instance.input_tokens,
+    );
+    add_quantile_row(
+        &mut table_per_instance,
+        "Output tokens",
+        report.per_instance.output_tokens,
+    );
+    add_quantile_row(
+        &mut table_per_instance,
+        "USD cost",
+        report.per_instance.usd_cost,
+    );
+    add_quantile_row(
+        &mut table_per_instance,
+        "Steps",
+        report.per_instance.step_count,
+    );
+    add_quantile_row(
+        &mut table_per_instance,
+        "Wall-clock sec",
+        report.per_instance.wall_clock_seconds,
+    );
     out.push_str(&table_per_instance.to_string());
     out.push_str("\n\nForecast totals:\n");
 
@@ -421,10 +441,30 @@ pub fn render_text(report: &ForecastReport) -> String {
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_header(vec!["Metric", "Point", "Lower", "Upper"]);
-    add_interval_row(&mut table_totals, "Total USD", report.forecast.total_cost_usd, "$");
-    add_interval_row(&mut table_totals, "Input tokens", report.forecast.total_input_tokens, "");
-    add_interval_row(&mut table_totals, "Output tokens", report.forecast.total_output_tokens, "");
-    add_interval_row(&mut table_totals, "Wall-clock sec", report.forecast.wall_clock_seconds, "");
+    add_interval_row(
+        &mut table_totals,
+        "Total USD",
+        report.forecast.total_cost_usd,
+        "$",
+    );
+    add_interval_row(
+        &mut table_totals,
+        "Input tokens",
+        report.forecast.total_input_tokens,
+        "",
+    );
+    add_interval_row(
+        &mut table_totals,
+        "Output tokens",
+        report.forecast.total_output_tokens,
+        "",
+    );
+    add_interval_row(
+        &mut table_totals,
+        "Wall-clock sec",
+        report.forecast.wall_clock_seconds,
+        "",
+    );
     out.push_str(&table_totals.to_string());
     out.push_str("\n\n");
     let _ = writeln!(
