@@ -676,10 +676,9 @@ fn render_instance_text(report: &InspectReport) -> String {
         let harness_ms = report
             .harness_overhead_ms_total
             .map_or_else(|| "unknown".to_owned(), |v| v.to_string());
-        let share = report.latency_share_pct.map_or_else(
-            String::new,
-            |s| format!(" ({}% / {}% / {}%)", s.model_pct, s.tool_pct, s.harness_pct),
-        );
+        let share = report.latency_share_pct.map_or_else(String::new, |s| {
+            format!(" ({}% / {}% / {}%)", s.model_pct, s.tool_pct, s.harness_pct)
+        });
         let _ = writeln!(
             s,
             "latency:          model_ms={model_ms} tool_ms={tool_ms} harness_ms={harness_ms}{share}",

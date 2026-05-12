@@ -94,7 +94,7 @@ impl SlowModel {
 
 #[async_trait]
 impl Model for SlowModel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slow-model"
     }
     async fn query(
@@ -268,8 +268,7 @@ async fn per_turn_stage_times_reconcile_to_duration_within_5_percent() {
     .unwrap();
     agent.run().await.unwrap();
 
-    let duration_ms =
-        agent.trajectory.info.duration_secs.unwrap_or(0.0) * 1000.0;
+    let duration_ms = agent.trajectory.info.duration_secs.unwrap_or(0.0) * 1000.0;
     let stage_sum_ms: u64 = agent
         .trajectory
         .messages
@@ -280,6 +279,7 @@ async fn per_turn_stage_times_reconcile_to_duration_within_5_percent() {
                 + m.extra.harness_overhead_ms.unwrap_or(0)
         })
         .sum();
+    #[allow(clippy::cast_precision_loss)]
     let stage_sum = stage_sum_ms as f64;
     let drift = (stage_sum - duration_ms).abs();
     assert!(
@@ -378,7 +378,9 @@ fn inspect_report_aggregates_stage_totals() {
     let out = rust_swe_agent::run::inspect::run(&args).unwrap();
     let report: &InspectReport = match &out {
         rust_swe_agent::run::inspect::InspectOutput::Instance(r) => r,
-        _ => panic!("expected instance report"),
+        rust_swe_agent::run::inspect::InspectOutput::Summary(_) => {
+            panic!("expected instance report")
+        }
     };
     assert_eq!(report.model_latency_ms_total, Some(400));
     assert_eq!(report.tool_latency_ms_total, Some(500));

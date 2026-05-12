@@ -718,16 +718,10 @@ impl Agent for DefaultAgent {
                         .redact_text(&err, surface::MODEL_OBSERVATION)
                         .text,
                 );
-                obs.extra.harness_overhead_ms =
-                    Some(elapsed_ms_since(self.last_measurement_end));
+                obs.extra.harness_overhead_ms = Some(elapsed_ms_since(self.last_measurement_end));
                 self.history.push(obs.clone());
                 let obs_extra = obs.extra.clone();
-                record_redacted_message(
-                    &mut self.trajectory,
-                    &obs,
-                    obs_extra,
-                    &self.redactor,
-                );
+                record_redacted_message(&mut self.trajectory, &obs, obs_extra, &self.redactor);
                 self.last_measurement_end = Instant::now();
                 self.steps += 1;
                 return Ok(StepOutcome::Continue);
