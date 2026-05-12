@@ -99,6 +99,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Bundle(b),
         } => bench_bundle(b),
+        Command::Bench {
+            cmd: args::BenchCmd::Matrix(m),
+        } => Box::pin(bench_matrix(m)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1506,6 +1509,77 @@ fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
         }
         Err(err) => Err(bundle_error_to_error(err)),
     }
+}
+
+async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
+    let cache_dir = m
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&m.dataset_path, &m.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = m.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
+
+    let matrix_args = crate::run::matrix::MatrixArgs {
+        config_path: m.config,
+        dataset_source,
+        dataset_cache_dir: cache_dir,
+        output_dir: m.output,
+        instance_ids: None,
+        limit: m.limit,
+        sample: m.sample,
+        seed: m.seed,
+        stratify_by: None,
+        stratify_mode: crate::run::swebench::StratifyMode::Proportional,
+        sweep_cost_limit_usd: m.sweep_cost_limit_usd,
+        matrix_parallelism: m.matrix_parallelism,
+        resume: m.resume,
+        parallel: m.parallel,
+        skip_preflight: m.skip_preflight,
+        skip_model_probe: m.skip_model_probe,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        cancel_deadline_secs: 60,
+        install_os_signal_handlers: true,
+    };
+
+    let summary = crate::run::matrix::run(matrix_args).await?;
+
+    println!("=== bench matrix ===");
+    for arm in &summary.arms {
+        println!(
+            "  [{rank}] {name}  model={model}  state={state}  resolved={resolved}  \
+             cost=${cost:.4}",
+            rank = arm.rank,
+            name = arm.name,
+            model = arm.model,
+            state = arm.state,
+            resolved = arm.resolved,
+            cost = arm.total_cost_usd,
+        );
+    }
+    Ok(())
 }
 
 fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {

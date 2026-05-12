@@ -175,6 +175,9 @@ a valid trajectory in hand:
   pass@k, and compare regression gates.
 - [`bench triage`](docs/spec-triage.md): deterministic unresolved-failure
   clustering, ranked stdout tables, and the `triage.json` schema.
+- [`bench matrix`](docs/spec-matrix.md): multi-arm experiment runner — compare
+  models or configs against the same instance set, shared budget enforcement,
+  `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.
 - [`agent scriptability`](docs/spec-scriptability.md): invocation-time MCP
   servers plus `PreToolUse` and `PostToolUse` hooks for A/B testing agent
   toolsets without rebuilding Rust.
