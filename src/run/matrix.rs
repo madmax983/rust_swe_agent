@@ -230,7 +230,6 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         .iter()
         .map(|i| i.instance_id.clone())
         .collect();
-    let instance_ids_csv = instance_ids.join(",");
 
     std::fs::create_dir_all(&args.output_dir)?;
     let state_path = args.output_dir.join("matrix.json");
@@ -279,6 +278,10 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
         }
     };
     write_matrix_state(&state_path, &state)?;
+
+    // Derive the arm instance list from the authoritative state (persisted on
+    // resume, freshly resolved on a new run) so all arms see a consistent workload.
+    let instance_ids_csv = state.instance_ids.join(",");
 
     // Cumulative cost starts from arms already complete (resume scenario).
     let mut cumulative_cost: f64 = state
