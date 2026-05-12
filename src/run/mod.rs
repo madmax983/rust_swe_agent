@@ -11,6 +11,7 @@ pub mod frontier;
 pub mod github_pr;
 pub mod hello_world;
 pub mod inspect;
+pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
 pub mod rate_limit;

@@ -290,6 +290,89 @@ pub enum BenchCmd {
     Reproduce(ReproduceCmd),
     /// Export or verify a portable, redacted sweep archive.
     Bundle(BundleCmd),
+    /// Run multiple sweep arms against the same instance set.
+    Matrix(MatrixCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct MatrixCmd {
+    /// Path to the TOML matrix manifest with `[[arm]]` entries.
+    #[arg(long)]
+    pub config: PathBuf,
+
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias (e.g. `verified`). Alternative to `--dataset-path`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long)]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Root output directory (arm results land in `{output}/{arm_name}/`).
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Shared USD ceiling across all arms. Arms that would start after the
+    /// limit is reached are recorded as `skipped_budget`.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Number of arms to run concurrently (default: 1 = sequential).
+    #[arg(long, default_value_t = 1)]
+    pub matrix_parallelism: usize,
+
+    /// Resume from a previous run, skipping `complete` and `skipped_budget` arms.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
+    /// Worker parallelism per arm sweep.
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
+    pub parallel: usize,
+
+    /// Skip startup preflight checks before launching arm sweeps.
+    #[arg(long, default_value_t = false)]
+    pub skip_preflight: bool,
+
+    /// Skip model-endpoint probe during preflight.
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
+
+    /// Seconds each arm sweep waits for in-flight tasks after a cancel signal.
+    #[arg(long, default_value_t = 60)]
+    pub cancel_deadline_secs: u64,
 }
 
 #[derive(Debug, Args)]
