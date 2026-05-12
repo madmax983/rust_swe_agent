@@ -130,15 +130,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.observation_head_ratio = v;
     }
     if let Some(kind) = &m.env {
-        cfg.root.environment.kind = match kind.as_str() {
-            "local" => crate::config::EnvKind::Local,
-            "docker" => crate::config::EnvKind::Docker,
-            other => {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "unknown --env `{other}` (expected `local` or `docker`)"
-                ))));
-            }
-        };
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
     }
     if let Some(img) = m.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
@@ -210,15 +202,7 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
         None => Config::defaults()?,
     };
     if let Some(kind) = &r.env {
-        cfg.root.environment.kind = match kind.as_str() {
-            "local" => crate::config::EnvKind::Local,
-            "docker" => crate::config::EnvKind::Docker,
-            other => {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "unknown --env `{other}` (expected `local` or `docker`)"
-                ))));
-            }
-        };
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
     }
     if let Some(img) = r.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
@@ -499,15 +483,7 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
         cfg.root.agent.observation_head_ratio = v;
     }
     if let Some(kind) = &s.env {
-        cfg.root.environment.kind = match kind.as_str() {
-            "local" => crate::config::EnvKind::Local,
-            "docker" => crate::config::EnvKind::Docker,
-            other => {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "unknown --env `{other}` (expected `local` or `docker`)"
-                ))));
-            }
-        };
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
     }
     if let Some(img) = s.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
@@ -1578,6 +1554,16 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(t.interval_ms)).await;
+    }
+}
+
+fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
+    match kind {
+        "local" => Ok(crate::config::EnvKind::Local),
+        "docker" => Ok(crate::config::EnvKind::Docker),
+        other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "unknown --env `{other}` (expected `local` or `docker`)"
+        )))),
     }
 }
 
