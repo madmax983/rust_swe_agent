@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! SWE-bench sweep runner. Minimum-viable full parity: load JSONL, dispatch
 //! tasks across `parallel` workers via a consumer-driven `JoinSet`, emit
 //! per-instance trajectory + patch files, summarize in `results.json`.
