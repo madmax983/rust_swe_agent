@@ -840,6 +840,10 @@ impl Agent for DefaultAgent {
         // construction.
         let obs_harness_ms = elapsed_ms_since(self.last_measurement_end);
         let (result, post_hook_results, tool_latency_recorded) = if tool_use_blocked {
+            // No tool exec, but obs_harness_ms above already captured time
+            // up to this point. Bump the measurement boundary so the next
+            // turn's harness doesn't re-count this same wall-clock window.
+            self.last_measurement_end = Instant::now();
             (blocked_run_result(&pre_hook_results), Vec::new(), None)
         } else {
             let tool_start = Instant::now();
