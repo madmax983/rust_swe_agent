@@ -380,6 +380,10 @@ pub fn to_json(report: &ForecastReport) -> Result<String, Error> {
 
 /// Render a terminal-friendly forecast report.
 pub fn render_text(report: &ForecastReport) -> String {
+    use comfy_table::Table;
+    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+    use comfy_table::presets::UTF8_FULL;
+
     let mut out = String::new();
     let _ = writeln!(out, "\n=== SWE-bench forecast ===");
     let _ = writeln!(
@@ -397,45 +401,32 @@ pub fn render_text(report: &ForecastReport) -> String {
         "Confidence:        {:.1}%",
         report.forecast.confidence_pct
     );
-    out.push_str("Per-instance p10 / median / p90:\n");
-    write_quantile_line(&mut out, "Input tokens", report.per_instance.input_tokens);
-    write_quantile_line(&mut out, "Output tokens", report.per_instance.output_tokens);
-    write_quantile_line(&mut out, "USD cost", report.per_instance.usd_cost);
-    write_quantile_line(&mut out, "Steps", report.per_instance.step_count);
-    write_quantile_line(
-        &mut out,
-        "Wall-clock sec",
-        report.per_instance.wall_clock_seconds,
-    );
-    out.push_str("Forecast totals:\n");
-    write_interval_line(
-        &mut out,
-        "Total USD",
-        report.forecast.total_cost_usd,
-        report.forecast.confidence_pct,
-        "$",
-    );
-    write_interval_line(
-        &mut out,
-        "Input tokens",
-        report.forecast.total_input_tokens,
-        report.forecast.confidence_pct,
-        "",
-    );
-    write_interval_line(
-        &mut out,
-        "Output tokens",
-        report.forecast.total_output_tokens,
-        report.forecast.confidence_pct,
-        "",
-    );
-    write_interval_line(
-        &mut out,
-        "Wall-clock sec",
-        report.forecast.wall_clock_seconds,
-        report.forecast.confidence_pct,
-        "",
-    );
+    out.push_str("\nPer-instance p10 / median / p90:\n");
+
+    let mut table_per_instance = Table::new();
+    table_per_instance
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "p10", "median", "p90"]);
+    add_quantile_row(&mut table_per_instance, "Input tokens", report.per_instance.input_tokens);
+    add_quantile_row(&mut table_per_instance, "Output tokens", report.per_instance.output_tokens);
+    add_quantile_row(&mut table_per_instance, "USD cost", report.per_instance.usd_cost);
+    add_quantile_row(&mut table_per_instance, "Steps", report.per_instance.step_count);
+    add_quantile_row(&mut table_per_instance, "Wall-clock sec", report.per_instance.wall_clock_seconds);
+    out.push_str(&table_per_instance.to_string());
+    out.push_str("\n\nForecast totals:\n");
+
+    let mut table_totals = Table::new();
+    table_totals
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Point", "Lower", "Upper"]);
+    add_interval_row(&mut table_totals, "Total USD", report.forecast.total_cost_usd, "$");
+    add_interval_row(&mut table_totals, "Input tokens", report.forecast.total_input_tokens, "");
+    add_interval_row(&mut table_totals, "Output tokens", report.forecast.total_output_tokens, "");
+    add_interval_row(&mut table_totals, "Wall-clock sec", report.forecast.wall_clock_seconds, "");
+    out.push_str(&table_totals.to_string());
+    out.push_str("\n\n");
     let _ = writeln!(
         out,
         "Resolution signal: {:.2}% ({}/{}) - {}",
@@ -667,26 +658,27 @@ fn threshold_check(limit_usd: Option<f64>, cost: IntervalEstimate) -> ThresholdC
     }
 }
 
-fn write_quantile_line(out: &mut String, label: &str, q: QuantileSummary) {
-    let _ = writeln!(
-        out,
-        "  {label:<15} {:>10.4} / {:>10.4} / {:>10.4}",
-        q.p10, q.median, q.p90
-    );
+fn add_quantile_row(table: &mut comfy_table::Table, label: &str, q: QuantileSummary) {
+    table.add_row(vec![
+        label.to_owned(),
+        format!("{:.4}", q.p10),
+        format!("{:.4}", q.median),
+        format!("{:.4}", q.p90),
+    ]);
 }
 
-fn write_interval_line(
-    out: &mut String,
+fn add_interval_row(
+    table: &mut comfy_table::Table,
     label: &str,
     interval: IntervalEstimate,
-    confidence_pct: f64,
     prefix: &str,
 ) {
-    let _ = writeln!(
-        out,
-        "  {label:<15} {prefix}{:.4} ({:.1}% CI {prefix}{:.4}-{prefix}{:.4})",
-        interval.point, confidence_pct, interval.lower, interval.upper
-    );
+    table.add_row(vec![
+        label.to_owned(),
+        format!("{prefix}{:.4}", interval.point),
+        format!("{prefix}{:.4}", interval.lower),
+        format!("{prefix}{:.4}", interval.upper),
+    ]);
 }
 
 fn as_f64_u64(value: u64) -> f64 {
