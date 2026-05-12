@@ -376,6 +376,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if let Some(err) = verification_err {
         return Err(err);
     }
+    if matches!(exit, crate::agent::ExitReason::AgentStagnation { .. }) {
+        std::process::exit(crate::exit_code::ExitCode::AgentStagnation.as_i32());
+    }
     Ok(())
 }
 
