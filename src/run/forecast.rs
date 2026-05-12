@@ -1,5 +1,6 @@
 //! `bench forecast`: run a small calibration sweep and extrapolate cost.
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -379,75 +380,123 @@ pub fn to_json(report: &ForecastReport) -> Result<String, Error> {
 }
 
 /// Render a terminal-friendly forecast report.
+#[allow(clippy::too_many_lines)]
 pub fn render_text(report: &ForecastReport) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "\n=== SWE-bench forecast ===");
-    let _ = writeln!(
-        out,
-        "Calibration:       n={} seed={}",
-        report.calibration.n, report.calibration.seed
+    let mut meta_table = Table::new();
+    meta_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    meta_table.set_header(vec!["Calibration", "Target", "Confidence"]);
+    meta_table.add_row(vec![
+        format!(
+            "n={} seed={}",
+            report.calibration.n, report.calibration.seed
+        ),
+        format!(
+            "{} instance(s) at parallel {}",
+            report.forecast.target_n, report.forecast.parallel
+        ),
+        format!("{:.1}%", report.forecast.confidence_pct),
+    ]);
+    let _ = writeln!(out, "{meta_table}");
+
+    let mut p_table = Table::new();
+    p_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    p_table.set_header(vec!["Per-instance Metric", "p10", "Median", "p90"]);
+    let add_q = |t: &mut Table, label: &str, q: &QuantileSummary| {
+        t.add_row(vec![
+            label.to_string(),
+            format!("{:.4}", q.p10),
+            format!("{:.4}", q.median),
+            format!("{:.4}", q.p90),
+        ]);
+    };
+    add_q(
+        &mut p_table,
+        "Input tokens",
+        &report.per_instance.input_tokens,
     );
-    let _ = writeln!(
-        out,
-        "Target:            {} instance(s) at parallel {}",
-        report.forecast.target_n, report.forecast.parallel
+    add_q(
+        &mut p_table,
+        "Output tokens",
+        &report.per_instance.output_tokens,
     );
-    let _ = writeln!(
-        out,
-        "Confidence:        {:.1}%",
-        report.forecast.confidence_pct
-    );
-    out.push_str("Per-instance p10 / median / p90:\n");
-    write_quantile_line(&mut out, "Input tokens", report.per_instance.input_tokens);
-    write_quantile_line(&mut out, "Output tokens", report.per_instance.output_tokens);
-    write_quantile_line(&mut out, "USD cost", report.per_instance.usd_cost);
-    write_quantile_line(&mut out, "Steps", report.per_instance.step_count);
-    write_quantile_line(
-        &mut out,
+    add_q(&mut p_table, "USD cost", &report.per_instance.usd_cost);
+    add_q(&mut p_table, "Steps", &report.per_instance.step_count);
+    add_q(
+        &mut p_table,
         "Wall-clock sec",
-        report.per_instance.wall_clock_seconds,
+        &report.per_instance.wall_clock_seconds,
     );
-    out.push_str("Forecast totals:\n");
-    write_interval_line(
-        &mut out,
+    let _ = writeln!(out, "{p_table}");
+
+    let mut t_table = Table::new();
+    t_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    t_table.set_header(vec![
+        "Forecast Totals",
+        "Point Estimate",
+        "Confidence Interval",
+    ]);
+    let add_i = |t: &mut Table, label: &str, i: &IntervalEstimate, prefix: &str| {
+        t.add_row(vec![
+            label.to_string(),
+            format!("{prefix}{:.4}", i.point),
+            format!(
+                "{:.1}% CI {prefix}{:.4}-{prefix}{:.4}",
+                report.forecast.confidence_pct, i.lower, i.upper
+            ),
+        ]);
+    };
+    add_i(
+        &mut t_table,
         "Total USD",
-        report.forecast.total_cost_usd,
-        report.forecast.confidence_pct,
+        &report.forecast.total_cost_usd,
         "$",
     );
-    write_interval_line(
-        &mut out,
+    add_i(
+        &mut t_table,
         "Input tokens",
-        report.forecast.total_input_tokens,
-        report.forecast.confidence_pct,
+        &report.forecast.total_input_tokens,
         "",
     );
-    write_interval_line(
-        &mut out,
+    add_i(
+        &mut t_table,
         "Output tokens",
-        report.forecast.total_output_tokens,
-        report.forecast.confidence_pct,
+        &report.forecast.total_output_tokens,
         "",
     );
-    write_interval_line(
-        &mut out,
+    add_i(
+        &mut t_table,
         "Wall-clock sec",
-        report.forecast.wall_clock_seconds,
-        report.forecast.confidence_pct,
+        &report.forecast.wall_clock_seconds,
         "",
     );
-    let _ = writeln!(
-        out,
-        "Resolution signal: {:.2}% ({}/{}) - {}",
-        report.resolution_rate.point * 100.0,
-        report.resolution_rate.resolved,
-        report.resolution_rate.total,
-        report.resolution_rate.disclaimer
-    );
-    let _ = writeln!(out, "Threshold:         {}", report.threshold.message);
+    let _ = writeln!(out, "{t_table}");
+
+    let mut res_table = Table::new();
+    res_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    res_table.set_header(vec!["Resolution Signal", "Threshold"]);
+    res_table.add_row(vec![
+        format!(
+            "{:.2}% ({}/{}) - {}",
+            report.resolution_rate.point * 100.0,
+            report.resolution_rate.resolved,
+            report.resolution_rate.total,
+            report.resolution_rate.disclaimer
+        ),
+        report.threshold.message.clone(),
+    ]);
+    let _ = writeln!(out, "{res_table}");
     out
 }
-
 fn calibration_instance_ids(
     planned: Vec<swebench::SweBenchInstance>,
     calibration_n: usize,
@@ -665,28 +714,6 @@ fn threshold_check(limit_usd: Option<f64>, cost: IntervalEstimate) -> ThresholdC
             ),
         }
     }
-}
-
-fn write_quantile_line(out: &mut String, label: &str, q: QuantileSummary) {
-    let _ = writeln!(
-        out,
-        "  {label:<15} {:>10.4} / {:>10.4} / {:>10.4}",
-        q.p10, q.median, q.p90
-    );
-}
-
-fn write_interval_line(
-    out: &mut String,
-    label: &str,
-    interval: IntervalEstimate,
-    confidence_pct: f64,
-    prefix: &str,
-) {
-    let _ = writeln!(
-        out,
-        "  {label:<15} {prefix}{:.4} ({:.1}% CI {prefix}{:.4}-{prefix}{:.4})",
-        interval.point, confidence_pct, interval.lower, interval.upper
-    );
 }
 
 fn as_f64_u64(value: u64) -> f64 {
