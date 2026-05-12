@@ -1546,7 +1546,7 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
         dataset_source,
         dataset_cache_dir: cache_dir,
         output_dir: m.output,
-        instance_ids: None,
+        instance_ids: m.instance_ids,
         limit: m.limit,
         sample: m.sample,
         seed: m.seed,

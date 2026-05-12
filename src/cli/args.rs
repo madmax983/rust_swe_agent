@@ -333,6 +333,11 @@ pub struct MatrixCmd {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
     /// Keep at most N instances after filtering and sampling.
     #[arg(long)]
     pub limit: Option<usize>,
