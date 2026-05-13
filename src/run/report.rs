@@ -113,16 +113,18 @@ fn render_markdown(
     eval: Option<&EvaluationResults>,
     baseline_report: Option<&CompareReport>,
 ) -> String {
+    let model = loaded.manifest.as_ref().map(|m| m.model.name.as_str());
     let mut buf = String::new();
     md_header(&mut buf, loaded);
     md_provenance(&mut buf, loaded.manifest.as_ref(), instances);
-    md_topline(&mut buf, instances, eval);
-    md_failure_mix(&mut buf, instances, eval);
+    md_topline(&mut buf, instances, eval, model);
+    md_failure_mix(&mut buf, instances, eval, model);
     md_top_failures(
         &mut buf,
         args.top_failures,
         instances,
         eval,
+        model,
         &args.sweep_dir,
     );
     md_eval_section(&mut buf, eval);
@@ -204,7 +206,12 @@ fn md_provenance(
     writeln!(buf).ok();
 }
 
-fn md_topline(buf: &mut String, instances: &[&InstanceResult], eval: Option<&EvaluationResults>) {
+fn md_topline(
+    buf: &mut String,
+    instances: &[&InstanceResult],
+    eval: Option<&EvaluationResults>,
+    model: Option<&str>,
+) {
     let total = instances.len();
     let resolved = instances.iter().filter(|i| is_resolved(i, eval)).count();
     let resolved_rate = pct(resolved, total);
@@ -213,7 +220,7 @@ fn md_topline(buf: &mut String, instances: &[&InstanceResult], eval: Option<&Eva
         total,
     );
     let pass_at_k = resolved_rate;
-    let total_cost: f64 = instances.iter().filter_map(|i| i.cost_usd).sum();
+    let total_cost: f64 = instances.iter().map(|i| cost_for(i, model)).sum();
     let cost_per_resolved = if resolved > 0 {
         total_cost / resolved as f64
     } else {
@@ -261,9 +268,10 @@ fn md_failure_mix(
     buf: &mut String,
     instances: &[&InstanceResult],
     eval: Option<&EvaluationResults>,
+    model: Option<&str>,
 ) {
     let total = instances.len();
-    let total_cost: f64 = instances.iter().filter_map(|i| i.cost_usd).sum();
+    let total_cost: f64 = instances.iter().map(|i| cost_for(i, model)).sum();
 
     writeln!(buf, "## Failure Mix").ok();
     writeln!(buf).ok();
@@ -275,7 +283,7 @@ fn md_failure_mix(
     let resolved_cost: f64 = instances
         .iter()
         .filter(|i| is_resolved(i, eval))
-        .filter_map(|i| i.cost_usd)
+        .map(|i| cost_for(i, model))
         .sum();
     let resolved_share = pct(resolved_n, total);
     let resolved_cost_share = cost_pct(resolved_cost, total_cost);
@@ -291,7 +299,7 @@ fn md_failure_mix(
         let cat = instance_category(inst, eval);
         let e = by_cat.entry(cat).or_insert((0, 0.0));
         e.0 += 1;
-        e.1 += inst.cost_usd.unwrap_or(0.0);
+        e.1 += cost_for(inst, model);
     }
 
     let mut rows: Vec<(String, usize, f64)> = by_cat
@@ -317,6 +325,7 @@ fn md_top_failures(
     top_n: usize,
     instances: &[&InstanceResult],
     eval: Option<&EvaluationResults>,
+    model: Option<&str>,
     sweep_dir: &Path,
 ) {
     writeln!(buf, "## Top Failed Instances (top {top_n})").ok();
@@ -334,9 +343,8 @@ fn md_top_failures(
         .filter(|i| !is_resolved(i, eval))
         .collect();
     failed.sort_by(|a, b| {
-        b.cost_usd
-            .unwrap_or(0.0)
-            .partial_cmp(&a.cost_usd.unwrap_or(0.0))
+        cost_for(b, model)
+            .partial_cmp(&cost_for(a, model))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.instance_id.cmp(&b.instance_id))
     });
@@ -345,9 +353,10 @@ fn md_top_failures(
         let cat = instance_category(inst, eval);
         let (resolved_count, runs) = resolved_count_and_runs(inst, eval);
         let ratio = format!("{resolved_count}/{runs}");
-        let cost = inst
-            .cost_usd
-            .map_or_else(|| "—".into(), |c| format!("${c:.4}"));
+        let cost = match inst.effective_cost_usd(model) {
+            Some(c) => format!("${c:.4}"),
+            None => "—".into(),
+        };
         let excerpt = trajectory_excerpt(sweep_dir, &inst.instance_id);
         writeln!(
             buf,
@@ -657,6 +666,15 @@ fn cost_pct(cost: f64, total: f64) -> f64 {
     } else {
         cost / total * 100.0
     }
+}
+
+/// Sweep-level cost for an instance. Prefers the recorded `cost_usd` when
+/// non-zero, otherwise falls back to a token-based estimate via
+/// `InstanceResult::effective_cost_usd`. Sweeps that only populate token
+/// counts (e.g. backends that don't return billing in the response) would
+/// otherwise show `$0.0000` across every cost cell.
+fn cost_for(inst: &InstanceResult, model: Option<&str>) -> f64 {
+    inst.effective_cost_usd(model).unwrap_or(0.0)
 }
 
 /// Did this instance resolve? Prefers the evaluator verdict (a submitted patch

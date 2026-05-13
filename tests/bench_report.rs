@@ -625,6 +625,36 @@ fn bench_report_markdown_matches_snapshot() {
 }
 
 #[test]
+fn bench_report_falls_back_to_token_based_cost_when_cost_usd_missing() {
+    // Sweep with no recorded `cost_usd` but populated token counts — the report
+    // should derive cost from `effective_cost_usd(model)` rather than showing
+    // $0.0000 totals and ranking failures by instance id.
+    let work = tempfile::tempdir().unwrap();
+    let mut row = errored("django__django-001", FailureCategory::StepLimit);
+    row.cost_usd = None;
+    row.prompt_tokens = Some(10_000);
+    row.completion_tokens = Some(2_000);
+    write_sweep(work.path(), vec![row]);
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    // Token-based estimate for claude-opus-4-7 with 10K input + 2K output
+    // tokens is well above $0; the dollar total must not be $0.0000.
+    let zero_dollar_total = content.contains("Total cost USD | $0.0000");
+    assert!(
+        !zero_dollar_total,
+        "report must derive cost from tokens when cost_usd is missing\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_treats_legacy_submitted_row_as_resolved() {
     // Legacy results.json fixtures: `runs == 0`, `resolved_count == 0`,
     // `pass_at_1 == false` even though the row is genuinely submitted (the
