@@ -675,14 +675,22 @@ impl Agent for DefaultAgent {
             return Ok(StepOutcome::Terminate(ExitReason::HistoryCompactionFailed));
         }
         // Retroactively mark elided observations in the trajectory.
+        // We also store the marker text so bench-inspect can reconstruct
+        // "as-sent-to-model" view without re-running elision logic.
         for (hist_idx, orig_bytes) in &elision.elided {
             if let Some(rec) = self.trajectory.messages.get_mut(*hist_idx) {
+                // The elided prompt slice at hist_idx holds the marker.
+                let marker = elision.prompt[*hist_idx].content.clone();
                 rec.extra
                     .other
                     .insert("history_elided".into(), serde_json::Value::Bool(true));
                 rec.extra.other.insert(
                     "history_bytes_elided".into(),
                     serde_json::json!(*orig_bytes as u64),
+                );
+                rec.extra.other.insert(
+                    "history_elision_marker".into(),
+                    serde_json::Value::String(marker),
                 );
             }
         }
