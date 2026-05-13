@@ -183,6 +183,54 @@ mod tests {
     }
 
     #[test]
+    fn from_error_timeout_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Env(EnvError::Timeout(
+                std::time::Duration::from_secs(1)
+            ))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn from_error_unexpected_exit_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Env(EnvError::UnexpectedExit("1".into()))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn from_error_docker_daemon_unreachable_is_preflight_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Env(EnvError::DockerDaemonUnreachable(
+                "connection refused".into()
+            ))),
+            ExitCode::PreflightFailure
+        );
+    }
+
+    #[test]
+    fn from_error_container_start_failed_is_preflight_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Env(EnvError::ContainerStartFailed(
+                "image not found".into()
+            ))),
+            ExitCode::PreflightFailure
+        );
+    }
+
+    #[test]
+    fn from_error_env_io_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Env(EnvError::Io(std::io::Error::other(
+                "disk full"
+            )))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
     fn from_error_model_is_task_unsuccessful() {
         assert_eq!(
             ExitCode::from_error(&Error::Model(ModelError::Request("t/o".into()))),
