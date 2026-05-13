@@ -244,6 +244,15 @@ pub struct BehavioralMetrics {
     pub tests_run_before_submit_rate: f64,
     pub resolved_rate_when_tests_run: f64,
     pub resolved_rate_when_tests_skipped: f64,
+    /// Number of instances where at least one observation was elided.
+    #[serde(default)]
+    pub history_elision_instances: usize,
+    /// Sum of `history_bytes_elided` across all elided observations in the sweep.
+    #[serde(default)]
+    pub history_bytes_elided_total: u64,
+    /// Number of instances that exited with `history_compaction_failed`.
+    #[serde(default)]
+    pub history_compaction_failed: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -384,6 +393,11 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
+    let (elision_instances, bytes_elided_total, compaction_failed) =
+        build_elision_stats(&args.sweep_dir, &results);
+    eval.behavioral.history_elision_instances = elision_instances;
+    eval.behavioral.history_bytes_elided_total = bytes_elided_total;
+    eval.behavioral.history_compaction_failed = compaction_failed;
     eval.breakdown = build_breakdown(
         &eval.instances,
         &results,
@@ -1277,7 +1291,60 @@ fn build_behavioral_metrics(
         tests_run_before_submit_rate: pct(tests_run, submitted),
         resolved_rate_when_tests_run: pct(resolved_with_tests, tests_run),
         resolved_rate_when_tests_skipped: pct(resolved_tests_skipped, tests_skipped),
+        ..BehavioralMetrics::default()
     }
+}
+
+/// Scan trajectory files for elision metadata produced by history-bounding.
+/// Returns (elision_instances, bytes_elided_total, compaction_failed_count).
+fn build_elision_stats<S: std::hash::BuildHasher>(
+    sweep_dir: &Path,
+    results: &HashMap<String, InstanceResult, S>,
+) -> (usize, u64, usize) {
+    let mut elision_instances = 0usize;
+    let mut bytes_elided_total = 0u64;
+    let mut compaction_failed = 0usize;
+
+    for (instance_id, result) in results {
+        if result.failure_category == Some(FailureCategory::HistoryCompactionFailed) {
+            compaction_failed += 1;
+        }
+        let Some(path) =
+            crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id)
+        else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) else {
+            continue;
+        };
+        let mut any_elided = false;
+        for msg in &traj.messages {
+            let elided = msg
+                .extra
+                .other
+                .get("history_elided")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if elided {
+                any_elided = true;
+                if let Some(bytes) = msg
+                    .extra
+                    .other
+                    .get("history_bytes_elided")
+                    .and_then(|v| v.as_u64())
+                {
+                    bytes_elided_total = bytes_elided_total.saturating_add(bytes);
+                }
+            }
+        }
+        if any_elided {
+            elision_instances += 1;
+        }
+    }
+    (elision_instances, bytes_elided_total, compaction_failed)
 }
 
 fn normalize_single_run_metrics(row: &mut InstanceEvaluation, runs: u32) {
@@ -1822,6 +1889,32 @@ pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
             row.bucket, row.n, row.total_usd, row.mean_usd, row.share_pct
         );
     }
+    out
+}
+
+/// Render the elision stats from `BehavioralMetrics` if any elision occurred.
+/// Returns an empty string when no history bounding was active.
+#[must_use]
+pub fn render_elision_stats(behavioral: &BehavioralMetrics) -> String {
+    if behavioral.history_elision_instances == 0 && behavioral.history_compaction_failed == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "history_elision_instances: {}",
+        behavioral.history_elision_instances
+    );
+    let _ = writeln!(
+        out,
+        "history_bytes_elided_total: {}",
+        behavioral.history_bytes_elided_total
+    );
+    let _ = writeln!(
+        out,
+        "history_compaction_failed: {}",
+        behavioral.history_compaction_failed
+    );
     out
 }
 

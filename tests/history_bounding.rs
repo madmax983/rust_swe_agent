@@ -245,17 +245,21 @@ async fn no_elision_markers_when_flags_unset() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 4 (RED): history_max_input_tokens bounds the byte-length of the prompt
 // sent to the model (1 token ≈ 4 bytes approximation).
+// Uses 30+ steps with 5 KB synthetic observations — the cap must hold for every
+// single query, not just the final one.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn max_input_tokens_bounds_prompt_bytes() {
-    const N_BASH: usize = 8;
-    const OBS_BYTES: usize = 2048;
-    // Cap at 6000 tokens ≈ 24 000 bytes.
-    const MAX_TOKENS: u64 = 6_000;
+    const N_BASH: usize = 32;
+    const OBS_BYTES: usize = 5 * 1024; // 5 KB per observation
+    // Cap at 8 000 tokens ≈ 32 000 bytes.
+    // Each 5 KB observation would grow the prompt well beyond this cap without
+    // elision, so the history-bounding logic must kick in every step.
+    const MAX_TOKENS: u64 = 8_000;
     const MAX_BYTES_APPROX: usize = (MAX_TOKENS as usize) * 4;
 
     let mut cfg = Config::defaults().unwrap();
-    cfg.root.agent.step_limit = 30;
+    cfg.root.agent.step_limit = 50;
     cfg.root.agent.history_max_input_tokens = Some(MAX_TOKENS);
     cfg.root.agent.observation_max_bytes = 64 * 1024;
 
@@ -275,7 +279,16 @@ async fn max_input_tokens_bounds_prompt_bytes() {
 
     agent.run().await.unwrap();
 
-    for (qi, query) in model.recorded_inputs().iter().enumerate() {
+    let inputs = model.recorded_inputs();
+    // We ran 32 bash steps + 1 submit, so the model should have received at
+    // least 30 queries.
+    assert!(
+        inputs.len() >= 30,
+        "expected ≥30 model queries, got {}",
+        inputs.len()
+    );
+
+    for (qi, query) in inputs.iter().enumerate() {
         let total_bytes: usize = query.iter().map(|m| m.content.len()).sum();
         assert!(
             total_bytes <= MAX_BYTES_APPROX,
