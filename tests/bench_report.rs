@@ -688,6 +688,48 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_escapes_pipes_in_cell_values() {
+    // A custom-sweep instance_id containing `|` must not break the
+    // markdown/HTML table layout by adding ghost cells. The reported
+    // cell content should contain the escaped form `\|`.
+    let work = tempfile::tempdir().unwrap();
+    let mut row = errored("custom|task-001", FailureCategory::StepLimit);
+    row.cost_usd = Some(0.10);
+    write_sweep(work.path(), vec![row]);
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    // The raw pipe must NOT appear unescaped inside the id (which would
+    // create a ghost column); the `\|` escape must be present.
+    assert!(
+        content.contains("custom\\|task-001"),
+        "instance_id with `|` must be escaped to `\\|` in cell\ncontent:\n{content}"
+    );
+    // The row should still parse as 5 columns (Instance, Category,
+    // Resolved/Total, Cost USD, Excerpt) — i.e. the body row containing
+    // our id has exactly 5 inner cells. We check by counting unescaped
+    // `|` on the body row.
+    let body_row = content
+        .lines()
+        .find(|l| l.contains("custom\\|task-001"))
+        .expect("row present");
+    // Count unescaped pipes by removing escaped ones first.
+    let unescaped = body_row.replace("\\|", "");
+    let pipe_count = unescaped.matches('|').count();
+    // 5 cells → 6 delimiters
+    assert_eq!(
+        pipe_count, 6,
+        "row should have 6 unescaped `|` delimiters (5 cells); got {pipe_count}\nrow: {body_row}"
+    );
+}
+
+#[test]
 fn bench_report_rejects_path_traversal_instance_id() {
     // A crafted instance_id containing parent components or absolute paths
     // could otherwise let `trajectory_excerpt` follow the join into a file

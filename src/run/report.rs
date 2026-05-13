@@ -177,25 +177,25 @@ fn md_provenance(
         return;
     };
 
-    writeln!(buf, "| Model | {} |", redact(&m.model.name)).ok();
+    writeln!(buf, "| Model | {} |", cell(&m.model.name)).ok();
     if let Some(sha) = &m.harness.git_sha {
-        writeln!(buf, "| Harness git SHA | {} |", redact(sha)).ok();
+        writeln!(buf, "| Harness git SHA | {} |", cell(sha)).ok();
     }
-    writeln!(buf, "| Dataset | {} |", redact(&m.dataset.path)).ok();
+    writeln!(buf, "| Dataset | {} |", cell(&m.dataset.path)).ok();
     if let Some(split) = &m.dataset.split {
-        writeln!(buf, "| Dataset split | {} |", redact(split)).ok();
+        writeln!(buf, "| Dataset split | {} |", cell(split)).ok();
     }
     if let Some(reproduced_from) = &m.reproduced_from {
         writeln!(
             buf,
             "| Reproduced from | {} |",
-            redact(&reproduced_from.sweep_dir)
+            cell(&reproduced_from.sweep_dir)
         )
         .ok();
     }
-    writeln!(buf, "| Started | {} |", redact(&m.runtime.started_at_utc)).ok();
+    writeln!(buf, "| Started | {} |", cell(&m.runtime.started_at_utc)).ok();
     if let Some(finished) = &m.runtime.finished_at_utc {
-        writeln!(buf, "| Finished | {} |", redact(finished)).ok();
+        writeln!(buf, "| Finished | {} |", cell(finished)).ok();
         if let (Ok(start), Ok(end)) = (
             chrono::DateTime::parse_from_rfc3339(&m.runtime.started_at_utc),
             chrono::DateTime::parse_from_rfc3339(finished),
@@ -329,7 +329,8 @@ fn md_failure_mix(
         let cost_share = cost_pct(*cost, total_cost);
         writeln!(
             buf,
-            "| {cat} | {n} | {share:.2}% | ${cost:.4} | {cost_share:.2}% |"
+            "| {} | {n} | {share:.2}% | ${cost:.4} | {cost_share:.2}% |",
+            cell(cat)
         )
         .ok();
     }
@@ -366,7 +367,7 @@ fn md_top_failures(
     });
 
     for inst in failed.iter().take(top_n) {
-        let cat = instance_category(inst, eval);
+        let cat = cell(&instance_category(inst, eval));
         let (resolved_count, runs) = resolved_count_and_runs(inst, eval);
         let ratio = format!("{resolved_count}/{runs}");
         let cost = match inst.effective_cost_usd(model) {
@@ -377,7 +378,7 @@ fn md_top_failures(
         writeln!(
             buf,
             "| {} | {cat} | {ratio} | {cost} | {excerpt} |",
-            redact(&inst.instance_id)
+            cell(&inst.instance_id)
         )
         .ok();
     }
@@ -467,7 +468,7 @@ fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
             let cand = t
                 .candidate_failure_category
                 .map_or_else(|| String::from("fail"), |c| format!("fail ({c:?})"));
-            writeln!(buf, "| {} | {base} | {cand} |", redact(&t.instance_id)).ok();
+            writeln!(buf, "| {} | {base} | {cand} |", cell(&t.instance_id)).ok();
         }
     }
     writeln!(buf).ok();
@@ -879,12 +880,28 @@ fn redact(text: &str) -> String {
         .text
 }
 
+/// Compose redact + markdown-cell-escape. Use this for every dynamic value
+/// going into a markdown table cell: it both strips secrets and protects the
+/// table layout from `|` / newline characters in operator-supplied text.
+fn cell(text: &str) -> String {
+    md_cell(&redact(text))
+}
+
 fn truncate_to_120(s: &str) -> String {
-    let s = s.replace('\n', " ").replace('|', "\\|");
+    let s = md_cell(s);
     match s.char_indices().nth(EXCERPT_LEN) {
         Some((i, _)) => format!("{}…", &s[..i]),
         None => s,
     }
+}
+
+/// Escape a value for inclusion in a markdown table cell: replace newlines
+/// with spaces and `|` with `\|`. Applied to every dynamic cell value
+/// (instance ids, manifest fields, outcome labels) so that user-controlled
+/// text containing pipes never shifts the table columns or — after the
+/// markdown-to-HTML pass — splits a row into ghost cells.
+fn md_cell(s: &str) -> String {
+    s.replace('\n', " ").replace('|', "\\|")
 }
 
 #[cfg(test)]
