@@ -240,6 +240,11 @@ fn select_instances(
         instances.truncate(n);
     }
 
+    assert!(
+        !instances.is_empty(),
+        "slicing flags produced an empty selection; use --limit / --sample > 0"
+    );
+
     instances
 }
 
@@ -508,8 +513,7 @@ fn utc_now_iso8601() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let (y, mo, d, h, mi, sec) = unix_to_ymd_hms(secs);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{sec:02}Z")
 }
