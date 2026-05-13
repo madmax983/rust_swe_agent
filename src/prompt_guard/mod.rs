@@ -11,6 +11,8 @@
 //! signal that the content is data, not instructions, and they make
 //! prompt-injection attempts visible in trajectories.
 
+use regex::Regex;
+
 /// Category of untrusted content fed into the prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UntrustedKind {
@@ -50,12 +52,15 @@ impl PromptGuard {
         format!("<{tag}>\n{safe}\n</{tag}>")
     }
 
-    /// Replace any occurrence of `</{tag}>` inside `content` with the
+    /// Replace any occurrence of `</{tag}\s*>` inside `content` with the
     /// entity-escaped form `&lt;/{tag}>` so it cannot break out of the
-    /// envelope.
+    /// envelope.  The `\s*` covers whitespace-padded variants such as
+    /// `</untrusted_task_text >` or `</untrusted_task_text\n>`.
     fn sanitize(content: &str, tag: &str) -> String {
-        let close_tag = format!("</{tag}>");
-        content.replace(&close_tag, &format!("&lt;/{tag}>"))
+        // Tag names are always simple [a-z_]+ strings — no regex escaping needed.
+        let re = Regex::new(&format!(r"</{tag}\s*>")).expect("valid tag pattern");
+        re.replace_all(content, format!("&lt;/{tag}>").as_str())
+            .into_owned()
     }
 
     /// Return the XML tag name for `kind` (without angle brackets).

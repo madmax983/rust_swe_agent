@@ -615,9 +615,9 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             r"git\b[^|;\n]*\bpush\b[^|;\n]*\s\+[A-Za-z0-9_/.]",
         ),
         // --- Unauthorized PR / issue publishing ---
-        // `gh pr create` publishes a pull request without operator approval.
+        // `gh pr create` / `gh pr new` (alias) publishes a PR without approval.
         // In an unattended run this is an unauthorized publishing event.
-        PolicyRule::deny_static("gh-pr-create", r"(?:^|[;\s|&])gh\s+pr\s+create\b"),
+        PolicyRule::deny_static("gh-pr-create", r"(?:^|[;\s|&])gh\s+pr\s+(?:create|new)\b"),
     ]
 }
 
