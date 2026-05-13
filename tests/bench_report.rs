@@ -688,6 +688,35 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_rejects_wrong_kind_evaluation_artifact() {
+    // evaluation.json with an artifact header from the wrong kind must be
+    // rejected (not silently accepted just because the field shapes overlap).
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(work.path(), vec![submitted("django__django-001")]);
+    let wrong_kind = serde_json::json!({
+        "artifact_kind": "sweep_results",
+        "schema_version": {"major": 1, "minor": 5},
+        "instances": [],
+    });
+    std::fs::write(
+        work.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&wrong_kind).unwrap(),
+    )
+    .unwrap();
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "bench report should reject an evaluation.json with the wrong artifact_kind"
+    );
+}
+
+#[test]
 fn bench_report_corrupt_evaluation_json_fails() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(work.path(), vec![submitted("django__django-001")]);

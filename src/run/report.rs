@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::artifact::ArtifactSchemaVersion;
+use crate::artifact::{ArtifactKind, ArtifactSchemaVersion, classify_json_value};
 use crate::error::Error;
 use crate::run::compare::{self, CompareReport, LoadedSweep, load_sweep};
 use crate::run::evaluate::{BreakdownSelection, EvaluationResults, evaluation_path};
@@ -78,11 +78,22 @@ fn load_evaluation(sweep_dir: &Path) -> Result<Option<EvaluationResults>, Error>
     if !path.exists() {
         return Ok(None);
     }
-    // File present: surface parse / IO errors rather than silently degrading
-    // to the missing-evaluation placeholder. A corrupt or schema-incompatible
-    // evaluation.json must not produce a plausible-but-wrong summary.
+    // File present: surface parse / IO / schema errors rather than silently
+    // degrading to the missing-evaluation placeholder. A corrupt or
+    // schema-incompatible evaluation.json must not produce a plausible-but-wrong
+    // summary. We validate the artifact header (kind + schema version) via the
+    // same `classify_json_value` path the rest of the sweep tooling uses, so a
+    // wrong-kind or future-incompatible artifact is rejected even if the
+    // remaining fields would happen to deserialize.
     let text = std::fs::read_to_string(&path)?;
-    let eval: EvaluationResults = serde_json::from_str(&text)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    classify_json_value(
+        &value,
+        ArtifactKind::EvaluationResults,
+        path.display().to_string(),
+    )
+    .map_err(|err| Error::Trajectory(err.to_string()))?;
+    let eval: EvaluationResults = serde_json::from_value(value)?;
     Ok(Some(eval))
 }
 
