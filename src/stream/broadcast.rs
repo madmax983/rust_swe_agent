@@ -17,11 +17,35 @@ use super::{StreamEvent, StreamSink};
 pub const DEFAULT_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone)]
+/// A real-time streaming sink that broadcasts agent events to multiple receivers.
+///
+/// `BroadcastSink` decouples the event generation from transport, ensuring that the
+/// agent is never throttled by slow network connections. It is disconnect-safe and
+/// robust against slow consumers, utilizing `tokio::sync::broadcast` under the hood.
+///
+/// ## Examples
+///
+/// ```rust
+/// # use rust_swe_agent::stream::{BroadcastSink, StreamSink, StreamEvent};
+/// let sink = BroadcastSink::new(16);
+/// let rx = sink.subscribe();
+///
+/// // Emitting an event is non-blocking and safe even if `rx` is dropped.
+/// sink.emit(StreamEvent::Observation {
+///     step: 1,
+///     content: "Look at this output".to_string(),
+///     timestamp: "2024-01-01T00:00:00Z".to_string(),
+/// });
+/// ```
 pub struct BroadcastSink {
     tx: broadcast::Sender<StreamEvent>,
 }
 
 impl BroadcastSink {
+    /// Creates a new broadcast sink with the specified channel capacity.
+    ///
+    /// If `capacity` is 0, it will be clamped to 1. When the channel is full,
+    /// the oldest events are dropped to prevent memory exhaustion and blockages.
     pub fn new(capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(capacity.max(1));
         Self { tx }
@@ -33,6 +57,10 @@ impl BroadcastSink {
         self.tx.receiver_count()
     }
 
+    /// Subscribes to the broadcast channel to receive real-time agent events.
+    ///
+    /// Each call returns an independent `Receiver` that sees all events emitted
+    /// *after* the subscription is created.
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.tx.subscribe()
     }
