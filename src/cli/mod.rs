@@ -108,6 +108,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::EvaluatorSelftest(s),
         } => bench_evaluator_selftest(s),
+        Command::Bench {
+            cmd: args::BenchCmd::Report(r),
+        } => bench_report(r),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1667,6 +1670,25 @@ fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> 
         );
     }
     Ok(())
+}
+
+fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
+    let format = match r.format.as_str() {
+        "markdown" | "md" => crate::run::report::ReportFormat::Markdown,
+        "html" => crate::run::report::ReportFormat::Html,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `markdown` or `html`)"
+            ))));
+        }
+    };
+    crate::run::report::run(&crate::run::report::ReportArgs {
+        sweep_dir: r.sweep,
+        output: r.output,
+        baseline: r.baseline,
+        top_failures: r.top_failures,
+        format,
+    })
 }
 
 fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {
