@@ -416,6 +416,13 @@ mod tests {
     }
 
     #[test]
+    fn alias_rejects_empty_string() {
+        let err = SwebenchAlias::from_str("").unwrap_err();
+        assert!(err.contains(""), "{err}");
+        assert!(err.contains("full"), "{err}");
+    }
+
+    #[test]
     fn alias_display_matches_as_str() {
         for alias in [
             SwebenchAlias::Full,
@@ -455,6 +462,13 @@ mod tests {
         let err = SwebenchSplit::from_str("validation").unwrap_err();
         assert!(err.contains("validation"), "{err}");
         assert!(err.contains("train"), "{err}");
+    }
+
+    #[test]
+    fn split_rejects_empty_string() {
+        let err = SwebenchSplit::from_str("").unwrap_err();
+        assert!(err.contains(""), "{err}");
+        assert!(err.contains("test"), "{err}");
     }
 
     #[test]

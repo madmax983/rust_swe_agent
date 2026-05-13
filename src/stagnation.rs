@@ -192,6 +192,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "stagnation window (4) must be >= threshold (5)")]
+    fn detector_panics_if_window_less_than_threshold() {
+        let _ = StagnationDetector::new(5, 4);
+    }
+
+    #[test]
+    fn detector_trips_immediately_when_threshold_is_zero() {
+        let mut det = StagnationDetector::new(0, 4);
+        let trip = det.observe(0, "ls").expect("should trip immediately");
+        assert_eq!(trip.count, 1);
+        assert_eq!(trip.step_indices, vec![0]);
+    }
+
+    #[test]
     fn detector_trips_at_k_identical_observations() {
         let mut det = StagnationDetector::new(4, 8);
         assert!(det.observe(0, "ls").is_none());

@@ -125,7 +125,7 @@ impl ModelError {
             return None;
         };
         let msg_lower = msg.to_ascii_lowercase();
-        for prefix in ["retry-after: ", "retry_after: ", "retry after: "] {
+        for prefix in ["retry-after: ", "retry-after:", "retry_after: ", "retry_after:", "retry after: ", "retry after:"] {
             if let Some(pos) = msg_lower.find(prefix) {
                 let digits: &str = msg[pos + prefix.len()..]
                     .split(|c: char| !c.is_ascii_digit())
@@ -172,6 +172,18 @@ mod tests {
     fn retry_after_secs_handles_space_variant() {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
+    }
+
+    #[test]
+    fn retry_after_secs_handles_no_space_after_colon() {
+        let e = ModelError::RateLimited("retry-after:120".into());
+        assert_eq!(e.retry_after_secs(), Some(120));
+    }
+
+    #[test]
+    fn retry_after_secs_handles_non_numeric_after_prefix() {
+        let e = ModelError::RateLimited("retry-after: soon".into());
+        assert_eq!(e.retry_after_secs(), None);
     }
 }
 

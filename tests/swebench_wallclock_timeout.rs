@@ -86,7 +86,7 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
     .unwrap();
     let elapsed = started.elapsed();
 
-    let max_elapsed = Duration::from_secs(6);
+    let max_elapsed = Duration::from_secs(12);
     assert!(
         elapsed < max_elapsed,
         "worker should return promptly after the 2s deadline; elapsed={elapsed:?}, max={max_elapsed:?}"

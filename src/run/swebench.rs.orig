@@ -6398,13 +6398,6 @@ instance = "inst"
     }
 
     #[test]
-    fn ensure_total_deadline_errors_when_expired_precisely() {
-        let deadline = Instant::now().checked_sub(Duration::from_nanos(1)).unwrap();
-        let err = ensure_total_deadline(deadline).unwrap_err();
-        assert!(err.to_string().contains("total timeout exceeded"));
-    }
-
-    #[test]
     fn render_preflight_text_mode_is_line_oriented() {
         let checks = vec![
             CheckResult {
