@@ -25,7 +25,10 @@ use rust_swe_agent::prompt_guard::{PromptGuard, UntrustedKind};
 fn prompt_guard_wraps_task_text_in_envelope() {
     let content = "fix the bug in foo.rs";
     let wrapped = PromptGuard::wrap(UntrustedKind::TaskText, content);
-    assert!(wrapped.contains(content), "wrapped must contain original content");
+    assert!(
+        wrapped.contains(content),
+        "wrapped must contain original content"
+    );
     assert!(
         wrapped.starts_with("<untrusted_task_text>"),
         "must start with opening tag, got: {wrapped:?}"
@@ -40,7 +43,10 @@ fn prompt_guard_wraps_task_text_in_envelope() {
 fn prompt_guard_wraps_tool_output_in_envelope() {
     let output = "STDOUT: test passed\nSTDERR: (empty)";
     let wrapped = PromptGuard::wrap(UntrustedKind::ToolOutput, output);
-    assert!(wrapped.contains(output), "wrapped must contain original content");
+    assert!(
+        wrapped.contains(output),
+        "wrapped must contain original content"
+    );
     assert!(wrapped.len() > output.len(), "envelope must add characters");
     assert!(
         wrapped.starts_with("<untrusted_tool_output>"),
@@ -97,18 +103,42 @@ fn prompt_guard_different_kinds_produce_different_envelopes() {
     let task_wrapped = PromptGuard::wrap(UntrustedKind::TaskText, content);
     let output_wrapped = PromptGuard::wrap(UntrustedKind::ToolOutput, content);
     let repo_wrapped = PromptGuard::wrap(UntrustedKind::RepoContent, content);
-    assert_ne!(task_wrapped, output_wrapped, "task and tool_output envelopes must differ");
-    assert_ne!(task_wrapped, repo_wrapped, "task and repo_content envelopes must differ");
-    assert_ne!(output_wrapped, repo_wrapped, "tool_output and repo_content envelopes must differ");
+    assert_ne!(
+        task_wrapped, output_wrapped,
+        "task and tool_output envelopes must differ"
+    );
+    assert_ne!(
+        task_wrapped, repo_wrapped,
+        "task and repo_content envelopes must differ"
+    );
+    assert_ne!(
+        output_wrapped, repo_wrapped,
+        "tool_output and repo_content envelopes must differ"
+    );
 }
 
 #[test]
 fn prompt_guard_tag_returns_correct_strings() {
-    assert_eq!(PromptGuard::tag(UntrustedKind::TaskText), "untrusted_task_text");
-    assert_eq!(PromptGuard::tag(UntrustedKind::ExtraContext), "untrusted_extra_context");
-    assert_eq!(PromptGuard::tag(UntrustedKind::ToolOutput), "untrusted_tool_output");
-    assert_eq!(PromptGuard::tag(UntrustedKind::HookOutput), "untrusted_hook_output");
-    assert_eq!(PromptGuard::tag(UntrustedKind::RepoContent), "untrusted_repo_content");
+    assert_eq!(
+        PromptGuard::tag(UntrustedKind::TaskText),
+        "untrusted_task_text"
+    );
+    assert_eq!(
+        PromptGuard::tag(UntrustedKind::ExtraContext),
+        "untrusted_extra_context"
+    );
+    assert_eq!(
+        PromptGuard::tag(UntrustedKind::ToolOutput),
+        "untrusted_tool_output"
+    );
+    assert_eq!(
+        PromptGuard::tag(UntrustedKind::HookOutput),
+        "untrusted_hook_output"
+    );
+    assert_eq!(
+        PromptGuard::tag(UntrustedKind::RepoContent),
+        "untrusted_repo_content"
+    );
 }
 
 // ── Policy: env-var exfiltration via curl ────────────────────────────────────

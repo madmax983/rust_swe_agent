@@ -588,10 +588,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // receives the pushed commits.  Named remotes (e.g. `origin`) are
         // NOT blocked — they refer to a pre-configured remote in
         // `.git/config`.
-        PolicyRule::deny_static(
-            "git-push-to-http-url",
-            r"git\s+push\b[^|;\n]*https?://",
-        ),
+        PolicyRule::deny_static("git-push-to-http-url", r"git\s+push\b[^|;\n]*https?://"),
         // `git push --force` / `git push -f` / `git push --force-with-lease`
         // are destructive: they rewrite history and can destroy upstream
         // branches.  In an unattended agent run these are never expected.
@@ -602,10 +599,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // --- Unauthorized PR / issue publishing ---
         // `gh pr create` publishes a pull request without operator approval.
         // In an unattended run this is an unauthorized publishing event.
-        PolicyRule::deny_static(
-            "gh-pr-create",
-            r"(?:^|[;\s|&])gh\s+pr\s+create\b",
-        ),
+        PolicyRule::deny_static("gh-pr-create", r"(?:^|[;\s|&])gh\s+pr\s+create\b"),
     ]
 }
 

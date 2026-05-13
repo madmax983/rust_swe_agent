@@ -88,6 +88,10 @@ mod tests {
         ];
         let tags: Vec<_> = kinds.iter().map(|k| PromptGuard::tag(*k)).collect();
         let unique: std::collections::BTreeSet<_> = tags.iter().collect();
-        assert_eq!(unique.len(), kinds.len(), "all kinds must have distinct tags");
+        assert_eq!(
+            unique.len(),
+            kinds.len(),
+            "all kinds must have distinct tags"
+        );
     }
 }
