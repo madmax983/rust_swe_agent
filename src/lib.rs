@@ -14,6 +14,7 @@ pub mod fingerprint;
 pub mod ids;
 pub mod model;
 pub mod policy;
+pub mod prompt_guard;
 pub mod redaction;
 pub mod run;
 pub mod skills;
@@ -45,6 +46,7 @@ pub use policy::{
     PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
     PolicyRule,
 };
+pub use prompt_guard::{PromptGuard, UntrustedKind};
 pub use redaction::{RedactionCount, RedactionSummary, Redactor};
 pub use skills::{
     ActiveSkill, ActiveSkillManifest, ActiveSkillSet, ResolvedSkillContext, SkillActivationReason,
