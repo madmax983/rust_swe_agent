@@ -49,7 +49,7 @@ pub fn run(args: &ReportArgs) -> Result<(), Error> {
 
 fn generate(args: &ReportArgs) -> Result<String, Error> {
     let loaded = load_sweep(&args.sweep_dir)?;
-    let eval = load_evaluation(&args.sweep_dir);
+    let eval = load_evaluation(&args.sweep_dir)?;
 
     // Sort instances deterministically by instance_id.
     let mut instances: Vec<&InstanceResult> = loaded.instances.values().collect();
@@ -70,13 +70,17 @@ fn generate(args: &ReportArgs) -> Result<String, Error> {
     }
 }
 
-fn load_evaluation(sweep_dir: &Path) -> Option<EvaluationResults> {
+fn load_evaluation(sweep_dir: &Path) -> Result<Option<EvaluationResults>, Error> {
     let path = evaluation_path(sweep_dir);
     if !path.exists() {
-        return None;
+        return Ok(None);
     }
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    // File present: surface parse / IO errors rather than silently degrading
+    // to the missing-evaluation placeholder. A corrupt or schema-incompatible
+    // evaluation.json must not produce a plausible-but-wrong summary.
+    let text = std::fs::read_to_string(&path)?;
+    let eval: EvaluationResults = serde_json::from_str(&text)?;
+    Ok(Some(eval))
 }
 
 fn baseline_compare_report(args: &ReportArgs) -> Result<Option<CompareReport>, Error> {
@@ -111,7 +115,13 @@ fn render_markdown(
     md_provenance(&mut buf, loaded.manifest.as_ref(), instances);
     md_topline(&mut buf, instances, eval);
     md_failure_mix(&mut buf, instances, eval);
-    md_top_failures(&mut buf, args.top_failures, instances, &args.sweep_dir);
+    md_top_failures(
+        &mut buf,
+        args.top_failures,
+        instances,
+        eval,
+        &args.sweep_dir,
+    );
     md_eval_section(&mut buf, eval);
     if let Some(report) = baseline_report {
         md_baseline_delta(&mut buf, report);
@@ -193,9 +203,12 @@ fn md_provenance(
 
 fn md_topline(buf: &mut String, instances: &[&InstanceResult], eval: Option<&EvaluationResults>) {
     let total = instances.len();
-    let resolved = instances.iter().filter(|i| i.resolved_count > 0).count();
+    let resolved = instances.iter().filter(|i| is_resolved(i, eval)).count();
     let resolved_rate = pct(resolved, total);
-    let pass_at_1 = pct(instances.iter().filter(|i| i.pass_at_1).count(), total);
+    let pass_at_1 = pct(
+        instances.iter().filter(|i| is_pass_at_1(i, eval)).count(),
+        total,
+    );
     let pass_at_k = resolved_rate;
     let total_cost: f64 = instances.iter().filter_map(|i| i.cost_usd).sum();
     let cost_per_resolved = if resolved > 0 {
@@ -255,10 +268,10 @@ fn md_failure_mix(
     writeln!(buf, "|---|---|---|---|---|").ok();
 
     // Resolved row first.
-    let resolved_n = instances.iter().filter(|i| i.resolved_count > 0).count();
+    let resolved_n = instances.iter().filter(|i| is_resolved(i, eval)).count();
     let resolved_cost: f64 = instances
         .iter()
-        .filter(|i| i.resolved_count > 0)
+        .filter(|i| is_resolved(i, eval))
         .filter_map(|i| i.cost_usd)
         .sum();
     let resolved_share = pct(resolved_n, total);
@@ -271,7 +284,7 @@ fn md_failure_mix(
 
     // Group unresolved instances by category.
     let mut by_cat: BTreeMap<String, (usize, f64)> = BTreeMap::new();
-    for inst in instances.iter().filter(|i| i.resolved_count == 0) {
+    for inst in instances.iter().filter(|i| !is_resolved(i, eval)) {
         let cat = instance_category(inst, eval);
         let e = by_cat.entry(cat).or_insert((0, 0.0));
         e.0 += 1;
@@ -300,6 +313,7 @@ fn md_top_failures(
     buf: &mut String,
     top_n: usize,
     instances: &[&InstanceResult],
+    eval: Option<&EvaluationResults>,
     sweep_dir: &Path,
 ) {
     writeln!(buf, "## Top Failed Instances (top {top_n})").ok();
@@ -314,7 +328,7 @@ fn md_top_failures(
     let mut failed: Vec<&InstanceResult> = instances
         .iter()
         .copied()
-        .filter(|i| i.resolved_count == 0)
+        .filter(|i| !is_resolved(i, eval))
         .collect();
     failed.sort_by(|a, b| {
         b.cost_usd
@@ -325,10 +339,9 @@ fn md_top_failures(
     });
 
     for inst in failed.iter().take(top_n) {
-        let cat = inst
-            .failure_category
-            .map_or_else(|| "unknown".into(), |c| format!("{c:?}"));
-        let ratio = format!("{}/{}", inst.resolved_count, inst.runs);
+        let cat = instance_category(inst, eval);
+        let (resolved_count, runs) = resolved_count_and_runs(inst, eval);
+        let ratio = format!("{resolved_count}/{runs}");
         let cost = inst
             .cost_usd
             .map_or_else(|| "—".into(), |c| format!("${c:.4}"));
@@ -641,6 +654,46 @@ fn cost_pct(cost: f64, total: f64) -> f64 {
     } else {
         cost / total * 100.0
     }
+}
+
+/// Did this instance resolve? Prefers the evaluator verdict (a submitted patch
+/// can be evaluated as unresolved); falls back to the sweep-row rerun count
+/// when no evaluation is present.
+fn is_resolved(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool {
+    if let Some(ie) = eval_for(inst, eval) {
+        ie.resolved_count > 0 || ie.resolved
+    } else {
+        inst.resolved_count > 0
+    }
+}
+
+/// Did the first run of this instance resolve? Same evaluator-first preference.
+fn is_pass_at_1(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool {
+    if let Some(ie) = eval_for(inst, eval) {
+        ie.pass_at_1
+    } else {
+        inst.pass_at_1
+    }
+}
+
+/// `(resolved_count, total_runs)` for display, preferring evaluator counts.
+fn resolved_count_and_runs(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> (u32, u32) {
+    if let Some(ie) = eval_for(inst, eval) {
+        let runs = if ie.runs > 0 { ie.runs } else { inst.runs };
+        (ie.resolved_count, runs)
+    } else {
+        (inst.resolved_count, inst.runs)
+    }
+}
+
+fn eval_for<'a>(
+    inst: &InstanceResult,
+    eval: Option<&'a EvaluationResults>,
+) -> Option<&'a crate::run::evaluate::InstanceEvaluation> {
+    eval?
+        .instances
+        .iter()
+        .find(|ie| ie.instance_id == inst.instance_id)
 }
 
 fn instance_category(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> String {

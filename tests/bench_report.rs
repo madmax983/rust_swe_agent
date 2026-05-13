@@ -625,6 +625,75 @@ fn bench_report_markdown_matches_snapshot() {
 }
 
 #[test]
+fn bench_report_corrupt_evaluation_json_fails() {
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(work.path(), vec![submitted("django__django-001")]);
+    // Write a malformed evaluation.json — must NOT be silently treated as
+    // "no evaluation data" (that would hide evaluator-only resolved status).
+    std::fs::write(work.path().join("evaluation.json"), b"{not valid json").unwrap();
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "bench report should exit non-zero when evaluation.json is malformed"
+    );
+}
+
+#[test]
+fn bench_report_uses_evaluation_resolved_over_sweep_submission() {
+    let work = tempfile::tempdir().unwrap();
+    // Sweep row says "submitted, pass_at_1 = true" — but evaluation.json
+    // contradicts that with `resolved: false`. The report must trust the
+    // evaluator, not the sweep proxy.
+    write_sweep(work.path(), vec![submitted("django__django-001")]);
+    let eval = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 5},
+        "instances": [{
+            "instance_id": "django__django-001",
+            "resolved": false,
+            "runs": 1,
+            "resolved_count": 0,
+            "pass_at_1": false,
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "unresolved"
+        }]
+    });
+    std::fs::write(
+        work.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval).unwrap(),
+    )
+    .unwrap();
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+
+    // Resolved count from evaluation is 0, not 1 (which the sweep row would have given).
+    assert!(
+        content.contains("Resolved | 0"),
+        "report must use evaluator resolved (0), not sweep submission (1)\ncontent:\n{content}"
+    );
+    // The unresolved instance must appear in the top-failed table.
+    assert!(
+        content.contains("django__django-001"),
+        "evaluator-failed instance must appear in top-failed table\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_baseline_flag_emits_delta_section() {
     let work = tempfile::tempdir().unwrap();
     let baseline_dir = work.path().join("baseline");
