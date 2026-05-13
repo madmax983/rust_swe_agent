@@ -596,8 +596,9 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:https?://|ssh://|git://|[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:)",
         ),
         // `git push --force` / `git push -f` / `git push -fv` / `git -C dir push --force`
-        // are destructive: they rewrite history and can destroy upstream
-        // branches.  In an unattended agent run these are never expected.
+        // `git push --mirror` — mirror pushes force-update all refs and delete
+        // refs absent locally; all forms are destructive and never expected in
+        // an unattended run.
         //
         // NOTE: `[ \t]` before the short-flag form is intentional.  Without it,
         // `-[a-zA-Z]*f` would falsely match the `-f` inside `--follow-tags`
@@ -606,7 +607,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // A space/tab anchor ensures we only catch genuine short options.
         PolicyRule::deny_static(
             "git-push-force",
-            r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:--force(?:-with-lease)?|[ \t]-[a-zA-Z]*f)",
+            r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:--force(?:-with-lease)?|--mirror|[ \t]-[a-zA-Z]*f)",
         ),
         // `git push origin +HEAD:refs/...` — a leading `+` on a refspec means
         // force-push even without --force.

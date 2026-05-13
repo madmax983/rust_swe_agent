@@ -341,6 +341,16 @@ fn safe_blocks_git_push_force_with_lease() {
     );
 }
 
+#[test]
+fn safe_blocks_git_push_mirror() {
+    let engine = PolicyEngine::new(PolicyProfile::Safe);
+    let cmd = "git push --mirror origin";
+    assert!(
+        matches!(engine.check_command(cmd), PolicyDecision::Deny { .. }),
+        "must block git push --mirror (force-updates all refs)"
+    );
+}
+
 // ── Policy: unauthorized publishing (gh pr create) ───────────────────────────
 
 #[test]
