@@ -212,10 +212,12 @@ fn totals_match_per_instance_results() {
 
     let totals = &result.output.totals;
     assert_eq!(totals.instances_total, 3);
-    // resolved-instance → resolved, no-patch-instance → errored, fail-instance → unresolved
+    // resolved-instance → resolved
+    // no-patch-instance → errored (gold_patch_missing)
+    // fail-instance     → errored (evaluator_failed counts as infrastructure error)
     assert_eq!(totals.instances_resolved, 1);
-    assert_eq!(totals.instances_errored, 1);
-    assert_eq!(totals.instances_unresolved, 1);
+    assert_eq!(totals.instances_errored, 2);
+    assert_eq!(totals.instances_unresolved, 0);
     assert_eq!(
         totals.instances_resolved + totals.instances_unresolved + totals.instances_errored,
         totals.instances_total
@@ -362,6 +364,26 @@ fn instance_ids_filter_works() {
 
     let result = run_selftest(SelftestArgs {
         instance_ids: Some("resolved-instance".into()),
+        ..make_args(dataset, output)
+    });
+
+    assert_eq!(result.output.instances.len(), 1);
+    assert_eq!(result.output.instances[0].instance_id, "resolved-instance");
+}
+
+#[test]
+fn instance_ids_at_file_filter_works() {
+    let work = tempfile::tempdir().unwrap();
+    let dataset = write_fixture_dataset(work.path());
+    let output = work.path().join("out");
+    std::fs::create_dir_all(&output).unwrap();
+
+    // Write a file containing the instance IDs to select.
+    let ids_file = work.path().join("ids.txt");
+    std::fs::write(&ids_file, "resolved-instance\n").unwrap();
+
+    let result = run_selftest(SelftestArgs {
+        instance_ids: Some(format!("@{}", ids_file.display())),
         ..make_args(dataset, output)
     });
 

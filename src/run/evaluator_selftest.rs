@@ -194,7 +194,13 @@ fn select_instances(
     args: &SelftestArgs,
 ) -> Vec<SweBenchInstance> {
     if let Some(ids_raw) = args.instance_ids.as_deref() {
-        let ids: HashSet<String> = ids_raw
+        let text = if let Some(path) = ids_raw.trim().strip_prefix('@') {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read --instance-ids file `{path}`: {e}"))
+        } else {
+            ids_raw.to_owned()
+        };
+        let ids: HashSet<String> = text
             .split([',', '\n'])
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -408,12 +414,24 @@ fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
 
 // ── Aggregate computations ────────────────────────────────────────────────────
 
+/// Returns `true` when an exit reason indicates an infrastructure/setup error
+/// rather than a clean "evaluator ran and said no" verdict.
+///
+/// `gold_patch_missing` — dataset row had no patch to evaluate.
+/// `evaluator_failed[: ...]` — evaluator crashed or couldn't grade the patch.
+///
+/// Both warrant exit code 3 (`HasErrored`); a plain unresolved verdict
+/// (gold patch submitted but not resolved) warrants exit code 4 (`HasUnresolved`).
+fn is_errored_reason(reason: &str) -> bool {
+    reason == EXIT_REASON_GOLD_PATCH_MISSING || reason.starts_with(EXIT_REASON_EVALUATOR_FAILED)
+}
+
 fn compute_totals(results: &[SelftestInstanceResult]) -> SelftestTotals {
     let instances_total = results.len();
     let instances_resolved = results.iter().filter(|r| r.resolved).count();
     let instances_errored = results
         .iter()
-        .filter(|r| !r.resolved && r.evaluator_exit_reason == EXIT_REASON_GOLD_PATCH_MISSING)
+        .filter(|r| !r.resolved && is_errored_reason(&r.evaluator_exit_reason))
         .count();
     let instances_unresolved = instances_total - instances_resolved - instances_errored;
     SelftestTotals {
@@ -614,8 +632,9 @@ mod tests {
         let t = compute_totals(&results);
         assert_eq!(t.instances_total, 3);
         assert_eq!(t.instances_resolved, 1);
-        assert_eq!(t.instances_errored, 1);
-        assert_eq!(t.instances_unresolved, 1);
+        // both gold_patch_missing and evaluator_failed count as errored
+        assert_eq!(t.instances_errored, 2);
+        assert_eq!(t.instances_unresolved, 0);
     }
 
     #[test]
