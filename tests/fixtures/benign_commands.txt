@@ -23,6 +23,7 @@ git push origin fix/my-bug
 git push -u origin feature-branch
 git push --follow-tags origin main
 git push
+git -c url.https://github.com/.insteadOf=git://github.com/ fetch origin
 
 # --- File inspection ---
 ls -la
