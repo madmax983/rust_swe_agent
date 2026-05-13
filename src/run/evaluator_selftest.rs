@@ -138,6 +138,16 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 /// structured result plus a pre-rendered stdout string.
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: SelftestArgs) -> SelftestResult {
+    assert!(
+        args.backend == "none" || args.backend == "sb-cli",
+        "unknown --backend {:?}: accepted values are `none` and `sb-cli`",
+        args.backend
+    );
+    assert!(
+        args.sample.is_none() || args.seed.is_some(),
+        "--sample requires --seed"
+    );
+
     let dataset_bytes =
         std::fs::read(&args.dataset_path).unwrap_or_else(|e| panic!("failed to read dataset: {e}"));
     let dataset_sha = sha256_hex(&dataset_bytes);
@@ -207,6 +217,10 @@ fn select_instances(
             .map(str::to_owned)
             .collect();
         instances.retain(|i| ids.contains(&i.instance_id));
+        assert!(
+            !instances.is_empty(),
+            "--instance-ids filter matched 0 instances; check for typos"
+        );
     }
 
     if let Some(n) = args.sample {
@@ -591,6 +605,7 @@ impl XorShift64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -668,5 +683,98 @@ mod tests {
             instances_errored: 0,
         };
         assert_eq!(compute_exit_status(&t), SelftestExitStatus::HasUnresolved);
+    }
+
+    #[test]
+    fn is_errored_reason_recognises_exact_and_prefixed_forms() {
+        assert!(is_errored_reason(EXIT_REASON_GOLD_PATCH_MISSING));
+        assert!(is_errored_reason(EXIT_REASON_EVALUATOR_FAILED));
+        // sb-cli path appends ": <detail>" — still errored
+        assert!(is_errored_reason(
+            "evaluator_failed: sb-cli exited with status 1"
+        ));
+        // unresolved verdict — not an infrastructure error
+        assert!(!is_errored_reason("unresolved"));
+        assert!(!is_errored_reason("patch_apply_failed"));
+        assert!(!is_errored_reason(EXIT_REASON_RESOLVED));
+    }
+
+    #[test]
+    fn map_eval_exit_reason_covers_all_variants() {
+        use crate::run::evaluate::EvalExitReason;
+        assert_eq!(
+            map_eval_exit_reason(&EvalExitReason::Resolved),
+            EXIT_REASON_RESOLVED
+        );
+        assert_eq!(
+            map_eval_exit_reason(&EvalExitReason::Unresolved),
+            "unresolved"
+        );
+        assert_eq!(
+            map_eval_exit_reason(&EvalExitReason::PatchApplyFailed),
+            "patch_apply_failed"
+        );
+        assert_eq!(
+            map_eval_exit_reason(&EvalExitReason::EvalError),
+            EXIT_REASON_EVALUATOR_FAILED
+        );
+        assert_eq!(
+            map_eval_exit_reason(&EvalExitReason::SkippedNoPatch),
+            EXIT_REASON_GOLD_PATCH_MISSING
+        );
+    }
+
+    #[test]
+    fn write_synthetic_predictions_produces_valid_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = crate::run::swebench::SweBenchInstance {
+            instance_id: "test__repo-1".into(),
+            repo: Some("test/repo".into()),
+            base_commit: Some("abc123".into()),
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let pairs = vec![(&inst, "diff --git a/f.py b/f.py".to_owned())];
+        write_synthetic_predictions(dir.path(), &pairs);
+
+        let preds_path = crate::run::swebench::predictions_path(dir.path());
+        assert!(preds_path.exists(), "all_preds.jsonl must be written");
+        let text = std::fs::read_to_string(preds_path).unwrap();
+        let row: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(row["instance_id"].as_str().unwrap(), "test__repo-1");
+        assert_eq!(
+            row["model_name_or_path"].as_str().unwrap(),
+            "evaluator_selftest"
+        );
+        assert!(row["model_patch"].as_str().unwrap().contains("diff"));
+    }
+
+    #[test]
+    fn write_synthetic_results_json_is_parseable() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = crate::run::swebench::SweBenchInstance {
+            instance_id: "test__repo-1".into(),
+            repo: Some("test/repo".into()),
+            base_commit: Some("abc123".into()),
+            problem_statement: None,
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let pairs = vec![(&inst, "diff --git a/f.py b/f.py".to_owned())];
+        write_synthetic_results_json(dir.path(), &pairs);
+
+        let path = dir.path().join("results.json");
+        assert!(path.exists());
+        let text = std::fs::read_to_string(path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["total"].as_u64().unwrap(), 1);
+        assert_eq!(v["submitted"].as_u64().unwrap(), 1);
+        let instances = v["instances"].as_array().unwrap();
+        assert_eq!(
+            instances[0]["instance_id"].as_str().unwrap(),
+            "test__repo-1"
+        );
+        assert_eq!(instances[0]["outcome"].as_str().unwrap(), "submitted");
     }
 }
