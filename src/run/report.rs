@@ -370,9 +370,13 @@ fn md_top_failures(
         let cat = cell(&instance_category(inst, eval));
         let (resolved_count, runs) = resolved_count_and_runs(inst, eval);
         let ratio = format!("{resolved_count}/{runs}");
-        let cost = match inst.effective_cost_usd(model) {
-            Some(c) => format!("${c:.4}"),
-            None => "—".into(),
+        // Mirror the aggregate path so free-tier `$0.00` stays `$0.00` rather
+        // than getting rewritten to a rate-card estimate. If the row has no
+        // cost data at all (None and no tokens), show an em-dash.
+        let cost = if inst.cost_usd.is_none() && inst.effective_cost_usd(model).is_none() {
+            "—".into()
+        } else {
+            format!("${:.4}", cost_for(inst, model))
         };
         let excerpt = trajectory_excerpt(sweep_dir, &inst.instance_id);
         writeln!(
@@ -702,12 +706,27 @@ fn cost_pct(cost: f64, total: f64) -> f64 {
     }
 }
 
-/// Sweep-level cost for an instance. Prefers the recorded `cost_usd` when
-/// non-zero, otherwise falls back to a token-based estimate via
-/// `InstanceResult::effective_cost_usd`. Sweeps that only populate token
-/// counts (e.g. backends that don't return billing in the response) would
-/// otherwise show `$0.0000` across every cost cell.
+/// Sweep-level cost for an instance.
+///
+/// Prefers the recorded `cost_usd` when non-zero, otherwise falls back to a
+/// token-based estimate via `InstanceResult::effective_cost_usd`. Free-tier
+/// models (e.g. `openrouter/.../:free`) intentionally record `cost_usd == 0.0`
+/// with non-zero token counts; in that case the recorded zero is preserved
+/// rather than replaced with a rate-card estimate, matching the rest of the
+/// sweep accounting (see `budget_accounting_cost_usd`). Otherwise reports for
+/// free-tier sweeps would overstate spend, cost percentages, and failure
+/// ranking.
 fn cost_for(inst: &InstanceResult, model: Option<&str>) -> f64 {
+    let tokens = inst.token_breakdown();
+    if let Some(cost) = inst.cost_usd {
+        let model_name = model.unwrap_or("");
+        if cost != 0.0
+            || !tokens.has_billable_tokens()
+            || crate::cost::is_free_tier_model(model_name)
+        {
+            return cost;
+        }
+    }
     inst.effective_cost_usd(model).unwrap_or(0.0)
 }
 

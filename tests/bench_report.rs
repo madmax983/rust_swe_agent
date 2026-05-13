@@ -11,6 +11,7 @@
 //!   - `--format html` produces html output
 //!   - deterministic output for fixed input
 
+#![recursion_limit = "256"]
 #![allow(
     clippy::unwrap_used,
     clippy::cast_precision_loss,
@@ -684,6 +685,73 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
     assert!(
         content.contains("100.00%"),
         "legacy submitted row should drive resolve rate to 100%\ncontent:\n{content}"
+    );
+}
+
+#[test]
+fn bench_report_preserves_zero_cost_for_free_tier_model() {
+    // A sweep using a `:free` model intentionally records `cost_usd: 0.0`
+    // even when token counts are populated. The report must preserve that
+    // zero rather than substituting a rate-card estimate, otherwise totals
+    // / cost percentages / failure ordering will overstate free-tier spend.
+    let work = tempfile::tempdir().unwrap();
+    let payload = serde_json::json!({
+        "artifact_kind": "sweep_results",
+        "schema_version": {"major": 1, "minor": 5},
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 0, "submitted_with_tests": 0,
+        "skipped": 0, "errored": 1,
+        "failures_by_category": {"step_limit": 1},
+        "budget_halted": 0, "with_patch": 0, "patch_empty": 0,
+        "patch_apply_invalid": 0, "github_pr_failures": 0,
+        "total_prompt_tokens": 10000, "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0, "total_completion_tokens": 2000,
+        "estimated_cost_usd": 0.0, "cache_hit_rate": 0.0,
+        "retries": 0, "retried_instances": 0, "pass_at_k": 0.0,
+        "filter_spec": {}, "cost_limit_usd": null,
+        "manifest": {
+            "harness": {"name": "rust_swe_agent", "version": "test", "git_resolution": "test"},
+            "dataset": {"path": "tests/fixtures/test.jsonl", "sha256": "test", "instance_count": 1},
+            "prompt_template": {"source": "inline", "sha256": "tpl"},
+            "config": {"resolved": "default", "overlay_paths": []},
+            "model": {"name": "openrouter/deepseek/deepseek-chat-v3.1:free", "backend": "litellm"},
+            "runtime": {
+                "started_at_utc": "2026-05-01T00:00:00Z",
+                "finished_at_utc": "2026-05-01T00:01:00Z",
+                "host_os": "linux", "resume_mode": false
+            },
+            "cli": {"argv": []}
+        },
+        "instances": [{
+            "instance_id": "django__django-001",
+            "exit_reason": "step_limit", "outcome": "error",
+            "failure_category": "step_limit",
+            "cost_usd": 0.0,
+            "prompt_tokens": 10000, "completion_tokens": 2000,
+            "patch_present": false, "non_empty_patch": false,
+            "attempts": 1, "retry_reasons": [],
+            "runs": 1, "resolved_count": 0, "pass_at_1": false
+        }]
+    });
+    std::fs::write(
+        work.path().join("results.json"),
+        serde_json::to_string_pretty(&payload).unwrap(),
+    )
+    .unwrap();
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("Total cost USD | $0.0000"),
+        "free-tier sweep must preserve $0 total cost\ncontent:\n{content}"
     );
 }
 
