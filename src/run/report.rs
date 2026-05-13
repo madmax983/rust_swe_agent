@@ -14,7 +14,10 @@ use crate::artifact::ArtifactSchemaVersion;
 use crate::error::Error;
 use crate::run::compare::{self, CompareReport, LoadedSweep, load_sweep};
 use crate::run::evaluate::{BreakdownSelection, EvaluationResults, evaluation_path};
-use crate::run::swebench::{InstanceResult, ProvenanceManifest};
+use crate::run::swebench::{
+    InstanceResult, ProvenanceManifest, effective_runs, pass_at_1 as sweep_pass_at_1,
+    resolved_count as sweep_resolved_count,
+};
 use crate::trajectory::Trajectory;
 
 const NO_EVAL_MSG: &str = "_no evaluation data — run `bench evaluate` to populate_";
@@ -193,8 +196,8 @@ fn md_provenance(
         }
     }
 
-    let runs_per: u32 = instances.first().map_or(1, |i| i.runs.max(1));
-    let total_runs: u32 = instances.iter().map(|i| i.runs.max(1)).sum();
+    let runs_per: u32 = instances.first().map_or(1, |i| effective_runs(i));
+    let total_runs: u32 = instances.iter().map(|i| effective_runs(i)).sum();
     writeln!(buf, "| Runs per instance | {runs_per} |").ok();
     writeln!(buf, "| Total runs | {total_runs} |").ok();
 
@@ -657,32 +660,41 @@ fn cost_pct(cost: f64, total: f64) -> f64 {
 }
 
 /// Did this instance resolve? Prefers the evaluator verdict (a submitted patch
-/// can be evaluated as unresolved); falls back to the sweep-row rerun count
-/// when no evaluation is present.
+/// can be evaluated as unresolved); falls back to the sweep-row helpers from
+/// `swebench` for non-evaluated rows. The sweep helpers handle legacy artifacts
+/// where `runs == 0` and `resolved_count == 0` but the row is genuinely
+/// submitted — direct field reads on `resolved_count` would mis-classify those
+/// successful legacy runs as failures.
 fn is_resolved(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool {
     if let Some(ie) = eval_for(inst, eval) {
         ie.resolved_count > 0 || ie.resolved
     } else {
-        inst.resolved_count > 0
+        sweep_resolved_count(inst) > 0
     }
 }
 
-/// Did the first run of this instance resolve? Same evaluator-first preference.
+/// Did the first run of this instance resolve? Same evaluator-first preference;
+/// legacy-aware fallback for non-evaluated rows.
 fn is_pass_at_1(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool {
     if let Some(ie) = eval_for(inst, eval) {
         ie.pass_at_1
     } else {
-        inst.pass_at_1
+        sweep_pass_at_1(inst)
     }
 }
 
-/// `(resolved_count, total_runs)` for display, preferring evaluator counts.
+/// `(resolved_count, total_runs)` for display, preferring evaluator counts and
+/// using the legacy-aware sweep helpers otherwise.
 fn resolved_count_and_runs(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> (u32, u32) {
     if let Some(ie) = eval_for(inst, eval) {
-        let runs = if ie.runs > 0 { ie.runs } else { inst.runs };
+        let runs = if ie.runs > 0 {
+            ie.runs
+        } else {
+            effective_runs(inst)
+        };
         (ie.resolved_count, runs)
     } else {
-        (inst.resolved_count, inst.runs)
+        (sweep_resolved_count(inst), effective_runs(inst))
     }
 }
 

@@ -625,6 +625,39 @@ fn bench_report_markdown_matches_snapshot() {
 }
 
 #[test]
+fn bench_report_treats_legacy_submitted_row_as_resolved() {
+    // Legacy results.json fixtures: `runs == 0`, `resolved_count == 0`,
+    // `pass_at_1 == false` even though the row is genuinely submitted (the
+    // pre-rerun-tracking schema). The report must classify these as resolved
+    // via `swebench::resolved_count`/`pass_at_1`, not as failures.
+    let work = tempfile::tempdir().unwrap();
+    let mut legacy = submitted("django__django-001");
+    legacy.runs = 0;
+    legacy.resolved_count = 0;
+    legacy.pass_at_1 = false;
+    write_sweep(work.path(), vec![legacy]);
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    // Legacy submitted row should count as resolved (1/1, 100%).
+    assert!(
+        content.contains("Resolved | 1"),
+        "legacy submitted row should be resolved\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("100.00%"),
+        "legacy submitted row should drive resolve rate to 100%\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_corrupt_evaluation_json_fails() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(work.path(), vec![submitted("django__django-001")]);
