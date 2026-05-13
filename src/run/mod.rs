@@ -3,6 +3,7 @@
 
 pub mod bundle;
 pub mod calibrate;
+pub mod command_stats;
 pub mod compare;
 pub mod dataset;
 pub mod evaluate;

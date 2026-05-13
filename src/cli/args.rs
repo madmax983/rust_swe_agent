@@ -284,6 +284,8 @@ pub enum BenchCmd {
     Tail(TailCmd),
     /// Cluster unresolved sweep failures into ranked actionable groups.
     Triage(TriageCmd),
+    /// Aggregate shell-command frequency and cost by outcome bucket.
+    CommandStats(CommandStatsCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
@@ -921,6 +923,40 @@ pub struct TriageCmd {
     /// Number of ranked clusters to print in text mode.
     #[arg(long, default_value_t = 10)]
     pub top: usize,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+#[derive(Debug, Args)]
+pub struct CommandStatsCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Restrict output to one outcome bucket: `resolved`, `unresolved`,
+    /// `errored`, or `all`.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Hide commands with fewer than N total invocations (default: 1).
+    #[arg(long, default_value_t = 1)]
+    pub min_invocations: usize,
+
+    /// Number of top rows by invocation count to print per bucket (default: 15).
+    #[arg(long, default_value_t = 15)]
+    pub top: usize,
+
+    /// Emit a delta table comparing two outcome buckets.
+    /// Currently only `resolved-vs-unresolved` is supported.
+    #[arg(long)]
+    pub compare: Option<String>,
+
+    /// Filter instances using the same syntax as `bench inspect --filter`.
+    /// Example: `failure_category=model_parse`.
+    #[arg(long)]
+    pub filter: Option<String>,
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]

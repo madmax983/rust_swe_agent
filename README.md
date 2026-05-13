@@ -175,6 +175,9 @@ a valid trajectory in hand:
   pass@k, and compare regression gates.
 - [`bench triage`](docs/spec-triage.md): deterministic unresolved-failure
   clustering, ranked stdout tables, and the `triage.json` schema.
+- [`bench command-stats`](docs/spec-command-stats.md): shell-command frequency
+  and cost aggregated by outcome bucket, delta view for resolved-vs-unresolved
+  comparison, and the `command-stats.json` schema.
 - [`bench matrix`](docs/spec-matrix.md): multi-arm experiment runner — compare
   models or configs against the same instance set, shared budget enforcement,
   `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.
