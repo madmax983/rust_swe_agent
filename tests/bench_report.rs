@@ -11,7 +11,12 @@
 //!   - `--format html` produces html output
 //!   - deterministic output for fixed input
 
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    clippy::expect_used
+)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -249,10 +254,7 @@ fn bench_report_basic_markdown_exits_zero() {
     );
     assert!(out_file.exists(), "report file should be written");
     let content = std::fs::read_to_string(&out_file).unwrap();
-    assert!(
-        !content.is_empty(),
-        "report file should not be empty"
-    );
+    assert!(!content.is_empty(), "report file should not be empty");
 }
 
 #[test]
@@ -484,10 +486,7 @@ fn bench_report_missing_evaluation_json_renders_graceful_message() {
 #[test]
 fn bench_report_format_html_exits_zero_and_writes_html() {
     let work = tempfile::tempdir().unwrap();
-    write_sweep(
-        work.path(),
-        vec![submitted("django__django-001")],
-    );
+    write_sweep(work.path(), vec![submitted("django__django-001")]);
     let out_file = work.path().join("report.html");
     let out = bench_report(&[
         "--sweep",
@@ -562,7 +561,10 @@ fn bench_report_output_is_deterministic() {
     ]);
     let c1 = std::fs::read_to_string(&out1).unwrap();
     let c2 = std::fs::read_to_string(&out2).unwrap();
-    assert_eq!(c1, c2, "bench report should produce deterministic output for fixed input");
+    assert_eq!(
+        c1, c2,
+        "bench report should produce deterministic output for fixed input"
+    );
 }
 
 #[test]
@@ -599,6 +601,83 @@ fn bench_report_missing_sweep_exits_nonzero() {
 }
 
 #[test]
+fn bench_report_markdown_matches_snapshot() {
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(
+        work.path(),
+        vec![
+            submitted("django__django-001"),
+            submitted("django__django-002"),
+            errored("django__django-003", FailureCategory::StepLimit),
+            errored("django__django-004", FailureCategory::ModelApi),
+        ],
+    );
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    insta::assert_snapshot!("bench_report_basic", content);
+}
+
+#[test]
+fn bench_report_baseline_flag_emits_delta_section() {
+    let work = tempfile::tempdir().unwrap();
+    let baseline_dir = work.path().join("baseline");
+    let candidate_dir = work.path().join("candidate");
+    std::fs::create_dir_all(&baseline_dir).unwrap();
+    std::fs::create_dir_all(&candidate_dir).unwrap();
+
+    // Baseline: 2 instances resolved, 1 errored.
+    write_sweep(
+        &baseline_dir,
+        vec![
+            submitted("django__django-001"),
+            submitted("django__django-002"),
+            errored("django__django-003", FailureCategory::StepLimit),
+        ],
+    );
+    // Candidate: 1 resolved, 1 errored, 1 regressed.
+    write_sweep(
+        &candidate_dir,
+        vec![
+            submitted("django__django-001"),
+            errored("django__django-002", FailureCategory::ModelApi),
+            errored("django__django-003", FailureCategory::StepLimit),
+        ],
+    );
+
+    let out_file = candidate_dir.join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &candidate_dir.display().to_string(),
+        "--baseline",
+        &baseline_dir.display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "bench report --baseline should exit 0\nstderr: {stderr}"
+    );
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("Delta vs Baseline") || content.contains("Resolved delta"),
+        "report should contain baseline delta section\ncontent:\n{content}"
+    );
+    // The regression (django-002 passed in baseline, failed in candidate) should be listed.
+    assert!(
+        content.contains("django__django-002"),
+        "regression should be listed in delta section\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_resolved_instance_not_in_failed_table() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(
@@ -629,8 +708,5 @@ fn bench_report_resolved_instance_not_in_failed_table() {
     // by looking for it specifically in a context that implies failure.
     // Since this is hard to parse precisely in a plain string test, we
     // at least verify the report was generated successfully.
-    assert!(
-        !content.is_empty(),
-        "report should not be empty"
-    );
+    assert!(!content.is_empty(), "report should not be empty");
 }
