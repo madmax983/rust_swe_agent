@@ -294,6 +294,8 @@ pub enum BenchCmd {
     Bundle(BundleCmd),
     /// Run multiple sweep arms against the same instance set.
     Matrix(MatrixCmd),
+    /// Verify the evaluator pipeline using gold patches as a zero-cost preflight.
+    EvaluatorSelftest(EvaluatorSelftestCmd),
 }
 
 #[derive(Debug, Args)]
@@ -961,4 +963,61 @@ pub struct CommandStatsCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EvaluatorSelftestCmd {
+    /// Path to the JSONL dataset whose `patch` fields are the gold patches.
+    #[arg(long)]
+    pub dataset_path: PathBuf,
+
+    /// Directory where `evaluator_selftest.json` will be written.
+    #[arg(long, default_value = "./selftest-out")]
+    pub output: PathBuf,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Output format: `text` (default, headline + non-resolved table) or
+    /// `json` (emits the JSON artifact only to stdout).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Evaluation backend: `none` (zero-cost presence check, default) or
+    /// `sb-cli` (routes gold patches through the same evaluator pipeline
+    /// that `bench evaluate` uses on real sweeps).
+    #[arg(long, default_value = "none")]
+    pub backend: String,
+
+    /// SWE-bench subset passed to `sb-cli submit` (e.g. `swe-bench-m`,
+    /// `swe-bench_lite`). Ignored when `--backend none`.
+    #[arg(long, default_value = "swe-bench-m")]
+    pub sb_subset: String,
+
+    /// SWE-bench split passed to `sb-cli submit` (e.g. `dev`, `test`).
+    /// Ignored when `--backend none`.
+    #[arg(long, default_value = "dev")]
+    pub sb_split: String,
+
+    /// Per-instance evaluation timeout in seconds for the `sb-cli` backend.
+    #[arg(long, default_value_t = 600)]
+    pub timeout_per_instance: u64,
+
+    /// Parallel worker count for the `sb-cli` evaluation backend.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
 }

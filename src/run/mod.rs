@@ -7,6 +7,7 @@ pub mod command_stats;
 pub mod compare;
 pub mod dataset;
 pub mod evaluate;
+pub mod evaluator_selftest;
 pub mod forecast;
 pub mod frontier;
 pub mod github_pr;
