@@ -723,11 +723,19 @@ fn is_resolved(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool 
     }
 }
 
-/// Did the first run of this instance resolve? Same evaluator-first preference;
-/// legacy-aware fallback for non-evaluated rows.
+/// Did the first run of this instance resolve? Evaluator-first preference;
+/// legacy-aware on both sides. When the eval row predates the `pass_at_1`
+/// field (single-run artifact where `pass_at_1` defaults to `false` but
+/// `resolved: true` already means the first run passed), fall back the same
+/// way `bench evaluate`'s summarizer does.
 fn is_pass_at_1(inst: &InstanceResult, eval: Option<&EvaluationResults>) -> bool {
     if let Some(ie) = eval_for(inst, eval) {
-        ie.pass_at_1
+        if ie.runs > 1 || ie.resolved_count > 0 || ie.pass_at_1 {
+            return ie.pass_at_1;
+        }
+        // Legacy single-run eval row: trust `resolved` when the sweep row
+        // confirms a single-run shape or already pass_at_1.
+        ie.resolved && (effective_runs(inst) == 1 || inst.pass_at_1)
     } else {
         sweep_pass_at_1(inst)
     }
@@ -773,13 +781,11 @@ fn instance_category(inst: &InstanceResult, eval: Option<&EvaluationResults>) ->
 }
 
 fn trajectory_excerpt(sweep_dir: &Path, instance_id: &str) -> String {
-    let nested = sweep_dir.join(instance_id).join("run-1.traj.json");
-    let legacy = sweep_dir.join(format!("{instance_id}.traj.json"));
-    let path = if nested.exists() {
-        nested
-    } else if legacy.exists() {
-        legacy
-    } else {
+    // Resolve via the shared helper so report covers all layouts that
+    // `bench inspect` understands: nested `instance_id/trajectory.json`,
+    // nested rerun `instance_id/run-1.traj.json`, legacy flat
+    // `instance_id.traj.json`, and bundled `trajectories/instance_id.traj.json`.
+    let Some(path) = crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id) else {
         return "_no trajectory_".into();
     };
 

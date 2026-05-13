@@ -688,6 +688,90 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_finds_nested_canonical_trajectory_layout() {
+    // Canonical nested `instance_id/trajectory.json` layout (what bench
+    // inspect uses as its primary path). The report should pick up that
+    // trajectory and render its last-assistant message in the excerpt
+    // column instead of `_no trajectory_`.
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(
+        work.path(),
+        vec![errored("django__django-001", FailureCategory::StepLimit)],
+    );
+    let instance_dir = work.path().join("django__django-001");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    let traj = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": {"major": 1, "minor": 5},
+        "info": {},
+        "messages": [
+            {"role": "user", "content": "fix this"},
+            {"role": "assistant", "content": "UNIQUE_EXCERPT_MARKER_42"}
+        ]
+    });
+    std::fs::write(
+        instance_dir.join("trajectory.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let out_file = work.path().join("report.md");
+    bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("UNIQUE_EXCERPT_MARKER_42"),
+        "report must resolve the canonical nested trajectory.json layout\ncontent:\n{content}"
+    );
+}
+
+#[test]
+fn bench_report_legacy_single_run_eval_row_counts_as_pass_at_1() {
+    // Legacy evaluation.json artifact: single-run row where `pass_at_1`
+    // defaulted to false (field didn't exist yet) but `resolved: true`
+    // already means the first run passed. The report must show 100% pass@1
+    // for that row, not 0%.
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(work.path(), vec![submitted("django__django-001")]);
+    let eval = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 5},
+        "instances": [{
+            "instance_id": "django__django-001",
+            "resolved": true,
+            // legacy shape: runs == 0, resolved_count == 0, pass_at_1 == false
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "resolved"
+        }]
+    });
+    std::fs::write(
+        work.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval).unwrap(),
+    )
+    .unwrap();
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("Pass@1 | 100.00%"),
+        "legacy single-run resolved eval row must count as pass@1\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_redacts_secrets_in_instance_ids() {
     // A custom/private sweep where an `instance_id` itself contains a
     // secret-shaped value must be redacted before the row reaches the

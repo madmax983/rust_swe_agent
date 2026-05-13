@@ -848,7 +848,7 @@ fn utf8_prefix_within_bytes(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
     let nested = sweep.join(instance_id).join("trajectory.json");
     if nested.exists() {
         return Some(nested);
