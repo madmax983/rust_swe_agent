@@ -58,9 +58,14 @@ impl PromptGuard {
     /// `</untrusted_task_text >` or `</untrusted_task_text\n>`.
     fn sanitize(content: &str, tag: &str) -> String {
         // Tag names are always simple [a-z_]+ strings — no regex escaping needed.
-        let re = Regex::new(&format!(r"</{tag}\s*>")).expect("valid tag pattern");
-        re.replace_all(content, format!("&lt;/{tag}>").as_str())
-            .into_owned()
+        // Regex::new only fails on invalid syntax; the pattern is always valid here.
+        if let Ok(re) = Regex::new(&format!(r"</{tag}\s*>")) {
+            re.replace_all(content, format!("&lt;/{tag}>").as_str())
+                .into_owned()
+        } else {
+            // Unreachable in practice; fall back to exact-match escaping.
+            content.replace(&format!("</{tag}>"), &format!("&lt;/{tag}>"))
+        }
     }
 
     /// Return the XML tag name for `kind` (without angle brackets).
