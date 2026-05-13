@@ -41,9 +41,21 @@ impl PromptGuard {
     /// {content}
     /// </untrusted_task_text>
     /// ```
+    ///
+    /// Any occurrence of the closing tag inside `content` is entity-escaped to
+    /// prevent close-tag XML breakout attacks.
     pub fn wrap(kind: UntrustedKind, content: &str) -> String {
         let tag = Self::tag(kind);
-        format!("<{tag}>\n{content}\n</{tag}>")
+        let safe = Self::sanitize(content, tag);
+        format!("<{tag}>\n{safe}\n</{tag}>")
+    }
+
+    /// Replace any occurrence of `</{tag}>` inside `content` with the
+    /// entity-escaped form `&lt;/{tag}>` so it cannot break out of the
+    /// envelope.
+    fn sanitize(content: &str, tag: &str) -> String {
+        let close_tag = format!("</{tag}>");
+        content.replace(&close_tag, &format!("&lt;/{tag}>"))
     }
 
     /// Return the XML tag name for `kind` (without angle brackets).

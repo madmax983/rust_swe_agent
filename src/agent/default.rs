@@ -27,6 +27,7 @@ use crate::model::{
     CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role,
 };
 use crate::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
+use crate::prompt_guard::{PromptGuard, UntrustedKind};
 use crate::redaction::{RedactingSink, Redactor, surface};
 use crate::stagnation::StagnationDetector;
 use crate::stream::{NullSink, StreamEvent, StreamSink};
@@ -214,19 +215,24 @@ impl DefaultAgentBuilder {
             ToolRegistry::from_config_and_providers(&self.config.root.agent.tools, tool_providers)?;
         let prompt_tools = tool_registry.prompt_tools();
 
+        let wrapped_task = PromptGuard::wrap(UntrustedKind::TaskText, &self.task);
+        let wrapped_extra_context = self
+            .extra_context
+            .as_deref()
+            .map(|ctx| PromptGuard::wrap(UntrustedKind::ExtraContext, ctx));
         let system_rendered = renderer.render_str(
             &self.config.root.prompts.system,
             &serde_json::json!({
-                "task": self.task,
-                "extra_context": self.extra_context,
+                "task": wrapped_task,
+                "extra_context": wrapped_extra_context,
                 "tools": &prompt_tools,
             }),
         )?;
         let instance_rendered = renderer.render_str(
             &self.config.root.prompts.instance,
             &serde_json::json!({
-                "task": self.task,
-                "extra_context": self.extra_context,
+                "task": wrapped_task,
+                "extra_context": wrapped_extra_context,
                 "tools": &prompt_tools,
             }),
         )?;
@@ -985,6 +991,10 @@ impl Agent for DefaultAgent {
             .redactor
             .redact_text(&obs_text, surface::MODEL_OBSERVATION)
             .text;
+        // 6c. Wrap the entire observation in an XML envelope so the model can
+        // distinguish tool output (potentially attacker-controlled) from
+        // operator-level instructions.
+        let obs_text = PromptGuard::wrap(UntrustedKind::ToolOutput, &obs_text);
 
         // (assistant turn was recorded before the policy gate at step 5)
 
@@ -2269,7 +2279,11 @@ mod tests {
             .rev()
             .find(|m| m.role == Role::User && m.content.contains("truncated"))
             .unwrap();
-        assert!(obs.content.len() <= 512);
+        // The observation content is wrapped in an XML envelope by PromptGuard;
+        // the envelope adds fixed overhead (~50 bytes) on top of the configured
+        // observation_max_bytes limit.
+        let xml_overhead = "<untrusted_tool_output>\n".len() + "\n</untrusted_tool_output>".len();
+        assert!(obs.content.len() <= 512 + xml_overhead);
     }
 
     #[tokio::test]
