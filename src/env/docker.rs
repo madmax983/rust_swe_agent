@@ -28,6 +28,8 @@ use crate::ids::ContainerId;
 pub const LABEL: &str = "rust-swe-agent=1";
 const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 
+const MAX_PIPE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 type PipeCollector = JoinHandle<Result<(), EnvError>>;
 type PipeBuffer = Arc<Mutex<Vec<u8>>>;
 
@@ -332,15 +334,20 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut remaining = MAX_PIPE_BUFFER_SIZE;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
-        buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+        let to_take = n.min(remaining);
+        if to_take > 0 {
+            buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(&chunk[..to_take]);
+            remaining = remaining.saturating_sub(to_take);
+        }
     }
 }
 
