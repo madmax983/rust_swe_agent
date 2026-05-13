@@ -93,7 +93,7 @@ pub struct SourceReportEntry {
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
 pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
 pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
-pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 12] = [
+pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 13] = [
     FailureCategory::EnvSetup,
     FailureCategory::ModelApi,
     FailureCategory::ModelParse,
@@ -105,6 +105,7 @@ pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 12] = [
     FailureCategory::PatchApplyInvalid,
     FailureCategory::PatchEmpty,
     FailureCategory::SecretLeakDetected,
+    FailureCategory::HistoryCompactionFailed,
     FailureCategory::Unknown,
 ];
 
@@ -1627,6 +1628,7 @@ pub fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
+        FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
     }
 }

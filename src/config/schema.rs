@@ -75,6 +75,22 @@ pub struct AgentCfg {
     /// Must be >= `stagnation_repeat_threshold`. Default: 8.
     #[serde(default = "default_stagnation_window")]
     pub stagnation_window: u32,
+    /// Token budget for the prompt sent to the model on each turn. When the
+    /// projected input exceeds this value, older tool observations are elided
+    /// oldest-first until the projection fits. Default: `None` (no cap).
+    ///
+    /// Uses a byte-based approximation (1 token ≈ 4 bytes) when a live
+    /// tokenizer is unavailable.
+    #[serde(default)]
+    pub history_max_input_tokens: Option<u64>,
+    /// Keep only the last N tool observations in the model-visible prompt.
+    /// Older observations are replaced with a short elision marker. Default:
+    /// `None` (keep all).
+    ///
+    /// When both `history_max_input_tokens` and `history_keep_last_observations`
+    /// are set, whichever elides more observations wins.
+    #[serde(default)]
+    pub history_keep_last_observations: Option<usize>,
 }
 
 fn default_step_limit() -> u32 {

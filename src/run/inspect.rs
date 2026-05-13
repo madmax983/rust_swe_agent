@@ -967,6 +967,7 @@ fn failure_label(c: FailureCategory) -> &'static str {
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
+        FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
     }
 }

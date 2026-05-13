@@ -3805,6 +3805,7 @@ fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
         "patch_empty" => Ok(FailureCategory::PatchEmpty),
         "secret_leak_detected" => Ok(FailureCategory::SecretLeakDetected),
         "agent_stagnation" => Ok(FailureCategory::AgentStagnation),
+        "history_compaction_failed" => Ok(FailureCategory::HistoryCompactionFailed),
         "unknown" => Ok(FailureCategory::Unknown),
         _ => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown retry category `{s}`"
@@ -4259,6 +4260,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
+        FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
     }
 }

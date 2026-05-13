@@ -205,6 +205,18 @@ pub struct MiniCmd {
     #[arg(long)]
     pub stagnation_window: Option<u32>,
 
+    /// Token budget for the model-visible prompt. Older tool observations are
+    /// elided oldest-first when the projected input would exceed this value.
+    /// Default: unset (no cap). Overrides the config-file value when set.
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N tool observations in the model-visible prompt.
+    /// Older ones are replaced with a short elision marker. Default: unset.
+    /// Overrides the config-file value when set.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
+
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
 }
@@ -810,6 +822,18 @@ pub struct SwebenchCmd {
     /// Overrides the config-file value when set. Schema default: 8.
     #[arg(long)]
     pub stagnation_window: Option<u32>,
+
+    /// Token budget for the model-visible prompt. Older tool observations are
+    /// elided oldest-first when the projected input would exceed this value.
+    /// Default: unset (no cap). Overrides the config-file value when set.
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N tool observations in the model-visible prompt.
+    /// Older ones are replaced with a short elision marker. Default: unset.
+    /// Overrides the config-file value when set.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,

@@ -42,6 +42,8 @@ use crate::trajectory::{
 
 const MAX_TOOL_HOOK_ENV_VALUE_BYTES: usize = 1024;
 const WALLCLOCK_WARNING_BEFORE_SECS: u64 = 30;
+/// Bytes-per-token approximation used when a live tokenizer is unavailable.
+const BYTES_PER_TOKEN: usize = 4;
 
 #[derive(Debug, Clone)]
 struct WallclockDeadline {
@@ -67,6 +69,143 @@ struct TruncateResult {
     text: String,
     bytes_omitted: usize,
     truncated: bool,
+}
+
+/// Output of `elide_history_for_model`.
+#[derive(Debug, Clone)]
+struct ElisionInfo {
+    /// History to pass to the model (with elision markers substituted).
+    prompt: Vec<Message>,
+    /// `(history_index, original_byte_len)` for each elided observation.
+    /// Used to retroactively update trajectory records.
+    elided: Vec<(usize, usize)>,
+    /// True when even eliding all candidates leaves the prompt over budget.
+    compaction_failed: bool,
+}
+
+/// Build a short, stable elision marker for an observation.
+///
+/// `obs_number` is the 0-based index of the observation among all User/Tool
+/// messages after the instance prompt (used for human-readable labelling).
+/// `bytes` is the original content size.
+fn elision_marker(obs_number: usize, bytes: usize) -> String {
+    format!("[history-elided: step {obs_number} observation, {bytes} bytes]")
+}
+
+/// Returns the indices of all User/Tool messages in `history` at position ≥ 2
+/// (i.e., everything after the system prompt and user instance message).
+fn observation_indices(history: &[Message]) -> Vec<usize> {
+    (2..history.len())
+        .filter(|&i| matches!(history[i].role, Role::User | Role::Tool))
+        .collect()
+}
+
+/// Build the model-visible history, eliding stale observations per config.
+///
+/// Protected (never elided):
+/// - `history[0]`: system prompt
+/// - `history[1]`: user instance / task message
+/// - The last User/Tool message (most recent observation)
+/// - The last Assistant message (most recent assistant turn, if any)
+///
+/// Candidates for elision are all other User/Tool messages, oldest first.
+///
+/// When both `keep_last_observations` and `max_input_tokens` are set, the rule
+/// that elides more observations wins.
+fn elide_history_for_model(
+    history: &[Message],
+    keep_last_observations: Option<usize>,
+    max_input_tokens: Option<u64>,
+) -> ElisionInfo {
+    let no_cap = keep_last_observations.is_none() && max_input_tokens.is_none();
+    if no_cap || history.len() <= 2 {
+        return ElisionInfo {
+            prompt: history.to_vec(),
+            elided: Vec::new(),
+            compaction_failed: false,
+        };
+    }
+
+    let obs_indices = observation_indices(history);
+    if obs_indices.len() <= 1 {
+        // Nothing to elide: only one (protected) observation.
+        return ElisionInfo {
+            prompt: history.to_vec(),
+            elided: Vec::new(),
+            compaction_failed: false,
+        };
+    }
+
+    // The last observation is always protected. Candidates are the rest (oldest first).
+    let candidate_count = obs_indices.len() - 1;
+
+    // How many to elide by the keep_last rule.
+    let elide_by_count = if let Some(keep) = keep_last_observations {
+        // Keep the last `keep` observations total (including the protected one).
+        // Among candidates, keep = keep.saturating_sub(1).
+        let keep_among = keep.saturating_sub(1);
+        candidate_count.saturating_sub(keep_among)
+    } else {
+        0
+    };
+
+    // How many to elide by the token-budget rule (oldest first, until under cap).
+    let elide_by_tokens = if let Some(max_tokens) = max_input_tokens {
+        let max_bytes = (max_tokens as usize).saturating_mul(BYTES_PER_TOKEN);
+        let mut total: usize = history.iter().map(|m| m.content.len()).sum();
+        let mut count = 0usize;
+        for (obs_num, &hist_idx) in obs_indices[..candidate_count].iter().enumerate() {
+            if total <= max_bytes {
+                break;
+            }
+            let orig = history[hist_idx].content.len();
+            let marker_len = elision_marker(obs_num, orig).len();
+            total = total.saturating_sub(orig).saturating_add(marker_len);
+            count += 1;
+        }
+        count
+    } else {
+        0
+    };
+
+    let elide_count = elide_by_count.max(elide_by_tokens);
+
+    // Compaction failure: even with ALL candidates elided, still over budget.
+    let compaction_failed = if let Some(max_tokens) = max_input_tokens {
+        let max_bytes = (max_tokens as usize).saturating_mul(BYTES_PER_TOKEN);
+        let min_total: usize = history
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                if let Some(pos) = obs_indices[..candidate_count].iter().position(|&idx| idx == i) {
+                    elision_marker(pos, m.content.len()).len()
+                } else {
+                    m.content.len()
+                }
+            })
+            .sum();
+        min_total > max_bytes
+    } else {
+        false
+    };
+
+    // Build the elided prompt.
+    let mut prompt = history.to_vec();
+    let mut elided = Vec::new();
+    for (obs_num, &hist_idx) in obs_indices[..candidate_count].iter().enumerate() {
+        if obs_num >= elide_count {
+            break;
+        }
+        let orig_len = history[hist_idx].content.len();
+        prompt[hist_idx].content = elision_marker(obs_num, orig_len);
+        elided.push((hist_idx, orig_len));
+    }
+
+    ElisionInfo {
+        prompt,
+        elided,
+        compaction_failed,
+    }
 }
 
 #[allow(
@@ -514,7 +653,41 @@ impl Agent for DefaultAgent {
         // 2. Retag cache hints (one line; backend handles capping).
         retag_cache_hints(&mut self.history);
 
-        // 3. model.query.
+        // 2.5. Elide stale observations from the model-visible prompt per
+        //      history_max_input_tokens / history_keep_last_observations config.
+        //      The full content is kept in self.history and the trajectory.
+        let elision = elide_history_for_model(
+            &self.history,
+            self.config.root.agent.history_keep_last_observations,
+            self.config.root.agent.history_max_input_tokens,
+        );
+        if elision.compaction_failed {
+            self.trajectory.info.exit_reason = Some("history_compaction_failed".into());
+            self.trajectory.info.failure_category =
+                Some(FailureCategory::HistoryCompactionFailed);
+            self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::ERROR);
+            self.emit_run_ended(
+                "history_compaction_failed",
+                Some(FailureCategory::HistoryCompactionFailed),
+                None,
+            );
+            return Ok(StepOutcome::Terminate(ExitReason::HistoryCompactionFailed));
+        }
+        // Retroactively mark elided observations in the trajectory.
+        for (hist_idx, orig_bytes) in &elision.elided {
+            if let Some(rec) = self.trajectory.messages.get_mut(*hist_idx) {
+                rec.extra
+                    .other
+                    .insert("history_elided".into(), serde_json::Value::Bool(true));
+                rec.extra.other.insert(
+                    "history_bytes_elided".into(),
+                    serde_json::json!(*orig_bytes as u64),
+                );
+            }
+        }
+
+        // 3. model.query (using the elided prompt, not the raw history).
         let opts = QueryOpts {
             temperature: self.config.root.model.temperature,
             max_tokens: Some(self.config.root.model.max_tokens),
@@ -528,7 +701,7 @@ impl Agent for DefaultAgent {
         let model_query_start = Instant::now();
         let query_result = query_model_until_cancelled(
             self.model.as_ref(),
-            &self.history,
+            &elision.prompt,
             &opts,
             self.cancellation.clone(),
         )
@@ -2514,5 +2687,97 @@ mod tests {
             agent.trajectory.info.failure_category,
             Some(FailureCategory::BudgetExhausted)
         );
+    }
+
+    // ── elide_history_for_model unit tests ───────────────────────────────────
+
+    fn make_history(obs_payloads: &[&str]) -> Vec<Message> {
+        let mut h = vec![
+            Message::system("system"),
+            Message::user("instance"),
+        ];
+        for payload in obs_payloads {
+            h.push(Message::assistant("```bash\necho x\n```"));
+            h.push(Message::user(payload.to_string()));
+        }
+        h
+    }
+
+    #[test]
+    fn elide_no_cap_returns_unchanged() {
+        let h = make_history(&["obs0", "obs1", "obs2"]);
+        let info = elide_history_for_model(&h, None, None);
+        assert_eq!(info.elided.len(), 0);
+        assert!(!info.compaction_failed);
+        assert_eq!(info.prompt.len(), h.len());
+    }
+
+    #[test]
+    fn elide_keep_last_1_elides_all_but_latest() {
+        let h = make_history(&["obs0", "obs1", "obs2"]);
+        let info = elide_history_for_model(&h, Some(1), None);
+        // obs0 and obs1 should be replaced; obs2 (last) stays intact.
+        assert_eq!(info.elided.len(), 2, "expected 2 elided observations");
+        assert!(info.prompt[3].content.contains("[history-elided:"));
+        assert!(info.prompt[5].content.contains("[history-elided:"));
+        assert!(info.prompt[7].content.contains("obs2"), "last obs must be intact");
+        assert!(!info.compaction_failed);
+    }
+
+    #[test]
+    fn elide_keep_last_preserves_system_and_instance() {
+        let h = make_history(&["obs0", "obs1"]);
+        let info = elide_history_for_model(&h, Some(1), None);
+        assert_eq!(info.prompt[0].content, "system");
+        assert_eq!(info.prompt[1].content, "instance");
+    }
+
+    #[test]
+    fn elide_marker_contains_step_number_and_bytes() {
+        let payload = "x".repeat(500);
+        let h = make_history(&[&payload, "recent"]);
+        let info = elide_history_for_model(&h, Some(1), None);
+        let marker = &info.prompt[3].content;
+        assert!(
+            marker.contains("[history-elided: step 0 observation, 500 bytes]"),
+            "unexpected marker: {marker}"
+        );
+    }
+
+    #[test]
+    fn elide_both_flags_compose_more_aggressive_wins() {
+        // 5 observations, each 200 bytes.
+        let obs: Vec<String> = (0..5).map(|i| format!("obs{i}{}", "x".repeat(196))).collect();
+        let obs_refs: Vec<&str> = obs.iter().map(String::as_str).collect();
+        let h = make_history(&obs_refs);
+
+        // keep_last=4 alone would elide 1 candidate.
+        // max_tokens set tight enough to elide more.
+        // Total = sys+inst+5*asst+5*obs ≈ 6+8+5*18+5*200 = ~1114 bytes
+        // With max_tokens=100 → max_bytes=400, we need to elide many obs.
+        let info = elide_history_for_model(&h, Some(4), Some(100));
+        assert!(
+            info.elided.len() > 1,
+            "token cap should force more elision than keep_last=4 alone; got {}",
+            info.elided.len()
+        );
+    }
+
+    #[test]
+    fn elide_compaction_failed_when_irreducible() {
+        let h = make_history(&["obs0", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]);
+        // Even with obs0 elided, the fixed content won't fit in 5 bytes.
+        let info = elide_history_for_model(&h, None, Some(1)); // 1 token = 4 bytes
+        assert!(info.compaction_failed);
+    }
+
+    #[test]
+    fn elide_single_observation_never_elided() {
+        let h = make_history(&["only-obs"]);
+        let info = elide_history_for_model(&h, Some(0), None);
+        // With keep_last=0 we'd like to elide everything, but the single obs
+        // is the "last" (protected). Nothing to elide.
+        assert_eq!(info.elided.len(), 0);
+        assert!(!info.compaction_failed);
     }
 }

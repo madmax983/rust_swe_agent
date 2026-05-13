@@ -149,6 +149,10 @@ pub enum FailureCategory {
     SecretLeakDetected,
     /// The agent repeated the same action without progress and was halted.
     AgentStagnation,
+    /// History could not be compacted to fit within `history_max_input_tokens`
+    /// even after eliding all older observations. The run is terminated rather
+    /// than sending an oversized prompt or triggering a provider context error.
+    HistoryCompactionFailed,
     /// An unknown or unclassified failure occurred.
     Unknown,
 }
