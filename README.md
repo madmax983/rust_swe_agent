@@ -200,6 +200,9 @@ a valid trajectory in hand:
   sweeps early when all instances fail with the same operator-actionable cause;
   exit code 11, `halt-report.json` artifact, actionable-category whitelist, and
   `bench reproduce` drift handling.
+- [`bench report`](docs/spec-report.md): produce a self-contained markdown or
+  HTML sweep summary — provenance, top-line metrics, failure mix, and top failed
+  instances — ready to drop into a PR, Slack thread, or paper appendix.
 
 ## Nightly E2E smoke
 

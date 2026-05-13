@@ -18,6 +18,7 @@ pub mod mini;
 pub mod patch_stats;
 pub mod rate_limit;
 pub mod replay;
+pub mod report;
 pub mod reproduce;
 pub mod swebench;
 pub mod tail;
