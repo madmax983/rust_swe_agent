@@ -782,6 +782,13 @@ fn instance_category(inst: &InstanceResult, eval: Option<&EvaluationResults>) ->
 }
 
 fn trajectory_excerpt(sweep_dir: &Path, instance_id: &str) -> String {
+    // Reject path-traversal-looking instance ids before joining them onto
+    // `sweep_dir`. A crafted or accidental path-like id (absolute, contains
+    // `..`, or uses path separators) could otherwise let the report read
+    // and embed contents from outside the sweep directory.
+    if !is_path_safe_instance_id(instance_id) {
+        return "_no trajectory_".into();
+    }
     // Resolve via the shared helper so report covers all layouts that
     // `bench inspect` understands: nested `instance_id/trajectory.json`,
     // nested rerun `instance_id/run-1.traj.json`, legacy flat
@@ -789,6 +796,12 @@ fn trajectory_excerpt(sweep_dir: &Path, instance_id: &str) -> String {
     let Some(path) = crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id) else {
         return "_no trajectory_".into();
     };
+    // Defense in depth: ensure the resolved path canonicalizes to something
+    // still inside the sweep directory. Symlinks or unusual layouts that the
+    // path-safe check above didn't catch get rejected here.
+    if !path_is_inside(sweep_dir, &path) {
+        return "_no trajectory_".into();
+    }
 
     let Ok(text) = std::fs::read_to_string(&path) else {
         return "_no trajectory_".into();
@@ -808,6 +821,43 @@ fn trajectory_excerpt(sweep_dir: &Path, instance_id: &str) -> String {
 
 fn apply_redaction(text: &str) -> String {
     redact(text)
+}
+
+/// Cheap path-traversal check on an `instance_id` before it gets joined onto
+/// the sweep directory. SWE-bench style ids are slug-shaped
+/// (`owner__repo-123`); any id containing path separators, parent components,
+/// or that parses as absolute is rejected outright.
+fn is_path_safe_instance_id(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    if id.contains('/') || id.contains('\\') {
+        return false;
+    }
+    if Path::new(id).is_absolute() {
+        return false;
+    }
+    for component in Path::new(id).components() {
+        if matches!(
+            component,
+            std::path::Component::ParentDir | std::path::Component::RootDir
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Confirm `candidate` resolves to a path that stays under `sweep_dir`. Used
+/// after `resolve_trajectory_path` to catch any symlinks or unusual layouts
+/// that the cheap id check missed. Falls back to a string-prefix check when
+/// canonicalization fails (e.g. file disappeared between exists() and the
+/// canonicalize call).
+fn path_is_inside(sweep_dir: &Path, candidate: &Path) -> bool {
+    let canon_sweep = std::fs::canonicalize(sweep_dir).unwrap_or_else(|_| sweep_dir.to_path_buf());
+    let canon_candidate =
+        std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+    canon_candidate.starts_with(&canon_sweep)
 }
 
 /// Process-wide redactor for all report text. Built once from the default

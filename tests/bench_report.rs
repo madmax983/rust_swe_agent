@@ -688,6 +688,58 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_rejects_path_traversal_instance_id() {
+    // A crafted instance_id containing parent components or absolute paths
+    // could otherwise let `trajectory_excerpt` follow the join into a file
+    // outside the sweep directory and embed its contents in the report.
+    // The report must render `_no trajectory_` for such rows and never
+    // include foreign file contents.
+    let work = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = "FOREIGN_TRAJECTORY_CONTENT_MARKER_777";
+    // Plant a trajectory.json outside the sweep that the traversal would
+    // resolve to: `<sweep>/../<outside basename>/trajectory.json`.
+    let outside_basename = outside
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let traj = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "artifact_kind": "trajectory",
+        "schema_version": {"major": 1, "minor": 5},
+        "info": {},
+        "messages": [{"role": "assistant", "content": secret}]
+    });
+    std::fs::write(
+        outside.path().join("trajectory.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let traversal_id = format!("../{outside_basename}");
+    write_sweep(
+        work.path(),
+        vec![errored(&traversal_id, FailureCategory::StepLimit)],
+    );
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        !content.contains(secret),
+        "report must not embed trajectory content from outside the sweep dir\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_finds_nested_canonical_trajectory_layout() {
     // Canonical nested `instance_id/trajectory.json` layout (what bench
     // inspect uses as its primary path). The report should pick up that
