@@ -568,7 +568,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Matches both bare `$VAR` and key=value forms like `key=$VAR`.
         PolicyRule::deny_static(
             "exfil-curl-data-env-var",
-            r#"curl\b[^|;\n]*(?:-d|--data(?:-binary|-urlencode|-raw|-ascii)?)\s+['"]?[^|;\n]*\$[A-Za-z_{]"#,
+            r#"curl\b[^|;\n]*(?:-d|--data(?:-binary|-urlencode|-raw|-ascii)?)\s*['"]?[^|;\n]*\$[A-Za-z_{]"#,
         ),
         // `env | curl/wget/nc` — dumps the entire process environment to a
         // remote endpoint.
@@ -598,9 +598,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // `git push --force` / `git push -f` / `git push -fv` / `git -C dir push --force`
         // are destructive: they rewrite history and can destroy upstream
         // branches.  In an unattended agent run these are never expected.
+        //
+        // NOTE: `[ \t]` before the short-flag form is intentional.  Without it,
+        // `-[a-zA-Z]*f` would falsely match the `-f` inside `--follow-tags`
+        // because `[^|;\n]*` can consume the first `-` of `--`, leaving just
+        // `-follow-tags` for the short-flag pattern to match against.
+        // A space/tab anchor ensures we only catch genuine short options.
         PolicyRule::deny_static(
             "git-push-force",
-            r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:--force(?:-with-lease)?|-[a-zA-Z]*f)",
+            r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:--force(?:-with-lease)?|[ \t]-[a-zA-Z]*f)",
         ),
         // `git push origin +HEAD:refs/...` — a leading `+` on a refspec means
         // force-push even without --force.

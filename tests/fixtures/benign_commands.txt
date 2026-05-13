@@ -21,6 +21,7 @@ git pull origin main
 git push origin feature-branch
 git push origin fix/my-bug
 git push -u origin feature-branch
+git push --follow-tags origin main
 git push
 
 # --- File inspection ---
