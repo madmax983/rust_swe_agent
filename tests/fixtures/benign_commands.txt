@@ -18,6 +18,10 @@ git commit -m "fix: correct off-by-one in parser"
 git checkout -b feature-branch
 git fetch origin
 git pull origin main
+git push origin feature-branch
+git push origin fix/my-bug
+git push -u origin feature-branch
+git push
 
 # --- File inspection ---
 ls -la
@@ -148,6 +152,11 @@ pip download requests
 curl --version
 wget --version
 curl -I https://example.com
+curl https://api.github.com/repos/owner/repo
+curl -O https://example.com/archive.tar.gz
+curl -L https://raw.githubusercontent.com/owner/repo/main/file
+curl -H "Accept: application/json" https://api.example.com/data
+wget https://example.com/file.tar.gz
 
 # --- Misc safe ops ---
 true
