@@ -15,6 +15,9 @@ use crate::model::{Message, MessageExtra};
 
 pub use crate::model::FallbackAttemptRecord;
 
+/// The version string for the trajectory serialization format.
+///
+/// Used to maintain compatibility with consumers expecting the `mini-swe-agent-1.2` structure.
 pub const FORMAT_VERSION: &str = "mini-swe-agent-1.2";
 
 /// Trajectory-level summary of fallback behavior for a single agent run.
@@ -49,30 +52,46 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Operator-supplied verification check run after the agent finishes.
+/// Operator-supplied verification check run after the agent finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationCheck {
+    /// The descriptive name of the check.
     pub name: String,
+    /// The shell command executed to perform the check.
     pub command: String,
 }
 
 /// Per-check evidence recorded after a verification check runs.
+/// Per-check evidence recorded after a verification check runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VerificationResult {
+    /// The descriptive name of the check.
     pub name: String,
+    /// The shell command executed to perform the check.
     pub command: String,
+    /// The exit code returned by the command.
     pub exit_code: i32,
+    /// The execution time in milliseconds.
     pub duration_ms: u64,
+    /// Indicates whether the check succeeded (exit code 0).
     pub passed: bool,
+    /// A truncated snippet of the standard output.
     pub stdout_preview: String,
+    /// A truncated snippet of the standard error.
     pub stderr_preview: String,
+    /// Indicates if the command execution was terminated due to a timeout.
     #[serde(default, skip_serializing_if = "is_false")]
     pub timed_out: bool,
 }
 
 /// Operator-facing verification status values.
+/// Operator-facing verification status values.
 pub mod verification_status {
+    /// Indicates all verification checks passed successfully.
     pub const VERIFIED: &str = "verified";
+    /// Indicates no verification checks were configured or run.
     pub const UNVERIFIED: &str = "unverified";
+    /// Indicates one or more verification checks failed.
     pub const VERIFICATION_FAILED: &str = "verification_failed";
 }
 
@@ -151,6 +170,10 @@ impl FailureCategory {
     }
 }
 
+/// The default list of command prefixes that are recognized as test invocations.
+///
+/// Used to detect when the agent runs commands like `pytest` or `cargo test`
+/// during an execution loop.
 pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "pytest",
     "python -m pytest",
@@ -170,6 +193,9 @@ pub const DEFAULT_TEST_COMMAND_PATTERNS: &[&str] = &[
     "./gradlew test",
 ];
 
+/// A compiled pattern used to detect if a shell command is a test invocation.
+///
+/// Supports both literal prefix matching (e.g., "pytest") and regex matching.
 #[derive(Debug, Clone)]
 pub struct TestCommandPattern {
     source: String,
@@ -209,14 +235,23 @@ impl TestCommandPattern {
     }
 }
 
+/// Represents a detected test command executed by the agent during its run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TestInvocation {
+    /// The zero-based step index during which the test was executed.
     pub step_index: u32,
+    /// The raw shell command that was executed.
     pub command: String,
+    /// The exit code returned by the test command.
     pub exit_code: i32,
+    /// The specific `TestCommandPattern` source that matched this command.
     pub matched_pattern: String,
 }
 
+/// Combines the default test patterns with any operator-supplied extra patterns.
+///
+/// If `replace_defaults` is true, the `DEFAULT_TEST_COMMAND_PATTERNS` are omitted,
+/// and only the `extra_patterns` are compiled and returned.
 pub fn effective_test_command_patterns(
     extra_patterns: &[String],
     replace_defaults: bool,
@@ -235,6 +270,19 @@ pub fn effective_test_command_patterns(
     Ok(patterns)
 }
 
+/// Scans a command string to determine if it invokes a known test runner.
+///
+/// Handles bash-like quoting and escaping to extract the underlying command
+/// before matching against the provided `patterns`.
+///
+/// ## Examples
+/// ```
+/// use rust_swe_agent::trajectory::{detect_test_command, effective_test_command_patterns};
+///
+/// let patterns = effective_test_command_patterns(&[], false).unwrap();
+/// let cmd = "cargo test --all-features";
+/// assert!(detect_test_command(cmd, &patterns).is_some());
+/// ```
 #[must_use]
 pub fn detect_test_command(command: &str, patterns: &[TestCommandPattern]) -> Option<String> {
     let mut single_quoted = false;

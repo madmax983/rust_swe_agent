@@ -11,18 +11,24 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// The name of the built-in bash tool, reserved and always available.
 pub const BASH_TOOL_NAME: &str = "bash";
+/// The highest Model Context Protocol version this agent supports for discovering tools.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
     &[MCP_PROTOCOL_VERSION, "2025-06-18", "2025-03-26"];
 
+/// Represents an invocation request made by the agent model for a specific tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCall {
+    /// The name of the tool to be executed.
     pub name: String,
+    /// The input string or serialized JSON payload for the tool.
     pub input: String,
 }
 
 impl ToolCall {
+    /// Constructs a `ToolCall` targeting the default built-in bash environment.
     pub fn bash(command: impl Into<String>) -> Self {
         Self {
             name: BASH_TOOL_NAME.into(),
@@ -30,6 +36,7 @@ impl ToolCall {
         }
     }
 
+    /// Generates a readable string representing this tool call, used in prompt construction.
     pub fn action_label(&self) -> String {
         if self.name == BASH_TOOL_NAME {
             self.input.clone()
@@ -39,15 +46,20 @@ impl ToolCall {
     }
 }
 
+/// Defines the interface, schema, and description of a tool dynamically provided to the agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolDefinition {
+    /// The unique name of the tool.
     pub name: String,
+    /// A human-readable description of what the tool accomplishes.
     pub description: String,
+    /// The optional JSON schema dictating the required format of the tool's input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
 }
 
 impl ToolDefinition {
+    /// Converts this `CommandTool` into a `ToolPromptInfo` for the model context.
     pub fn prompt_info(&self) -> ToolPromptInfo {
         ToolPromptInfo {
             name: self.name.clone(),
@@ -60,24 +72,36 @@ impl ToolDefinition {
     }
 }
 
+/// Represents a comprehensive metadata payload sent when invoking an external tool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolInvocation {
+    /// The name of the tool being invoked.
     pub name: String,
+    /// The specific arguments or payload provided to the tool.
     pub input: String,
+    /// The identifier for the current agent task.
     pub task: String,
+    /// The name of the AI model currently executing.
     pub model: String,
+    /// The current step iteration of the agent loop.
     pub step: u32,
+    /// The accumulated cost of the agent execution thus far.
     pub total_cost_usd: f64,
 }
 
+/// The structured response returned by executing a tool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolOutput {
+    /// Standard output stream content produced by the tool.
     #[serde(default)]
     pub stdout: String,
+    /// Standard error stream content produced by the tool.
     #[serde(default)]
     pub stderr: String,
+    /// The integer status code reflecting success (0) or failure.
     #[serde(default)]
     pub exit_code: i32,
+    /// Indicates if the tool was prematurely killed due to exceeding a timeout constraint.
     #[serde(default)]
     pub timed_out: bool,
 }
@@ -93,43 +117,88 @@ impl From<ToolOutput> for crate::env::RunResult {
     }
 }
 
+/// Information extracted from a tool used specifically to generate context in model prompts.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolPromptInfo {
+    /// The tool name.
     pub name: String,
+    /// The tool's descriptive text to be presented to the model.
     pub description: String,
+    /// The serialized input schema text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<String>,
 }
 
+/// A structural manifest summarizing all registered tools for trajectory exports or analysis.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ToolsetManifest {
+    /// The list of tools contained within this manifest.
     pub tools: Vec<ToolManifestEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// A single entry in the exported `ToolsetManifest`.
+///
+/// Provides a high-level summary of a tool's capabilities and its origin.
+///
+/// ## Examples
+/// ```
+/// use rust_swe_agent::tool::{ToolManifestEntry, ToolSource};
+///
+/// let entry = ToolManifestEntry {
+///     name: "bash".into(),
+///     description: "Run shell commands.".into(),
+///     source: ToolSource::BuiltIn,
+/// };
+/// ```
 pub struct ToolManifestEntry {
+    /// The canonical, unique name of the tool (e.g., "bash", "str_replace").
     pub name: String,
+    /// A human-readable description of what the tool does.
     pub description: String,
+    /// The origin of this tool, indicating how it is executed.
     pub source: ToolSource,
 }
 
+/// Describes the origin of a tool.
+///
+/// This enum is used to distinguish between natively implemented tools,
+/// shell command wrappers, tools provided via the Model Context Protocol (MCP),
+/// and dynamically registered runtime providers.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolSource {
+    /// A tool that is implemented natively within the agent (e.g., the base Bash tool).
     BuiltIn,
+    /// A tool that executes by running a subprocess command (e.g., Python scripts).
     CommandAdapter,
+    /// A tool provided by an external Model Context Protocol (MCP) server over stdio.
     McpServer,
+    /// A tool injected by a dynamic `ToolProvider` at runtime.
     RuntimeProvider,
 }
 
+/// A trait for dynamically providing tools to the agent's environment.
+///
+/// Implementors of this trait can register one or more tools, defining their
+/// schema and handling their execution logic when invoked by the model.
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
+    /// Returns the definitions for all tools supported by this provider.
     fn tools(&self) -> &[ToolDefinition];
 
+    /// Returns the source category for tools originating from this provider.
+    /// Defaults to `ToolSource::RuntimeProvider`.
     fn source(&self) -> ToolSource {
         ToolSource::RuntimeProvider
     }
 
+    /// Executes a tool invocation requested by the model.
+    ///
+    /// ## Arguments
+    /// * `env` - The environment context (e.g., docker, local shell) to execute within.
+    /// * `invocation` - The requested tool name and its arguments.
+    /// * `cancellation` - An optional token to abort long-running executions.
     async fn call(
         &self,
         env: &dyn crate::env::Environment,
@@ -138,15 +207,37 @@ pub trait ToolProvider: Send + Sync {
     ) -> Result<ToolOutput, crate::error::Error>;
 }
 
+/// A tool that executes via a shell command when invoked.
+///
+/// `CommandTool` bridges the gap between the model's structured tool calls and
+/// the underlying shell environment. It wraps a command string and optionally
+/// enforces a timeout.
+///
+/// ## Examples
+/// ```
+/// use rust_swe_agent::tool::CommandTool;
+///
+/// let grep_tool = CommandTool {
+///     name: "grep_search".into(),
+///     description: Some("Searches for text in files".into()),
+///     command: "grep -rn".into(),
+///     timeout_secs: Some(10),
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct CommandTool {
+    /// The unique identifier for this tool.
     pub name: String,
+    /// An optional description of the tool's behavior.
     pub description: Option<String>,
+    /// The shell command prefix to execute.
     pub command: String,
+    /// An optional execution deadline in seconds.
     pub timeout_secs: Option<u64>,
 }
 
 impl CommandTool {
+    /// Converts this `CommandTool` into a `ToolPromptInfo` for the model context.
     pub fn prompt_info(&self) -> ToolPromptInfo {
         ToolPromptInfo {
             name: self.name.clone(),
@@ -159,6 +250,11 @@ impl CommandTool {
     }
 }
 
+/// A central repository managing all available tools for an agent run.
+///
+/// The `ToolRegistry` aggregates tools from static configurations (`CommandTool`)
+/// and dynamic plugins (`ToolProvider`, like MCP servers), ensuring name uniqueness
+/// and providing a unified routing interface for execution.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     command_tools: BTreeMap<String, CommandTool>,
@@ -173,6 +269,22 @@ struct ProviderToolEntry {
 }
 
 impl ToolRegistry {
+    /// Creates a new `ToolRegistry` containing only the specified config-based tools.
+    ///
+    /// ## Examples
+    /// ```
+    /// use rust_swe_agent::tool::ToolRegistry;
+    /// use rust_swe_agent::config::ToolCfg;
+    ///
+    /// let config = vec![ToolCfg {
+    ///     name: "echo".into(),
+    ///     command: "echo".into(),
+    ///     description: None,
+    ///     timeout_secs: None,
+    /// }];
+    /// let registry = ToolRegistry::from_config(&config);
+    /// assert!(registry.contains("echo"));
+    /// ```
     pub fn from_config(tools: &[crate::config::ToolCfg]) -> Self {
         let command_tools = tools
             .iter()
@@ -195,6 +307,10 @@ impl ToolRegistry {
         }
     }
 
+    /// Creates a registry combining config-based tools and dynamic `ToolProvider`s.
+    ///
+    /// Resolves tool definitions and enforces name uniqueness across all sources.
+    /// Returns an error if any tool names conflict.
     pub fn from_config_and_providers(
         tools: &[crate::config::ToolCfg],
         providers: Vec<Arc<dyn ToolProvider>>,
@@ -254,12 +370,14 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Returns `true` if a tool with the given name is registered (including the built-in `bash`).
     pub fn contains(&self, name: &str) -> bool {
         name == BASH_TOOL_NAME
             || self.command_tools.contains_key(name)
             || self.provider_tools.contains_key(name)
     }
 
+    /// Returns a list of all registered tool names, always starting with `bash`.
     pub fn tool_names(&self) -> Vec<String> {
         std::iter::once(BASH_TOOL_NAME.to_owned())
             .chain(self.command_tools.keys().cloned())
@@ -267,10 +385,12 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Returns the `CommandTool` definition for the given name, if it exists.
     pub fn command_tool(&self, name: &str) -> Option<&CommandTool> {
         self.command_tools.get(name)
     }
 
+    /// Returns the `ToolProvider` responsible for executing the given tool name, if any.
     pub fn provider_for(&self, name: &str) -> Option<&dyn ToolProvider> {
         let entry = self.provider_tools.get(name)?;
         self.providers
@@ -278,6 +398,7 @@ impl ToolRegistry {
             .map(std::convert::AsRef::as_ref)
     }
 
+    /// Aggregates all registered tools into prompts suitable for model system context.
     pub fn prompt_tools(&self) -> Vec<ToolPromptInfo> {
         std::iter::once(ToolPromptInfo {
             name: BASH_TOOL_NAME.into(),
@@ -293,6 +414,7 @@ impl ToolRegistry {
         .collect()
     }
 
+    /// Generates a `ToolsetManifest` summarizing all available tools and their sources.
     pub fn manifest(&self) -> ToolsetManifest {
         let tools = std::iter::once(ToolManifestEntry {
             name: BASH_TOOL_NAME.into(),
@@ -319,6 +441,14 @@ impl ToolRegistry {
     }
 }
 
+/// A `ToolProvider` backed by a Model Context Protocol (MCP) server communicating over stdio.
+///
+/// This struct manages the lifecycle and JSON-RPC communication with an external
+/// process (like a Node.js or Python script) that implements the MCP specification.
+/// A `ToolProvider` backed by a Model Context Protocol (MCP) server communicating over stdio.
+///
+/// This struct manages the lifecycle and JSON-RPC communication with an external
+/// process (like a Node.js or Python script) that implements the MCP specification.
 pub struct McpStdioServer {
     command: String,
     timeout: Duration,
@@ -327,6 +457,12 @@ pub struct McpStdioServer {
 }
 
 impl McpStdioServer {
+    /// Launches the MCP server process and queries its supported tools via JSON-RPC.
+    ///
+    /// This performs the initial handshake and tool discovery phases of the MCP protocol.
+    /// Launches the MCP server process and queries its supported tools via JSON-RPC.
+    ///
+    /// This performs the initial handshake and tool discovery phases of the MCP protocol.
     pub async fn discover(
         env: &dyn crate::env::Environment,
         cfg: &crate::config::McpServerCfg,
@@ -698,6 +834,12 @@ fn mcp_content_to_text(content: &serde_json::Value) -> String {
     }
 }
 
+/// Iterates over a list of MCP server configurations, launching and discovering tools for each.
+///
+/// Returns a vector of `ToolProvider` traits that can be registered with a `ToolRegistry`.
+/// Iterates over a list of MCP server configurations, launching and discovering tools for each.
+///
+/// Returns a vector of `ToolProvider` traits that can be registered with a `ToolRegistry`.
 pub async fn discover_mcp_servers(
     env: &dyn crate::env::Environment,
     servers: &[crate::config::McpServerCfg],
@@ -714,6 +856,30 @@ pub async fn discover_mcp_servers(
     Ok(providers)
 }
 
+/// Validates that a tool name conforms to strict alphanumeric constraints.
+///
+/// Must start with an ASCII letter and contain only ASCII letters, digits, `_`, or `-`.
+///
+/// ## Examples
+/// ```
+/// use rust_swe_agent::tool::validate_tool_name;
+///
+/// assert!(validate_tool_name("valid_tool-name").is_ok());
+/// assert!(validate_tool_name("1invalid").is_err());
+/// assert!(validate_tool_name("invalid tool").is_err());
+/// ```
+/// Validates that a tool name conforms to strict alphanumeric constraints.
+///
+/// Must start with an ASCII letter and contain only ASCII letters, digits, `_`, or `-`.
+///
+/// ## Examples
+/// ```
+/// use rust_swe_agent::tool::validate_tool_name;
+///
+/// assert!(validate_tool_name("valid_tool-name").is_ok());
+/// assert!(validate_tool_name("1invalid").is_err());
+/// assert!(validate_tool_name("invalid tool").is_err());
+/// ```
 pub fn validate_tool_name(name: &str) -> Result<(), &'static str> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
