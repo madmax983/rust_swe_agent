@@ -688,6 +688,73 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_redacts_secrets_in_manifest_fields() {
+    // A dataset path or other manifest string that embeds a secret-shaped value
+    // must be redacted before reaching the shareable report file.
+    let work = tempfile::tempdir().unwrap();
+    let leaked_token = "sk-abcdef0123456789ABCDEF12345";
+    let dataset_path = format!("/tmp/datasets/{leaked_token}/swebench.jsonl");
+    // Write a results.json that we hand-craft so we can plant the secret in
+    // manifest.dataset.path (write_sweep hardcodes that field).
+    let payload = serde_json::json!({
+        "artifact_kind": "sweep_results",
+        "schema_version": {"major": 1, "minor": 5},
+        "total": 1,
+        "sweep_status": "completed",
+        "submitted": 1, "submitted_with_tests": 0,
+        "skipped": 0, "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0, "with_patch": 1, "patch_empty": 0,
+        "patch_apply_invalid": 0, "github_pr_failures": 0,
+        "total_prompt_tokens": 0, "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0, "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.05, "cache_hit_rate": 0.0,
+        "retries": 0, "retried_instances": 0, "pass_at_k": 1.0,
+        "filter_spec": {}, "cost_limit_usd": null,
+        "manifest": {
+            "harness": {"name": "rust_swe_agent", "version": "test", "git_resolution": "test"},
+            "dataset": {"path": dataset_path, "sha256": "test", "instance_count": 1},
+            "prompt_template": {"source": "inline", "sha256": "tpl"},
+            "config": {"resolved": "default", "overlay_paths": []},
+            "model": {"name": "claude-opus-4-7", "backend": "litellm"},
+            "runtime": {
+                "started_at_utc": "2026-05-01T00:00:00Z",
+                "finished_at_utc": "2026-05-01T00:01:00Z",
+                "host_os": "linux", "resume_mode": false
+            },
+            "cli": {"argv": []}
+        },
+        "instances": [{
+            "instance_id": "django__django-001",
+            "exit_reason": "submitted", "outcome": "submitted",
+            "patch_present": true, "non_empty_patch": true,
+            "attempts": 1, "retry_reasons": [],
+            "runs": 1, "resolved_count": 1, "pass_at_1": true
+        }]
+    });
+    std::fs::write(
+        work.path().join("results.json"),
+        serde_json::to_string_pretty(&payload).unwrap(),
+    )
+    .unwrap();
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        !content.contains(leaked_token),
+        "report must redact secret-shaped values embedded in manifest fields; \
+         leaked token still present in output\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_rejects_wrong_kind_evaluation_artifact() {
     // evaluation.json with an artifact header from the wrong kind must be
     // rejected (not silently accepted just because the field shapes overlap).

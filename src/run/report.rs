@@ -177,20 +177,25 @@ fn md_provenance(
         return;
     };
 
-    writeln!(buf, "| Model | {} |", m.model.name).ok();
+    writeln!(buf, "| Model | {} |", redact(&m.model.name)).ok();
     if let Some(sha) = &m.harness.git_sha {
-        writeln!(buf, "| Harness git SHA | {sha} |").ok();
+        writeln!(buf, "| Harness git SHA | {} |", redact(sha)).ok();
     }
-    writeln!(buf, "| Dataset | {} |", m.dataset.path).ok();
+    writeln!(buf, "| Dataset | {} |", redact(&m.dataset.path)).ok();
     if let Some(split) = &m.dataset.split {
-        writeln!(buf, "| Dataset split | {split} |").ok();
+        writeln!(buf, "| Dataset split | {} |", redact(split)).ok();
     }
     if let Some(reproduced_from) = &m.reproduced_from {
-        writeln!(buf, "| Reproduced from | {} |", reproduced_from.sweep_dir).ok();
+        writeln!(
+            buf,
+            "| Reproduced from | {} |",
+            redact(&reproduced_from.sweep_dir)
+        )
+        .ok();
     }
-    writeln!(buf, "| Started | {} |", m.runtime.started_at_utc).ok();
+    writeln!(buf, "| Started | {} |", redact(&m.runtime.started_at_utc)).ok();
     if let Some(finished) = &m.runtime.finished_at_utc {
-        writeln!(buf, "| Finished | {finished} |").ok();
+        writeln!(buf, "| Finished | {} |", redact(finished)).ok();
         if let (Ok(start), Ok(end)) = (
             chrono::DateTime::parse_from_rfc3339(&m.runtime.started_at_utc),
             chrono::DateTime::parse_from_rfc3339(finished),
@@ -397,8 +402,18 @@ fn md_eval_section(buf: &mut String, eval: Option<&EvaluationResults>) {
 fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
     writeln!(buf, "## Delta vs Baseline").ok();
     writeln!(buf).ok();
-    writeln!(buf, "Baseline: `{}`", report.baseline_dir.display()).ok();
-    writeln!(buf, "Candidate: `{}`", report.candidate_dir.display()).ok();
+    writeln!(
+        buf,
+        "Baseline: `{}`",
+        redact(&report.baseline_dir.display().to_string())
+    )
+    .ok();
+    writeln!(
+        buf,
+        "Candidate: `{}`",
+        redact(&report.candidate_dir.display().to_string())
+    )
+    .ok();
     writeln!(buf).ok();
     writeln!(buf, "| Metric | Value |").ok();
     writeln!(buf, "|---|---|").ok();
@@ -779,10 +794,26 @@ fn trajectory_excerpt(sweep_dir: &Path, instance_id: &str) -> String {
 }
 
 fn apply_redaction(text: &str) -> String {
-    use crate::redaction::{Redactor, surface};
-    let cfg = crate::config::RedactionCfg::default();
-    let redactor = Redactor::from_config_lossy(&cfg);
-    redactor.redact_text(text, surface::EXPORT).text
+    redact(text)
+}
+
+/// Process-wide redactor for all report text. Built once from the default
+/// `RedactionCfg` (matches what the rest of the harness uses for the `export`
+/// surface) so manifest values, instance text, and trajectory excerpts all
+/// pass through the same pipeline before reaching the output file.
+fn redactor() -> &'static crate::redaction::Redactor {
+    use std::sync::OnceLock;
+    static REDACTOR: OnceLock<crate::redaction::Redactor> = OnceLock::new();
+    REDACTOR.get_or_init(|| {
+        let cfg = crate::config::RedactionCfg::default();
+        crate::redaction::Redactor::from_config_lossy(&cfg)
+    })
+}
+
+fn redact(text: &str) -> String {
+    redactor()
+        .redact_text(text, crate::redaction::surface::EXPORT)
+        .text
 }
 
 fn truncate_to_120(s: &str) -> String {
