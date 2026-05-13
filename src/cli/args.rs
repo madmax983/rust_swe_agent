@@ -996,4 +996,28 @@ pub struct EvaluatorSelftestCmd {
     /// `json` (emits the JSON artifact only to stdout).
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Evaluation backend: `none` (zero-cost presence check, default) or
+    /// `sb-cli` (routes gold patches through the same evaluator pipeline
+    /// that `bench evaluate` uses on real sweeps).
+    #[arg(long, default_value = "none")]
+    pub backend: String,
+
+    /// SWE-bench subset passed to `sb-cli submit` (e.g. `swe-bench-m`,
+    /// `swe-bench_lite`). Ignored when `--backend none`.
+    #[arg(long, default_value = "swe-bench-m")]
+    pub sb_subset: String,
+
+    /// SWE-bench split passed to `sb-cli submit` (e.g. `dev`, `test`).
+    /// Ignored when `--backend none`.
+    #[arg(long, default_value = "dev")]
+    pub sb_split: String,
+
+    /// Per-instance evaluation timeout in seconds for the `sb-cli` backend.
+    #[arg(long, default_value_t = 600)]
+    pub timeout_per_instance: u64,
+
+    /// Parallel worker count for the `sb-cli` evaluation backend.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
 }

@@ -38,6 +38,26 @@ fn write_no_patch_dataset(dir: &std::path::Path) -> PathBuf {
     path
 }
 
+/// Construct a `SelftestArgs` with `none` backend defaults, overriding only
+/// the dataset path and output dir. Tests that need other fields set them
+/// explicitly after calling this helper.
+fn make_args(dataset_path: PathBuf, output_dir: PathBuf) -> SelftestArgs {
+    SelftestArgs {
+        dataset_path,
+        output_dir,
+        instance_ids: None,
+        limit: None,
+        sample: None,
+        seed: None,
+        format: "text".into(),
+        backend: "none".into(),
+        sb_subset: "swe-bench-m".into(),
+        sb_split: "dev".into(),
+        timeout_per_instance: 600,
+        parallel: 4,
+    }
+}
+
 // ── core result struct tests ──────────────────────────────────────────────────
 
 #[test]
@@ -47,15 +67,7 @@ fn missing_patch_field_recorded_as_gold_patch_missing() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     let selftest_out = result.output;
     assert_eq!(selftest_out.instances.len(), 1);
@@ -80,15 +92,7 @@ fn empty_patch_string_treated_as_missing() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: path,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(path, output));
 
     let inst = &result.output.instances[0];
     assert_eq!(inst.evaluator_exit_reason, "gold_patch_missing");
@@ -102,15 +106,7 @@ fn nonempty_patch_marks_resolved() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     let inst = &result.output.instances[0];
     assert!(inst.resolved, "non-empty gold patch must be resolved");
@@ -124,15 +120,7 @@ fn evaluator_duration_ms_is_recorded() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     // Duration is always recorded (may be 0 in test, but key must be present).
     let inst = &result.output.instances[0];
@@ -148,15 +136,7 @@ fn json_artifact_written_to_output_dir() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    run_selftest(make_args(dataset, output.clone()));
 
     let artifact_path = output.join("evaluator_selftest.json");
     assert!(
@@ -172,15 +152,7 @@ fn json_artifact_has_required_schema_fields() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    run_selftest(SelftestArgs {
-        dataset_path: dataset.clone(),
-        output_dir: output.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    run_selftest(make_args(dataset, output.clone()));
 
     let text = std::fs::read_to_string(output.join("evaluator_selftest.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -218,15 +190,7 @@ fn json_artifact_dataset_path_matches_input() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    run_selftest(SelftestArgs {
-        dataset_path: dataset.clone(),
-        output_dir: output.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    run_selftest(make_args(dataset, output.clone()));
 
     let text = std::fs::read_to_string(output.join("evaluator_selftest.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -246,15 +210,7 @@ fn totals_match_per_instance_results() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     let totals = &result.output.totals;
     assert_eq!(totals.instances_total, 3);
@@ -277,15 +233,7 @@ fn exit_status_ok_when_all_resolved() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     assert_eq!(
         result.exit_status,
@@ -301,15 +249,7 @@ fn exit_status_nonzero_when_any_unresolved() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     assert_ne!(
         result.exit_status,
@@ -325,15 +265,7 @@ fn exit_status_nonzero_for_errored_only() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     assert_ne!(result.exit_status, SelftestExitStatus::AllResolved);
 }
@@ -347,15 +279,7 @@ fn stdout_text_contains_headline() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     assert!(
         result.stdout.contains("evaluator self-test"),
@@ -376,15 +300,7 @@ fn stdout_text_lists_non_resolved_instances() {
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
-    let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    let result = run_selftest(make_args(dataset, output));
 
     // The non-resolved instances should appear in the output.
     assert!(
@@ -409,17 +325,11 @@ fn stdout_json_format_emits_json_only() {
     std::fs::create_dir_all(&output).unwrap();
 
     let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
         format: "json".into(),
+        ..make_args(dataset, output)
     });
 
-    let parsed: serde_json::Value = serde_json::from_str(&result.stdout)
-        .expect("--format json stdout must be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
     assert!(parsed.is_object(), "JSON output must be an object");
 }
 
@@ -433,13 +343,8 @@ fn limit_restricts_instance_count() {
     std::fs::create_dir_all(&output).unwrap();
 
     let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
-        instance_ids: None,
         limit: Some(1),
-        sample: None,
-        seed: None,
-        format: "text".into(),
+        ..make_args(dataset, output)
     });
 
     assert_eq!(
@@ -458,13 +363,8 @@ fn instance_ids_filter_works() {
     std::fs::create_dir_all(&output).unwrap();
 
     let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
         instance_ids: Some("resolved-instance".into()),
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
+        ..make_args(dataset, output)
     });
 
     assert_eq!(result.output.instances.len(), 1);
@@ -483,25 +383,8 @@ fn two_runs_produce_identical_json_modulo_timestamp_and_duration() {
     std::fs::create_dir_all(&out1).unwrap();
     std::fs::create_dir_all(&out2).unwrap();
 
-    run_selftest(SelftestArgs {
-        dataset_path: dataset.clone(),
-        output_dir: out1.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
-
-    run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: out2.clone(),
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
-    });
+    run_selftest(make_args(dataset.clone(), out1.clone()));
+    run_selftest(make_args(dataset, out2.clone()));
 
     let json1: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(out1.join("evaluator_selftest.json")).unwrap(),
@@ -547,13 +430,8 @@ fn fail_instance_exit_reason_surfaced_in_stdout() {
     std::fs::create_dir_all(&output).unwrap();
 
     let result = run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output,
         instance_ids: Some("fail-instance".into()),
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
+        ..make_args(dataset, output)
     });
 
     let inst = &result.output.instances[0];
@@ -578,13 +456,8 @@ fn fail_instance_exit_reason_in_json() {
     std::fs::create_dir_all(&output).unwrap();
 
     run_selftest(SelftestArgs {
-        dataset_path: dataset,
-        output_dir: output.clone(),
         instance_ids: Some("fail-instance".into()),
-        limit: None,
-        sample: None,
-        seed: None,
-        format: "text".into(),
+        ..make_args(dataset, output.clone())
     });
 
     let text = std::fs::read_to_string(output.join("evaluator_selftest.json")).unwrap();
@@ -598,4 +471,20 @@ fn fail_instance_exit_reason_in_json() {
     );
     assert_ne!(reason, "gold_patch_missing");
     assert_ne!(reason, "resolved");
+}
+
+// ── backend field in artifact ─────────────────────────────────────────────────
+
+#[test]
+fn evaluator_backend_field_reflects_none_backend() {
+    let work = tempfile::tempdir().unwrap();
+    let dataset = write_resolved_only_dataset(work.path());
+    let output = work.path().join("out");
+    std::fs::create_dir_all(&output).unwrap();
+
+    run_selftest(make_args(dataset, output.clone()));
+
+    let text = std::fs::read_to_string(output.join("evaluator_selftest.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["evaluator_backend"].as_str().unwrap(), "none");
 }

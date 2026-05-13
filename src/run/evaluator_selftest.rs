@@ -7,7 +7,8 @@
 //!
 //! The `none` backend resolves any non-empty gold patch (trivially verifying
 //! the patch is present). The `sb-cli` backend creates a synthetic predictions
-//! file and runs the actual evaluator pipeline, giving a real confirmed signal.
+//! file and routes it through the same evaluator pipeline that `bench evaluate`
+//! uses on real sweeps, giving a real confirmed signal.
 //!
 //! A dataset row whose `patch` field is absent or empty is recorded as
 //! `errored` with reason `gold_patch_missing` — not silently skipped.
@@ -22,6 +23,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::run::dataset::sha256_hex;
+use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend, EvalExitReason};
 use crate::run::swebench::{self, SweBenchInstance};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -42,6 +44,17 @@ pub struct SelftestArgs {
     pub seed: Option<u64>,
     /// Output format: `"text"` (default) or `"json"`.
     pub format: String,
+    /// Evaluation backend: `"none"` (presence check) or `"sb-cli"` (real
+    /// evaluator pipeline, same code path as `bench evaluate`).
+    pub backend: String,
+    /// SWE-bench subset for the `sb-cli` backend (e.g. `"swe-bench-m"`).
+    pub sb_subset: String,
+    /// SWE-bench split for the `sb-cli` backend (e.g. `"dev"`).
+    pub sb_split: String,
+    /// Per-instance evaluation timeout in seconds for the `sb-cli` backend.
+    pub timeout_per_instance: u64,
+    /// Parallel worker count for the `sb-cli` backend.
+    pub parallel: usize,
 }
 
 /// Per-instance result recorded in the self-test artifact.
@@ -134,10 +147,11 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 
     let selected = select_instances(all_instances, &args);
 
-    let mut instance_results: Vec<SelftestInstanceResult> = selected
-        .iter()
-        .map(evaluate_gold_patch)
-        .collect();
+    let mut instance_results: Vec<SelftestInstanceResult> = if args.backend == "sb-cli" {
+        evaluate_via_sb_cli(&selected, &args)
+    } else {
+        selected.iter().map(evaluate_gold_patch_none).collect()
+    };
 
     // Sort by instance_id for determinism.
     instance_results.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -150,7 +164,7 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
         dataset_sha256: dataset_sha,
         harness_git_sha: current_git_sha(),
         timestamp_utc: utc_now_iso8601(),
-        evaluator_backend: "none".into(),
+        evaluator_backend: args.backend.clone(),
         instances: instance_results,
         totals,
     };
@@ -176,7 +190,6 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 // ── Instance selection ────────────────────────────────────────────────────────
 
 fn select_instances(mut instances: Vec<SweBenchInstance>, args: &SelftestArgs) -> Vec<SweBenchInstance> {
-    // Filter by instance_ids if provided.
     if let Some(ids_raw) = args.instance_ids.as_deref() {
         let ids: HashSet<String> = ids_raw
             .split([',', '\n'])
@@ -187,7 +200,6 @@ fn select_instances(mut instances: Vec<SweBenchInstance>, args: &SelftestArgs) -
         instances.retain(|i| ids.contains(&i.instance_id));
     }
 
-    // Sample if requested.
     if let Some(n) = args.sample {
         if let Some(seed) = args.seed {
             if n < instances.len() {
@@ -201,7 +213,6 @@ fn select_instances(mut instances: Vec<SweBenchInstance>, args: &SelftestArgs) -
         }
     }
 
-    // Limit.
     if let Some(n) = args.limit {
         instances.truncate(n);
     }
@@ -209,9 +220,9 @@ fn select_instances(mut instances: Vec<SweBenchInstance>, args: &SelftestArgs) -
     instances
 }
 
-// ── Per-instance evaluation ───────────────────────────────────────────────────
+// ── None-backend evaluation ───────────────────────────────────────────────────
 
-fn evaluate_gold_patch(instance: &SweBenchInstance) -> SelftestInstanceResult {
+fn evaluate_gold_patch_none(instance: &SweBenchInstance) -> SelftestInstanceResult {
     let start = Instant::now();
 
     let patch = instance
@@ -238,6 +249,154 @@ fn evaluate_gold_patch(instance: &SweBenchInstance) -> SelftestInstanceResult {
         resolved,
         evaluator_exit_reason: reason,
         evaluator_duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+// ── Sb-cli backend evaluation ─────────────────────────────────────────────────
+
+/// Route gold patches through the same `evaluate::run()` pipeline that real
+/// sweeps use, by creating a synthetic sweep directory.
+fn evaluate_via_sb_cli(
+    selected: &[SweBenchInstance],
+    args: &SelftestArgs,
+) -> Vec<SelftestInstanceResult> {
+    // Scratch dir for the synthetic sweep artifacts (results.json, all_preds.jsonl).
+    let scratch = args.output_dir.join("_eval_scratch");
+    std::fs::create_dir_all(&scratch)
+        .unwrap_or_else(|e| panic!("cannot create eval scratch dir: {e}"));
+
+    // Split into instances that have a gold patch and those that don't.
+    let mut missing: Vec<SelftestInstanceResult> = Vec::new();
+    let mut eval_pairs: Vec<(&SweBenchInstance, String)> = Vec::new();
+
+    for inst in selected {
+        let patch = inst
+            .other
+            .get("patch")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if patch.trim().is_empty() {
+            missing.push(SelftestInstanceResult {
+                instance_id: inst.instance_id.clone(),
+                resolved: false,
+                evaluator_exit_reason: EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
+                evaluator_duration_ms: 0,
+            });
+        } else {
+            eval_pairs.push((inst, patch.to_owned()));
+        }
+    }
+
+    if eval_pairs.is_empty() {
+        return missing;
+    }
+
+    write_synthetic_results_json(&scratch, &eval_pairs);
+    write_synthetic_predictions(&scratch, &eval_pairs);
+
+    let eval_args = EvaluateArgs {
+        sweep_dir: scratch,
+        dataset_path: Some(args.dataset_path.clone()),
+        backend: EvaluateBackend::SbCli,
+        timeout_per_instance_secs: args.timeout_per_instance,
+        parallel: args.parallel,
+        sb_subset: args.sb_subset.clone(),
+        sb_split: args.sb_split.clone(),
+        run_id: None,
+        breakdown: BreakdownSelection::none(),
+        cost_attribution: false,
+    };
+
+    let start = Instant::now();
+    let eval_result = crate::run::evaluate::run(&eval_args);
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    let mut sb_cli_results: Vec<SelftestInstanceResult> = match eval_result {
+        Ok(eval) => {
+            let n = eval.instances.len().max(1) as u64;
+            let per_inst_ms = total_ms / n;
+            eval.instances
+                .into_iter()
+                .map(|e| SelftestInstanceResult {
+                    instance_id: e.instance_id,
+                    resolved: e.resolved,
+                    evaluator_exit_reason: map_eval_exit_reason(&e.eval_exit_reason),
+                    evaluator_duration_ms: per_inst_ms,
+                })
+                .collect()
+        }
+        Err(e) => {
+            // Entire evaluator invocation failed — mark all submitted instances.
+            eval_pairs
+                .iter()
+                .map(|(inst, _)| SelftestInstanceResult {
+                    instance_id: inst.instance_id.clone(),
+                    resolved: false,
+                    evaluator_exit_reason: format!("{EXIT_REASON_EVALUATOR_FAILED}: {e}"),
+                    evaluator_duration_ms: total_ms,
+                })
+                .collect()
+        }
+    };
+
+    sb_cli_results.extend(missing);
+    sb_cli_results
+}
+
+/// Write a minimal synthetic `results.json` that `evaluate::run()` / `load_sweep()`
+/// can parse. Each instance is marked as `outcome: submitted, patch_present: true`.
+fn write_synthetic_results_json(dir: &Path, pairs: &[(&SweBenchInstance, String)]) {
+    let n = pairs.len();
+    let instances: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|(inst, _)| {
+            serde_json::json!({
+                "instance_id": inst.instance_id,
+                "exit_reason": "submitted",
+                "outcome": "submitted",
+                "patch_present": true,
+                "non_empty_patch": true,
+            })
+        })
+        .collect();
+
+    let results = serde_json::json!({
+        "total": n,
+        "submitted": n,
+        "skipped": 0,
+        "errored": 0,
+        "instances": instances,
+    });
+
+    let path = dir.join("results.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&results).unwrap_or_default())
+        .unwrap_or_else(|e| panic!("failed to write synthetic results.json: {e}"));
+}
+
+/// Write `all_preds.jsonl` with the gold patch for each instance.
+fn write_synthetic_predictions(dir: &Path, pairs: &[(&SweBenchInstance, String)]) {
+    let mut lines = String::new();
+    for (inst, patch) in pairs {
+        let row = serde_json::json!({
+            "instance_id": inst.instance_id,
+            "model_patch": patch,
+            "model_name_or_path": "evaluator_selftest",
+        });
+        lines.push_str(&serde_json::to_string(&row).unwrap_or_default());
+        lines.push('\n');
+    }
+    let path = swebench::predictions_path(dir);
+    std::fs::write(&path, lines)
+        .unwrap_or_else(|e| panic!("failed to write synthetic predictions: {e}"));
+}
+
+fn map_eval_exit_reason(reason: &EvalExitReason) -> String {
+    match reason {
+        EvalExitReason::Resolved => EXIT_REASON_RESOLVED.to_owned(),
+        EvalExitReason::Unresolved => "unresolved".to_owned(),
+        EvalExitReason::PatchApplyFailed => "patch_apply_failed".to_owned(),
+        EvalExitReason::EvalError => EXIT_REASON_EVALUATOR_FAILED.to_owned(),
+        EvalExitReason::SkippedNoPatch => EXIT_REASON_GOLD_PATCH_MISSING.to_owned(),
     }
 }
 

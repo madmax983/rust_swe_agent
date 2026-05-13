@@ -1635,6 +1635,11 @@ fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> 
         sample: s.sample,
         seed: s.seed,
         format: s.format,
+        backend: s.backend,
+        sb_subset: s.sb_subset,
+        sb_split: s.sb_split,
+        timeout_per_instance: s.timeout_per_instance,
+        parallel: s.parallel,
     };
     let result = crate::run::evaluator_selftest::run(selftest_args);
     print!("{}", result.stdout);
