@@ -562,7 +562,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Matches bare `$VAR` and braced `${VAR}` forms.
         PolicyRule::deny_static(
             "exfil-curl-header-env-var",
-            r#"curl\b[^|;\n]*(?:-H|--header)\s+['"]?[^|;\n]*\$[A-Za-z_{]"#,
+            r#"curl\b[^|;\n]*(?:-H|--header)\s*['"]?[^|;\n]*\$[A-Za-z_{]"#,
         ),
         // curl with an environment variable in the -d / --data body.
         // Matches both bare `$VAR` and key=value forms like `key=$VAR`.
