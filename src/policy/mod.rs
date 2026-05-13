@@ -568,7 +568,7 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
         // Matches both bare `$VAR` and key=value forms like `key=$VAR`.
         PolicyRule::deny_static(
             "exfil-curl-data-env-var",
-            r#"curl\b[^|;\n]*(?:-d|--data(?:-binary|-urlencode|-raw)?)\s+['"]?[^|;\n]*\$[A-Za-z_{]"#,
+            r#"curl\b[^|;\n]*(?:-d|--data(?:-binary|-urlencode|-raw|-ascii)?)\s+['"]?[^|;\n]*\$[A-Za-z_{]"#,
         ),
         // `env | curl/wget/nc` — dumps the entire process environment to a
         // remote endpoint.
@@ -583,14 +583,17 @@ fn builtin_deny_rules() -> Vec<PolicyRule> {
             r#"wget\b[^|;\n]*--post-data=['"]?[^|;\n]*\$[A-Za-z_{]"#,
         ),
         // --- Unauthorized git publishing ---
-        // `git push` to an explicit HTTP/HTTPS URL is a reliable
-        // exfiltration vector: the attacker controls the remote and
-        // receives the pushed commits.  Named remotes (e.g. `origin`) are
-        // NOT blocked — they refer to a pre-configured remote in
-        // `.git/config`.
+        // `git push` to an explicit URL (HTTP/HTTPS/SSH/SCP-like/git://) is
+        // a reliable exfiltration vector: the attacker controls the remote.
+        // Named remotes (e.g. `origin`) are NOT blocked — they refer to a
+        // pre-configured remote in `.git/config`.  Patterns covered:
+        //   https://evil.com/repo.git
+        //   ssh://git@evil.com/repo.git
+        //   git://evil.com/repo.git
+        //   git@evil.com:owner/repo.git  (SCP-like syntax)
         PolicyRule::deny_static(
-            "git-push-to-http-url",
-            r"git\b[^|;\n]*\bpush\b[^|;\n]*https?://",
+            "git-push-explicit-url",
+            r"git\b[^|;\n]*\bpush\b[^|;\n]*(?:https?://|ssh://|git://|[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+:)",
         ),
         // `git push --force` / `git push -f` / `git push -fv` / `git -C dir push --force`
         // are destructive: they rewrite history and can destroy upstream
