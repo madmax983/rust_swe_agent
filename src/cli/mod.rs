@@ -1511,6 +1511,7 @@ fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
     let cache_dir = m
         .dataset_cache_dir
@@ -1574,19 +1575,24 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
 
     let summary = crate::run::matrix::run(matrix_args).await?;
 
-    println!("=== bench matrix ===");
+    let mut table = comfy_table::Table::new();
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Rank", "Name", "Model", "State", "Resolved", "Cost($)",
+        ]);
     for arm in &summary.arms {
-        println!(
-            "  [{rank}] {name}  model={model}  state={state}  resolved={resolved}  \
-             cost=${cost:.4}",
-            rank = arm.rank,
-            name = arm.name,
-            model = arm.model,
-            state = arm.state,
-            resolved = arm.resolved,
-            cost = arm.total_cost_usd,
-        );
+        table.add_row(vec![
+            arm.rank.to_string(),
+            arm.name.clone(),
+            arm.model.clone(),
+            arm.state.clone(),
+            arm.resolved.to_string(),
+            format!("{:.4}", arm.total_cost_usd),
+        ]);
     }
+    println!("=== bench matrix ===\n{table}");
     Ok(())
 }
 

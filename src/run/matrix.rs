@@ -6,8 +6,9 @@
 //! cost across completed arms meets the limit, remaining arms are recorded as
 //! `skipped_budget`.
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::collections::HashSet;
-use std::fmt::Write as _;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -613,14 +614,13 @@ fn build_summary(state: &MatrixState) -> MatrixSummary {
 
 fn render_summary_text(summary: &MatrixSummary, state: &MatrixState) -> String {
     let n = state.instance_ids.len();
-    let mut s = String::from("=== bench matrix summary ===\n\n");
-    let _ = writeln!(
-        s,
-        "{:<4} {:<24} {:<24} {:<14} {:>8} {:>10} {:>10}",
-        "Rank", "Name", "Model", "State", "Resolved", "Rate%", "Cost($)"
-    );
-    s.push_str(&"-".repeat(100));
-    s.push('\n');
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Rank", "Name", "Model", "State", "Resolved", "Rate%", "Cost($)",
+        ]);
 
     for row in &summary.arms {
         let rate_pct = if n > 0 {
@@ -628,13 +628,17 @@ fn render_summary_text(summary: &MatrixSummary, state: &MatrixState) -> String {
         } else {
             "N/A".into()
         };
-        let _ = writeln!(
-            s,
-            "{:<4} {:<24} {:<24} {:<14} {:>8} {:>10} {:>10.4}",
-            row.rank, row.name, row.model, row.state, row.resolved, rate_pct, row.total_cost_usd
-        );
+        table.add_row(vec![
+            row.rank.to_string(),
+            row.name.clone(),
+            row.model.clone(),
+            row.state.clone(),
+            row.resolved.to_string(),
+            rate_pct,
+            format!("{:.4}", row.total_cost_usd),
+        ]);
     }
-    s
+    format!("=== bench matrix summary ===\n\n{table}\n")
 }
 
 fn write_matrix_state(path: &Path, state: &MatrixState) -> Result<(), Error> {
