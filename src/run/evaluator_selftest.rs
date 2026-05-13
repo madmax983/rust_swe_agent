@@ -23,7 +23,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::run::dataset::sha256_hex;
-use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend, EvalExitReason};
+use crate::run::evaluate::{BreakdownSelection, EvalExitReason, EvaluateArgs, EvaluateBackend};
 use crate::run::swebench::{self, SweBenchInstance};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -138,8 +138,8 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 /// structured result plus a pre-rendered stdout string.
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: SelftestArgs) -> SelftestResult {
-    let dataset_bytes = std::fs::read(&args.dataset_path)
-        .unwrap_or_else(|e| panic!("failed to read dataset: {e}"));
+    let dataset_bytes =
+        std::fs::read(&args.dataset_path).unwrap_or_else(|e| panic!("failed to read dataset: {e}"));
     let dataset_sha = sha256_hex(&dataset_bytes);
 
     let all_instances =
@@ -189,7 +189,10 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 
 // ── Instance selection ────────────────────────────────────────────────────────
 
-fn select_instances(mut instances: Vec<SweBenchInstance>, args: &SelftestArgs) -> Vec<SweBenchInstance> {
+fn select_instances(
+    mut instances: Vec<SweBenchInstance>,
+    args: &SelftestArgs,
+) -> Vec<SweBenchInstance> {
     if let Some(ids_raw) = args.instance_ids.as_deref() {
         let ids: HashSet<String> = ids_raw
             .split([',', '\n'])
@@ -369,8 +372,11 @@ fn write_synthetic_results_json(dir: &Path, pairs: &[(&SweBenchInstance, String)
     });
 
     let path = dir.join("results.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&results).unwrap_or_default())
-        .unwrap_or_else(|e| panic!("failed to write synthetic results.json: {e}"));
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&results).unwrap_or_default(),
+    )
+    .unwrap_or_else(|e| panic!("failed to write synthetic results.json: {e}"));
 }
 
 /// Write `all_preds.jsonl` with the gold patch for each instance.
@@ -448,11 +454,8 @@ fn render_stdout(output: &SelftestOutput, format: &str) -> String {
         totals.instances_resolved, totals.instances_total,
     );
 
-    let non_resolved: Vec<&SelftestInstanceResult> = output
-        .instances
-        .iter()
-        .filter(|r| !r.resolved)
-        .collect();
+    let non_resolved: Vec<&SelftestInstanceResult> =
+        output.instances.iter().filter(|r| !r.resolved).collect();
 
     if !non_resolved.is_empty() {
         let _ = writeln!(s, "\nNon-resolved instances:");
@@ -521,7 +524,13 @@ fn days_in_year(y: u32) -> u32 {
 fn days_in_month(y: u32, m: u32) -> u32 {
     match m {
         4 | 6 | 9 | 11 => 30,
-        2 => if is_leap(y) { 29 } else { 28 },
+        2 => {
+            if is_leap(y) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 31,
     }
 }

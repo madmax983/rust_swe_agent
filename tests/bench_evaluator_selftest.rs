@@ -25,8 +25,7 @@ fn write_fixture_dataset(dir: &std::path::Path) -> PathBuf {
 
 fn write_resolved_only_dataset(dir: &std::path::Path) -> PathBuf {
     let path = dir.join("dataset_resolved.jsonl");
-    let content =
-        "{\"instance_id\":\"gold-ok\",\"patch\":\"diff --git a/f.py b/f.py\\n--- a/f.py\\n+++ b/f.py\\n@@ -1 +1 @@\\n-x\\n+y\\n\"}\n";
+    let content = "{\"instance_id\":\"gold-ok\",\"patch\":\"diff --git a/f.py b/f.py\\n--- a/f.py\\n+++ b/f.py\\n@@ -1 +1 @@\\n-x\\n+y\\n\"}\n";
     std::fs::write(&path, content).unwrap();
     path
 }
@@ -84,11 +83,7 @@ fn missing_patch_field_recorded_as_gold_patch_missing() {
 fn empty_patch_string_treated_as_missing() {
     let work = tempfile::tempdir().unwrap();
     let path = work.path().join("dataset.jsonl");
-    std::fs::write(
-        &path,
-        "{\"instance_id\":\"empty-patch\",\"patch\":\"\"}\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "{\"instance_id\":\"empty-patch\",\"patch\":\"\"}\n").unwrap();
     let output = work.path().join("out");
     std::fs::create_dir_all(&output).unwrap();
 
@@ -162,7 +157,10 @@ fn json_artifact_has_required_schema_fields() {
     assert!(obj.contains_key("dataset_path"), "missing dataset_path");
     assert!(obj.contains_key("dataset_sha256"), "missing dataset_sha256");
     assert!(obj.contains_key("timestamp_utc"), "missing timestamp_utc");
-    assert!(obj.contains_key("evaluator_backend"), "missing evaluator_backend");
+    assert!(
+        obj.contains_key("evaluator_backend"),
+        "missing evaluator_backend"
+    );
     assert!(obj.contains_key("instances"), "missing instances");
     assert!(obj.contains_key("totals"), "missing totals");
 
