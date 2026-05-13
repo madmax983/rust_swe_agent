@@ -1016,6 +1016,16 @@ fn bench_report_baseline_flag_emits_delta_section() {
         content.contains("django__django-002"),
         "regression should be listed in delta section\ncontent:\n{content}"
     );
+    // Regression rows must label transitions as `pass`/`fail` (plus the
+    // failure category) instead of the raw `submitted`/`error` outcomes.
+    assert!(
+        content.contains("pass") && content.contains("fail"),
+        "regression rows should use explicit pass/fail labels\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("ModelApi"),
+        "regression rows should include the failure category\ncontent:\n{content}"
+    );
 }
 
 #[test]

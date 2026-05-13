@@ -458,14 +458,15 @@ fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
         writeln!(buf, "| Instance | Baseline | Candidate |").ok();
         writeln!(buf, "|---|---|---|").ok();
         for t in report.regressions.iter().take(TOP_DELTA_LIST) {
-            let base = t
-                .baseline_outcome
-                .as_deref()
-                .map_or_else(|| "—".into(), redact);
+            // `regressions` are always pass->fail transitions; label them
+            // explicitly so evaluator-only regressions (where both
+            // sweep-row outcomes are `submitted`) don't render as the
+            // unhelpful `submitted | submitted`. Append the failure
+            // category when present.
+            let base = String::from("pass");
             let cand = t
-                .candidate_outcome
-                .as_deref()
-                .map_or_else(|| "—".into(), redact);
+                .candidate_failure_category
+                .map_or_else(|| String::from("fail"), |c| format!("fail ({c:?})"));
             writeln!(buf, "| {} | {base} | {cand} |", redact(&t.instance_id)).ok();
         }
     }
