@@ -688,6 +688,35 @@ fn bench_report_treats_legacy_submitted_row_as_resolved() {
 }
 
 #[test]
+fn bench_report_redacts_secrets_in_instance_ids() {
+    // A custom/private sweep where an `instance_id` itself contains a
+    // secret-shaped value must be redacted before the row reaches the
+    // shareable report.
+    let work = tempfile::tempdir().unwrap();
+    let leaked_token = "sk-abcdef0123456789ABCDEF12345";
+    // Embed the secret with a non-word-character boundary so the default
+    // redactor's `\b sk-...` pattern matches.
+    let leaky_id = format!("custom/{leaked_token}");
+    let mut row = errored(&leaky_id, FailureCategory::StepLimit);
+    row.cost_usd = Some(0.42);
+    write_sweep(work.path(), vec![row]);
+
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        !content.contains(leaked_token),
+        "report must redact secrets embedded in instance IDs\ncontent:\n{content}"
+    );
+}
+
+#[test]
 fn bench_report_redacts_secrets_in_manifest_fields() {
     // A dataset path or other manifest string that embeds a secret-shaped value
     // must be redacted before reaching the shareable report file.

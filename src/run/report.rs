@@ -377,7 +377,7 @@ fn md_top_failures(
         writeln!(
             buf,
             "| {} | {cat} | {ratio} | {cost} | {excerpt} |",
-            inst.instance_id
+            redact(&inst.instance_id)
         )
         .ok();
     }
@@ -458,9 +458,15 @@ fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
         writeln!(buf, "| Instance | Baseline | Candidate |").ok();
         writeln!(buf, "|---|---|---|").ok();
         for t in report.regressions.iter().take(TOP_DELTA_LIST) {
-            let base = t.baseline_outcome.as_deref().unwrap_or("—");
-            let cand = t.candidate_outcome.as_deref().unwrap_or("—");
-            writeln!(buf, "| {} | {base} | {cand} |", t.instance_id).ok();
+            let base = t
+                .baseline_outcome
+                .as_deref()
+                .map_or_else(|| "—".into(), redact);
+            let cand = t
+                .candidate_outcome
+                .as_deref()
+                .map_or_else(|| "—".into(), redact);
+            writeln!(buf, "| {} | {base} | {cand} |", redact(&t.instance_id)).ok();
         }
     }
     writeln!(buf).ok();
