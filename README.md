@@ -171,6 +171,9 @@ a valid trajectory in hand:
   and secret handling guidance. Start here before tuning a sweep.
 - [`bench tail`](docs/spec-tail.md): live aggregate progress, cost burn, ETA,
   and failure mix for running SWE-bench sweeps.
+- [`bench evaluator-selftest`](docs/spec-evaluator-selftest.md): zero-cost
+  preflight that verifies the evaluator pipeline against gold patches before
+  launching a paid sweep. Run after switching dataset, evaluator image, or machine.
 - [`bench evaluate`](docs/spec-evaluation.md): evaluator output, rerun metrics,
   pass@k, and compare regression gates.
 - [`bench triage`](docs/spec-triage.md): deterministic unresolved-failure

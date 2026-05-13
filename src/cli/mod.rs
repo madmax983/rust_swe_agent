@@ -105,6 +105,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Matrix(m),
         } => Box::pin(bench_matrix(m)).await,
+        Command::Bench {
+            cmd: args::BenchCmd::EvaluatorSelftest(s),
+        } => bench_evaluator_selftest(s),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1617,6 +1620,39 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
             state = arm.state,
             resolved = arm.resolved,
             cost = arm.total_cost_usd,
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> {
+    let selftest_args = crate::run::evaluator_selftest::SelftestArgs {
+        dataset_path: s.dataset_path,
+        output_dir: s.output,
+        instance_ids: s.instance_ids,
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
+        format: s.format,
+    };
+    let result = crate::run::evaluator_selftest::run(selftest_args);
+    print!("{}", result.stdout);
+    let code = result.exit_status.as_exit_code();
+    if code != 0 {
+        exit_with_outcome(
+            match result.exit_status {
+                crate::run::evaluator_selftest::SelftestExitStatus::AllResolved => {
+                    ExitCode::Success
+                }
+                crate::run::evaluator_selftest::SelftestExitStatus::HasUnresolved => {
+                    ExitCode::TaskUnsuccessful
+                }
+                crate::run::evaluator_selftest::SelftestExitStatus::HasErrored => {
+                    ExitCode::PreflightFailure
+                }
+            },
+            "evaluator self-test: not all instances resolved",
         );
     }
     Ok(())

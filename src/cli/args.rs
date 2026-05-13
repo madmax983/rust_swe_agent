@@ -294,6 +294,8 @@ pub enum BenchCmd {
     Bundle(BundleCmd),
     /// Run multiple sweep arms against the same instance set.
     Matrix(MatrixCmd),
+    /// Verify the evaluator pipeline using gold patches as a zero-cost preflight.
+    EvaluatorSelftest(EvaluatorSelftestCmd),
 }
 
 #[derive(Debug, Args)]
@@ -959,6 +961,39 @@ pub struct CommandStatsCmd {
     pub filter: Option<String>,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EvaluatorSelftestCmd {
+    /// Path to the JSONL dataset whose `patch` fields are the gold patches.
+    #[arg(long)]
+    pub dataset_path: PathBuf,
+
+    /// Directory where `evaluator_selftest.json` will be written.
+    #[arg(long, default_value = "./selftest-out")]
+    pub output: PathBuf,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Output format: `text` (default, headline + non-resolved table) or
+    /// `json` (emits the JSON artifact only to stdout).
     #[arg(long, default_value = "text")]
     pub format: String,
 }
