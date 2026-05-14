@@ -23,7 +23,10 @@
   "behavioral": {
     "tests_run_before_submit_rate": 0.0,
     "resolved_rate_when_tests_run": 0.0,
-    "resolved_rate_when_tests_skipped": 0.0
+    "resolved_rate_when_tests_skipped": 0.0,
+    "history_elision_instances": 0,
+    "history_bytes_elided_total": 0,
+    "history_compaction_failed": 0
   },
   "latency_summary": {
     "harness_overhead_ms": {"p50": 0, "p95": 0}

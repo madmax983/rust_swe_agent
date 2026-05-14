@@ -57,6 +57,9 @@ pub enum ExitReason {
         count: u32,
         window: u32,
     },
+    /// The prompt could not be compacted to fit within `history_max_input_tokens`
+    /// even after eliding all eligible older observations.
+    HistoryCompactionFailed,
 }
 
 impl ExitReason {
@@ -82,6 +85,7 @@ impl ExitReason {
             Self::UserInterrupt => "user_interrupt",
             Self::ModelRefusal { .. } => "model_refusal",
             Self::AgentStagnation { .. } => "agent_stagnation",
+            Self::HistoryCompactionFailed => "history_compaction_failed",
         }
     }
 }

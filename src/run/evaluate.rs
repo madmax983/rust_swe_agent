@@ -93,7 +93,7 @@ pub struct SourceReportEntry {
 pub const COST_ATTRIBUTION_RESOLVED_BUCKET: &str = "resolved";
 pub const COST_ATTRIBUTION_UNCATEGORIZED_BUCKET: &str = "uncategorized";
 pub const COST_ATTRIBUTION_TOTAL_BUCKET: &str = "TOTAL";
-pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 12] = [
+pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 13] = [
     FailureCategory::EnvSetup,
     FailureCategory::ModelApi,
     FailureCategory::ModelParse,
@@ -105,6 +105,7 @@ pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 12] = [
     FailureCategory::PatchApplyInvalid,
     FailureCategory::PatchEmpty,
     FailureCategory::SecretLeakDetected,
+    FailureCategory::HistoryCompactionFailed,
     FailureCategory::Unknown,
 ];
 
@@ -243,6 +244,15 @@ pub struct BehavioralMetrics {
     pub tests_run_before_submit_rate: f64,
     pub resolved_rate_when_tests_run: f64,
     pub resolved_rate_when_tests_skipped: f64,
+    /// Number of instances where at least one observation was elided.
+    #[serde(default)]
+    pub history_elision_instances: usize,
+    /// Sum of `history_bytes_elided` across all elided observations in the sweep.
+    #[serde(default)]
+    pub history_bytes_elided_total: u64,
+    /// Number of instances that exited with `history_compaction_failed`.
+    #[serde(default)]
+    pub history_compaction_failed: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -383,13 +393,18 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
+    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
+    let (elision_instances, bytes_elided_total, compaction_failed) =
+        build_elision_stats(&args.sweep_dir, &run_slots);
+    eval.behavioral.history_elision_instances = elision_instances;
+    eval.behavioral.history_bytes_elided_total = bytes_elided_total;
+    eval.behavioral.history_compaction_failed = compaction_failed;
     eval.breakdown = build_breakdown(
         &eval.instances,
         &results,
         &args.breakdown,
         model_name.as_deref(),
     );
-    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     if args.cost_attribution {
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
@@ -1276,7 +1291,79 @@ fn build_behavioral_metrics(
         tests_run_before_submit_rate: pct(tests_run, submitted),
         resolved_rate_when_tests_run: pct(resolved_with_tests, tests_run),
         resolved_rate_when_tests_skipped: pct(resolved_tests_skipped, tests_skipped),
+        ..BehavioralMetrics::default()
     }
+}
+
+/// Scan trajectory files for elision metadata produced by history-bounding.
+/// Iterates all run slots (handles reruns) to count instances with elision and
+/// aggregate bytes. Returns (elision_instances, bytes_elided_total, compaction_failed_count).
+fn build_elision_stats(
+    sweep_dir: &Path,
+    run_slots: &[crate::run::compare::LoadedRunSlot],
+) -> (usize, u64, usize) {
+    let compaction_failed = run_slots
+        .iter()
+        .filter(|s| s.result.failure_category == Some(FailureCategory::HistoryCompactionFailed))
+        .count();
+
+    let mut elision_instance_set = std::collections::HashSet::<String>::new();
+    let mut bytes_elided_total = 0u64;
+
+    for slot in run_slots {
+        let path = swebench::trajectory_path_for_run(sweep_dir, &slot.instance_id, slot.run_index);
+        let path = if path.exists() {
+            path
+        } else {
+            // Fallbacks in priority order: nested legacy, flat, bundled-archive.
+            let nested = sweep_dir.join(&slot.instance_id).join("trajectory.json");
+            let flat = sweep_dir.join(format!("{}.traj.json", slot.instance_id));
+            let bundled = sweep_dir
+                .join("trajectories")
+                .join(format!("{}.traj.json", slot.instance_id));
+            if nested.exists() {
+                nested
+            } else if flat.exists() {
+                flat
+            } else {
+                bundled
+            }
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) else {
+            continue;
+        };
+        let mut any_elided = false;
+        for msg in &traj.messages {
+            let elided = msg
+                .extra
+                .other
+                .get("history_elided")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if elided {
+                any_elided = true;
+                if let Some(bytes) = msg
+                    .extra
+                    .other
+                    .get("history_bytes_elided")
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    bytes_elided_total = bytes_elided_total.saturating_add(bytes);
+                }
+            }
+        }
+        if any_elided {
+            elision_instance_set.insert(slot.instance_id.clone());
+        }
+    }
+    (
+        elision_instance_set.len(),
+        bytes_elided_total,
+        compaction_failed,
+    )
 }
 
 fn normalize_single_run_metrics(row: &mut InstanceEvaluation, runs: u32) {
@@ -1627,6 +1714,7 @@ pub fn failure_label(cat: FailureCategory) -> &'static str {
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
+        FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
     }
 }
@@ -1820,6 +1908,32 @@ pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
             row.bucket, row.n, row.total_usd, row.mean_usd, row.share_pct
         );
     }
+    out
+}
+
+/// Render the elision stats from `BehavioralMetrics` if any elision occurred.
+/// Returns an empty string when no history bounding was active.
+#[must_use]
+pub fn render_elision_stats(behavioral: &BehavioralMetrics) -> String {
+    if behavioral.history_elision_instances == 0 && behavioral.history_compaction_failed == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "history_elision_instances: {}",
+        behavioral.history_elision_instances
+    );
+    let _ = writeln!(
+        out,
+        "history_bytes_elided_total: {}",
+        behavioral.history_bytes_elided_total
+    );
+    let _ = writeln!(
+        out,
+        "history_compaction_failed: {}",
+        behavioral.history_compaction_failed
+    );
     out
 }
 
@@ -2792,5 +2906,121 @@ mod tests {
         assert!(cmd.contains("swe-bench-m"), "got: {cmd}");
         assert!(cmd.contains("dev"), "got: {cmd}");
         assert!(cmd.contains("test-run"), "got: {cmd}");
+    }
+
+    #[test]
+    fn render_elision_stats_empty_when_no_elision() {
+        let behavioral = BehavioralMetrics::default();
+        assert!(
+            render_elision_stats(&behavioral).is_empty(),
+            "should be empty when no elision occurred"
+        );
+    }
+
+    #[test]
+    fn render_elision_stats_shows_counts_when_nonzero() {
+        let behavioral = BehavioralMetrics {
+            history_elision_instances: 3,
+            history_bytes_elided_total: 12_345,
+            history_compaction_failed: 1,
+            ..BehavioralMetrics::default()
+        };
+        let text = render_elision_stats(&behavioral);
+        assert!(
+            text.contains("history_elision_instances: 3"),
+            "missing instances count: {text}"
+        );
+        assert!(
+            text.contains("history_bytes_elided_total: 12345"),
+            "missing bytes total: {text}"
+        );
+        assert!(
+            text.contains("history_compaction_failed: 1"),
+            "missing compaction_failed count: {text}"
+        );
+    }
+
+    #[test]
+    fn build_elision_stats_counts_from_trajectory_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        // Instance a: one elided message → counts toward instances + bytes
+        let instance_a = sweep.join("inst-a");
+        std::fs::create_dir_all(&instance_a).unwrap();
+        let traj_a = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "cmd"},
+                {
+                    "role": "user",
+                    "content": "full content",
+                    "extra": {
+                        "history_elided": true,
+                        "history_bytes_elided": 500_u64
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_a.join("run-1.traj.json"),
+            serde_json::to_string(&traj_a).unwrap(),
+        )
+        .unwrap();
+
+        // Instance b: history_compaction_failed — result lives in the slot
+        let make_result = |id: &str, cat: Option<FailureCategory>| InstanceResult {
+            instance_id: id.into(),
+            exit_reason: cat
+                .as_ref()
+                .map_or_else(|| "submitted".into(), |c| format!("{c:?}").to_lowercase()),
+            outcome: Some(
+                if cat.is_some() {
+                    "error"
+                } else {
+                    outcome::SUBMITTED
+                }
+                .into(),
+            ),
+            failure_category: cat,
+            steps: None,
+            cost_usd: None,
+            prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            completion_tokens: None,
+            duration_secs: None,
+            error: None,
+            github_pr_error: None,
+            patch_present: cat.is_none(),
+            non_empty_patch: cat.is_none(),
+            attempts: 1,
+            retry_reasons: vec![],
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+            fallback_count: None,
+            final_model: None,
+        };
+        let run_slots = vec![
+            crate::run::compare::LoadedRunSlot {
+                instance_id: "inst-a".to_owned(),
+                run_index: 1,
+                result: make_result("inst-a", None),
+            },
+            crate::run::compare::LoadedRunSlot {
+                instance_id: "inst-b".to_owned(),
+                run_index: 1,
+                result: make_result("inst-b", Some(FailureCategory::HistoryCompactionFailed)),
+            },
+        ];
+        let (instances, bytes, compaction_failed) = build_elision_stats(sweep, &run_slots);
+        assert_eq!(instances, 1, "one instance should be elided");
+        assert_eq!(bytes, 500, "should total 500 bytes elided");
+        assert_eq!(compaction_failed, 1, "one compaction_failed instance");
     }
 }

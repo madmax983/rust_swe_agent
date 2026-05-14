@@ -54,6 +54,12 @@ pub struct InspectStep {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation_note: Option<String>,
+    /// True when this observation was elided from the model-visible prompt.
+    #[serde(default)]
+    pub history_elided: bool,
+    /// The marker text that was sent to the model in place of the full content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_sent_marker: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -430,6 +436,8 @@ fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
                 stderr: None,
                 truncated: false,
                 truncation_note: None,
+                history_elided: false,
+                as_sent_marker: None,
             });
             continue;
         }
@@ -446,6 +454,21 @@ fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
             continue;
         };
         let bash = infer_bash_from_previous_assistant(traj, msg_idx);
+        let history_elided = msg
+            .extra
+            .other
+            .get("history_elided")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let as_sent_marker = if history_elided {
+            msg.extra
+                .other
+                .get("history_elision_marker")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        } else {
+            None
+        };
         let (stdout, stdout_note, stdout_truncated) =
             maybe_truncate(&run_result.stdout, full, current_index);
         let (stderr, stderr_note, stderr_truncated) =
@@ -467,6 +490,8 @@ fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
             stderr: Some(stderr),
             truncated: stdout_truncated || stderr_truncated,
             truncation_note: (!note_parts.is_empty()).then(|| note_parts.join("; ")),
+            history_elided,
+            as_sent_marker,
         });
     }
     steps
@@ -714,7 +739,19 @@ fn render_instance_text(report: &InspectReport) -> String {
         if let Some(code) = step.exit_code {
             let _ = writeln!(s, "exit_code: {code}");
         }
-        if let Some(out) = &step.stdout {
+        if step.history_elided {
+            let marker = step
+                .as_sent_marker
+                .as_deref()
+                .unwrap_or("[elision marker unavailable]");
+            let _ = writeln!(s, "[as-sent to model] {marker}");
+            if step.stdout.as_ref().is_some_and(|o| !o.is_empty()) {
+                let _ = writeln!(s, "[as-recorded stdout]");
+                if let Some(out) = &step.stdout {
+                    let _ = writeln!(s, "{out}");
+                }
+            }
+        } else if let Some(out) = &step.stdout {
             let _ = writeln!(s, "stdout:\n{out}");
         }
         if let Some(err) = &step.stderr {
@@ -967,6 +1004,7 @@ fn failure_label(c: FailureCategory) -> &'static str {
         FailureCategory::PatchApplyInvalid => "patch_apply_invalid",
         FailureCategory::PatchEmpty => "patch_empty",
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
+        FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
     }
 }
@@ -1130,5 +1168,131 @@ mod tests {
         } else {
             panic!("expected Instance output");
         }
+    }
+
+    #[test]
+    fn elided_step_renders_two_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("task-elided");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let run_result = serde_json::json!({
+            "stdout": "full_observation_content",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        });
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "```bash\necho x\n```"},
+                {
+                    "role": "user",
+                    "content": "full_observation_content",
+                    "extra": {
+                        "run_result": run_result,
+                        "history_elided": true,
+                        "history_elision_marker": "[history-elided: step 0 observation, 23 bytes]",
+                        "history_bytes_elided": 23
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-elided".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+
+        assert!(
+            text.contains("[as-sent to model]"),
+            "elided step should show as-sent view:\n{text}"
+        );
+        assert!(
+            text.contains("[history-elided: step 0 observation"),
+            "elided step should include marker text:\n{text}"
+        );
+        assert!(
+            text.contains("[as-recorded stdout]"),
+            "elided step should show as-recorded label:\n{text}"
+        );
+        assert!(
+            text.contains("full_observation_content"),
+            "elided step should show full recorded content:\n{text}"
+        );
+
+        if let InspectOutput::Instance(report) = &output {
+            let elided_step = report.steps.iter().find(|s| s.history_elided);
+            assert!(elided_step.is_some(), "report must contain an elided step");
+            let step = elided_step.unwrap();
+            assert!(
+                step.as_sent_marker
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("[history-elided:"),
+                "as_sent_marker must contain the elision marker"
+            );
+        } else {
+            panic!("expected Instance output");
+        }
+    }
+
+    #[test]
+    fn elided_step_without_marker_shows_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("task-no-marker");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let run_result = serde_json::json!({
+            "stdout": "content",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        });
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "```bash\necho x\n```"},
+                {
+                    "role": "user",
+                    "content": "content",
+                    "extra": {
+                        "run_result": run_result,
+                        "history_elided": true
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-no-marker".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+        assert!(
+            text.contains("[elision marker unavailable]"),
+            "should show fallback when marker is absent:\n{text}"
+        );
     }
 }

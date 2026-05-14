@@ -149,7 +149,13 @@ pub enum FailureCategory {
     SecretLeakDetected,
     /// The agent repeated the same action without progress and was halted.
     AgentStagnation,
-    /// An unknown or unclassified failure occurred.
+    /// History could not be compacted to fit within `history_max_input_tokens`
+    /// even after eliding all older observations. The run is terminated rather
+    /// than sending an oversized prompt or triggering a provider context error.
+    HistoryCompactionFailed,
+    /// An unknown or unclassified failure occurred, or a value produced by a
+    /// newer harness version that this reader does not recognise.
+    #[serde(other)]
     Unknown,
 }
 
@@ -166,7 +172,10 @@ impl FailureCategory {
     /// errors, or conditions already governed by other budget controls).
     #[must_use]
     pub fn is_actionable(self) -> bool {
-        matches!(self, Self::EnvSetup | Self::ModelApi)
+        matches!(
+            self,
+            Self::EnvSetup | Self::ModelApi | Self::HistoryCompactionFailed
+        )
     }
 }
 

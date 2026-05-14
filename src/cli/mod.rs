@@ -162,6 +162,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(v) = m.stagnation_window {
         cfg.root.agent.stagnation_window = v;
     }
+    if let Some(v) = m.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = m.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
     let trajectory_name = m
@@ -227,6 +233,12 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
     }
     if let Some(img) = r.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = r.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = r.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
     }
 
     let args = crate::run::replay::ReplayArgs {
@@ -523,6 +535,12 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     }
     if let Some(v) = s.stagnation_window {
         cfg.root.agent.stagnation_window = v;
+    }
+    if let Some(v) = s.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = s.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
     }
     apply_mcp_server_overrides(&mut cfg, &s.mcp_servers)?;
     Ok(cfg)
@@ -986,6 +1004,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
     print!("{}", crate::run::evaluate::render_summary_table(&summary));
     if let Some(latency) = &eval.latency_summary {
         print!("{}", crate::run::evaluate::render_latency_summary(latency));
+    }
+    let elision_text = crate::run::evaluate::render_elision_stats(&eval.behavioral);
+    if !elision_text.is_empty() {
+        print!("{elision_text}");
     }
     if let Some(prov) = &eval.provenance {
         println!(
@@ -1998,6 +2020,8 @@ mod tests {
             detect_stagnation: None,
             stagnation_repeat_threshold: None,
             stagnation_window: None,
+            history_max_input_tokens: None,
+            history_keep_last_observations: None,
             mcp_servers: Vec::new(),
             config: None,
             env: None,
