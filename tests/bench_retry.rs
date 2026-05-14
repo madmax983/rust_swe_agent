@@ -18,9 +18,9 @@ use rust_swe_agent::run::retry::{
     restore_missing_trajectories, save_pre_retry_backup,
 };
 use rust_swe_agent::run::swebench::{
-    CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult,
-    ModelManifest, ProvenanceManifest, PromptTemplateManifest, RuntimeManifest,
-    SWEEP_STATUS_COMPLETED, SweepResults,
+    CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult, ModelManifest,
+    PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SWEEP_STATUS_COMPLETED,
+    SweepResults,
 };
 use rust_swe_agent::trajectory::FailureCategory;
 
@@ -140,7 +140,11 @@ fn make_retry_entry(retry_id: &str, count: usize) -> RetryHistoryEntry {
 
 #[test]
 fn resolve_selection_refuse_no_selector() {
-    let instances = vec![make_instance("a", "error", Some(FailureCategory::StepLimit))];
+    let instances = vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )];
     let err = resolve_selection(&instances, None, None, None, None, false)
         .expect_err("must fail with no selector");
     assert!(err.to_string().contains("at least one of"), "{err}");
@@ -289,33 +293,61 @@ fn merge_preserves_unselected_rows() {
     let retry_output = base_sweep(vec![make_instance("a", "submitted", None)]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
-    let merged = merge_retry_results(&original, &retry_output, make_retry_entry("r1", 1), &selected_ids);
+    let merged = merge_retry_results(
+        &original,
+        &retry_output,
+        make_retry_entry("r1", 1),
+        &selected_ids,
+    );
 
     assert_eq!(merged.instances.len(), 2);
-    let b = merged.instances.iter().find(|r| r.instance_id == "b").unwrap();
+    let b = merged
+        .instances
+        .iter()
+        .find(|r| r.instance_id == "b")
+        .unwrap();
     assert_eq!(b.outcome.as_deref(), Some("submitted"));
-    assert!(b.retry_id.is_none(), "unselected row must not gain retry_id");
+    assert!(
+        b.retry_id.is_none(),
+        "unselected row must not gain retry_id"
+    );
 }
 
 #[test]
 fn merge_replaces_selected_row() {
-    let original = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+    let original = base_sweep(vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
     let mut new_a = make_instance("a", "submitted", None);
     new_a.steps = Some(99);
     let retry_output = base_sweep(vec![new_a]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
-    let merged =
-        merge_retry_results(&original, &retry_output, make_retry_entry("r1", 1), &selected_ids);
+    let merged = merge_retry_results(
+        &original,
+        &retry_output,
+        make_retry_entry("r1", 1),
+        &selected_ids,
+    );
 
-    let a = merged.instances.iter().find(|r| r.instance_id == "a").unwrap();
+    let a = merged
+        .instances
+        .iter()
+        .find(|r| r.instance_id == "a")
+        .unwrap();
     assert_eq!(a.outcome.as_deref(), Some("submitted"));
     assert_eq!(a.steps, Some(99));
 }
 
 #[test]
 fn merge_sets_retry_id_on_retried_instance() {
-    let original = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+    let original = base_sweep(vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
     let retry_output = base_sweep(vec![make_instance("a", "submitted", None)]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
@@ -326,26 +358,49 @@ fn merge_sets_retry_id_on_retried_instance() {
         &selected_ids,
     );
 
-    let a = merged.instances.iter().find(|r| r.instance_id == "a").unwrap();
+    let a = merged
+        .instances
+        .iter()
+        .find(|r| r.instance_id == "a")
+        .unwrap();
     assert_eq!(a.retry_id.as_deref(), Some("test-retry-id-abc"));
 }
 
 #[test]
 fn merge_sets_previous_failure_category() {
-    let original = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+    let original = base_sweep(vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
     let retry_output = base_sweep(vec![make_instance("a", "submitted", None)]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
-    let merged =
-        merge_retry_results(&original, &retry_output, make_retry_entry("rid", 1), &selected_ids);
+    let merged = merge_retry_results(
+        &original,
+        &retry_output,
+        make_retry_entry("rid", 1),
+        &selected_ids,
+    );
 
-    let a = merged.instances.iter().find(|r| r.instance_id == "a").unwrap();
-    assert_eq!(a.previous_failure_category, Some(FailureCategory::StepLimit));
+    let a = merged
+        .instances
+        .iter()
+        .find(|r| r.instance_id == "a")
+        .unwrap();
+    assert_eq!(
+        a.previous_failure_category,
+        Some(FailureCategory::StepLimit)
+    );
 }
 
 #[test]
 fn merge_appends_retry_history_entry() {
-    let original = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+    let original = base_sweep(vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
     let retry_output = base_sweep(vec![make_instance("a", "submitted", None)]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
@@ -367,12 +422,18 @@ fn merge_preserves_prior_retry_history_entries() {
         make_instance("a", "error", Some(FailureCategory::StepLimit)),
         make_instance("b", "error", Some(FailureCategory::StepLimit)),
     ]);
-    original.retry_history.push(make_retry_entry("old-entry", 1));
+    original
+        .retry_history
+        .push(make_retry_entry("old-entry", 1));
     let retry_output = base_sweep(vec![make_instance("a", "submitted", None)]);
     let selected_ids: HashSet<String> = ["a".to_owned()].into();
 
-    let merged =
-        merge_retry_results(&original, &retry_output, make_retry_entry("new-entry", 1), &selected_ids);
+    let merged = merge_retry_results(
+        &original,
+        &retry_output,
+        make_retry_entry("new-entry", 1),
+        &selected_ids,
+    );
 
     assert_eq!(merged.retry_history.len(), 2);
     assert_eq!(merged.retry_history[0].retry_id, "old-entry");
@@ -450,9 +511,8 @@ fn write_fixture_sweep(dir: &Path, instances: &[(&str, &str, Option<&str>)]) {
     let list: Vec<InstanceResult> = instances
         .iter()
         .map(|(id, out, cat)| {
-            let fc = cat.and_then(|c| {
-                serde_json::from_value::<FailureCategory>(serde_json::json!(c)).ok()
-            });
+            let fc = cat
+                .and_then(|c| serde_json::from_value::<FailureCategory>(serde_json::json!(c)).ok());
             make_instance(id, out, fc)
         })
         .collect();
@@ -523,7 +583,9 @@ fn cli_round_trip_compare_reads_retry_history() {
         r.previous_failure_category = Some(FailureCategory::StepLimit);
         r
     }]);
-    results.retry_history.push(make_retry_entry("test-retry-id", 1));
+    results
+        .retry_history
+        .push(make_retry_entry("test-retry-id", 1));
     write_results(candidate.path(), &results);
 
     let baseline = tempfile::tempdir().unwrap();
@@ -564,7 +626,9 @@ fn cli_round_trip_inspect_retried_instance() {
         r.previous_failure_category = Some(FailureCategory::StepLimit);
         r
     }]);
-    results.retry_history.push(make_retry_entry("some-retry-id", 1));
+    results
+        .retry_history
+        .push(make_retry_entry("some-retry-id", 1));
     write_results(sweep.path(), &results);
 
     // Minimal trajectory for the retried instance
@@ -746,7 +810,11 @@ fn archive_uses_flat_path() {
         .join(".retry")
         .join("retry-flat-test")
         .join(format!("{instance_id}.traj.json"));
-    assert!(flat.exists(), "archived trajectory must be at flat path {}", flat.display());
+    assert!(
+        flat.exists(),
+        "archived trajectory must be at flat path {}",
+        flat.display()
+    );
 
     // Nested path inside archive must NOT exist
     let nested = sweep
@@ -755,7 +823,11 @@ fn archive_uses_flat_path() {
         .join("retry-flat-test")
         .join(instance_id)
         .join("run-1.traj.json");
-    assert!(!nested.exists(), "nested archive path must not be created: {}", nested.display());
+    assert!(
+        !nested.exists(),
+        "nested archive path must not be created: {}",
+        nested.display()
+    );
 }
 
 // ─── Unit: save_pre_retry_backup ─────────────────────────────────────────────
@@ -763,7 +835,11 @@ fn archive_uses_flat_path() {
 #[test]
 fn save_pre_retry_backup_writes_json() {
     let sweep = tempfile::tempdir().unwrap();
-    let results = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+    let results = base_sweep(vec![make_instance(
+        "a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
 
     save_pre_retry_backup(sweep.path(), &results, "backup-test-id").unwrap();
 
@@ -772,11 +848,17 @@ fn save_pre_retry_backup_writes_json() {
         .join(".retry")
         .join("backup-test-id")
         .join("pre-retry.json");
-    assert!(path.exists(), "pre-retry.json must be written to archive dir");
+    assert!(
+        path.exists(),
+        "pre-retry.json must be written to archive dir"
+    );
 
     let json = std::fs::read_to_string(&path).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert!(v.get("instances").is_some(), "pre-retry.json must contain full sweep data");
+    assert!(
+        v.get("instances").is_some(),
+        "pre-retry.json must contain full sweep data"
+    );
 }
 
 // ─── Unit: restore_missing_trajectories ──────────────────────────────────────
@@ -791,13 +873,20 @@ fn restore_missing_trajectories_restores_when_absent() {
     // Write archive copy
     let archive_dir = sweep.path().join(".retry").join("r1");
     std::fs::create_dir_all(&archive_dir).unwrap();
-    std::fs::write(archive_dir.join(format!("{id}.traj.json")), b"{\"info\":{\"exit_reason\":\"submitted\"}}").unwrap();
+    std::fs::write(
+        archive_dir.join(format!("{id}.traj.json")),
+        b"{\"info\":{\"exit_reason\":\"submitted\"}}",
+    )
+    .unwrap();
 
     // live path does not exist
     restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
 
     let live = sweep.path().join(id).join("run-1.traj.json");
-    assert!(live.exists(), "missing trajectory must be restored from archive");
+    assert!(
+        live.exists(),
+        "missing trajectory must be restored from archive"
+    );
 }
 
 #[test]
@@ -816,13 +905,20 @@ fn restore_missing_trajectories_keeps_valid_trajectory() {
     // Write a different archive copy
     let archive_dir = sweep.path().join(".retry").join("r1");
     std::fs::create_dir_all(&archive_dir).unwrap();
-    std::fs::write(archive_dir.join(format!("{id}.traj.json")), b"{\"info\":{\"exit_reason\":\"error\"}}").unwrap();
+    std::fs::write(
+        archive_dir.join(format!("{id}.traj.json")),
+        b"{\"info\":{\"exit_reason\":\"error\"}}",
+    )
+    .unwrap();
 
     restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
 
     // Live trajectory must be unchanged
     let content = std::fs::read(sweep.path().join(id).join("run-1.traj.json")).unwrap();
-    assert_eq!(content, valid_content, "valid trajectory must not be overwritten");
+    assert_eq!(
+        content, valid_content,
+        "valid trajectory must not be overwritten"
+    );
 }
 
 #[test]
@@ -838,18 +934,26 @@ fn restore_missing_trajectories_restores_cancelled() {
     std::fs::write(
         live_dir.join("run-1.traj.json"),
         b"{\"info\":{\"exit_reason\":\"cancelled\"}}",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Write the archived copy
     let archive_dir = sweep.path().join(".retry").join("r1");
     std::fs::create_dir_all(&archive_dir).unwrap();
     let archived_content = b"{\"info\":{\"exit_reason\":\"submitted\"}}";
-    std::fs::write(archive_dir.join(format!("{id}.traj.json")), archived_content).unwrap();
+    std::fs::write(
+        archive_dir.join(format!("{id}.traj.json")),
+        archived_content,
+    )
+    .unwrap();
 
     restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
 
     let content = std::fs::read(sweep.path().join(id).join("run-1.traj.json")).unwrap();
-    assert_eq!(content, archived_content, "cancelled trajectory must be replaced with archive");
+    assert_eq!(
+        content, archived_content,
+        "cancelled trajectory must be replaced with archive"
+    );
 }
 
 // ─── CLI: harness mismatch bypassed with --allow-harness-mismatch ─────────────
@@ -864,7 +968,9 @@ fn cli_harness_mismatch_bypassed_with_flag() {
         "error",
         Some(FailureCategory::StepLimit),
     )]);
-    results.manifest = Some(make_manifest_with_sha("0000000000000000000000000000000000000000"));
+    results.manifest = Some(make_manifest_with_sha(
+        "0000000000000000000000000000000000000000",
+    ));
     write_results(sweep.path(), &results);
 
     // With --allow-harness-mismatch, the mismatch gate is bypassed.
@@ -884,7 +990,10 @@ fn cli_harness_mismatch_bypassed_with_flag() {
         .unwrap();
 
     // Must exit non-zero (dry-run without --yes), but must NOT say "SHA mismatch"
-    assert!(!out.status.success(), "dry-run without --yes must be non-zero");
+    assert!(
+        !out.status.success(),
+        "dry-run without --yes must be non-zero"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("SHA mismatch") && !stderr.contains("harness git SHA mismatch"),
@@ -913,7 +1022,10 @@ fn cli_dry_run_non_interactive_hint() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "non-interactive without --yes must fail");
+    assert!(
+        !out.status.success(),
+        "non-interactive without --yes must fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("--yes") || stderr.contains("non-interactively"),
@@ -932,7 +1044,9 @@ fn cli_round_trip_tail_reads_retry_history() {
         r.previous_failure_category = Some(FailureCategory::StepLimit);
         r
     }]);
-    results.retry_history.push(make_retry_entry("tail-retry-id", 1));
+    results
+        .retry_history
+        .push(make_retry_entry("tail-retry-id", 1));
     write_results(sweep.path(), &results);
 
     let out = Command::new(binary_path())

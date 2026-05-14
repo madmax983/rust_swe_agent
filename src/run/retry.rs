@@ -365,10 +365,7 @@ pub fn detect_harness_mismatch(results: &SweepResults) -> bool {
 
 /// Testable inner form: accepts an explicit `current_sha` rather than running
 /// `git rev-parse HEAD`. Pass `None` to simulate "git not available".
-pub fn detect_harness_mismatch_with_sha(
-    results: &SweepResults,
-    current_sha: Option<&str>,
-) -> bool {
+pub fn detect_harness_mismatch_with_sha(results: &SweepResults, current_sha: Option<&str>) -> bool {
     let Some(manifest) = &results.manifest else {
         return false;
     };
@@ -409,11 +406,22 @@ pub fn generate_retry_id() -> String {
     let b = &h[..16];
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-4{:01x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3],
-        b[4], b[5],
-        b[6] & 0x0F, b[7],
-        (b[8] & 0x3F) | 0x80, b[9],
-        b[10], b[11], b[12], b[13], b[14], b[15]
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6] & 0x0F,
+        b[7],
+        (b[8] & 0x3F) | 0x80,
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
     )
 }
 
@@ -434,8 +442,12 @@ pub fn load_sweep_results(sweep_dir: &Path) -> Result<SweepResults, Error> {
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| Error::Trajectory(format!("bench retry: malformed results.json: {e}")))?;
 
-    classify_json_value(&value, ArtifactKind::SweepResults, results_path.display().to_string())
-        .map_err(|e| Error::Trajectory(e.to_string()))?;
+    classify_json_value(
+        &value,
+        ArtifactKind::SweepResults,
+        results_path.display().to_string(),
+    )
+    .map_err(|e| Error::Trajectory(e.to_string()))?;
 
     let results: SweepResults = serde_json::from_value(value)
         .map_err(|e| Error::Trajectory(format!("bench retry: cannot deserialize results: {e}")))?;

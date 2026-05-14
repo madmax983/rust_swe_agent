@@ -1777,10 +1777,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     // Dry-run preview: ask for confirmation when --yes is not set.
     if !r.yes {
         let ids: Vec<&str> = selected.iter().map(|i| i.instance_id.as_str()).collect();
-        eprintln!(
-            "bench retry: {} instance(s) selected:",
-            selected.len()
-        );
+        eprintln!("bench retry: {} instance(s) selected:", selected.len());
         for id in &ids {
             eprintln!("  {id}");
         }
@@ -1803,8 +1800,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     save_pre_retry_backup(&r.sweep, &original, &retry_id)?;
     archive_trajectories(&r.sweep, &selected, &retry_id)?;
 
-    let selected_ids: HashSet<String> =
-        selected.iter().map(|i| i.instance_id.clone()).collect();
+    let selected_ids: HashSet<String> = selected.iter().map(|i| i.instance_id.clone()).collect();
     let ids_csv = {
         let mut v: Vec<&str> = selected_ids.iter().map(String::as_str).collect();
         v.sort_unstable();
@@ -1815,7 +1811,9 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     let retry_results = match crate::run::swebench::run(sweep_args).await {
         Ok(results) => results,
         Err(e) => {
-            if let Err(restore_err) = crate::run::retry::restore_pre_retry_backup(&r.sweep, &retry_id) {
+            if let Err(restore_err) =
+                crate::run::retry::restore_pre_retry_backup(&r.sweep, &retry_id)
+            {
                 tracing::warn!(err = %restore_err, "could not restore pre-retry backup");
             }
             return Err(e);
@@ -1831,11 +1829,9 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
         sweep_cost_limit_usd: r.sweep_cost_limit_usd,
     };
     let selection = RetrySelection {
-        failure_categories: failure_categories.as_ref().map(|v| {
-            v.iter()
-                .map(|c| format!("{c:?}").to_lowercase())
-                .collect()
-        }),
+        failure_categories: failure_categories
+            .as_ref()
+            .map(|v| v.iter().map(|c| format!("{c:?}").to_lowercase()).collect()),
         outcomes: outcomes.clone(),
         instance_ids: instance_ids.clone(),
         limit: r.limit,
@@ -1947,7 +1943,11 @@ fn retry_swebench_args(
         retry_on_resume: false,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        config_overlay_paths: r.config.as_ref().map(|p| vec![p.clone()]).unwrap_or_default(),
+        config_overlay_paths: r
+            .config
+            .as_ref()
+            .map(|p| vec![p.clone()])
+            .unwrap_or_default(),
         dry_run: false,
         skip_preflight: false,
         preflight_format: "text".into(),
