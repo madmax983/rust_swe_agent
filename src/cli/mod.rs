@@ -1896,6 +1896,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn retry_swebench_args(
     r: &args::RetryCmd,
     results: &crate::run::swebench::SweepResults,
@@ -1927,19 +1928,11 @@ fn retry_swebench_args(
         cfg.root.environment.docker_image = Some(img);
     }
 
-    // dataset_cache_dir may be overridden when the manifest has a concrete
-    // cache_path so the named dataset doesn't need to be re-downloaded.
-    let mut dataset_cache_dir = crate::run::dataset::default_cache_dir();
+    let dataset_cache_dir = crate::run::dataset::default_cache_dir();
 
     let dataset_source = if let Some(path) = &r.dataset_path {
-        // Resolve relative paths against the sweep directory so callers can
-        // use paths like `../my-dataset.jsonl` recorded relative to the sweep.
-        let resolved = if path.is_relative() {
-            r.sweep.join(path)
-        } else {
-            path.clone()
-        };
-        DatasetSource::LocalPath(resolved)
+        // Explicit --dataset-path is relative to cwd, matching bench swebench behavior.
+        DatasetSource::LocalPath(path.clone())
     } else if let Some(alias_str) = &r.dataset {
         let alias = alias_str
             .parse::<crate::run::dataset::SwebenchAlias>()
@@ -1949,8 +1942,14 @@ fn retry_swebench_args(
             .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
         DatasetSource::Named { alias, split }
     } else if let Some(m) = manifest {
-        match m.dataset.source_kind.as_str() {
-            "named" => {
+        if m.dataset.source_kind.as_str() == "named" {
+            // When the manifest recorded an exact cache file path, use it as a
+            // local path directly so the dataset is not re-downloaded when the
+            // original sweep used a non-default cache location. Fall back to
+            // Named (which uses the default cache dir) when cache_path is absent.
+            if let Some(cp) = &m.dataset.cache_path {
+                DatasetSource::LocalPath(std::path::PathBuf::from(cp))
+            } else {
                 let alias_str = m.dataset.alias.as_deref().unwrap_or("verified");
                 let split_str = m.dataset.split.as_deref().unwrap_or("test");
                 let alias = alias_str
@@ -1959,26 +1958,18 @@ fn retry_swebench_args(
                 let split = split_str
                     .parse::<crate::run::dataset::SwebenchSplit>()
                     .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-                // Reuse the recorded cache directory so the dataset is not
-                // re-downloaded when the original sweep used a non-default location.
-                if let Some(cp) = &m.dataset.cache_path {
-                    if let Some(parent) = std::path::Path::new(cp).parent() {
-                        dataset_cache_dir = parent.to_path_buf();
-                    }
-                }
                 DatasetSource::Named { alias, split }
             }
-            _ => {
-                // Resolve relative dataset paths recorded in the manifest
-                // against the sweep directory so the retry works from any cwd.
-                let recorded = std::path::PathBuf::from(&m.dataset.path);
-                let resolved = if recorded.is_relative() {
-                    r.sweep.join(&recorded)
-                } else {
-                    recorded
-                };
-                DatasetSource::LocalPath(resolved)
-            }
+        } else {
+            // Resolve relative dataset paths recorded in the manifest
+            // against the sweep directory so the retry works from any cwd.
+            let recorded = std::path::PathBuf::from(&m.dataset.path);
+            let resolved = if recorded.is_relative() {
+                r.sweep.join(&recorded)
+            } else {
+                recorded
+            };
+            DatasetSource::LocalPath(resolved)
         }
     } else {
         return Err(Error::Config(crate::error::ConfigError::Invalid(

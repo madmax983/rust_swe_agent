@@ -199,16 +199,16 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
         .count();
     let errored = merged_instances
         .iter()
-        .filter(|r| {
-            let out = r.outcome.as_deref().unwrap_or("");
-            out != "submitted" && !r.exit_reason.starts_with("budget_halt")
-        })
+        .filter(|r| r.outcome.as_deref() == Some("error"))
         .count();
     let budget_halted = merged_instances
         .iter()
         .filter(|r| r.exit_reason.starts_with("budget_halt"))
         .count();
-    let with_patch = merged_instances.iter().filter(|r| r.with_patch()).count();
+    let with_patch = merged_instances
+        .iter()
+        .filter(|r| r.non_empty_patch && r.outcome.as_deref() == Some("submitted"))
+        .count();
     let patch_empty = merged_instances.iter().filter(|r| r.patch_empty()).count();
     let patch_apply_invalid = merged_instances
         .iter()
@@ -584,14 +584,10 @@ pub fn build_history_entry(
 // ─── trait helpers used in merge ──────────────────────────────────────────────
 
 trait InstanceResultExt {
-    fn with_patch(&self) -> bool;
     fn patch_empty(&self) -> bool;
 }
 
 impl InstanceResultExt for InstanceResult {
-    fn with_patch(&self) -> bool {
-        self.patch_present && self.non_empty_patch
-    }
     fn patch_empty(&self) -> bool {
         self.patch_present && !self.non_empty_patch
     }
