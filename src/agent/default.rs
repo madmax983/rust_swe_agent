@@ -351,15 +351,29 @@ fn ceil_char_boundary(input: &str, idx: usize) -> usize {
     i
 }
 
+/// The standard implementation of the SWE agent loop.
+///
+/// `DefaultAgent` drives the state machine by orchestrating the conversation
+/// between the LLM and the local environment. It manages prompt formatting,
+/// cache optimization, cost tracking, security boundaries, and telemetry logging.
 pub struct DefaultAgent {
+    /// The global runtime configuration governing this agent's limits and behavior.
     pub config: Config,
+    /// The inference backend used to generate actions.
     pub model: Arc<dyn Model>,
+    /// The sandboxed environment where shell commands and file operations execute.
     pub env: Box<dyn Environment>,
+    /// Formats the context and observations into the target model's preferred syntax.
     pub renderer: Arc<Renderer>,
+    /// The conversation transcript maintained over the lifecycle of the task.
     pub history: Vec<Message>,
+    /// The persistent append-only log of all actions, observations, and telemetry.
     pub trajectory: Trajectory,
+    /// The number of completed model-action-observation cycles.
     pub steps: u32,
+    /// The cumulative spend across all API calls in this run.
     pub total_cost_usd: f64,
+    /// Where the cost accounting information was sourced from.
     pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
@@ -379,9 +393,13 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    /// Scrubbing engine that prevents secrets from leaking into logs or external traces.
     pub redactor: Redactor,
+    /// An optional async interrupt switch used to abort execution gracefully.
     pub cancellation: Option<CancellationToken>,
+    /// The security layer enforcing permission rules against model-generated shell commands.
     pub policy_engine: PolicyEngine,
+    /// The collection of capabilities that the model is allowed to invoke.
     pub tool_registry: ToolRegistry,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
@@ -397,21 +415,34 @@ pub struct DefaultAgent {
     stagnation_detector: Option<StagnationDetector>,
 }
 
+/// Constructs a [`DefaultAgent`] with its necessary dependencies and environment constraints.
+///
+/// Ensures that telemetry, secrets redaction, and policy enforcement are properly
+/// bound before the agent loop begins.
 pub struct DefaultAgentBuilder {
+    /// The runtime configuration profile.
     pub config: Config,
+    /// The language model backend.
     pub model: Arc<dyn Model>,
+    /// The sandboxed environment.
     pub env: Box<dyn Environment>,
+    /// The objective the agent is attempting to solve.
     pub task: String,
+    /// Optional supplementary context appended to the system prompt.
     pub extra_context: Option<String>,
+    /// The renderer translating internal state into model prompts.
     pub renderer: Option<Arc<Renderer>>,
+    /// The telemetry stream for realtime observability.
     pub stream: Option<Arc<dyn StreamSink>>,
 }
 
 impl DefaultAgentBuilder {
+    /// Assembles the `DefaultAgent` using standard built-in tools.
     pub fn build(self) -> Result<DefaultAgent, Error> {
         self.build_with_tool_providers(Vec::new())
     }
 
+    /// Assembles the `DefaultAgent` while injecting external tool providers (like MCPs).
     #[allow(clippy::too_many_lines)]
     pub fn build_with_tool_providers(
         self,
@@ -1333,6 +1364,9 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    /// Injects a strict wallclock deadline. If the loop exceeds this duration,
+    /// it terminates immediately. Used primarily during high-throughput parallel sweeps
+    /// to prevent runaway agent loops from blocking CI.
     pub fn set_wallclock_deadline(&mut self, timeout: Duration) {
         self.wallclock_deadline = Some(WallclockDeadline {
             deadline: Instant::now() + timeout,
@@ -1526,6 +1560,8 @@ impl DefaultAgent {
         }
     }
 
+    /// Transitions the agent state machine into a wallclock-timeout state.
+    /// This writes the final metadata and flushes the trajectory cleanly.
     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
         self.trajectory.info.exit_reason = Some(exit_reason::WALLCLOCK_TIMEOUT.into());
         self.trajectory.info.failure_category = Some(FailureCategory::WallclockTimeout);
@@ -1572,6 +1608,8 @@ impl DefaultAgent {
         })
     }
 
+    /// Transitions the agent state machine into a cancelled state.
+    /// This handles user-initiated SIGINT/SIGTERM terminations safely.
     pub fn finalize_cancelled(&mut self) {
         self.trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
         self.trajectory.info.failure_category = None;

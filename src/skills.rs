@@ -35,10 +35,13 @@ pub struct SkillRegistry {
     manifests: Vec<SkillManifest>,
 }
 
+/// Indicates how a specific skill was selected for inclusion in the context.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillActivationReason {
+    /// The skill was explicitly named in the agent's instructions or task context.
     ExplicitMention,
+    /// The skill was automatically selected based on heuristics (like repository patterns).
     AutoMatch,
 }
 

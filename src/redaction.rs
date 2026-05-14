@@ -14,13 +14,22 @@ use sha2::{Digest, Sha256};
 use crate::config::RedactionCfg;
 use crate::stream::{StreamEvent, StreamSink};
 
+/// Defines target surfaces where text might be exported or persisted,
+/// allowing the redactor to optionally tune behavior per output medium.
 pub mod surface {
+    /// Surface for storing full trajectory logs on disk.
     pub const TRAJECTORY: &str = "trajectory";
+    /// Surface for sending environment observations back to the LLM.
     pub const MODEL_OBSERVATION: &str = "model_observation";
+    /// Surface for realtime API/web streaming.
     pub const STREAM: &str = "stream";
+    /// Surface for the local CLI debug inspector.
     pub const INSPECT: &str = "inspect";
+    /// Surface for generic external text export.
     pub const EXPORT: &str = "export";
+    /// Surface for the final generated git patch diff.
     pub const PATCH_SUBMISSION: &str = "patch_submission";
+    /// Surface for writing summary comments to GitHub pull requests.
     pub const GITHUB_COMMENT: &str = "github_comment";
 }
 

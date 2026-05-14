@@ -21,12 +21,17 @@ pub use deterministic::DeterministicModel;
 pub use fallback::FallbackModel;
 pub use litellm::{AnthropicBackend, LitellmBackend};
 
+/// The role associated with a message in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// High-level instructions that set the behavior of the assistant.
     System,
+    /// Messages from the user or environment.
     User,
+    /// Responses from the assistant itself.
     Assistant,
+    /// Results returned from executing a tool call.
     Tool,
 }
 

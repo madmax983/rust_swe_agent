@@ -15,7 +15,9 @@ use thiserror::Error;
 /// contract. Major bumps are breaking; minor bumps must remain additive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ArtifactSchemaVersion {
+    /// Incremented for breaking changes.
     pub major: u16,
+    /// Incremented for additive, backwards-compatible fields.
     pub minor: u16,
 }
 
@@ -83,7 +85,9 @@ impl fmt::Display for ArtifactKind {
 /// Standard top-level artifact metadata fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactHeader {
+    /// Identifies the file format and its intended consumer.
     pub artifact_kind: ArtifactKind,
+    /// The structural version attached to the artifact.
     pub schema_version: ArtifactSchemaVersion,
 }
 
@@ -118,9 +122,13 @@ impl CompatibilityClass {
 /// Result of classifying a specific artifact payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactCompatibility {
+    /// The declared kind found during parsing.
     pub kind: ArtifactKind,
+    /// The declared version found during parsing (if present).
     pub version: Option<ArtifactSchemaVersion>,
+    /// How the current executable should handle this artifact.
     pub class: CompatibilityClass,
+    /// Any warnings generated during evaluation (e.g. forward-compatibility warnings).
     pub warnings: Vec<String>,
 }
 
@@ -135,25 +143,41 @@ impl ArtifactCompatibility {
     }
 }
 
+/// Represents errors that occur when deserializing or validating an artifact's header.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ArtifactSchemaError {
+    /// The artifact's declared kind did not match the expected type for the current operation.
     #[error("{path}: artifact kind mismatch: expected {expected}, found {found}")]
     KindMismatch {
+        /// The file path of the artifact that failed validation.
         path: String,
+        /// The expected artifact kind.
         expected: ArtifactKind,
+        /// The actual artifact kind found in the header.
         found: ArtifactKind,
     },
+    /// The artifact was written by a newer, incompatible version of the binary.
     #[error(
         "{path}: unsupported future artifact schema for {kind}: version {version}; this binary supports major {supported_major}. Re-run with a newer rust-swe-agent."
     )]
     UnsupportedFuture {
+        /// The file path of the artifact.
         path: String,
+        /// The artifact kind.
         kind: ArtifactKind,
+        /// The future version found.
         version: ArtifactSchemaVersion,
+        /// The max major version this binary understands.
         supported_major: u16,
     },
+    /// The artifact metadata header could not be parsed.
     #[error("{path}: malformed artifact schema header: {message}")]
-    MalformedHeader { path: String, message: String },
+    MalformedHeader {
+        /// The file path of the artifact.
+        path: String,
+        /// Underlying parser error details.
+        message: String,
+    },
 }
 
 /// Classify a decoded JSON artifact against the expected artifact family.

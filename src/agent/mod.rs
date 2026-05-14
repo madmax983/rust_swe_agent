@@ -40,21 +40,43 @@ pub use parse::{
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     /// The agent explicitly decided to submit a final answer.
-    Submitted { final_output: String },
+    Submitted {
+        /// The text of the final answer submitted by the agent.
+        final_output: String,
+    },
     /// The agent reached its configured maximum number of allowed steps.
-    StepLimit { limit: u32 },
+    StepLimit {
+        /// The configured step limit that was reached.
+        limit: u32,
+    },
     /// The agent exceeded its configured maximum spend.
-    CostLimit { limit_usd: f64, spent_usd: f64 },
+    CostLimit {
+        /// The maximum allowed cost in USD.
+        limit_usd: f64,
+        /// The actual cost spent in USD.
+        spent_usd: f64,
+    },
     /// The agent's per-task USD budget was exhausted mid-loop.
-    BudgetExhausted { limit_usd: f64, spent_usd: f64 },
+    BudgetExhausted {
+        /// The maximum allowed budget in USD.
+        limit_usd: f64,
+        /// The actual cost spent in USD.
+        spent_usd: f64,
+    },
     /// A human explicitly cancelled the run.
     UserInterrupt,
     /// The LLM backend refused to complete the prompt (e.g. safety filters).
-    ModelRefusal { reason: String },
+    ModelRefusal {
+        /// The reason for refusal provided by the model backend.
+        reason: String,
+    },
     /// The agent was halted because it repeated the same action K times in W steps.
     AgentStagnation {
+        /// The hash of the action that was repeated.
         action_hash: String,
+        /// The number of times the action was repeated.
         count: u32,
+        /// The window of steps over which the repetition occurred.
         window: u32,
     },
     /// The prompt could not be compacted to fit within `history_max_input_tokens`

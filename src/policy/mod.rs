@@ -50,6 +50,7 @@ impl Default for PolicyCfg {
 
 // ── Policy profiles ───────────────────────────────────────────────────────────
 
+/// Security profile level governing command execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyProfile {
     /// Block the built-in dangerous-command corpus; allow everything else.

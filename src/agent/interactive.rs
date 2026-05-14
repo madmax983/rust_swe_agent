@@ -9,16 +9,24 @@ use async_trait::async_trait;
 use super::{Agent, DefaultAgent, ExitReason, StepOutcome};
 use crate::error::Error;
 
+/// A wrapper around `DefaultAgent` that injects terminal interactivity.
+///
+/// Use this when driving the agent from a human-attended CLI rather than
+/// an automated batch sweep.
 pub struct InteractiveAgent {
+    /// The wrapped standard agent loop.
     pub inner: DefaultAgent,
+    /// If true, automatic prompting for human review of commands is skipped.
     pub yolo: bool,
 }
 
 impl InteractiveAgent {
+    /// Wraps an existing `DefaultAgent` to add CLI interactivity.
     pub fn new(inner: DefaultAgent, yolo: bool) -> Self {
         Self { inner, yolo }
     }
 
+    /// Generates a human-readable one-line status summary of the agent's progress.
     pub fn status_line(&self) -> String {
         let cache_str = if self.inner.model.supports_explicit_cache() {
             "cache:explicit"

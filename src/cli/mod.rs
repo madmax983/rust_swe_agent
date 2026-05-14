@@ -26,6 +26,7 @@ pub struct Cli {
     pub log: String,
 }
 
+/// The top-level commands available in the CLI.
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
