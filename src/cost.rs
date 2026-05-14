@@ -96,3 +96,117 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_return_unknown_when_combined_with_unknown() {
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::FreeTierInferred),
+            CostSource::Unknown
+        );
+    }
+
+    #[test]
+    fn should_return_rate_card_estimate_when_combined_with_lower_priority() {
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::FreeTierInferred),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+    }
+
+    #[test]
+    fn should_return_provider_reported_when_combined_with_free_tier() {
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+    }
+
+    #[test]
+    fn should_return_free_tier_when_combined_with_free_tier() {
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+    }
+
+    #[test]
+    fn should_format_display_correctly() {
+        assert_eq!(
+            format!("{}", CostSource::ProviderReported),
+            "provider_reported"
+        );
+        assert_eq!(
+            format!("{}", CostSource::RateCardEstimate),
+            "rate_card_estimate"
+        );
+        assert_eq!(
+            format!("{}", CostSource::FreeTierInferred),
+            "free_tier_inferred"
+        );
+        assert_eq!(format!("{}", CostSource::Unknown), "unknown");
+    }
+
+    #[test]
+    fn should_calculate_estimate_cost_usd() {
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet",
+        );
+        // 3.0 + (3.0 * 0.10) + (3.0 * 1.25) + 15.0 = 3.0 + 0.3 + 3.75 + 15.0 = 22.05
+        assert!((cost - 22.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn should_calculate_estimate_cost_usd_non_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        // 3.0 + (3.0 * 1.0) + (3.0 * 1.0) + 15.0 = 3.0 + 3.0 + 3.0 + 15.0 = 24.0
+        assert!((cost - 24.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn should_identify_free_tier_models() {
+        assert!(is_free_tier_model("google/gemini-pro:free"));
+        assert!(is_free_tier_model("gemini-pro:free"));
+        assert!(!is_free_tier_model("google/gemini-pro"));
+        assert!(!is_free_tier_model("claude-3-5-sonnet"));
+    }
+}
