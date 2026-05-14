@@ -1824,6 +1824,11 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     let retry_results = match crate::run::swebench::run(sweep_args).await {
         Ok(results) => results,
         Err(e) => {
+            // Restore any trajectories/patches that were overwritten before
+            // reverting results.json, so on-disk state is consistent.
+            if let Err(restore_err) = restore_missing_trajectories(&r.sweep, &selected, &retry_id) {
+                tracing::warn!(err = %restore_err, "could not restore archived trajectories");
+            }
             if let Err(restore_err) =
                 crate::run::retry::restore_pre_retry_backup(&r.sweep, &retry_id)
             {
@@ -1922,8 +1927,19 @@ fn retry_swebench_args(
         cfg.root.environment.docker_image = Some(img);
     }
 
+    // dataset_cache_dir may be overridden when the manifest has a concrete
+    // cache_path so the named dataset doesn't need to be re-downloaded.
+    let mut dataset_cache_dir = crate::run::dataset::default_cache_dir();
+
     let dataset_source = if let Some(path) = &r.dataset_path {
-        DatasetSource::LocalPath(path.clone())
+        // Resolve relative paths against the sweep directory so callers can
+        // use paths like `../my-dataset.jsonl` recorded relative to the sweep.
+        let resolved = if path.is_relative() {
+            r.sweep.join(path)
+        } else {
+            path.clone()
+        };
+        DatasetSource::LocalPath(resolved)
     } else if let Some(alias_str) = &r.dataset {
         let alias = alias_str
             .parse::<crate::run::dataset::SwebenchAlias>()
@@ -1943,9 +1959,26 @@ fn retry_swebench_args(
                 let split = split_str
                     .parse::<crate::run::dataset::SwebenchSplit>()
                     .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+                // Reuse the recorded cache directory so the dataset is not
+                // re-downloaded when the original sweep used a non-default location.
+                if let Some(cp) = &m.dataset.cache_path {
+                    if let Some(parent) = std::path::Path::new(cp).parent() {
+                        dataset_cache_dir = parent.to_path_buf();
+                    }
+                }
                 DatasetSource::Named { alias, split }
             }
-            _ => DatasetSource::LocalPath(std::path::PathBuf::from(&m.dataset.path)),
+            _ => {
+                // Resolve relative dataset paths recorded in the manifest
+                // against the sweep directory so the retry works from any cwd.
+                let recorded = std::path::PathBuf::from(&m.dataset.path);
+                let resolved = if recorded.is_relative() {
+                    r.sweep.join(&recorded)
+                } else {
+                    recorded
+                };
+                DatasetSource::LocalPath(resolved)
+            }
         }
     } else {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -1955,7 +1988,7 @@ fn retry_swebench_args(
 
     Ok(crate::run::swebench::SwebenchArgs {
         dataset_source,
-        dataset_cache_dir: crate::run::dataset::default_cache_dir(),
+        dataset_cache_dir,
         output_dir: r.sweep.clone(),
         parallel: r.parallel.unwrap_or(4),
         config: cfg,

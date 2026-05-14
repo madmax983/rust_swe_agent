@@ -191,7 +191,7 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
     let total = merged_instances.len();
     let submitted = merged_instances
         .iter()
-        .filter(|r| r.outcome.as_deref() == Some("submitted"))
+        .filter(|r| r.outcome.as_deref() == Some("submitted") && r.exit_reason != "skipped_resume")
         .count();
     let submitted_with_tests = merged_instances
         .iter()
