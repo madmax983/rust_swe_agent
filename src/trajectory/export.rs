@@ -130,11 +130,11 @@ impl TrajectoryExporter for HtmlExporter {
         html.push_str(
             "body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n",
         );
-        html.push_str(".message { margin-bottom: 20px; padding: 15px; border-radius: 8px; white-space: pre-wrap; }\n");
+        html.push_str(".message { margin-bottom: 20px; padding: 15px; border-radius: 8px; }\n");
         html.push_str(".system { background-color: #f8d7da; color: #721c24; }\n");
         html.push_str(".user { background-color: #d1ecf1; color: #0c5460; }\n");
         html.push_str(".assistant { background-color: #d4edda; color: #155724; }\n");
-        html.push_str(".tool { background-color: #e2e3e5; color: #383d41; font-family: monospace; }");
+        html.push_str(".tool { background-color: #e2e3e5; color: #383d41; font-family: monospace; white-space: pre-wrap; }\n");
         html.push_str("</style>\n</head>\n<body>\n");
 
         html.push_str("<h1>Trajectory Export</h1>\n");
@@ -149,7 +149,13 @@ impl TrajectoryExporter for HtmlExporter {
         }
 
         if let Some(outcome) = &trajectory.info.outcome {
-            let _ = writeln!(html, "<p><strong>Outcome:</strong> {outcome}</p>");
+            let outcome_redacted = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = outcome_redacted
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace(';', "&#59;");
+            let _ = writeln!(html, "<p><strong>Outcome:</strong> {safe_outcome}</p>");
         }
 
         for msg in &trajectory.messages {
@@ -167,11 +173,18 @@ impl TrajectoryExporter for HtmlExporter {
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")
+                .replace('\n', "<br>");
+
+            let safe_role_title = role_title
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
                 .replace(';', "&#59;");
+            let safe_role_class = role_class.replace('"', "&quot;");
 
             let _ = writeln!(
                 html,
-                "<div class=\"{role_class}\">\n<h2>{role_title}</h2>\n<p>{safe_content}</p>\n</div>"
+                "<div class=\"message {safe_role_class}\">\n<h2>{safe_role_title}</h2>\n<p>{safe_content}</p>\n</div>"
             );
         }
 
