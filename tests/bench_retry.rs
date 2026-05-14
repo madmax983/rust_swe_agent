@@ -5,7 +5,7 @@
 //! Green phase: minimal implementation makes all tests pass.
 //! Refactor   : clean-up committed.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::collections::HashSet;
 use std::path::Path;
