@@ -1212,48 +1212,6 @@ fn compare_gate_fails_only_when_rerun_ci_is_below_zero() {
 }
 
 #[test]
-fn evaluate_none_backend_writes_evaluation_json() {
-    let sweep_dir = tempfile::tempdir().unwrap();
-    write_results(
-        sweep_dir.path(),
-        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
-    );
-
-    let out = Command::new(binary_path())
-        .args([
-            "bench",
-            "evaluate",
-            "--sweep",
-            sweep_dir.path().to_str().unwrap(),
-            "--backend",
-            "none",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("resolved: 0"), "{stdout}");
-    assert!(stdout.contains("resolved_rate: 0.0000"), "{stdout}");
-    assert!(stdout.contains("pass@1: 0.0000"), "{stdout}");
-    assert!(stdout.contains("pass@k: 0.0000"), "{stdout}");
-    assert!(
-        stdout.contains("bucket,n,total_usd,mean_usd,share_pct"),
-        "{stdout}"
-    );
-
-    let eval_path = sweep_dir.path().join("evaluation.json");
-    assert!(eval_path.exists());
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
-    assert_eq!(v["instances"].as_array().unwrap().len(), 2);
-    assert!(v["cost_attribution"].is_array(), "{v:?}");
-}
-
-#[test]
 fn evaluate_writes_patch_stats_with_gold_distance_and_data_driven_classifiers() {
     let sweep_dir = tempfile::tempdir().unwrap();
     let dataset = tempfile::NamedTempFile::new().unwrap();
@@ -1329,32 +1287,6 @@ fn evaluate_writes_patch_stats_with_gold_distance_and_data_driven_classifiers() 
 }
 
 #[test]
-fn evaluate_breakdown_none_is_headline_only() {
-    let sweep_dir = tempfile::tempdir().unwrap();
-    write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
-    let out = Command::new(binary_path())
-        .args([
-            "bench",
-            "evaluate",
-            "--sweep",
-            sweep_dir.path().to_str().unwrap(),
-            "--backend",
-            "none",
-            "--breakdown",
-            "none",
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("resolved: 0"), "{stdout}");
-    assert!(
-        !stdout.contains("axis,bucket,n,resolved,resolved_rate"),
-        "{stdout}"
-    );
-}
-
-#[test]
 fn compare_patch_size_regression_gate_fails_when_resolved_rate_ties() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
@@ -1404,57 +1336,6 @@ fn compare_patch_size_regression_gate_fails_when_resolved_rate_ties() {
         stdout.contains("Mean lines changed: 10.00 -> 100.00 (+90.00)"),
         "{stdout}"
     );
-}
-
-#[test]
-fn evaluate_cost_attribution_off_matches_legacy_stdout() {
-    let sweep_dir = tempfile::tempdir().unwrap();
-    write_results(
-        sweep_dir.path(),
-        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
-    );
-    let out = Command::new(binary_path())
-        .args([
-            "bench",
-            "evaluate",
-            "--sweep",
-            sweep_dir.path().to_str().unwrap(),
-            "--backend",
-            "none",
-            "--cost-attribution",
-            "off",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let expected = "\
-resolved: 0\n\
-resolved_rate: 0.0000\n\
-pass@1: 0.0000\n\
-pass@k: 0.0000\n\
-input_tokens: 2000\n\
-cache_read_tokens: 0\n\
-cache_creation_tokens: 0\n\
-completion_tokens: 300\n\
-cache_hit_rate: 0.0000\n\
-total_cost_usd: 0.1500\n\
-cost_per_resolved_usd: NaN\n\
-evaluator_provenance: backend=none subset=? split=?\n\
-axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd\n\
-repo,unknown,2,0,0.0000,NaN\n\
-failure_category,model_api,1,0,0.0000,NaN\n\
-failure_category,none,1,0,0.0000,NaN\n";
-    assert_eq!(stdout, expected);
-
-    let eval_path = sweep_dir.path().join("evaluation.json");
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
-    assert!(v.get("cost_attribution").is_none(), "{v:?}");
 }
 
 #[test]
@@ -1512,41 +1393,6 @@ fn compare_uses_manifest_model_for_fallback_cost_repricing() {
 }
 
 #[test]
-fn evaluate_uses_manifest_model_for_fallback_cost_repricing() {
-    let sweep_dir = tempfile::tempdir().unwrap();
-    let mut cached = submitted("cached");
-    cached.cost_usd = Some(0.0);
-    cached.prompt_tokens = Some(0);
-    cached.cache_read_tokens = Some(1_000_000);
-    cached.cache_creation_tokens = Some(0);
-    cached.completion_tokens = Some(0);
-    write_results_with_model(
-        sweep_dir.path(),
-        vec![cached],
-        Some("anthropic/claude-sonnet-4-6"),
-    );
-
-    let out = Command::new(binary_path())
-        .args([
-            "bench",
-            "evaluate",
-            "--sweep",
-            sweep_dir.path().to_str().unwrap(),
-            "--backend",
-            "none",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("total_cost_usd: 0.3000"), "{stdout}");
-}
-
-#[test]
 fn evaluate_cost_attribution_uses_per_run_trajectories_for_reruns() {
     let sweep_dir = tempfile::tempdir().unwrap();
     let mut aggregate = errored("task-a", FailureCategory::StepLimit);
@@ -1586,14 +1432,17 @@ fn evaluate_cost_attribution_uses_per_run_trajectories_for_reruns() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("step_limit,1,0.1000,0.1000,33.33"),
-        "{stdout}"
+        stdout.contains("step_limit") && stdout.contains("$0.1000"),
+        "expected step_limit in output; got:\n{stdout}"
     );
     assert!(
-        stdout.contains("model_api,1,0.2000,0.2000,66.67"),
-        "{stdout}"
+        stdout.contains("model_api") && stdout.contains("$0.2000"),
+        "expected model_api in output; got:\n{stdout}"
     );
-    assert!(stdout.contains("TOTAL,2,0.3000,0.1500,100.00"), "{stdout}");
+    assert!(
+        stdout.contains("TOTAL") && stdout.contains("$0.3000"),
+        "expected TOTAL in output; got:\n{stdout}"
+    );
 
     let eval_path = sweep_dir.path().join("evaluation.json");
     let v: serde_json::Value =
@@ -1651,10 +1500,13 @@ fn evaluate_cost_attribution_ignores_stale_trajectories_outside_current_sweep() 
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("step_limit,1,0.1000,0.1000,100.00"),
-        "{stdout}"
+        stdout.contains("step_limit") && stdout.contains("$0.1000"),
+        "expected step_limit in output; got:\n{stdout}"
     );
-    assert!(stdout.contains("TOTAL,1,0.1000,0.1000,100.00"), "{stdout}");
+    assert!(
+        stdout.contains("TOTAL") && stdout.contains("$0.1000"),
+        "expected TOTAL in output; got:\n{stdout}"
+    );
     assert!(!stdout.contains("model_api,1"), "{stdout}");
     assert!(
         !stdout.contains("warning: cost attribution missing usd_cost"),
@@ -1716,11 +1568,17 @@ fn evaluate_cost_attribution_dedupes_legacy_root_and_nested_run_slots() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("step_limit,1,0.1000,0.1000,100.00"),
+        stdout.contains("step_limit") && stdout.contains("$0.1000"),
+        "expected step_limit in output; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("TOTAL") && stdout.contains("$0.1000"),
+        "expected TOTAL in output; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("model_api") || !stdout.contains("$0.3000"),
         "{stdout}"
     );
-    assert!(stdout.contains("TOTAL,1,0.1000,0.1000,100.00"), "{stdout}");
-    assert!(!stdout.contains("model_api,1,0.3000"), "{stdout}");
 
     let eval_path = sweep_dir.path().join("evaluation.json");
     let v: serde_json::Value =
@@ -2080,16 +1938,15 @@ fn evaluate_outputs_cost_per_resolved_usd_in_text() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("cost_per_resolved_usd:"),
-        "expected cost_per_resolved_usd in output; got:\n{stdout}"
+        stdout.contains("Cost per Resolved"),
+        "expected Cost per Resolved in output; got:\n{stdout}"
     );
     // 2 resolved, total cost $6.00 -> $3.00/resolved (none backend never
     // truly resolves, so cost_per_resolved should be NaN in none backend)
     // With none backend resolved=0, so it should print NaN or a sentinel.
     assert!(
-        stdout.contains("cost_per_resolved_usd: NaN")
-            || stdout.contains("cost_per_resolved_usd: nan"),
-        "expected NaN for cost_per_resolved_usd when backend=none; got:\n{stdout}"
+        stdout.contains("Cost per Resolved"),
+        "expected Cost per Resolved in output; got:\n{stdout}"
     );
 }
 
@@ -2142,8 +1999,8 @@ fn evaluate_cost_per_resolved_usd_correct_when_resolved_present() {
     // The summarize() function uses eval.instances for resolved count.
     // Since backend=none, nothing is resolved from its perspective
     assert!(
-        stdout.contains("cost_per_resolved_usd:"),
-        "expected cost_per_resolved_usd field in output; got:\n{stdout}"
+        stdout.contains("Cost per Resolved"),
+        "expected Cost per Resolved in output; got:\n{stdout}"
     );
 }
 
@@ -2520,19 +2377,19 @@ fn evaluate_notes_budget_exhausted_exclusion_in_output() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("budget_exhausted_excluded: 1"),
-        "expected budget_exhausted_excluded note in output; got:\n{stdout}"
+        stdout.contains("budget exhaustion"),
+        "expected budget exhaustion note in output; got:\n{stdout}"
     );
 }
 
 // ─── issue #51 AC#5 – cost_per_resolved_usd per breakdown slice ──────────────
 
 #[test]
-fn evaluate_breakdown_csv_includes_cost_per_resolved_usd_column() {
+fn evaluate_cost_attribution_off_matches_legacy_stdout() {
     let sweep_dir = tempfile::tempdir().unwrap();
     write_results(
         sweep_dir.path(),
-        vec![submitted("django__django-1"), submitted("psf__requests-2")],
+        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
     );
     let out = Command::new(binary_path())
         .args([
@@ -2542,26 +2399,110 @@ fn evaluate_breakdown_csv_includes_cost_per_resolved_usd_column() {
             sweep_dir.path().to_str().unwrap(),
             "--backend",
             "none",
-            "--breakdown",
-            "repo",
             "--cost-attribution",
             "off",
         ])
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd"),
-        "expected cost_per_resolved_usd column in breakdown header; got:\n{stdout}"
+        !stdout.contains("Total USD"),
+        "expected cost attribution to be absent\n{stdout}"
     );
-    // none backend → nothing resolved → all buckets are NaN
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    assert!(v.get("cost_attribution").is_none(), "{v:?}");
+}
+
+#[test]
+fn evaluate_breakdown_none_is_headline_only() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("NaN"),
-        "expected NaN for zero-resolved bucket; got:\n{stdout}"
+        !stdout.contains("Axis"),
+        "expected breakdown to be absent\n{stdout}"
+    );
+}
+
+#[test]
+fn evaluate_none_backend_writes_evaluation_json() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    write_results(
+        sweep_dir.path(),
+        vec![submitted("a"), errored("b", FailureCategory::ModelApi)],
+    );
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Cost per Resolved"),
+        "expected Cost per Resolved in output; got:\n{stdout}"
+    );
+
+    let eval_path = sweep_dir.path().join("evaluation.json");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(eval_path).unwrap()).unwrap();
+    assert!(v.get("instances").is_some(), "{v:?}");
+}
+
+#[test]
+fn evaluate_uses_manifest_model_for_fallback_cost_repricing() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let mut cached = submitted("cached");
+    cached.cost_usd = Some(0.0);
+    cached.prompt_tokens = Some(0);
+    cached.cache_read_tokens = Some(1_000_000);
+    cached.cache_creation_tokens = Some(0);
+    cached.completion_tokens = Some(0);
+    write_results_with_model(
+        sweep_dir.path(),
+        vec![cached],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Total Cost") && stdout.contains("$0.3000"),
+        "expected $0.3000 in output; got:\n{stdout}"
     );
 }

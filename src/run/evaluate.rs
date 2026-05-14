@@ -1791,36 +1791,58 @@ fn build_cost_attribution_report(
 
 #[must_use]
 pub fn render_breakdown_table(rows: &[BreakdownBucket]) -> String {
-    let mut out = String::from("axis,bucket,n,resolved,resolved_rate,cost_per_resolved_usd\n");
+    let mut table = comfy_table::Table::new();
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Axis",
+            "Bucket",
+            "N",
+            "Resolved",
+            "Rate",
+            "Cost/Resolved",
+        ]);
+
     for row in rows {
         let axis = match row.bucket_axis {
             BreakdownAxis::Repo => "repo",
             BreakdownAxis::FailureCategory => "failure_category",
         };
         let cpr = match row.cost_per_resolved_usd {
-            Some(v) => format!("{v:.4}"),
+            Some(v) => format!("${v:.4}"),
             None => "NaN".to_owned(),
         };
-        let _ = writeln!(
-            out,
-            "{axis},{},{},{},{:.4},{cpr}",
-            row.bucket_value, row.n, row.resolved, row.resolved_rate
-        );
+        table.add_row(vec![
+            axis.to_string(),
+            row.bucket_value.clone(),
+            row.n.to_string(),
+            row.resolved.to_string(),
+            format!("{:.1}%", row.resolved_rate * 100.0),
+            cpr,
+        ]);
     }
-    out
+    table.to_string()
 }
 
 #[must_use]
 pub fn render_cost_attribution_table(rows: &[CostAttributionBucket]) -> String {
-    let mut out = String::from("bucket,n,total_usd,mean_usd,share_pct\n");
+    let mut table = comfy_table::Table::new();
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Bucket", "N", "Total USD", "Mean USD", "Share"]);
+
     for row in rows {
-        let _ = writeln!(
-            out,
-            "{},{},{:.4},{:.4},{:.2}",
-            row.bucket, row.n, row.total_usd, row.mean_usd, row.share_pct
-        );
+        table.add_row(vec![
+            row.bucket.clone(),
+            row.n.to_string(),
+            format!("${:.4}", row.total_usd),
+            format!("${:.4}", row.mean_usd),
+            format!("{:.1}%", row.share_pct * 100.0),
+        ]);
     }
-    out
+    table.to_string()
 }
 
 #[must_use]
@@ -1838,48 +1860,75 @@ pub fn render_latency_summary(summary: &LatencySummary) -> String {
 }
 
 pub fn render_summary_table(summary: &EvaluationSummary) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "resolved: {}", summary.resolved);
-    let _ = writeln!(out, "resolved_rate: {:.4}", summary.resolved_rate);
-    let _ = writeln!(out, "pass@1: {:.4}", summary.pass_at_1);
-    let _ = writeln!(out, "pass@k: {:.4}", summary.pass_at_k);
-    let _ = writeln!(out, "input_tokens: {}", summary.total_input_tokens);
-    let _ = writeln!(
-        out,
-        "cache_read_tokens: {}",
-        summary.total_cache_read_tokens
-    );
-    let _ = writeln!(
-        out,
-        "cache_creation_tokens: {}",
-        summary.total_cache_creation_tokens
-    );
-    let _ = writeln!(
-        out,
-        "completion_tokens: {}",
-        summary.total_completion_tokens
-    );
-    let _ = writeln!(out, "cache_hit_rate: {:.4}", summary.cache_hit_rate);
-    let _ = writeln!(out, "total_cost_usd: {:.4}", summary.total_cost_usd);
-    let _ = writeln!(
-        out,
-        "cost_per_resolved_usd: {:.4}",
-        summary.cost_per_resolved_usd
-    );
+    let mut table = comfy_table::Table::new();
+    table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Value"]);
+
+    table.add_row(vec!["Resolved", &summary.resolved.to_string()]);
+    table.add_row(vec![
+        "Resolved Rate",
+        &format!("{:.2}%", summary.resolved_rate * 100.0),
+    ]);
+    table.add_row(vec![
+        "Pass@1",
+        &format!("{:.2}%", summary.pass_at_1 * 100.0),
+    ]);
+    table.add_row(vec![
+        "Pass@k",
+        &format!("{:.2}%", summary.pass_at_k * 100.0),
+    ]);
+    table.add_row(vec![
+        "Input Tokens",
+        &summary.total_input_tokens.to_string(),
+    ]);
+    table.add_row(vec![
+        "Cache Read Tokens",
+        &summary.total_cache_read_tokens.to_string(),
+    ]);
+    table.add_row(vec![
+        "Cache Creation Tokens",
+        &summary.total_cache_creation_tokens.to_string(),
+    ]);
+    table.add_row(vec![
+        "Completion Tokens",
+        &summary.total_completion_tokens.to_string(),
+    ]);
+    table.add_row(vec![
+        "Cache Hit Rate",
+        &format!("{:.2}%", summary.cache_hit_rate * 100.0),
+    ]);
+    table.add_row(vec![
+        "Total Cost",
+        &format!("${:.4}", summary.total_cost_usd),
+    ]);
+    table.add_row(vec![
+        "Cost per Resolved",
+        &format!("${:.4}", summary.cost_per_resolved_usd),
+    ]);
+
     if !summary.cost_per_resolved_ci95_lower.is_nan() {
-        let _ = writeln!(
-            out,
-            "cost_per_resolved_ci95: [{:.4}, {:.4}]",
-            summary.cost_per_resolved_ci95_lower, summary.cost_per_resolved_ci95_upper
-        );
+        table.add_row(vec![
+            "Cost/Resolved 95% CI",
+            &format!(
+                "[${:.4}, ${:.4}]",
+                summary.cost_per_resolved_ci95_lower, summary.cost_per_resolved_ci95_upper
+            ),
+        ]);
     }
+
+    let mut out = table.to_string();
+
     if summary.budget_exhausted_excluded > 0 {
         let _ = writeln!(
             out,
-            "budget_exhausted_excluded: {} (cost_per_resolved computed on budget-respecting runs only)",
+            "
+Note: {} instances were excluded from cost_per_resolved_usd due to budget exhaustion.",
             summary.budget_exhausted_excluded
         );
     }
+
     out
 }
 
@@ -2337,27 +2386,21 @@ mod tests {
         assert!((summary.cache_hit_rate - 0.8).abs() < f64::EPSILON);
 
         let rendered = render_summary_table(&summary);
-        assert!(rendered.contains("input_tokens: 100"), "got:\n{rendered}");
+        assert!(rendered.contains("Input Tokens"), "got:\n{rendered}");
+        assert!(rendered.contains("100"), "got:\n{rendered}");
+        assert!(rendered.contains("Cache Read Tokens"), "got:\n{rendered}");
+        assert!(rendered.contains("800"), "got:\n{rendered}");
         assert!(
-            rendered.contains("cache_read_tokens: 800"),
+            rendered.contains("Cache Creation Tokens"),
             "got:\n{rendered}"
         );
-        assert!(
-            rendered.contains("cache_creation_tokens: 100"),
-            "got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("completion_tokens: 50"),
-            "got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("cache_hit_rate: 0.8000"),
-            "got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("total_cost_usd: 0.4200"),
-            "got:\n{rendered}"
-        );
+        assert!(rendered.contains("100"), "got:\n{rendered}");
+        assert!(rendered.contains("Completion Tokens"), "got:\n{rendered}");
+        assert!(rendered.contains("50"), "got:\n{rendered}");
+        assert!(rendered.contains("Cache Hit Rate"), "got:\n{rendered}");
+        assert!(rendered.contains("80.00%"), "got:\n{rendered}");
+        assert!(rendered.contains("Total Cost"), "got:\n{rendered}");
+        assert!(rendered.contains("$0.4200"), "got:\n{rendered}");
     }
 
     // --- RED phase: cost_per_resolved_usd tests ---
@@ -2496,12 +2539,12 @@ mod tests {
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);
         assert!(
-            rendered.contains("cost_per_resolved_usd:"),
-            "render_summary_table should include cost_per_resolved_usd; got:\n{rendered}"
+            rendered.contains("Cost per Resolved"),
+            "render_summary_table should include Cost per Resolved; got:\n{rendered}"
         );
         assert!(
-            rendered.contains("4.0000"),
-            "cost_per_resolved_usd should be 4.0000 (1 resolved at $4); got:\n{rendered}"
+            rendered.contains("$4.0000"),
+            "cost_per_resolved_usd should be $4.0000 (1 resolved at $4); got:\n{rendered}"
         );
     }
 
