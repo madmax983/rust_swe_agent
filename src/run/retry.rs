@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use crate::config::Config;
 use crate::error::{ConfigError, Error};
 use crate::run::swebench::{
-    existing_patch_path_for_run, patch_path_for_run, InstanceResult, SweepResults,
+    InstanceResult, SweepResults, existing_patch_path_for_run, patch_path_for_run,
 };
 use crate::trajectory::FailureCategory;
 
