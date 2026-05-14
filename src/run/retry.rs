@@ -195,7 +195,15 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
         .count();
     let submitted_with_tests = merged_instances
         .iter()
-        .filter(|r| r.outcome.as_deref() == Some("submitted") && r.tests_run_before_submit)
+        .filter(|r| {
+            r.outcome.as_deref() == Some("submitted")
+                && r.exit_reason != "skipped_resume"
+                && r.tests_run_before_submit
+        })
+        .count();
+    let skipped = merged_instances
+        .iter()
+        .filter(|r| r.exit_reason == "skipped_resume")
         .count();
     let errored = merged_instances
         .iter()
@@ -256,6 +264,28 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
         .filter_map(|r| r.completion_tokens)
         .sum();
     let estimated_cost_usd: f64 = merged_instances.iter().filter_map(|r| r.cost_usd).sum();
+    // actual_cost_usd is the sum of per-instance cost_usd when all rows have it.
+    let actual_cost_usd: Option<f64> = if merged_instances.iter().all(|r| r.cost_usd.is_some()) {
+        Some(estimated_cost_usd)
+    } else {
+        None
+    };
+    let baseline_cost_usd = crate::run::swebench::estimate_cost_usd(
+        total_prompt_tokens,
+        total_cache_read_tokens,
+        total_cache_creation_tokens,
+        total_completion_tokens,
+        crate::run::swebench::BASELINE_COST_MODEL,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let cache_hit_rate =
+        if total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens > 0 {
+            (total_cache_read_tokens + total_cache_creation_tokens) as f64
+                / (total_prompt_tokens + total_cache_read_tokens + total_cache_creation_tokens)
+                    as f64
+        } else {
+            0.0
+        };
     let retried_instances = merged_instances
         .iter()
         .filter(|r| !r.retry_reasons.is_empty())
@@ -283,6 +313,7 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
     result.total = total;
     result.submitted = submitted;
     result.submitted_with_tests = submitted_with_tests;
+    result.skipped = skipped;
     result.errored = errored;
     result.budget_halted = budget_halted;
     result.with_patch = with_patch;
@@ -296,6 +327,12 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
     result.total_cache_creation_tokens = total_cache_creation_tokens;
     result.total_completion_tokens = total_completion_tokens;
     result.estimated_cost_usd = estimated_cost_usd;
+    result.actual_cost_usd = actual_cost_usd;
+    result.actual_cost_source =
+        actual_cost_usd.map(|_| crate::run::swebench::CostSource::RateCardEstimate);
+    result.baseline_cost_usd = Some(baseline_cost_usd);
+    result.baseline_cost_model = Some(crate::run::swebench::BASELINE_COST_MODEL.to_owned());
+    result.cache_hit_rate = cache_hit_rate;
     result.retried_instances = retried_instances;
     result.retries = retries;
     result.total_fallbacks = total_fallbacks;
