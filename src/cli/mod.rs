@@ -1754,7 +1754,9 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
         raw.split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(str::to_owned)
+            // Normalize the user-facing alias "errored" → "error" so it matches
+            // the stored outcome value in trajectory files.
+            .map(|s| if s == "errored" { "error" } else { s }.to_owned())
             .collect()
     });
 
@@ -1937,7 +1939,12 @@ fn retry_swebench_args(
         let alias = alias_str
             .parse::<crate::run::dataset::SwebenchAlias>()
             .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-        let split = "test"
+        // Reuse the manifest split when available so the correct dataset bytes
+        // are used; fall back to "test" only when there is no manifest.
+        let split_str = manifest
+            .and_then(|m| m.dataset.split.as_deref())
+            .unwrap_or("test");
+        let split = split_str
             .parse::<crate::run::dataset::SwebenchSplit>()
             .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
         DatasetSource::Named { alias, split }

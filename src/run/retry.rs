@@ -110,7 +110,13 @@ pub fn resolve_selection<'a>(
         selected.retain(|r| id_set.contains(r.instance_id.as_str()));
     }
 
-    // 4. Guard against re-running already-resolved instances.
+    // 4. Cap before the resolved-instance check so that --limit applies to the
+    //    final selection; a resolved row beyond the cap must not block the retry.
+    if let Some(n) = limit {
+        selected.truncate(n);
+    }
+
+    // 5. Guard against re-running already-resolved instances.
     //    In pass@k sweeps, resolved_count > 0 means at least one run succeeded
     //    even if outcome is not "submitted", so we treat those as resolved too.
     if !allow_resolved_retry {
@@ -125,12 +131,6 @@ pub fn resolve_selection<'a>(
             ))));
         }
     }
-
-    // 5. Cap.
-    if let Some(n) = limit {
-        selected.truncate(n);
-    }
-
     if selected.is_empty() {
         return Err(Error::Config(ConfigError::Invalid(
             "bench retry: no instances matched the given filters — nothing to retry".into(),
