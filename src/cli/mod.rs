@@ -111,6 +111,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Report(r),
         } => bench_report(r),
+        Command::Bench {
+            cmd: args::BenchCmd::Retry(r),
+        } => Box::pin(bench_retry(r)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1713,6 +1716,236 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
     })
 }
 
+async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
+    use crate::run::retry::{
+        archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
+        load_sweep_results, merge_retry_results, resolve_selection,
+    };
+    use crate::run::swebench::{OverrideDelta, RetrySelection, write_sweep_results_atomic};
+    use crate::trajectory::FailureCategory;
+    use std::collections::HashSet;
+
+    let original = load_sweep_results(&r.sweep)?;
+
+    // Parse comma-separated selection flags.
+    let failure_categories: Option<Vec<FailureCategory>> = r
+        .failure_category
+        .as_deref()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::run::swebench::parse_failure_category_label)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
+    let outcomes: Option<Vec<String>> = r.outcome.as_deref().map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+
+    let instance_ids: Option<Vec<String>> = r.instance_ids.as_deref().map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+
+    let selected = resolve_selection(
+        &original.instances,
+        failure_categories.as_deref(),
+        outcomes.as_deref(),
+        instance_ids.as_deref(),
+        r.limit,
+        r.allow_resolved_retry,
+    )?;
+
+    // Harness mismatch gate.
+    let harness_mismatch = detect_harness_mismatch(&original);
+    if harness_mismatch && !r.allow_harness_mismatch {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench retry: harness git SHA mismatch; pass --allow-harness-mismatch to bypass".into(),
+        )));
+    }
+
+    // Dry-run preview: exit non-zero without --yes.
+    if !r.yes {
+        let ids: Vec<&str> = selected.iter().map(|i| i.instance_id.as_str()).collect();
+        eprintln!(
+            "bench retry: {} instance(s) selected (pass --yes to run):",
+            selected.len()
+        );
+        for id in &ids {
+            eprintln!("  {id}");
+        }
+        std::process::exit(1);
+    }
+
+    let retry_id = generate_retry_id();
+    archive_trajectories(&r.sweep, &selected, &retry_id)?;
+
+    let selected_ids: HashSet<String> =
+        selected.iter().map(|i| i.instance_id.clone()).collect();
+    let ids_csv = {
+        let mut v: Vec<&str> = selected_ids.iter().map(String::as_str).collect();
+        v.sort_unstable();
+        v.join(",")
+    };
+
+    let sweep_args = retry_swebench_args(&r, &original, &ids_csv)?;
+    let retry_results = crate::run::swebench::run(sweep_args).await?;
+
+    let override_delta = OverrideDelta {
+        model: r.model.clone(),
+        step_limit: r.step_limit,
+        task_timeout_secs: r.task_timeout_secs,
+        per_task_budget_usd: r.per_task_budget_usd,
+        sweep_cost_limit_usd: r.sweep_cost_limit_usd,
+    };
+    let selection = RetrySelection {
+        failure_categories: failure_categories.as_ref().map(|v| {
+            v.iter()
+                .map(|c| format!("{c:?}").to_lowercase())
+                .collect()
+        }),
+        outcomes: outcomes.clone(),
+        instance_ids: instance_ids.clone(),
+        limit: r.limit,
+    };
+    let entry = build_history_entry(
+        &retry_id,
+        &selected,
+        selection,
+        override_delta,
+        harness_mismatch,
+        &original,
+        &retry_results,
+    );
+
+    let merged = merge_retry_results(&original, &retry_results, entry, &selected_ids);
+    let results_path = r.sweep.join("results.json");
+    write_sweep_results_atomic(&results_path, &merged)?;
+
+    tracing::info!(
+        retry_id = %retry_id,
+        count = selected.len(),
+        "bench retry complete"
+    );
+    Ok(())
+}
+
+fn retry_swebench_args(
+    r: &args::RetryCmd,
+    results: &crate::run::swebench::SweepResults,
+    instance_ids_csv: &str,
+) -> Result<crate::run::swebench::SwebenchArgs, Error> {
+    use crate::run::dataset::DatasetSource;
+
+    let manifest = results.manifest.as_ref();
+
+    let mut cfg = match &r.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+    if let Some(model) = &r.model {
+        cfg.root.model.name.clone_from(model);
+    } else if let Some(m) = manifest {
+        cfg.root.model.name.clone_from(&m.model.name);
+    }
+    if let Some(v) = r.step_limit {
+        cfg.root.agent.step_limit = v;
+    }
+    if let Some(v) = r.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if let Some(kind) = &r.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = r.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+
+    let dataset_source = if let Some(path) = &r.dataset_path {
+        DatasetSource::LocalPath(path.clone())
+    } else if let Some(alias_str) = &r.dataset {
+        let alias = alias_str
+            .parse::<crate::run::dataset::SwebenchAlias>()
+            .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+        let split = "test"
+            .parse::<crate::run::dataset::SwebenchSplit>()
+            .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+        DatasetSource::Named { alias, split }
+    } else if let Some(m) = manifest {
+        match m.dataset.source_kind.as_str() {
+            "named" => {
+                let alias_str = m.dataset.alias.as_deref().unwrap_or("verified");
+                let split_str = m.dataset.split.as_deref().unwrap_or("test");
+                let alias = alias_str
+                    .parse::<crate::run::dataset::SwebenchAlias>()
+                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+                let split = split_str
+                    .parse::<crate::run::dataset::SwebenchSplit>()
+                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+                DatasetSource::Named { alias, split }
+            }
+            _ => DatasetSource::LocalPath(std::path::PathBuf::from(&m.dataset.path)),
+        }
+    } else {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench retry: no dataset source available; pass --dataset-path or --dataset".into(),
+        )));
+    };
+
+    Ok(crate::run::swebench::SwebenchArgs {
+        dataset_source,
+        dataset_cache_dir: crate::run::dataset::default_cache_dir(),
+        output_dir: r.sweep.clone(),
+        parallel: r.parallel.unwrap_or(4),
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: r.sweep_cost_limit_usd,
+        task_timeout_secs: r.task_timeout_secs,
+        instance_ids: Some(instance_ids_csv.to_owned()),
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: crate::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        config_overlay_paths: r.config.as_ref().map(|p| vec![p.clone()]).unwrap_or_default(),
+        dry_run: false,
+        skip_preflight: false,
+        preflight_format: "text".into(),
+        skip_model_probe: false,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "sweep".into(),
+        skip_patch_validation: false,
+        max_rpm: None,
+        max_input_tpm: None,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: true,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: false,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+    })
+}
+
 fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {
     match err {
         crate::run::bundle::BundleError::MissingSource(message)
@@ -2089,6 +2322,7 @@ mod tests {
 
             model_mix: std::collections::BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         }
     }
 

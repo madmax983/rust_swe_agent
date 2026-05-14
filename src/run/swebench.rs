@@ -342,6 +342,73 @@ pub struct InstanceResult {
     /// no fallback occurred. `None` for single-model runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_model: Option<String>,
+    /// UUID of the `bench retry` invocation that produced this result.
+    /// `None` for instances from the original sweep run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_id: Option<String>,
+    /// The failure category the instance had before being retried.
+    /// `None` for instances from the original sweep run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_failure_category: Option<FailureCategory>,
+}
+
+/// Selection criteria recorded in a retry history entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetrySelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_categories: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcomes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Override-flag delta recorded in a retry history entry: fields present only
+/// when the operator explicitly overrode the manifest's original value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OverrideDelta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_task_budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep_cost_limit_usd: Option<f64>,
+}
+
+/// One entry in `SweepResults::retry_history`, appended by each `bench retry`
+/// invocation. Never modified or removed after it is written.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryHistoryEntry {
+    /// UUID assigned to this retry invocation.
+    pub retry_id: String,
+    /// RFC-3339 UTC timestamp when the retry started.
+    pub timestamp_utc: String,
+    /// Selection criteria that determined the retried set.
+    pub selection: RetrySelection,
+    /// Overrides applied relative to the manifest's original values.
+    pub override_delta: OverrideDelta,
+    /// Number of instances retried in this invocation.
+    pub count: usize,
+    /// Whether the harness git SHA differed from the manifest's recorded SHA.
+    pub harness_mismatch: bool,
+    /// `submitted` count before the retry.
+    pub pre_submitted: usize,
+    /// `errored` count before the retry.
+    pub pre_errored: usize,
+    /// `resolved_count` sum before the retry.
+    pub pre_resolved_count: usize,
+    /// `submitted` count after merging retry results.
+    pub post_submitted: usize,
+    /// `errored` count after merging retry results.
+    pub post_errored: usize,
+    /// `resolved_count` sum after merging retry results.
+    pub post_resolved_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -451,6 +518,10 @@ pub struct SweepResults {
     /// cancelled, and budget-halted sweeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub systemic_halt_category: Option<FailureCategory>,
+    /// Append-only log of `bench retry` invocations that amended this sweep.
+    /// Omitted from serialization when empty to remain additive-minor compatible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_history: Vec<RetryHistoryEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -759,6 +830,7 @@ impl Default for SweepResults {
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: Vec::new(),
         }
     }
 }
@@ -1475,6 +1547,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1562,6 +1635,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1933,6 +2007,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 fallback_count: None,
 
                                 final_model: None,
+                                retry_id: None,
+                                previous_failure_category: None,
                             },
                         ));
                     }
@@ -2167,6 +2243,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         total_fallbacks,
         model_mix,
         systemic_halt_category,
+        retry_history: vec![],
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -2186,7 +2263,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     Ok(sweep)
 }
 
-fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(), Error> {
+pub(crate) fn write_sweep_results_atomic(path: &Path, results: &SweepResults) -> Result<(), Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     crate::artifact::to_writer_pretty(temp.as_file_mut(), ArtifactKind::SweepResults, results)?;
@@ -2929,6 +3006,8 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -2978,6 +3057,8 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -3612,6 +3693,8 @@ fn skipped_result_from_info(
                 Some(s.final_model.clone())
             }
         }),
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -3791,7 +3874,7 @@ fn parse_retry_on(retry_on: Option<&str>) -> Result<BTreeSet<FailureCategory>, E
     Ok(BTreeSet::from([FailureCategory::ModelApi]))
 }
 
-fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
+pub(crate) fn parse_failure_category_label(s: &str) -> Result<FailureCategory, Error> {
     match s {
         "env_setup" => Ok(FailureCategory::EnvSetup),
         "model_api" => Ok(FailureCategory::ModelApi),
@@ -4095,6 +4178,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                         Some(s.final_model.clone())
                     }
                 }),
+            retry_id: None,
+            previous_failure_category: None,
         };
         let current = publish_github_pr_for_result(
             current,
@@ -4593,6 +4678,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -4920,6 +5007,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -4960,6 +5049,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
@@ -5026,6 +5117,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -5107,6 +5199,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
 
         let t = s.summary_table();
@@ -5165,6 +5258,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
 
         let t = s.summary_table();
@@ -5244,6 +5338,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let t = s.summary_table();
         assert!(
@@ -5310,6 +5405,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
 
         let t = s.summary_table();
@@ -5383,6 +5479,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
 
         let t = s.summary_table();
@@ -5444,6 +5541,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -6357,7 +6455,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 5})
+            serde_json::json!({"major": 1, "minor": 6})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());
@@ -6484,6 +6582,7 @@ instance = "inst"
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6818,6 +6917,7 @@ instance = "inst"
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let t = s.summary_table();
         assert!(
@@ -6890,6 +6990,7 @@ instance = "inst"
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let t = s.summary_table();
         assert!(

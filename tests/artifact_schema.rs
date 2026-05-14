@@ -26,7 +26,7 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     // per-turn wall-clock attribution (model/tool/harness latency).
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 5)
+        ArtifactSchemaVersion::new(1, 6)
     );
 }
 
@@ -34,7 +34,7 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
 fn artifact_classifier_marks_exact_current_version_supported_current() {
     let payload = serde_json::json!({
         "artifact_kind": "sweep_results",
-        "schema_version": {"major": 1, "minor": 5},
+        "schema_version": {"major": 1, "minor": 6},
         "total": 0,
         "instances": []
     });
@@ -144,7 +144,7 @@ fn trajectory_serialization_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "trajectory");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
 }
 
@@ -172,7 +172,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(results["artifact_kind"], "sweep_results");
     assert_eq!(
         results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
 
     let predictions = std::fs::read_to_string(output.join("all_preds.jsonl")).unwrap();
@@ -196,7 +196,7 @@ async fn swebench_run_writes_versioned_results_and_prediction_metadata() {
     assert_eq!(metadata["artifact_kind"], "swebench_predictions_metadata");
     assert_eq!(
         metadata["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
     assert_eq!(metadata["predictions_file"], "all_preds.jsonl");
     assert_eq!(metadata["row_count"], 1);
@@ -239,7 +239,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
     assert_eq!(eval["artifact_kind"], "evaluation_results");
     assert_eq!(
         eval["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
 }
 
@@ -254,7 +254,7 @@ fn forecast_json_includes_artifact_header() {
     assert_eq!(value["artifact_kind"], "forecast_report");
     assert_eq!(
         value["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
 }
 
@@ -289,7 +289,7 @@ async fn forecast_run_keeps_calibration_results_versioned_after_manifest_mark() 
     assert_eq!(calibration_results["artifact_kind"], "sweep_results");
     assert_eq!(
         calibration_results["schema_version"],
-        serde_json::json!({"major": 1, "minor": 5})
+        serde_json::json!({"major": 1, "minor": 6})
     );
 }
 
@@ -537,7 +537,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
 
     let preflight = serde_json::json!({
         "artifact_kind": "preflight_report",
-        "schema_version": {"major": 1, "minor": 5},
+        "schema_version": {"major": 1, "minor": 6},
         "mode": "doctor",
         "checks": [{
             "status": "ok",
@@ -828,6 +828,8 @@ fn instance(id: &str, input_tokens: u64, output_tokens: u64, cost_usd: f64) -> I
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -875,6 +877,7 @@ fn fixture_results() -> SweepResults {
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     }
 }
 

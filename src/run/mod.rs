@@ -20,6 +20,7 @@ pub mod rate_limit;
 pub mod replay;
 pub mod report;
 pub mod reproduce;
+pub mod retry;
 pub mod swebench;
 pub mod tail;
 pub mod trajectory_diff;

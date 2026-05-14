@@ -48,6 +48,8 @@ fn submitted(id: &str) -> InstanceResult {
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -79,6 +81,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -225,6 +229,7 @@ fn write_results_with_filter_spec_and_model(
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     std::fs::write(
         dir.join("results.json"),

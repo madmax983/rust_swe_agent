@@ -47,6 +47,8 @@ fn minimal_instance_result(id: &str) -> InstanceResult {
         last_tests_passed: None,
         fallback_count: None,
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -121,6 +123,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         cost_limit_usd: None,
+        retry_history: vec![],
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();
     rust_swe_agent::artifact::to_writer_pretty(

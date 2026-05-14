@@ -322,6 +322,95 @@ pub enum BenchCmd {
     EvaluatorSelftest(EvaluatorSelftestCmd),
     /// Produce a shareable markdown or HTML sweep summary.
     Report(ReportCmd),
+    /// Re-run only the failed instances of a completed sweep and merge results.
+    Retry(RetryCmd),
+}
+
+/// `bench retry` — re-run selected failed instances and merge into sweep dir.
+#[derive(Debug, Args)]
+pub struct RetryCmd {
+    /// Path to the completed sweep directory (must contain `results.json`).
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    // ── selection flags ───────────────────────────────────────────────────────
+    /// Comma-separated `FailureCategory` labels to retry
+    /// (e.g. `step_limit,patch_apply_invalid`).
+    /// At least one of `--failure-category`, `--outcome`, or `--instance-ids`
+    /// is required.
+    #[arg(long = "failure-category", value_name = "CATS")]
+    pub failure_category: Option<String>,
+
+    /// Comma-separated outcome values to retry
+    /// (`errored`, `step_limit_reached`, `submitted`).
+    #[arg(long, value_name = "OUTCOMES")]
+    pub outcome: Option<String>,
+
+    /// Comma-separated instance ids to retry (intersected with other filters).
+    #[arg(long, value_name = "IDS")]
+    pub instance_ids: Option<String>,
+
+    /// Cap the selection at N instances after all other filters.
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Allow re-running instances that were already `submitted` (extra cost).
+    #[arg(long, default_value_t = false)]
+    pub allow_resolved_retry: bool,
+
+    // ── gate flags ────────────────────────────────────────────────────────────
+    /// Skip the harness git-SHA mismatch check.
+    #[arg(long, default_value_t = false)]
+    pub allow_harness_mismatch: bool,
+
+    /// Proceed without interactive confirmation (skip dry-run exit).
+    #[arg(long, default_value_t = false)]
+    pub yes: bool,
+
+    // ── override flags ────────────────────────────────────────────────────────
+    /// Override the model name for the retry run.
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Path to a config TOML overlay file.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Override the step limit for the retry run.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Override the per-task wallclock timeout (seconds).
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
+    /// Override the per-task USD budget ceiling.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Override the sweep-level USD cost ceiling.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Override the environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Override the docker image (requires `--env docker`).
+    #[arg(long)]
+    pub docker_image: Option<String>,
+
+    /// Number of parallel worker slots for the retry run.
+    #[arg(long)]
+    pub parallel: Option<usize>,
+
+    /// Path to the dataset JSONL file (required unless manifest path is accessible).
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named dataset alias (alternative to `--dataset-path`).
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
 }
 
 #[derive(Debug, Args)]

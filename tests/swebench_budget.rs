@@ -920,6 +920,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }],
         rate_limit_events: None,
 
@@ -927,6 +929,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     std::fs::write(
         output.join("results.json"),
@@ -1094,6 +1097,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }],
         rate_limit_events: None,
 
@@ -1101,6 +1106,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     std::fs::write(
         output.join("results.json"),
@@ -1239,6 +1245,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }],
         rate_limit_events: None,
 
@@ -1246,6 +1254,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     std::fs::write(
         output.join("results.json"),

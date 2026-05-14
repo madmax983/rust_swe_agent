@@ -137,6 +137,8 @@ fn instance(
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -233,6 +235,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
 
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     }
 }
 
@@ -349,6 +352,8 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         fallback_count: None,
 
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }];
     results.total = 1;
     results.submitted = 1;
