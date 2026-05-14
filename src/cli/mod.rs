@@ -127,46 +127,98 @@ fn init_logging(level: &str) {
         .try_init();
 }
 
-macro_rules! apply_config_overrides {
-    ($cfg:expr, $cmd:expr) => {
-        $cfg.root.model.name.clone_from(&$cmd.model);
-        $cfg.root.agent.step_limit = $cmd.step_limit;
-        if let Some(v) = $cmd.observation_max_bytes {
-            $cfg.root.agent.observation_max_bytes = v;
-        }
-        if let Some(v) = $cmd.observation_head_ratio {
-            validate_observation_head_ratio(v)?;
-            $cfg.root.agent.observation_head_ratio = v;
-        }
-        if let Some(kind) = &$cmd.env {
-            $cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
-        }
-        if let Some(img) = $cmd.docker_image.clone() {
-            $cfg.root.environment.docker_image = Some(img);
-        }
-        if let Some(v) = $cmd.per_task_budget_usd {
-            $cfg.root.agent.per_task_budget_usd = Some(v);
-        }
-        if $cmd.hide_budget_from_agent {
-            $cfg.root.agent.hide_budget_from_agent = true;
-        }
-        if let Some(v) = $cmd.detect_stagnation {
-            $cfg.root.agent.detect_stagnation = v;
-        }
-        if let Some(v) = $cmd.stagnation_repeat_threshold {
-            $cfg.root.agent.stagnation_repeat_threshold = v;
-        }
-        if let Some(v) = $cmd.stagnation_window {
-            $cfg.root.agent.stagnation_window = v;
-        }
-        if let Some(v) = $cmd.history_max_input_tokens {
-            $cfg.root.agent.history_max_input_tokens = Some(v);
-        }
-        if let Some(v) = $cmd.history_keep_last_observations {
-            $cfg.root.agent.history_keep_last_observations = Some(v);
-        }
-        apply_mcp_server_overrides(&mut $cfg, &$cmd.mcp_servers)?;
-    };
+
+
+trait ConfigOverrides {
+    fn model(&self) -> &str;
+    fn step_limit(&self) -> u32;
+    fn observation_max_bytes(&self) -> Option<usize>;
+    fn observation_head_ratio(&self) -> Option<f64>;
+    fn env(&self) -> Option<&String>;
+    fn docker_image(&self) -> Option<&String>;
+    fn per_task_budget_usd(&self) -> Option<f64>;
+    fn hide_budget_from_agent(&self) -> bool;
+    fn detect_stagnation(&self) -> Option<bool>;
+    fn stagnation_repeat_threshold(&self) -> Option<u32>;
+    fn stagnation_window(&self) -> Option<u32>;
+    fn history_max_input_tokens(&self) -> Option<u64>;
+    fn history_keep_last_observations(&self) -> Option<usize>;
+    fn mcp_servers(&self) -> &[String];
+}
+
+impl ConfigOverrides for args::MiniCmd {
+    fn model(&self) -> &str { &self.model }
+    fn step_limit(&self) -> u32 { self.step_limit }
+    fn observation_max_bytes(&self) -> Option<usize> { self.observation_max_bytes }
+    fn observation_head_ratio(&self) -> Option<f64> { self.observation_head_ratio }
+    fn env(&self) -> Option<&String> { self.env.as_ref() }
+    fn docker_image(&self) -> Option<&String> { self.docker_image.as_ref() }
+    fn per_task_budget_usd(&self) -> Option<f64> { self.per_task_budget_usd }
+    fn hide_budget_from_agent(&self) -> bool { self.hide_budget_from_agent }
+    fn detect_stagnation(&self) -> Option<bool> { self.detect_stagnation }
+    fn stagnation_repeat_threshold(&self) -> Option<u32> { self.stagnation_repeat_threshold }
+    fn stagnation_window(&self) -> Option<u32> { self.stagnation_window }
+    fn history_max_input_tokens(&self) -> Option<u64> { self.history_max_input_tokens }
+    fn history_keep_last_observations(&self) -> Option<usize> { self.history_keep_last_observations }
+    fn mcp_servers(&self) -> &[String] { &self.mcp_servers }
+}
+
+impl ConfigOverrides for args::SwebenchCmd {
+    fn model(&self) -> &str { &self.model }
+    fn step_limit(&self) -> u32 { self.step_limit }
+    fn observation_max_bytes(&self) -> Option<usize> { self.observation_max_bytes }
+    fn observation_head_ratio(&self) -> Option<f64> { self.observation_head_ratio }
+    fn env(&self) -> Option<&String> { self.env.as_ref() }
+    fn docker_image(&self) -> Option<&String> { self.docker_image.as_ref() }
+    fn per_task_budget_usd(&self) -> Option<f64> { self.per_task_budget_usd }
+    fn hide_budget_from_agent(&self) -> bool { self.hide_budget_from_agent }
+    fn detect_stagnation(&self) -> Option<bool> { self.detect_stagnation }
+    fn stagnation_repeat_threshold(&self) -> Option<u32> { self.stagnation_repeat_threshold }
+    fn stagnation_window(&self) -> Option<u32> { self.stagnation_window }
+    fn history_max_input_tokens(&self) -> Option<u64> { self.history_max_input_tokens }
+    fn history_keep_last_observations(&self) -> Option<usize> { self.history_keep_last_observations }
+    fn mcp_servers(&self) -> &[String] { &self.mcp_servers }
+}
+
+fn apply_config_overrides(cfg: &mut Config, cmd: &impl ConfigOverrides) -> Result<(), Error> {
+    cfg.root.model.name = cmd.model().to_owned();
+    cfg.root.agent.step_limit = cmd.step_limit();
+    if let Some(v) = cmd.observation_max_bytes() {
+        cfg.root.agent.observation_max_bytes = v;
+    }
+    if let Some(v) = cmd.observation_head_ratio() {
+        validate_observation_head_ratio(v)?;
+        cfg.root.agent.observation_head_ratio = v;
+    }
+    if let Some(kind) = cmd.env() {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = cmd.docker_image() {
+        cfg.root.environment.docker_image = Some(img.clone());
+    }
+    if let Some(v) = cmd.per_task_budget_usd() {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if cmd.hide_budget_from_agent() {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
+    if let Some(v) = cmd.detect_stagnation() {
+        cfg.root.agent.detect_stagnation = v;
+    }
+    if let Some(v) = cmd.stagnation_repeat_threshold() {
+        cfg.root.agent.stagnation_repeat_threshold = v;
+    }
+    if let Some(v) = cmd.stagnation_window() {
+        cfg.root.agent.stagnation_window = v;
+    }
+    if let Some(v) = cmd.history_max_input_tokens() {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = cmd.history_keep_last_observations() {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
+    apply_mcp_server_overrides(cfg, cmd.mcp_servers())?;
+    Ok(())
 }
 
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
@@ -174,7 +226,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
-    apply_config_overrides!(cfg, m);
+    apply_config_overrides(&mut cfg, &m)?;
 
     let trajectory_name = m
         .trajectory_name
@@ -512,7 +564,7 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
-    apply_config_overrides!(cfg, s);
+    apply_config_overrides(&mut cfg, s)?;
     Ok(cfg)
 }
 
