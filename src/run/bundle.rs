@@ -1386,6 +1386,8 @@ fn read_archive_inventory(archive_path: &Path) -> Result<ArchiveInventory, Bundl
     Ok(inventory)
 }
 
+const MAX_ARCHIVE_FILE_SIZE: u64 = 16 * 1024 * 1024;
+
 fn hash_reader<R: std::io::Read>(reader: &mut R) -> Result<(String, u64), std::io::Error> {
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -1397,6 +1399,11 @@ fn hash_reader<R: std::io::Read>(reader: &mut R) -> Result<(String, u64), std::i
         }
         hasher.update(&buf[..read]);
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        if total > MAX_ARCHIVE_FILE_SIZE {
+            return Err(std::io::Error::other(
+                "bundle: archive file size limit exceeded",
+            ));
+        }
     }
     Ok((format!("{:x}", hasher.finalize()), total))
 }
