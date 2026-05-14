@@ -2963,8 +2963,7 @@ mod tests {
             instance_id: id.into(),
             exit_reason: cat
                 .as_ref()
-                .map(|c| format!("{c:?}").to_lowercase())
-                .unwrap_or_else(|| "submitted".into()),
+                .map_or_else(|| "submitted".into(), |c| format!("{c:?}").to_lowercase()),
             outcome: Some(
                 if cat.is_some() {
                     "error"
