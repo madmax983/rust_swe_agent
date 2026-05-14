@@ -336,8 +336,8 @@ fn validate_jsonl_bytes(bytes: &[u8]) -> Result<usize, String> {
         if line.is_empty() {
             continue;
         }
-        // ⚡ Bolt: Use `IgnoredAny` to avoid allocating an in-memory DOM since we only care about syntax validity.
-        let v: Result<serde::de::IgnoredAny, _> = serde_json::from_str(line);
+        // Use IgnoredAny to avoid allocating an in-memory DOM since we only care about syntax validity.
+        let v = serde_json::from_str::<serde::de::IgnoredAny>(line);
         if let Err(e) = v {
             return Err(format!("line {}: {e}", i + 1));
         }
