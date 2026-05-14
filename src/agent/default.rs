@@ -133,7 +133,7 @@ fn elide_history_for_model(
     max_input_tokens: Option<u64>,
 ) -> ElisionInfo {
     let no_cap = keep_last_observations.is_none() && max_input_tokens.is_none();
-    if no_cap || history.len() <= 2 {
+    if no_cap {
         return ElisionInfo {
             prompt: history.to_vec(),
             elided: Vec::new(),
@@ -141,12 +141,25 @@ fn elide_history_for_model(
         };
     }
 
-    let obs_indices = observation_indices(history);
     let max_bytes = max_input_tokens.map(|t| {
         usize::try_from(t)
             .unwrap_or(usize::MAX)
             .saturating_mul(BYTES_PER_TOKEN)
     });
+
+    // With only system + instance messages there is nothing to elide. Still
+    // check whether those fixed messages already exceed the token cap.
+    if history.len() <= 2 {
+        let compaction_failed = max_bytes
+            .is_some_and(|limit| history.iter().map(|m| m.content.len()).sum::<usize>() > limit);
+        return ElisionInfo {
+            prompt: history.to_vec(),
+            elided: Vec::new(),
+            compaction_failed,
+        };
+    }
+
+    let obs_indices = observation_indices(history);
 
     if obs_indices.len() <= 1 {
         // No elidable candidates. Still check the budget: if the fixed prompt

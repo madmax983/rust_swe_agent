@@ -1315,7 +1315,12 @@ fn build_elision_stats(
         let path = if path.exists() {
             path
         } else {
-            sweep_dir.join(format!("{}.traj.json", slot.instance_id))
+            // Fallbacks: flat layout then bundled-archive layout.
+            let flat = sweep_dir.join(format!("{}.traj.json", slot.instance_id));
+            let bundled = sweep_dir
+                .join("trajectories")
+                .join(format!("{}.traj.json", slot.instance_id));
+            if flat.exists() { flat } else { bundled }
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;

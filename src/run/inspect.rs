@@ -747,10 +747,12 @@ fn render_instance_text(report: &InspectReport) -> String {
             let _ = writeln!(s, "[as-sent to model] {marker}");
             if step.stdout.as_ref().is_some_and(|o| !o.is_empty()) {
                 let _ = writeln!(s, "[as-recorded stdout]");
+                if let Some(out) = &step.stdout {
+                    let _ = writeln!(s, "{out}");
+                }
             }
-        }
-        if let Some(out) = &step.stdout {
-            let _ = writeln!(s, "{out}");
+        } else if let Some(out) = &step.stdout {
+            let _ = writeln!(s, "stdout:\n{out}");
         }
         if let Some(err) = &step.stderr {
             if !err.is_empty() {
