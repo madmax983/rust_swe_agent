@@ -135,6 +135,14 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
+
+    if m.render_only {
+        cfg.root.model.name.clone_from(&m.model);
+        cfg.root.agent.step_limit = m.step_limit;
+        apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+        return mini_render_only_cmd(m, cfg);
+    }
+
     cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
     if let Some(v) = m.observation_max_bytes {
@@ -223,6 +231,31 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         maybe_publish_mini_github_pr(github_pr).await?;
     }
     run_result?;
+    Ok(())
+}
+
+fn mini_render_only_cmd(
+    m: args::MiniCmd,
+    cfg: crate::config::Config,
+) -> Result<(), Error> {
+    crate::run::render_only::reject_incompatible_flags(m.per_task_budget_usd, m.task_timeout_secs)?;
+
+    let args = crate::run::render_only::RenderOnlyArgs {
+        task: m.task,
+        extra_context: m.extra_context,
+        config: cfg,
+    };
+    let report = crate::run::render_only::render(args)?;
+
+    match m.format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
+            println!("{json}");
+        }
+        _ => {
+            print!("{}", crate::run::render_only::format_text(&report));
+        }
+    }
     Ok(())
 }
 
@@ -2368,6 +2401,8 @@ mod tests {
                 github_pr_backoff_base_ms: 250,
                 github_pr_branch_prefix: "rust-swe-agent".into(),
             },
+            render_only: false,
+            format: "text".into(),
         }
     }
 

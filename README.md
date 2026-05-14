@@ -51,7 +51,24 @@ The trajectory at `runs/quickstart/hello-world.traj.json` should parse as
 `mini-swe-agent-1.1`, have `outcome: "submitted"`, and record
 `total_cost_usd: 0.0`.
 
-### 2. Inspect The Trajectory
+### 2. Preview Your Prompt Before Any Paid Call
+
+Use `--render-only` to see the exact system message, user message, registered
+tools, and an estimated token count — at $0 with zero network calls. This is
+the recommended first step when iterating on prompts, configs, or hooks:
+
+```bash
+cargo run --quiet -- --log error mini --render-only --task "fix the bug in src/lib.rs" --model claude-opus-4-7
+```
+
+Add `--format json` for a stable, schema-versioned object suitable for CI
+snapshot diffing:
+
+```bash
+cargo run --quiet -- --log error mini --render-only --task "fix the bug" --model claude-opus-4-7 --format json
+```
+
+### 3. Inspect The Trajectory
 
 PowerShell:
 

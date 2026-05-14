@@ -16,6 +16,7 @@ pub mod inspect;
 pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
+pub mod render_only;
 pub mod rate_limit;
 pub mod replay;
 pub mod report;

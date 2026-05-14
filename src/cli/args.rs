@@ -219,6 +219,19 @@ pub struct MiniCmd {
 
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
+
+    /// Render the initial prompt surface and exit without running the agent.
+    /// Prints the system message, first user message, registered tools, hook
+    /// config, token estimate, and upper-bound cost — at $0 and zero network
+    /// calls. Mutually exclusive with --per-task-budget-usd and
+    /// --task-timeout-secs.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
+
+    /// Output format for --render-only: `text` (default, human-readable) or
+    /// `json` (stable, schema-versioned, suitable for CI diffing).
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Debug, Args)]
