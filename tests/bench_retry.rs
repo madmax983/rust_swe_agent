@@ -13,9 +13,15 @@ use std::process::Command;
 
 use rust_swe_agent::artifact::ArtifactKind;
 use rust_swe_agent::run::retry::{
-    OverrideDelta, RetryHistoryEntry, RetrySelection, merge_retry_results, resolve_selection,
+    OverrideDelta, RetryHistoryEntry, RetrySelection, archive_trajectories,
+    detect_harness_mismatch_with_sha, merge_retry_results, resolve_selection,
+    restore_missing_trajectories, save_pre_retry_backup,
 };
-use rust_swe_agent::run::swebench::{InstanceResult, SWEEP_STATUS_COMPLETED, SweepResults};
+use rust_swe_agent::run::swebench::{
+    CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult,
+    ModelManifest, ProvenanceManifest, PromptTemplateManifest, RuntimeManifest,
+    SWEEP_STATUS_COMPLETED, SweepResults,
+};
 use rust_swe_agent::trajectory::FailureCategory;
 
 mod support;
@@ -628,6 +634,321 @@ fn cli_round_trip_evaluate_reads_retry_history() {
     assert!(
         out.status.success(),
         "bench evaluate must succeed on retry-amended results.json; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ─── helpers for manifest-based tests ────────────────────────────────────────
+
+fn make_manifest_with_sha(sha: &str) -> ProvenanceManifest {
+    ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "test".into(),
+            version: "0.1.0".into(),
+            git_sha: Some(sha.into()),
+            git_dirty: None,
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest::default(),
+        prompt_template: PromptTemplateManifest {
+            source: "builtin".into(),
+            path: None,
+            sha256: "abc".into(),
+        },
+        config: ConfigManifest {
+            resolved: "{}".into(),
+            overlay_paths: vec![],
+        },
+        model: ModelManifest {
+            name: "test-model".into(),
+            backend: "anthropic".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-01-01T00:00:00Z".into(),
+            finished_at_utc: None,
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: None,
+        },
+        cli: CliManifest { argv: vec![] },
+        circuit_breaker: None,
+        reproduced_from: None,
+    }
+}
+
+fn sweep_with_sha(sha: &str) -> SweepResults {
+    let mut r = base_sweep(vec![]);
+    r.manifest = Some(make_manifest_with_sha(sha));
+    r
+}
+
+// ─── Unit: detect_harness_mismatch_with_sha ──────────────────────────────────
+
+#[test]
+fn detect_harness_mismatch_when_shas_differ() {
+    let results = sweep_with_sha("aaaaaa");
+    assert!(
+        detect_harness_mismatch_with_sha(&results, Some("bbbbbb")),
+        "must detect mismatch when manifest sha != current sha"
+    );
+}
+
+#[test]
+fn detect_harness_mismatch_false_when_shas_match() {
+    let results = sweep_with_sha("deadbeef");
+    assert!(
+        !detect_harness_mismatch_with_sha(&results, Some("deadbeef")),
+        "must not flag mismatch when shas are identical"
+    );
+}
+
+#[test]
+fn detect_harness_mismatch_false_when_no_manifest() {
+    let results = base_sweep(vec![]);
+    assert!(
+        !detect_harness_mismatch_with_sha(&results, Some("some-sha")),
+        "no manifest → no mismatch"
+    );
+}
+
+#[test]
+fn detect_harness_mismatch_false_when_no_current_sha() {
+    let results = sweep_with_sha("abc123");
+    assert!(
+        !detect_harness_mismatch_with_sha(&results, None),
+        "current_sha=None means git unavailable → treat as no mismatch"
+    );
+}
+
+// ─── Unit: archive_trajectories (flat path) ──────────────────────────────────
+
+#[test]
+fn archive_uses_flat_path() {
+    let sweep = tempfile::tempdir().unwrap();
+    let instance_id = "django__django-001";
+
+    // Create trajectory in nested layout (sweep_dir/{id}/run-1.traj.json)
+    let traj_dir = sweep.path().join(instance_id);
+    std::fs::create_dir_all(&traj_dir).unwrap();
+    std::fs::write(traj_dir.join("run-1.traj.json"), b"{}").unwrap();
+
+    let inst = make_instance(instance_id, "error", Some(FailureCategory::StepLimit));
+    let selected = vec![&inst];
+
+    archive_trajectories(sweep.path(), &selected, "retry-flat-test").unwrap();
+
+    // Archive must be at flat path: .retry/{retry_id}/{instance_id}.traj.json
+    let flat = sweep
+        .path()
+        .join(".retry")
+        .join("retry-flat-test")
+        .join(format!("{instance_id}.traj.json"));
+    assert!(flat.exists(), "archived trajectory must be at flat path {}", flat.display());
+
+    // Nested path inside archive must NOT exist
+    let nested = sweep
+        .path()
+        .join(".retry")
+        .join("retry-flat-test")
+        .join(instance_id)
+        .join("run-1.traj.json");
+    assert!(!nested.exists(), "nested archive path must not be created: {}", nested.display());
+}
+
+// ─── Unit: save_pre_retry_backup ─────────────────────────────────────────────
+
+#[test]
+fn save_pre_retry_backup_writes_json() {
+    let sweep = tempfile::tempdir().unwrap();
+    let results = base_sweep(vec![make_instance("a", "error", Some(FailureCategory::StepLimit))]);
+
+    save_pre_retry_backup(sweep.path(), &results, "backup-test-id").unwrap();
+
+    let path = sweep
+        .path()
+        .join(".retry")
+        .join("backup-test-id")
+        .join("pre-retry.json");
+    assert!(path.exists(), "pre-retry.json must be written to archive dir");
+
+    let json = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(v.get("instances").is_some(), "pre-retry.json must contain full sweep data");
+}
+
+// ─── Unit: restore_missing_trajectories ──────────────────────────────────────
+
+#[test]
+fn restore_missing_trajectories_restores_when_absent() {
+    let sweep = tempfile::tempdir().unwrap();
+    let id = "instance-absent";
+    let inst = make_instance(id, "error", Some(FailureCategory::StepLimit));
+    let selected = vec![&inst];
+
+    // Write archive copy
+    let archive_dir = sweep.path().join(".retry").join("r1");
+    std::fs::create_dir_all(&archive_dir).unwrap();
+    std::fs::write(archive_dir.join(format!("{id}.traj.json")), b"{\"info\":{\"exit_reason\":\"submitted\"}}").unwrap();
+
+    // live path does not exist
+    restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
+
+    let live = sweep.path().join(id).join("run-1.traj.json");
+    assert!(live.exists(), "missing trajectory must be restored from archive");
+}
+
+#[test]
+fn restore_missing_trajectories_keeps_valid_trajectory() {
+    let sweep = tempfile::tempdir().unwrap();
+    let id = "instance-valid";
+    let inst = make_instance(id, "submitted", None);
+    let selected = vec![&inst];
+
+    // Write a valid live trajectory
+    let live_dir = sweep.path().join(id);
+    std::fs::create_dir_all(&live_dir).unwrap();
+    let valid_content = b"{\"info\":{\"exit_reason\":\"submitted\",\"outcome\":\"submitted\"}}";
+    std::fs::write(live_dir.join("run-1.traj.json"), valid_content).unwrap();
+
+    // Write a different archive copy
+    let archive_dir = sweep.path().join(".retry").join("r1");
+    std::fs::create_dir_all(&archive_dir).unwrap();
+    std::fs::write(archive_dir.join(format!("{id}.traj.json")), b"{\"info\":{\"exit_reason\":\"error\"}}").unwrap();
+
+    restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
+
+    // Live trajectory must be unchanged
+    let content = std::fs::read(sweep.path().join(id).join("run-1.traj.json")).unwrap();
+    assert_eq!(content, valid_content, "valid trajectory must not be overwritten");
+}
+
+#[test]
+fn restore_missing_trajectories_restores_cancelled() {
+    let sweep = tempfile::tempdir().unwrap();
+    let id = "instance-cancelled";
+    let inst = make_instance(id, "cancelled", None);
+    let selected = vec![&inst];
+
+    // Write a live trajectory with exit_reason = "cancelled"
+    let live_dir = sweep.path().join(id);
+    std::fs::create_dir_all(&live_dir).unwrap();
+    std::fs::write(
+        live_dir.join("run-1.traj.json"),
+        b"{\"info\":{\"exit_reason\":\"cancelled\"}}",
+    ).unwrap();
+
+    // Write the archived copy
+    let archive_dir = sweep.path().join(".retry").join("r1");
+    std::fs::create_dir_all(&archive_dir).unwrap();
+    let archived_content = b"{\"info\":{\"exit_reason\":\"submitted\"}}";
+    std::fs::write(archive_dir.join(format!("{id}.traj.json")), archived_content).unwrap();
+
+    restore_missing_trajectories(sweep.path(), &selected, "r1").unwrap();
+
+    let content = std::fs::read(sweep.path().join(id).join("run-1.traj.json")).unwrap();
+    assert_eq!(content, archived_content, "cancelled trajectory must be replaced with archive");
+}
+
+// ─── CLI: harness mismatch bypassed with --allow-harness-mismatch ─────────────
+
+#[test]
+fn cli_harness_mismatch_bypassed_with_flag() {
+    let sweep = tempfile::tempdir().unwrap();
+
+    // Build results with a fake manifest SHA that differs from any real SHA
+    let mut results = base_sweep(vec![make_instance(
+        "inst-a",
+        "error",
+        Some(FailureCategory::StepLimit),
+    )]);
+    results.manifest = Some(make_manifest_with_sha("0000000000000000000000000000000000000000"));
+    write_results(sweep.path(), &results);
+
+    // With --allow-harness-mismatch, the mismatch gate is bypassed.
+    // Without --yes and not a TTY, we expect dry-run exit (non-zero due to no --yes)
+    // but NOT the harness-mismatch error message.
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "retry",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--failure-category",
+            "step_limit",
+            "--allow-harness-mismatch",
+        ])
+        .output()
+        .unwrap();
+
+    // Must exit non-zero (dry-run without --yes), but must NOT say "SHA mismatch"
+    assert!(!out.status.success(), "dry-run without --yes must be non-zero");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("SHA mismatch") && !stderr.contains("harness git SHA mismatch"),
+        "mismatch gate must be bypassed with --allow-harness-mismatch: {stderr}"
+    );
+}
+
+// ─── CLI: dry-run non-interactive hint ────────────────────────────────────────
+
+#[test]
+fn cli_dry_run_non_interactive_hint() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_fixture_sweep(sweep.path(), &[("inst-x", "error", Some("step_limit"))]);
+
+    // Running without --yes and piping stdin (non-TTY) must emit the --yes hint
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "retry",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--failure-category",
+            "step_limit",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success(), "non-interactive without --yes must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--yes") || stderr.contains("non-interactively"),
+        "must hint about --yes in non-interactive mode: {stderr}"
+    );
+}
+
+// ─── CLI: bench tail round-trip on retry-amended results ─────────────────────
+
+#[test]
+fn cli_round_trip_tail_reads_retry_history() {
+    let sweep = tempfile::tempdir().unwrap();
+    let mut results = base_sweep(vec![{
+        let mut r = make_instance("task-b", "submitted", None);
+        r.retry_id = Some("tail-retry-id".into());
+        r.previous_failure_category = Some(FailureCategory::StepLimit);
+        r
+    }]);
+    results.retry_history.push(make_retry_entry("tail-retry-id", 1));
+    write_results(sweep.path(), &results);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "tail",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--once",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "bench tail --once must succeed on retry-amended results.json; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

@@ -231,7 +231,7 @@ pub fn merge_retry_results(
 // ─── archive ──────────────────────────────────────────────────────────────────
 
 /// Archive trajectory files for the selected instances to
-/// `{sweep_dir}/.retry/{retry_id}/{instance_id}/run-1.traj.json` before the
+/// `{sweep_dir}/.retry/{retry_id}/{instance_id}.traj.json` before the
 /// agent loop overwrites them.
 pub fn archive_trajectories(
     sweep_dir: &Path,
@@ -239,10 +239,11 @@ pub fn archive_trajectories(
     retry_id: &str,
 ) -> Result<(), Error> {
     let archive_root = sweep_dir.join(".retry").join(retry_id);
+    std::fs::create_dir_all(&archive_root)?;
 
     for inst in selected {
         let id = &inst.instance_id;
-        // Try nested layout first, then legacy.
+        // Try nested layout first, then legacy flat layout.
         let src = sweep_dir.join(id).join("run-1.traj.json");
         let src = if src.exists() {
             src
@@ -254,13 +255,103 @@ pub fn archive_trajectories(
             continue;
         }
 
-        let dst_dir = archive_root.join(id);
-        std::fs::create_dir_all(&dst_dir)?;
-        let dst = dst_dir.join("run-1.traj.json");
+        let dst = archive_root.join(format!("{id}.traj.json"));
         std::fs::copy(&src, &dst)?;
     }
 
     Ok(())
+}
+
+// ─── pre-retry backup ─────────────────────────────────────────────────────────
+
+/// Save `results.json` to `{sweep_dir}/.retry/{retry_id}/pre-retry.json` so
+/// the original sweep state can be manually restored if the process is killed
+/// unexpectedly (SIGKILL, OOM). For graceful cancellation (SIGINT/SIGTERM)
+/// `restore_missing_trajectories` handles the revert automatically.
+pub fn save_pre_retry_backup(
+    sweep_dir: &Path,
+    results: &SweepResults,
+    retry_id: &str,
+) -> Result<(), Error> {
+    let archive_root = sweep_dir.join(".retry").join(retry_id);
+    std::fs::create_dir_all(&archive_root)?;
+    let backup_path = archive_root.join("pre-retry.json");
+    let json = serde_json::to_string_pretty(results)?;
+    std::fs::write(&backup_path, json.as_bytes())?;
+    Ok(())
+}
+
+/// Copy `pre-retry.json` back to `results.json` to undo a failed retry attempt.
+/// Called when `swebench::run()` returns a hard error before any instances ran.
+pub fn restore_pre_retry_backup(sweep_dir: &Path, retry_id: &str) -> Result<(), Error> {
+    let backup_path = sweep_dir
+        .join(".retry")
+        .join(retry_id)
+        .join("pre-retry.json");
+    if backup_path.exists() {
+        let results_path = sweep_dir.join("results.json");
+        std::fs::copy(&backup_path, &results_path)?;
+    }
+    Ok(())
+}
+
+// ─── partial-results restore ──────────────────────────────────────────────────
+
+/// Restore archived trajectory files for any selected instances whose new
+/// trajectory is absent, empty, invalid JSON, or carries `exit_reason =
+/// "cancelled"` (written by swebench when an in-flight task is cut short by
+/// SIGINT/SIGTERM before it could complete).
+///
+/// This gives `bench retry` the same partial-results guarantee as the sweep
+/// itself: completed instances keep their new data, in-flight instances revert
+/// to the last known-good archived trajectory.
+pub fn restore_missing_trajectories(
+    sweep_dir: &Path,
+    selected: &[&InstanceResult],
+    retry_id: &str,
+) -> Result<(), Error> {
+    for inst in selected {
+        let id = &inst.instance_id;
+        let live_path = sweep_dir.join(id).join("run-1.traj.json");
+
+        if needs_trajectory_restore(&live_path) {
+            let archived = sweep_dir
+                .join(".retry")
+                .join(retry_id)
+                .join(format!("{id}.traj.json"));
+            if archived.exists() {
+                std::fs::create_dir_all(sweep_dir.join(id))?;
+                std::fs::copy(&archived, &live_path)?;
+                tracing::debug!(
+                    instance_id = %id,
+                    "restored archived trajectory for in-flight/incomplete instance"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Returns `true` when the trajectory at `path` should be replaced with the
+/// archived copy because it was never written (missing), is empty, is not
+/// valid JSON, or records `exit_reason = "cancelled"`.
+fn needs_trajectory_restore(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return true;
+    };
+    if content.trim().is_empty() {
+        return true;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return true;
+    };
+    // In-flight instances cancelled by SIGINT get exit_reason = "cancelled".
+    let exit_reason = v
+        .get("info")
+        .and_then(|i| i.get("exit_reason"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("");
+    exit_reason == "cancelled" || v.get("info").is_none()
 }
 
 // ─── harness mismatch check ────────────────────────────────────────────────────
@@ -269,16 +360,25 @@ pub fn archive_trajectories(
 /// the current binary's SHA. Returns `false` when either SHA is unavailable
 /// (treated as "can't compare, proceed safely").
 pub fn detect_harness_mismatch(results: &SweepResults) -> bool {
+    detect_harness_mismatch_with_sha(results, current_git_sha().as_deref())
+}
+
+/// Testable inner form: accepts an explicit `current_sha` rather than running
+/// `git rev-parse HEAD`. Pass `None` to simulate "git not available".
+pub fn detect_harness_mismatch_with_sha(
+    results: &SweepResults,
+    current_sha: Option<&str>,
+) -> bool {
     let Some(manifest) = &results.manifest else {
         return false;
     };
     let Some(manifest_sha) = &manifest.harness.git_sha else {
         return false;
     };
-    let Some(current_sha) = current_git_sha() else {
+    let Some(sha) = current_sha else {
         return false;
     };
-    manifest_sha != &current_sha
+    manifest_sha.as_str() != sha
 }
 
 fn current_git_sha() -> Option<String> {

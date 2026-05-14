@@ -1719,7 +1719,8 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
 async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     use crate::run::retry::{
         archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
-        load_sweep_results, merge_retry_results, resolve_selection,
+        load_sweep_results, merge_retry_results, resolve_selection, restore_missing_trajectories,
+        save_pre_retry_backup,
     };
     use crate::run::swebench::{OverrideDelta, RetrySelection, write_sweep_results_atomic};
     use crate::trajectory::FailureCategory;
@@ -1773,20 +1774,33 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
         )));
     }
 
-    // Dry-run preview: exit non-zero without --yes.
+    // Dry-run preview: ask for confirmation when --yes is not set.
     if !r.yes {
         let ids: Vec<&str> = selected.iter().map(|i| i.instance_id.as_str()).collect();
         eprintln!(
-            "bench retry: {} instance(s) selected (pass --yes to run):",
+            "bench retry: {} instance(s) selected:",
             selected.len()
         );
         for id in &ids {
             eprintln!("  {id}");
         }
-        std::process::exit(1);
+        if std::io::stdin().is_terminal() {
+            eprint!("Proceed? [y/N] ");
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)
+                .map_err(Error::Io)?;
+            if !answer.trim().eq_ignore_ascii_case("y") {
+                std::process::exit(1);
+            }
+        } else {
+            eprintln!("(pass --yes to proceed non-interactively)");
+            std::process::exit(1);
+        }
     }
 
     let retry_id = generate_retry_id();
+    save_pre_retry_backup(&r.sweep, &original, &retry_id)?;
     archive_trajectories(&r.sweep, &selected, &retry_id)?;
 
     let selected_ids: HashSet<String> =
@@ -1798,7 +1812,16 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     };
 
     let sweep_args = retry_swebench_args(&r, &original, &ids_csv)?;
-    let retry_results = crate::run::swebench::run(sweep_args).await?;
+    let retry_results = match crate::run::swebench::run(sweep_args).await {
+        Ok(results) => results,
+        Err(e) => {
+            if let Err(restore_err) = crate::run::retry::restore_pre_retry_backup(&r.sweep, &retry_id) {
+                tracing::warn!(err = %restore_err, "could not restore pre-retry backup");
+            }
+            return Err(e);
+        }
+    };
+    restore_missing_trajectories(&r.sweep, &selected, &retry_id)?;
 
     let override_delta = OverrideDelta {
         model: r.model.clone(),
