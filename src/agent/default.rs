@@ -94,9 +94,21 @@ fn elision_marker(obs_number: usize, bytes: usize) -> String {
 
 /// Returns the indices of all User/Tool messages in `history` at position ≥ 2
 /// (i.e., everything after the system prompt and user instance message).
+/// Harness advisory messages (marked `harness_advisory: true`) are excluded so
+/// they are never selected as elision candidates or as the protected last
+/// observation.
 fn observation_indices(history: &[Message]) -> Vec<usize> {
     (2..history.len())
-        .filter(|&i| matches!(history[i].role, Role::User | Role::Tool))
+        .filter(|&i| {
+            let m = &history[i];
+            matches!(m.role, Role::User | Role::Tool)
+                && !m
+                    .extra
+                    .other
+                    .get("harness_advisory")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -109,9 +121,12 @@ fn observation_indices(history: &[Message]) -> Vec<usize> {
 /// - The last Assistant message (most recent assistant turn, if any)
 ///
 /// Candidates for elision are all other User/Tool messages, oldest first.
+/// Harness advisory messages (e.g. wallclock warnings) are excluded from the
+/// candidate set so they cannot displace real tool results.
 ///
 /// When both `keep_last_observations` and `max_input_tokens` are set, the rule
 /// that elides more observations wins.
+#[allow(clippy::too_many_lines)]
 fn elide_history_for_model(
     history: &[Message],
     keep_last_observations: Option<usize>,
@@ -179,10 +194,12 @@ fn elide_history_for_model(
                     met_at = count;
                 }
             }
-            // `total` is now the size after all candidates are replaced — the
-            // minimum the budget-based pass can achieve.
+            // compaction_failed only when no prefix of candidates ever fit the
+            // budget.  A later iteration can push total back above the limit if
+            // a tiny observation is replaced by a longer marker, but met_at
+            // already identifies a valid elision count.
             let elide_needed = if met { met_at } else { count };
-            (elide_needed, total > limit)
+            (elide_needed, !met)
         }
     } else {
         (0, false)
@@ -1348,13 +1365,18 @@ impl DefaultAgent {
              work and submit now with COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT. Do not install \
              dependencies unless they are strictly required to produce the final patch."
         );
-        let msg = Message::user(
+        let mut msg = Message::user(
             self.redactor
                 .redact_text(&content, surface::MODEL_OBSERVATION)
                 .text,
         );
+        // Mark as harness advisory so elision treats it as a non-observation
+        // and never counts it as the protected "last observation".
+        msg.extra
+            .other
+            .insert("harness_advisory".into(), serde_json::Value::Bool(true));
         self.history.push(msg.clone());
-        let mut extra = MessageExtra::default();
+        let mut extra = msg.extra.clone();
         extra.other.insert(
             "wallclock_deadline_warning".into(),
             serde_json::Value::Bool(true),

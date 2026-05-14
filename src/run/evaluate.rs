@@ -395,7 +395,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     let (elision_instances, bytes_elided_total, compaction_failed) =
-        build_elision_stats(&args.sweep_dir, &run_slots, &results);
+        build_elision_stats(&args.sweep_dir, &run_slots);
     eval.behavioral.history_elision_instances = elision_instances;
     eval.behavioral.history_bytes_elided_total = bytes_elided_total;
     eval.behavioral.history_compaction_failed = compaction_failed;
@@ -1298,14 +1298,13 @@ fn build_behavioral_metrics(
 /// Scan trajectory files for elision metadata produced by history-bounding.
 /// Iterates all run slots (handles reruns) to count instances with elision and
 /// aggregate bytes. Returns (elision_instances, bytes_elided_total, compaction_failed_count).
-fn build_elision_stats<S: std::hash::BuildHasher>(
+fn build_elision_stats(
     sweep_dir: &Path,
     run_slots: &[crate::run::compare::LoadedRunSlot],
-    results: &HashMap<String, InstanceResult, S>,
 ) -> (usize, u64, usize) {
-    let compaction_failed = results
-        .values()
-        .filter(|r| r.failure_category == Some(FailureCategory::HistoryCompactionFailed))
+    let compaction_failed = run_slots
+        .iter()
+        .filter(|s| s.result.failure_category == Some(FailureCategory::HistoryCompactionFailed))
         .count();
 
     let mut elision_instance_set = std::collections::HashSet::<String>::new();
@@ -2959,134 +2958,56 @@ mod tests {
         )
         .unwrap();
 
-        // Instance b: history_compaction_failed
+        // Instance b: history_compaction_failed — result lives in the slot
+        let make_result = |id: &str, cat: Option<FailureCategory>| InstanceResult {
+            instance_id: id.into(),
+            exit_reason: cat
+                .as_ref()
+                .map(|c| format!("{c:?}").to_lowercase())
+                .unwrap_or_else(|| "submitted".into()),
+            outcome: Some(
+                if cat.is_some() {
+                    "error"
+                } else {
+                    outcome::SUBMITTED
+                }
+                .into(),
+            ),
+            failure_category: cat,
+            steps: None,
+            cost_usd: None,
+            prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            completion_tokens: None,
+            duration_secs: None,
+            error: None,
+            github_pr_error: None,
+            patch_present: cat.is_none(),
+            non_empty_patch: cat.is_none(),
+            attempts: 1,
+            retry_reasons: vec![],
+            runs: 0,
+            resolved_count: 0,
+            pass_at_1: false,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+            fallback_count: None,
+            final_model: None,
+        };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {
                 instance_id: "inst-a".to_owned(),
                 run_index: 1,
-                result: InstanceResult {
-                    instance_id: "inst-a".into(),
-                    exit_reason: "submitted".into(),
-                    outcome: Some(outcome::SUBMITTED.into()),
-                    failure_category: None,
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    cache_read_tokens: None,
-                    cache_creation_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: None,
-                    github_pr_error: None,
-                    patch_present: true,
-                    non_empty_patch: true,
-                    attempts: 1,
-                    retry_reasons: vec![],
-                    runs: 0,
-                    resolved_count: 0,
-                    pass_at_1: false,
-                    tests_run_before_submit: false,
-                    last_tests_passed: None,
-                    fallback_count: None,
-                    final_model: None,
-                },
+                result: make_result("inst-a", None),
             },
             crate::run::compare::LoadedRunSlot {
                 instance_id: "inst-b".to_owned(),
                 run_index: 1,
-                result: InstanceResult {
-                    instance_id: "inst-b".into(),
-                    exit_reason: "history_compaction_failed".into(),
-                    outcome: Some("error".into()),
-                    failure_category: Some(FailureCategory::HistoryCompactionFailed),
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    cache_read_tokens: None,
-                    cache_creation_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: None,
-                    github_pr_error: None,
-                    patch_present: false,
-                    non_empty_patch: false,
-                    attempts: 1,
-                    retry_reasons: vec![],
-                    runs: 0,
-                    resolved_count: 0,
-                    pass_at_1: false,
-                    tests_run_before_submit: false,
-                    last_tests_passed: None,
-                    fallback_count: None,
-                    final_model: None,
-                },
+                result: make_result("inst-b", Some(FailureCategory::HistoryCompactionFailed)),
             },
         ];
-        let results: HashMap<String, InstanceResult> = [
-            (
-                "inst-a".to_owned(),
-                InstanceResult {
-                    instance_id: "inst-a".into(),
-                    exit_reason: "submitted".into(),
-                    outcome: Some(outcome::SUBMITTED.into()),
-                    failure_category: None,
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    cache_read_tokens: None,
-                    cache_creation_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: None,
-                    github_pr_error: None,
-                    patch_present: true,
-                    non_empty_patch: true,
-                    attempts: 1,
-                    retry_reasons: vec![],
-                    runs: 0,
-                    resolved_count: 0,
-                    pass_at_1: false,
-                    tests_run_before_submit: false,
-                    last_tests_passed: None,
-                    fallback_count: None,
-                    final_model: None,
-                },
-            ),
-            (
-                "inst-b".to_owned(),
-                InstanceResult {
-                    instance_id: "inst-b".into(),
-                    exit_reason: "history_compaction_failed".into(),
-                    outcome: Some("error".into()),
-                    failure_category: Some(FailureCategory::HistoryCompactionFailed),
-                    steps: None,
-                    cost_usd: None,
-                    prompt_tokens: None,
-                    cache_read_tokens: None,
-                    cache_creation_tokens: None,
-                    completion_tokens: None,
-                    duration_secs: None,
-                    error: None,
-                    github_pr_error: None,
-                    patch_present: false,
-                    non_empty_patch: false,
-                    attempts: 1,
-                    retry_reasons: vec![],
-                    runs: 0,
-                    resolved_count: 0,
-                    pass_at_1: false,
-                    tests_run_before_submit: false,
-                    last_tests_passed: None,
-                    fallback_count: None,
-                    final_model: None,
-                },
-            ),
-        ]
-        .into_iter()
-        .collect();
-
-        let (instances, bytes, compaction_failed) =
-            build_elision_stats(sweep, &run_slots, &results);
+        let (instances, bytes, compaction_failed) = build_elision_stats(sweep, &run_slots);
         assert_eq!(instances, 1, "one instance should be elided");
         assert_eq!(bytes, 500, "should total 500 bytes elided");
         assert_eq!(compaction_failed, 1, "one compaction_failed instance");
