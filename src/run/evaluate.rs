@@ -1309,8 +1309,7 @@ fn build_elision_stats<S: std::hash::BuildHasher>(
         if result.failure_category == Some(FailureCategory::HistoryCompactionFailed) {
             compaction_failed += 1;
         }
-        let Some(path) =
-            crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id)
+        let Some(path) = crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id)
         else {
             continue;
         };
@@ -1326,7 +1325,7 @@ fn build_elision_stats<S: std::hash::BuildHasher>(
                 .extra
                 .other
                 .get("history_elided")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             if elided {
                 any_elided = true;
@@ -1334,7 +1333,7 @@ fn build_elision_stats<S: std::hash::BuildHasher>(
                     .extra
                     .other
                     .get("history_bytes_elided")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                 {
                     bytes_elided_total = bytes_elided_total.saturating_add(bytes);
                 }

@@ -151,7 +151,9 @@ fn elide_history_for_model(
 
     // How many to elide by the token-budget rule (oldest first, until under cap).
     let elide_by_tokens = if let Some(max_tokens) = max_input_tokens {
-        let max_bytes = (max_tokens as usize).saturating_mul(BYTES_PER_TOKEN);
+        let max_bytes = usize::try_from(max_tokens)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(BYTES_PER_TOKEN);
         let mut total: usize = history.iter().map(|m| m.content.len()).sum();
         let mut count = 0usize;
         for (obs_num, &hist_idx) in obs_indices[..candidate_count].iter().enumerate() {
@@ -172,12 +174,17 @@ fn elide_history_for_model(
 
     // Compaction failure: even with ALL candidates elided, still over budget.
     let compaction_failed = if let Some(max_tokens) = max_input_tokens {
-        let max_bytes = (max_tokens as usize).saturating_mul(BYTES_PER_TOKEN);
+        let max_bytes = usize::try_from(max_tokens)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(BYTES_PER_TOKEN);
         let min_total: usize = history
             .iter()
             .enumerate()
             .map(|(i, m)| {
-                if let Some(pos) = obs_indices[..candidate_count].iter().position(|&idx| idx == i) {
+                if let Some(pos) = obs_indices[..candidate_count]
+                    .iter()
+                    .position(|&idx| idx == i)
+                {
                     elision_marker(pos, m.content.len()).len()
                 } else {
                     m.content.len()
@@ -663,8 +670,7 @@ impl Agent for DefaultAgent {
         );
         if elision.compaction_failed {
             self.trajectory.info.exit_reason = Some("history_compaction_failed".into());
-            self.trajectory.info.failure_category =
-                Some(FailureCategory::HistoryCompactionFailed);
+            self.trajectory.info.failure_category = Some(FailureCategory::HistoryCompactionFailed);
             self.trajectory.info.steps = Some(self.steps);
             self.finalize_run_metadata(outcome::ERROR);
             self.emit_run_ended(
@@ -2700,10 +2706,7 @@ mod tests {
     // ── elide_history_for_model unit tests ───────────────────────────────────
 
     fn make_history(obs_payloads: &[&str]) -> Vec<Message> {
-        let mut h = vec![
-            Message::system("system"),
-            Message::user("instance"),
-        ];
+        let mut h = vec![Message::system("system"), Message::user("instance")];
         for payload in obs_payloads {
             h.push(Message::assistant("```bash\necho x\n```"));
             h.push(Message::user(payload.to_string()));
@@ -2728,7 +2731,10 @@ mod tests {
         assert_eq!(info.elided.len(), 2, "expected 2 elided observations");
         assert!(info.prompt[3].content.contains("[history-elided:"));
         assert!(info.prompt[5].content.contains("[history-elided:"));
-        assert!(info.prompt[7].content.contains("obs2"), "last obs must be intact");
+        assert!(
+            info.prompt[7].content.contains("obs2"),
+            "last obs must be intact"
+        );
         assert!(!info.compaction_failed);
     }
 
@@ -2755,7 +2761,9 @@ mod tests {
     #[test]
     fn elide_both_flags_compose_more_aggressive_wins() {
         // 5 observations, each 200 bytes.
-        let obs: Vec<String> = (0..5).map(|i| format!("obs{i}{}", "x".repeat(196))).collect();
+        let obs: Vec<String> = (0..5)
+            .map(|i| format!("obs{i}{}", "x".repeat(196)))
+            .collect();
         let obs_refs: Vec<&str> = obs.iter().map(String::as_str).collect();
         let h = make_history(&obs_refs);
 
@@ -2773,7 +2781,10 @@ mod tests {
 
     #[test]
     fn elide_compaction_failed_when_irreducible() {
-        let h = make_history(&["obs0", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]);
+        let h = make_history(&[
+            "obs0",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        ]);
         // Even with obs0 elided, the fixed content won't fit in 5 bytes.
         let info = elide_history_for_model(&h, None, Some(1)); // 1 token = 4 bytes
         assert!(info.compaction_failed);

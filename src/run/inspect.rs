@@ -458,7 +458,7 @@ fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
             .extra
             .other
             .get("history_elided")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         let as_sent_marker = if history_elided {
             msg.extra
