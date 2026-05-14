@@ -171,10 +171,13 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
         .map(|orig| {
             if selected_ids.contains(&orig.instance_id) {
                 if let Some(new) = retry_by_id.get(orig.instance_id.as_str()) {
-                    // Don't replace with a cancelled row; the trajectory restore
-                    // has already put the old trajectory back on disk but
-                    // results.json should keep the original summary row.
-                    if new.exit_reason != "cancelled" {
+                    // Don't replace with a cancelled or budget-halt row: cancelled
+                    // means the task was cut short without running, and budget-halt
+                    // means the sweep cost limit was reached before this instance
+                    // started. In both cases no new trajectory was written so the
+                    // original result should be preserved.
+                    if new.exit_reason != "cancelled" && !new.exit_reason.starts_with("budget_halt")
+                    {
                         let mut updated = (*new).clone();
                         updated.retry_id = Some(entry.retry_id.clone());
                         updated.previous_failure_category = orig.failure_category;
@@ -420,6 +423,36 @@ pub fn restore_pre_retry_backup(sweep_dir: &Path, retry_id: &str) -> Result<(), 
 }
 
 // ─── partial-results restore ──────────────────────────────────────────────────
+
+/// Unconditionally restore archived trajectory and patch files for every
+/// selected instance.  Used on the hard-error path where `swebench::run`
+/// returned `Err` and we need to roll back all on-disk state to match the
+/// pre-retry `results.json` that is being restored.
+pub fn restore_archived_trajectories(
+    sweep_dir: &Path,
+    selected: &[&InstanceResult],
+    retry_id: &str,
+) -> Result<(), Error> {
+    let archive_dir = sweep_dir.join(".retry").join(retry_id);
+    for inst in selected {
+        let id = &inst.instance_id;
+        let archived_traj = archive_dir.join(format!("{id}.traj.json"));
+        if archived_traj.exists() {
+            let live_path = sweep_dir.join(id).join("run-1.traj.json");
+            std::fs::create_dir_all(sweep_dir.join(id))?;
+            std::fs::copy(&archived_traj, &live_path)?;
+        }
+        let archived_patch = archive_dir.join(format!("{id}.patch"));
+        if archived_patch.exists() {
+            let dest_patch = patch_path_for_run(sweep_dir, id, 1);
+            if let Some(parent) = dest_patch.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&archived_patch, &dest_patch)?;
+        }
+    }
+    Ok(())
+}
 
 /// Restore archived trajectory files for any selected instances whose new
 /// trajectory is absent, empty, invalid JSON, or carries `exit_reason =

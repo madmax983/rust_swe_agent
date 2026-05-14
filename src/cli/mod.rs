@@ -1720,8 +1720,8 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
 async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     use crate::run::retry::{
         archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
-        load_sweep_results, merge_retry_results, resolve_selection, restore_missing_trajectories,
-        save_pre_retry_backup,
+        load_sweep_results, merge_retry_results, resolve_selection, restore_archived_trajectories,
+        restore_missing_trajectories, save_pre_retry_backup,
     };
     use crate::run::swebench::{
         OverrideDelta, RetrySelection, SWEEP_STATUS_COMPLETED, write_sweep_results_atomic,
@@ -1826,9 +1826,11 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     let retry_results = match crate::run::swebench::run(sweep_args).await {
         Ok(results) => results,
         Err(e) => {
-            // Restore any trajectories/patches that were overwritten before
-            // reverting results.json, so on-disk state is consistent.
-            if let Err(restore_err) = restore_missing_trajectories(&r.sweep, &selected, &retry_id) {
+            // Unconditionally restore all archived trajectories/patches so that
+            // any completed instances that already overwrote their live files are
+            // rolled back to match the pre-retry results.json we are restoring.
+            if let Err(restore_err) = restore_archived_trajectories(&r.sweep, &selected, &retry_id)
+            {
                 tracing::warn!(err = %restore_err, "could not restore archived trajectories");
             }
             if let Err(restore_err) =
@@ -1984,6 +1986,9 @@ fn retry_swebench_args(
         )));
     };
 
+    let cfg_max_rpm = cfg.root.sweep.max_rpm;
+    let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
+
     Ok(crate::run::swebench::SwebenchArgs {
         dataset_source,
         dataset_cache_dir,
@@ -2020,14 +2025,14 @@ fn retry_swebench_args(
         preflight_total_timeout_s: 60,
         preflight_mode: "sweep".into(),
         skip_patch_validation: false,
-        max_rpm: None,
-        max_input_tpm: None,
+        max_rpm: cfg_max_rpm,
+        max_input_tpm: cfg_max_input_tpm,
         cancel_deadline_secs: 30,
         install_os_signal_handlers: true,
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
-        abort_on_systemic_failure: false,
+        abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
     })
