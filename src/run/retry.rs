@@ -10,7 +10,9 @@ use std::time::SystemTime;
 
 use crate::config::Config;
 use crate::error::{ConfigError, Error};
-use crate::run::swebench::{InstanceResult, SweepResults};
+use crate::run::swebench::{
+    existing_patch_path_for_run, patch_path_for_run, InstanceResult, SweepResults,
+};
 use crate::trajectory::FailureCategory;
 
 // Re-export so callers can import from `run::retry`.
@@ -109,13 +111,15 @@ pub fn resolve_selection<'a>(
     }
 
     // 4. Guard against re-running already-resolved instances.
+    //    In pass@k sweeps, resolved_count > 0 means at least one run succeeded
+    //    even if outcome is not "submitted", so we treat those as resolved too.
     if !allow_resolved_retry {
         if let Some(resolved) = selected
             .iter()
-            .find(|r| r.outcome.as_deref() == Some("submitted"))
+            .find(|r| r.outcome.as_deref() == Some("submitted") || r.resolved_count > 0)
         {
             return Err(Error::Config(ConfigError::Invalid(format!(
-                "bench retry: instance '{}' has outcome 'submitted'; pass \
+                "bench retry: instance '{}' is already resolved; pass \
                  --allow-resolved-retry to acknowledge the extra cost",
                 resolved.instance_id
             ))));
@@ -223,12 +227,17 @@ pub fn merge_retry_results<S: std::hash::BuildHasher>(
         }
         map
     };
-    let resolved_total: u32 = merged_instances.iter().map(|r| r.resolved_count).sum();
+    // Count rows with any resolved run (pass@k semantics: resolved_count > 0 means
+    // at least one of the k runs submitted successfully, regardless of value).
+    let resolved_any = merged_instances
+        .iter()
+        .filter(|r| r.resolved_count > 0)
+        .count();
     #[allow(clippy::cast_precision_loss)]
     let pass_at_k = if merged_instances.is_empty() {
         0.0
     } else {
-        f64::from(resolved_total) / merged_instances.len() as f64
+        resolved_any as f64 / merged_instances.len() as f64
     };
     let total_prompt_tokens: u64 = merged_instances
         .iter()
@@ -325,6 +334,13 @@ pub fn archive_trajectories(
 
         let dst = archive_root.join(format!("{id}.traj.json"));
         std::fs::copy(&src, &dst)?;
+
+        // Also archive the patch file so it can be restored if the retry is cancelled.
+        let patch_src = existing_patch_path_for_run(sweep_dir, id, 1);
+        if patch_src.exists() {
+            let patch_dst = archive_root.join(format!("{id}.patch"));
+            std::fs::copy(&patch_src, &patch_dst)?;
+        }
     }
 
     Ok(())
@@ -344,7 +360,10 @@ pub fn save_pre_retry_backup(
     let archive_root = sweep_dir.join(".retry").join(retry_id);
     std::fs::create_dir_all(&archive_root)?;
     let backup_path = archive_root.join("pre-retry.json");
-    let json = serde_json::to_string_pretty(results)?;
+    // Use the artifact serializer so the backup includes artifact_kind/schema_version
+    // headers; load_sweep_results calls classify_json_value which requires them.
+    let json =
+        crate::artifact::to_string_pretty(crate::artifact::ArtifactKind::SweepResults, results)?;
     std::fs::write(&backup_path, json.as_bytes())?;
     Ok(())
 }
@@ -383,17 +402,25 @@ pub fn restore_missing_trajectories(
         let live_path = sweep_dir.join(id).join("run-1.traj.json");
 
         if needs_trajectory_restore(&live_path) {
-            let archived = sweep_dir
-                .join(".retry")
-                .join(retry_id)
-                .join(format!("{id}.traj.json"));
-            if archived.exists() {
+            let archive_dir = sweep_dir.join(".retry").join(retry_id);
+            let archived_traj = archive_dir.join(format!("{id}.traj.json"));
+            if archived_traj.exists() {
                 std::fs::create_dir_all(sweep_dir.join(id))?;
-                std::fs::copy(&archived, &live_path)?;
+                std::fs::copy(&archived_traj, &live_path)?;
                 tracing::debug!(
                     instance_id = %id,
                     "restored archived trajectory for in-flight/incomplete instance"
                 );
+            }
+            // Restore the patch file too so a cancelled retry doesn't leave the
+            // original summary row pointing at a patch from the abandoned run.
+            let archived_patch = archive_dir.join(format!("{id}.patch"));
+            if archived_patch.exists() {
+                let dest_patch = patch_path_for_run(sweep_dir, id, 1);
+                if let Some(parent) = dest_patch.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&archived_patch, &dest_patch)?;
             }
         }
     }

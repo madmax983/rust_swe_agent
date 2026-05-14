@@ -1832,6 +1832,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
             return Err(e);
         }
     };
+    let retry_cancelled = retry_results.sweep_status != SWEEP_STATUS_COMPLETED;
     restore_missing_trajectories(&r.sweep, &selected, &retry_id)?;
 
     let override_delta = OverrideDelta {
@@ -1872,6 +1873,15 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
 
     let results_path = r.sweep.join("results.json");
     write_sweep_results_atomic(&results_path, &merged)?;
+
+    if retry_cancelled {
+        // Merge and write succeeded so partial results are preserved, but exit
+        // non-zero so automation can detect the incomplete retry.
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench retry: retry was cancelled (status: {}) — partial results have been merged",
+            retry_results.sweep_status
+        ))));
+    }
 
     tracing::info!(
         retry_id = %retry_id,
