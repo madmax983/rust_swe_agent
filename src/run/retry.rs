@@ -4,7 +4,7 @@
 //! the selected failed instances and merges their outcomes back into the same
 //! `results.json` with full provenance in `retry_history`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -104,7 +104,7 @@ pub fn resolve_selection<'a>(
 
     // 3. Intersect with explicit instance_ids.
     if let Some(ids) = instance_ids {
-        let id_set: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let id_set: HashSet<&str> = ids.iter().map(String::as_str).collect();
         selected.retain(|r| id_set.contains(r.instance_id.as_str()));
     }
 
@@ -127,6 +127,12 @@ pub fn resolve_selection<'a>(
         selected.truncate(n);
     }
 
+    if selected.is_empty() {
+        return Err(Error::Config(ConfigError::Invalid(
+            "bench retry: no instances matched the given filters — nothing to retry".into(),
+        )));
+    }
+
     Ok(selected)
 }
 
@@ -142,11 +148,12 @@ pub fn resolve_selection<'a>(
 ///
 /// All other rows are preserved byte-for-byte. Aggregate counters are
 /// recomputed. The `entry` is appended to `retry_history`.
-pub fn merge_retry_results(
+#[allow(clippy::too_many_lines)]
+pub fn merge_retry_results<S: std::hash::BuildHasher>(
     original: &SweepResults,
     retry_results: &SweepResults,
     entry: RetryHistoryEntry,
-    selected_ids: &HashSet<String>,
+    selected_ids: &HashSet<String, S>,
 ) -> SweepResults {
     let retry_by_id: HashMap<&str, &InstanceResult> = retry_results
         .instances
@@ -160,20 +167,31 @@ pub fn merge_retry_results(
         .map(|orig| {
             if selected_ids.contains(&orig.instance_id) {
                 if let Some(new) = retry_by_id.get(orig.instance_id.as_str()) {
-                    let mut updated = (*new).clone();
-                    updated.retry_id = Some(entry.retry_id.clone());
-                    updated.previous_failure_category = orig.failure_category;
-                    return updated;
+                    // Don't replace with a cancelled row; the trajectory restore
+                    // has already put the old trajectory back on disk but
+                    // results.json should keep the original summary row.
+                    if new.exit_reason != "cancelled" {
+                        let mut updated = (*new).clone();
+                        updated.retry_id = Some(entry.retry_id.clone());
+                        updated.previous_failure_category = orig.failure_category;
+                        return updated;
+                    }
                 }
             }
             orig.clone()
         })
         .collect();
 
-    // Recompute aggregates from the merged instance list.
+    // Recompute all aggregates from the merged instance list so reports and
+    // comparisons don't see stale counters from the pre-retry sweep.
+    let total = merged_instances.len();
     let submitted = merged_instances
         .iter()
         .filter(|r| r.outcome.as_deref() == Some("submitted"))
+        .count();
+    let submitted_with_tests = merged_instances
+        .iter()
+        .filter(|r| r.outcome.as_deref() == Some("submitted") && r.tests_run_before_submit)
         .count();
     let errored = merged_instances
         .iter()
@@ -182,19 +200,36 @@ pub fn merge_retry_results(
             out != "submitted" && !r.exit_reason.starts_with("budget_halt")
         })
         .count();
+    let budget_halted = merged_instances
+        .iter()
+        .filter(|r| r.exit_reason.starts_with("budget_halt"))
+        .count();
     let with_patch = merged_instances.iter().filter(|r| r.with_patch()).count();
     let patch_empty = merged_instances.iter().filter(|r| r.patch_empty()).count();
     let patch_apply_invalid = merged_instances
         .iter()
         .filter(|r| r.failure_category == Some(FailureCategory::PatchApplyInvalid))
         .count();
+    let github_pr_failures = merged_instances
+        .iter()
+        .filter(|r| r.github_pr_error.is_some())
+        .count();
+    let failures_by_category: BTreeMap<FailureCategory, usize> = {
+        let mut map = BTreeMap::new();
+        for r in &merged_instances {
+            if let Some(cat) = r.failure_category {
+                *map.entry(cat).or_insert(0) += 1;
+            }
+        }
+        map
+    };
     let resolved_total: u32 = merged_instances.iter().map(|r| r.resolved_count).sum();
+    #[allow(clippy::cast_precision_loss)]
     let pass_at_k = if merged_instances.is_empty() {
         0.0
     } else {
-        resolved_total as f64 / merged_instances.len() as f64
+        f64::from(resolved_total) / merged_instances.len() as f64
     };
-
     let total_prompt_tokens: u64 = merged_instances
         .iter()
         .filter_map(|r| r.prompt_tokens)
@@ -211,18 +246,51 @@ pub fn merge_retry_results(
         .iter()
         .filter_map(|r| r.completion_tokens)
         .sum();
+    let estimated_cost_usd: f64 = merged_instances.iter().filter_map(|r| r.cost_usd).sum();
+    let retried_instances = merged_instances
+        .iter()
+        .filter(|r| !r.retry_reasons.is_empty())
+        .count();
+    let retries: u64 = merged_instances
+        .iter()
+        .map(|r| r.retry_reasons.len() as u64)
+        .sum();
+    let total_fallbacks: u64 = merged_instances
+        .iter()
+        .filter_map(|r| r.fallback_count)
+        .map(u64::from)
+        .sum();
+    let model_mix: BTreeMap<String, usize> = {
+        let mut map = BTreeMap::new();
+        for r in &merged_instances {
+            if let Some(m) = &r.final_model {
+                *map.entry(m.clone()).or_insert(0) += 1;
+            }
+        }
+        map
+    };
 
     let mut result = original.clone();
+    result.total = total;
     result.submitted = submitted;
+    result.submitted_with_tests = submitted_with_tests;
     result.errored = errored;
+    result.budget_halted = budget_halted;
     result.with_patch = with_patch;
     result.patch_empty = patch_empty;
     result.patch_apply_invalid = patch_apply_invalid;
+    result.github_pr_failures = github_pr_failures;
+    result.failures_by_category = failures_by_category;
     result.pass_at_k = pass_at_k;
     result.total_prompt_tokens = total_prompt_tokens;
     result.total_cache_read_tokens = total_cache_read_tokens;
     result.total_cache_creation_tokens = total_cache_creation_tokens;
     result.total_completion_tokens = total_completion_tokens;
+    result.estimated_cost_usd = estimated_cost_usd;
+    result.retried_instances = retried_instances;
+    result.retries = retries;
+    result.total_fallbacks = total_fallbacks;
+    result.model_mix = model_mix;
     result.instances = merged_instances;
     result.retry_history.push(entry);
     result

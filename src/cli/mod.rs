@@ -1716,17 +1716,26 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     use crate::run::retry::{
         archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
         load_sweep_results, merge_retry_results, resolve_selection, restore_missing_trajectories,
         save_pre_retry_backup,
     };
-    use crate::run::swebench::{OverrideDelta, RetrySelection, write_sweep_results_atomic};
+    use crate::run::swebench::{
+        OverrideDelta, RetrySelection, SWEEP_STATUS_COMPLETED, write_sweep_results_atomic,
+    };
     use crate::trajectory::FailureCategory;
     use std::collections::HashSet;
 
     let original = load_sweep_results(&r.sweep)?;
+    if original.sweep_status != SWEEP_STATUS_COMPLETED {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench retry: sweep status is '{}', not 'completed'; only completed sweeps can be retried",
+            original.sweep_status
+        ))));
+    }
 
     // Parse comma-separated selection flags.
     let failure_categories: Option<Vec<FailureCategory>> = r
@@ -1788,11 +1797,15 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
             std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)
                 .map_err(Error::Io)?;
             if !answer.trim().eq_ignore_ascii_case("y") {
-                std::process::exit(1);
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "bench retry: cancelled by user".into(),
+                )));
             }
         } else {
             eprintln!("(pass --yes to proceed non-interactively)");
-            std::process::exit(1);
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "bench retry: pass --yes to proceed non-interactively".into(),
+            )));
         }
     }
 
@@ -1836,6 +1849,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
         instance_ids: instance_ids.clone(),
         limit: r.limit,
     };
+    // Build a placeholder entry (post-counts will be fixed after merge).
     let entry = build_history_entry(
         &retry_id,
         &selected,
@@ -1846,7 +1860,16 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
         &retry_results,
     );
 
-    let merged = merge_retry_results(&original, &retry_results, entry, &selected_ids);
+    let mut merged = merge_retry_results(&original, &retry_results, entry, &selected_ids);
+    // Overwrite post-counts with values from the fully merged sweep so that
+    // the history entry reflects the whole sweep, not just the retry subset.
+    if let Some(last) = merged.retry_history.last_mut() {
+        let post_resolved: u32 = merged.instances.iter().map(|r| r.resolved_count).sum();
+        last.post_submitted = merged.submitted;
+        last.post_errored = merged.errored;
+        last.post_resolved_count = post_resolved as usize;
+    }
+
     let results_path = r.sweep.join("results.json");
     write_sweep_results_atomic(&results_path, &merged)?;
 
