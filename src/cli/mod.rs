@@ -234,6 +234,12 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
     if let Some(img) = r.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if let Some(v) = r.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = r.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
 
     let args = crate::run::replay::ReplayArgs {
         trajectory_path: r.trajectory_path,

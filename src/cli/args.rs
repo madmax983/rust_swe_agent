@@ -273,6 +273,18 @@ pub struct ReplayCmd {
     /// step in the drift report. Excess is replaced with `[truncated]`.
     #[arg(long, default_value_t = crate::run::replay::DEFAULT_DRIFT_CAP_BYTES)]
     pub drift_cap_bytes: usize,
+
+    /// Token budget for the model-visible prompt (same as the run-time flag).
+    /// Required when replaying a trajectory produced with this bound so the
+    /// elided prompts match and fingerprint comparison succeeds.
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N observations in the model-visible prompt (same as
+    /// the run-time flag). Required when replaying a trajectory produced with
+    /// this bound so fingerprint comparison succeeds.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
 }
 
 #[derive(Debug, Subcommand)]

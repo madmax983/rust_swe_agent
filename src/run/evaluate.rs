@@ -1315,12 +1315,19 @@ fn build_elision_stats(
         let path = if path.exists() {
             path
         } else {
-            // Fallbacks: flat layout then bundled-archive layout.
+            // Fallbacks in priority order: nested legacy, flat, bundled-archive.
+            let nested = sweep_dir.join(&slot.instance_id).join("trajectory.json");
             let flat = sweep_dir.join(format!("{}.traj.json", slot.instance_id));
             let bundled = sweep_dir
                 .join("trajectories")
                 .join(format!("{}.traj.json", slot.instance_id));
-            if flat.exists() { flat } else { bundled }
+            if nested.exists() {
+                nested
+            } else if flat.exists() {
+                flat
+            } else {
+                bundled
+            }
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
