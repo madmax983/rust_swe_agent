@@ -179,7 +179,7 @@ async fn trajectory_records_full_content_and_elision_metadata() {
             m.extra
                 .other
                 .get("history_elided")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         })
         .collect();
@@ -196,7 +196,7 @@ async fn trajectory_records_full_content_and_elision_metadata() {
             .extra
             .other
             .get("history_bytes_elided")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         assert!(
             bytes_elided > 0,
@@ -256,7 +256,7 @@ async fn max_input_tokens_bounds_prompt_bytes() {
     // Each 5 KB observation would grow the prompt well beyond this cap without
     // elision, so the history-bounding logic must kick in every step.
     const MAX_TOKENS: u64 = 8_000;
-    const MAX_BYTES_APPROX: usize = (MAX_TOKENS as usize) * 4;
+    const MAX_BYTES_APPROX: usize = 8_000 * 4; // MAX_TOKENS * 4 bytes-per-token approximation
 
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 50;

@@ -393,8 +393,9 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
+    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     let (elision_instances, bytes_elided_total, compaction_failed) =
-        build_elision_stats(&args.sweep_dir, &results);
+        build_elision_stats(&args.sweep_dir, &run_slots, &results);
     eval.behavioral.history_elision_instances = elision_instances;
     eval.behavioral.history_bytes_elided_total = bytes_elided_total;
     eval.behavioral.history_compaction_failed = compaction_failed;
@@ -404,7 +405,6 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         &args.breakdown,
         model_name.as_deref(),
     );
-    let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     if args.cost_attribution {
         eval.cost_attribution = build_cost_attribution_from_run_slots(
             &run_slots,
@@ -1296,22 +1296,27 @@ fn build_behavioral_metrics(
 }
 
 /// Scan trajectory files for elision metadata produced by history-bounding.
-/// Returns (elision_instances, bytes_elided_total, compaction_failed_count).
+/// Iterates all run slots (handles reruns) to count instances with elision and
+/// aggregate bytes. Returns (elision_instances, bytes_elided_total, compaction_failed_count).
 fn build_elision_stats<S: std::hash::BuildHasher>(
     sweep_dir: &Path,
+    run_slots: &[crate::run::compare::LoadedRunSlot],
     results: &HashMap<String, InstanceResult, S>,
 ) -> (usize, u64, usize) {
-    let mut elision_instances = 0usize;
-    let mut bytes_elided_total = 0u64;
-    let mut compaction_failed = 0usize;
+    let compaction_failed = results
+        .values()
+        .filter(|r| r.failure_category == Some(FailureCategory::HistoryCompactionFailed))
+        .count();
 
-    for (instance_id, result) in results {
-        if result.failure_category == Some(FailureCategory::HistoryCompactionFailed) {
-            compaction_failed += 1;
-        }
-        let Some(path) = crate::run::inspect::resolve_trajectory_path(sweep_dir, instance_id)
-        else {
-            continue;
+    let mut elision_instance_set = std::collections::HashSet::<String>::new();
+    let mut bytes_elided_total = 0u64;
+
+    for slot in run_slots {
+        let path = swebench::trajectory_path_for_run(sweep_dir, &slot.instance_id, slot.run_index);
+        let path = if path.exists() {
+            path
+        } else {
+            sweep_dir.join(format!("{}.traj.json", slot.instance_id))
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -1340,10 +1345,14 @@ fn build_elision_stats<S: std::hash::BuildHasher>(
             }
         }
         if any_elided {
-            elision_instances += 1;
+            elision_instance_set.insert(slot.instance_id.clone());
         }
     }
-    (elision_instances, bytes_elided_total, compaction_failed)
+    (
+        elision_instance_set.len(),
+        bytes_elided_total,
+        compaction_failed,
+    )
 }
 
 fn normalize_single_run_metrics(row: &mut InstanceEvaluation, runs: u32) {
@@ -2945,12 +2954,74 @@ mod tests {
             ]
         });
         std::fs::write(
-            instance_a.join("trajectory.json"),
+            instance_a.join("run-1.traj.json"),
             serde_json::to_string(&traj_a).unwrap(),
         )
         .unwrap();
 
         // Instance b: history_compaction_failed
+        let run_slots = vec![
+            crate::run::compare::LoadedRunSlot {
+                instance_id: "inst-a".to_owned(),
+                run_index: 1,
+                result: InstanceResult {
+                    instance_id: "inst-a".into(),
+                    exit_reason: "submitted".into(),
+                    outcome: Some(outcome::SUBMITTED.into()),
+                    failure_category: None,
+                    steps: None,
+                    cost_usd: None,
+                    prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    completion_tokens: None,
+                    duration_secs: None,
+                    error: None,
+                    github_pr_error: None,
+                    patch_present: true,
+                    non_empty_patch: true,
+                    attempts: 1,
+                    retry_reasons: vec![],
+                    runs: 0,
+                    resolved_count: 0,
+                    pass_at_1: false,
+                    tests_run_before_submit: false,
+                    last_tests_passed: None,
+                    fallback_count: None,
+                    final_model: None,
+                },
+            },
+            crate::run::compare::LoadedRunSlot {
+                instance_id: "inst-b".to_owned(),
+                run_index: 1,
+                result: InstanceResult {
+                    instance_id: "inst-b".into(),
+                    exit_reason: "history_compaction_failed".into(),
+                    outcome: Some("error".into()),
+                    failure_category: Some(FailureCategory::HistoryCompactionFailed),
+                    steps: None,
+                    cost_usd: None,
+                    prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    completion_tokens: None,
+                    duration_secs: None,
+                    error: None,
+                    github_pr_error: None,
+                    patch_present: false,
+                    non_empty_patch: false,
+                    attempts: 1,
+                    retry_reasons: vec![],
+                    runs: 0,
+                    resolved_count: 0,
+                    pass_at_1: false,
+                    tests_run_before_submit: false,
+                    last_tests_passed: None,
+                    fallback_count: None,
+                    final_model: None,
+                },
+            },
+        ];
         let results: HashMap<String, InstanceResult> = [
             (
                 "inst-a".to_owned(),
@@ -3014,7 +3085,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (instances, bytes, compaction_failed) = build_elision_stats(sweep, &results);
+        let (instances, bytes, compaction_failed) =
+            build_elision_stats(sweep, &run_slots, &results);
         assert_eq!(instances, 1, "one instance should be elided");
         assert_eq!(bytes, 500, "should total 500 bytes elided");
         assert_eq!(compaction_failed, 1, "one compaction_failed instance");

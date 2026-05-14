@@ -127,74 +127,105 @@ fn elide_history_for_model(
     }
 
     let obs_indices = observation_indices(history);
+    let max_bytes = max_input_tokens.map(|t| {
+        usize::try_from(t)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(BYTES_PER_TOKEN)
+    });
+
     if obs_indices.len() <= 1 {
-        // Nothing to elide: only one (protected) observation.
+        // No elidable candidates. Still check the budget: if the fixed prompt
+        // (system + instance + single protected observation) already exceeds the
+        // cap there is nothing we can do to fix it.
+        let compaction_failed = max_bytes
+            .is_some_and(|limit| history.iter().map(|m| m.content.len()).sum::<usize>() > limit);
         return ElisionInfo {
             prompt: history.to_vec(),
             elided: Vec::new(),
-            compaction_failed: false,
+            compaction_failed,
         };
     }
 
     // The last observation is always protected. Candidates are the rest (oldest first).
     let candidate_count = obs_indices.len() - 1;
 
-    // How many to elide by the keep_last rule.
+    // Count-based minimum elisions from keep_last_observations.
     let elide_by_count = if let Some(keep) = keep_last_observations {
-        // Keep the last `keep` observations total (including the protected one).
-        // Among candidates, keep = keep.saturating_sub(1).
-        let keep_among = keep.saturating_sub(1);
-        candidate_count.saturating_sub(keep_among)
+        candidate_count.saturating_sub(keep.saturating_sub(1))
     } else {
         0
     };
 
-    // How many to elide by the token-budget rule (oldest first, until under cap).
-    let elide_by_tokens = if let Some(max_tokens) = max_input_tokens {
-        let max_bytes = usize::try_from(max_tokens)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(BYTES_PER_TOKEN);
-        let mut total: usize = history.iter().map(|m| m.content.len()).sum();
-        let mut count = 0usize;
-        for (obs_num, &hist_idx) in obs_indices[..candidate_count].iter().enumerate() {
-            if total <= max_bytes {
-                break;
-            }
-            let orig = history[hist_idx].content.len();
-            let marker_len = elision_marker(obs_num, orig).len();
-            total = total.saturating_sub(orig).saturating_add(marker_len);
-            count += 1;
-        }
-        count
-    } else {
-        0
-    };
-
-    let elide_count = elide_by_count.max(elide_by_tokens);
-
-    // Compaction failure: even with ALL candidates elided, still over budget.
-    let compaction_failed = if let Some(max_tokens) = max_input_tokens {
-        let max_bytes = usize::try_from(max_tokens)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(BYTES_PER_TOKEN);
-        let min_total: usize = history
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                if let Some(pos) = obs_indices[..candidate_count]
-                    .iter()
-                    .position(|&idx| idx == i)
-                {
-                    elision_marker(pos, m.content.len()).len()
-                } else {
-                    m.content.len()
+    // Token-budget: single O(N) pass through ALL candidates.
+    // Continues past the break-even point so the final `total` equals the
+    // minimum achievable prompt size — used for compaction_failed detection.
+    let (elide_by_tokens, compaction_failed_full) = if let Some(limit) = max_bytes {
+        let initial_total: usize = history.iter().map(|m| m.content.len()).sum();
+        if initial_total <= limit {
+            // Already under budget; no token-based elisions needed.
+            (0, false)
+        } else {
+            let mut total = initial_total;
+            let mut count = 0usize;
+            let mut met = false;
+            let mut met_at = 0usize;
+            for (obs_num, &hist_idx) in obs_indices[..candidate_count].iter().enumerate() {
+                let orig = history[hist_idx].content.len();
+                let marker_len = elision_marker(obs_num, orig).len();
+                total = total.saturating_sub(orig).saturating_add(marker_len);
+                count += 1;
+                if !met && total <= limit {
+                    met = true;
+                    met_at = count;
                 }
-            })
-            .sum();
-        min_total > max_bytes
+            }
+            // `total` is now the size after all candidates are replaced — the
+            // minimum the budget-based pass can achieve.
+            let elide_needed = if met { met_at } else { count };
+            (elide_needed, total > limit)
+        }
     } else {
-        false
+        (0, false)
     };
+
+    let mut elide_count = elide_by_count.max(elide_by_tokens);
+    let mut compaction_failed = compaction_failed_full;
+
+    // When count-based elision is more aggressive and a token budget is active,
+    // the extra marker replacements can inflate the prompt (markers can be longer
+    // than very short observations). Re-verify the actual size and extend
+    // elide_count toward candidate_count until the prompt fits or all candidates
+    // are exhausted.
+    if !compaction_failed {
+        if let Some(limit) = max_bytes {
+            if elide_count > elide_by_tokens {
+                let mut actual: usize = history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        if let Some(pos) = obs_indices[..candidate_count]
+                            .iter()
+                            .position(|&idx| idx == i)
+                        {
+                            if pos < elide_count {
+                                return elision_marker(pos, m.content.len()).len();
+                            }
+                        }
+                        m.content.len()
+                    })
+                    .sum();
+                while actual > limit && elide_count < candidate_count {
+                    let pos = elide_count;
+                    let hist_idx = obs_indices[pos];
+                    let orig = history[hist_idx].content.len();
+                    let marker_len = elision_marker(pos, orig).len();
+                    actual = actual.saturating_sub(orig).saturating_add(marker_len);
+                    elide_count += 1;
+                }
+                compaction_failed = actual > limit;
+            }
+        }
+    }
 
     // Build the elided prompt.
     let mut prompt = history.to_vec();
@@ -799,8 +830,10 @@ impl Agent for DefaultAgent {
         //   2. Normalize (strip the per-run salt hash) — produces stable markers
         //      like [REDACTED:kind:size].  Used only to compute a run-independent
         //      fingerprint hash; NOT stored in the trajectory.
-        let redacted_history: Vec<crate::model::Message> = self
-            .history
+        // Fingerprint the elided prompt (what the model actually received), not
+        // self.history, so replay with the same config reproduces the same hash.
+        let redacted_history: Vec<crate::model::Message> = elision
+            .prompt
             .iter()
             .map(|m| {
                 let mut m2 = m.clone();
@@ -2798,5 +2831,41 @@ mod tests {
         // is the "last" (protected). Nothing to elide.
         assert_eq!(info.elided.len(), 0);
         assert!(!info.compaction_failed);
+    }
+
+    #[test]
+    fn elide_single_observation_compaction_failed_when_over_budget() {
+        // Only one observation (protected) but it's already over the 1-token budget.
+        let h = make_history(&["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]);
+        let info = elide_history_for_model(&h, None, Some(1)); // 1 token = 4 bytes
+        // Nothing to elide, but prompt exceeds budget → compaction_failed.
+        assert_eq!(info.elided.len(), 0);
+        assert!(info.compaction_failed);
+    }
+
+    #[test]
+    fn elide_count_inflation_handled_by_budget() {
+        // 3 observations each 5 bytes. Markers are longer (~45 bytes each).
+        // keep_last=1 would elide 2 candidates; those replacements inflate the prompt.
+        // With a tight budget (say 100 bytes), the function must extend elide_count
+        // until under budget or declare compaction_failed.
+        let obs: Vec<String> = (0..3).map(|i| format!("obs{i}")).collect();
+        let obs_refs: Vec<&str> = obs.iter().map(String::as_str).collect();
+        let h = make_history(&obs_refs);
+        // Budget = 10 tokens = 40 bytes. System+instance ≈ 20 bytes, each obs 4 bytes.
+        // Without elision total ≈ 36 bytes (under budget). But keep_last=1 forces
+        // eliding 2 obs with markers (~45 bytes each), inflating to ~130 bytes.
+        // The function should extend past keep_last to minimize, or report failure.
+        let info = elide_history_for_model(&h, Some(1), Some(10));
+        // Even with all candidates elided the markers inflate the prompt, so
+        // compaction_failed should be set if min achievable > budget.
+        let total_with_all_elided: usize = info.prompt.iter().map(|m| m.content.len()).sum();
+        let max_bytes = 10 * BYTES_PER_TOKEN;
+        assert!(
+            total_with_all_elided <= max_bytes || info.compaction_failed,
+            "either prompt fits or compaction_failed must be set; \
+             total={total_with_all_elided} max={max_bytes} failed={}",
+            info.compaction_failed
+        );
     }
 }
