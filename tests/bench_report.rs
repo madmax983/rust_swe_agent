@@ -57,6 +57,8 @@ fn submitted(id: &str) -> InstanceResult {
         last_tests_passed: None,
         fallback_count: None,
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -86,6 +88,8 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         last_tests_passed: None,
         fallback_count: None,
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
@@ -199,6 +203,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         total_fallbacks: 0,
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     };
     std::fs::write(
         dir.join("results.json"),

@@ -538,6 +538,7 @@ fn sweep_results_summary_table_shows_circuit_breaker_status() {
         errored: 5,
         not_started: 5,
         systemic_halt_category: Some(FailureCategory::ModelApi),
+        retry_history: vec![],
         ..SweepResults::default()
     };
 

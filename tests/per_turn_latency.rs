@@ -64,13 +64,13 @@ fn legacy_trajectory_without_latency_fields_parses_cleanly() {
     assert_eq!(traj.messages[0].extra.harness_overhead_ms, None);
 }
 
-// -- 2. Artifact schema bump: 1.4 -> 1.5.
+// -- 2. Artifact schema bump: 1.5 -> 1.6.
 
 #[test]
 fn artifact_schema_minor_bumped_for_latency_attribution() {
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 5),
+        ArtifactSchemaVersion::new(1, 6),
     );
 }
 

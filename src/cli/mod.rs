@@ -111,6 +111,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Report(r),
         } => bench_report(r),
+        Command::Bench {
+            cmd: args::BenchCmd::Retry(r),
+        } => Box::pin(bench_retry(r)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1713,6 +1716,328 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
+async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
+    use crate::run::retry::{
+        archive_trajectories, build_history_entry, detect_harness_mismatch, generate_retry_id,
+        load_sweep_results, merge_retry_results, resolve_selection, restore_archived_trajectories,
+        restore_missing_trajectories, save_pre_retry_backup,
+    };
+    use crate::run::swebench::{
+        OverrideDelta, RetrySelection, SWEEP_STATUS_COMPLETED, write_sweep_results_atomic,
+    };
+    use crate::trajectory::FailureCategory;
+    use std::collections::HashSet;
+
+    let original = load_sweep_results(&r.sweep)?;
+    if original.sweep_status != SWEEP_STATUS_COMPLETED {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench retry: sweep status is '{}', not 'completed'; only completed sweeps can be retried",
+            original.sweep_status
+        ))));
+    }
+
+    // Parse comma-separated selection flags.
+    let failure_categories: Option<Vec<FailureCategory>> = r
+        .failure_category
+        .as_deref()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::run::swebench::parse_failure_category_label)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
+    let outcomes: Option<Vec<String>> = r.outcome.as_deref().map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            // Normalize the user-facing alias "errored" → "error" so it matches
+            // the stored outcome value in trajectory files.
+            .map(|s| if s == "errored" { "error" } else { s }.to_owned())
+            .collect()
+    });
+
+    let instance_ids: Option<Vec<String>> = r.instance_ids.as_deref().map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+
+    let selected = resolve_selection(
+        &original.instances,
+        failure_categories.as_deref(),
+        outcomes.as_deref(),
+        instance_ids.as_deref(),
+        r.limit,
+        r.allow_resolved_retry,
+    )?;
+
+    // Harness mismatch gate.
+    let harness_mismatch = detect_harness_mismatch(&original);
+    if harness_mismatch && !r.allow_harness_mismatch {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench retry: harness git SHA mismatch; pass --allow-harness-mismatch to bypass".into(),
+        )));
+    }
+
+    // Dry-run preview: ask for confirmation when --yes is not set.
+    if !r.yes {
+        let ids: Vec<&str> = selected.iter().map(|i| i.instance_id.as_str()).collect();
+        eprintln!("bench retry: {} instance(s) selected:", selected.len());
+        for id in &ids {
+            eprintln!("  {id}");
+        }
+        if std::io::stdin().is_terminal() {
+            eprint!("Proceed? [y/N] ");
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)
+                .map_err(Error::Io)?;
+            if !answer.trim().eq_ignore_ascii_case("y") {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "bench retry: cancelled by user".into(),
+                )));
+            }
+        } else {
+            eprintln!("(pass --yes to proceed non-interactively)");
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "bench retry: pass --yes to proceed non-interactively".into(),
+            )));
+        }
+    }
+
+    let retry_id = generate_retry_id();
+    save_pre_retry_backup(&r.sweep, &original, &retry_id)?;
+    archive_trajectories(&r.sweep, &selected, &retry_id)?;
+
+    let selected_ids: HashSet<String> = selected.iter().map(|i| i.instance_id.clone()).collect();
+    let ids_csv = {
+        let mut v: Vec<&str> = selected_ids.iter().map(String::as_str).collect();
+        v.sort_unstable();
+        v.join(",")
+    };
+
+    let sweep_args = retry_swebench_args(&r, &original, &ids_csv)?;
+    let retry_results = match crate::run::swebench::run(sweep_args).await {
+        Ok(results) => results,
+        Err(e) => {
+            // Unconditionally restore all archived trajectories/patches so that
+            // any completed instances that already overwrote their live files are
+            // rolled back to match the pre-retry results.json we are restoring.
+            if let Err(restore_err) = restore_archived_trajectories(&r.sweep, &selected, &retry_id)
+            {
+                tracing::warn!(err = %restore_err, "could not restore archived trajectories");
+            }
+            if let Err(restore_err) =
+                crate::run::retry::restore_pre_retry_backup(&r.sweep, &retry_id)
+            {
+                tracing::warn!(err = %restore_err, "could not restore pre-retry backup");
+            }
+            return Err(e);
+        }
+    };
+    let retry_cancelled = retry_results.sweep_status != SWEEP_STATUS_COMPLETED;
+    restore_missing_trajectories(&r.sweep, &selected, &retry_id)?;
+
+    let override_delta = OverrideDelta {
+        model: r.model.clone(),
+        step_limit: r.step_limit,
+        task_timeout_secs: r.task_timeout_secs,
+        per_task_budget_usd: r.per_task_budget_usd,
+        sweep_cost_limit_usd: r.sweep_cost_limit_usd,
+    };
+    let selection = RetrySelection {
+        failure_categories: failure_categories
+            .as_ref()
+            .map(|v| v.iter().map(|c| format!("{c:?}").to_lowercase()).collect()),
+        outcomes: outcomes.clone(),
+        instance_ids: instance_ids.clone(),
+        limit: r.limit,
+    };
+    // Build a placeholder entry (post-counts will be fixed after merge).
+    let entry = build_history_entry(
+        &retry_id,
+        &selected,
+        selection,
+        override_delta,
+        harness_mismatch,
+        &original,
+        &retry_results,
+    );
+
+    let mut merged = merge_retry_results(&original, &retry_results, entry, &selected_ids);
+    // Overwrite post-counts with values from the fully merged sweep so that
+    // the history entry reflects the whole sweep, not just the retry subset.
+    if let Some(last) = merged.retry_history.last_mut() {
+        let post_resolved: u32 = merged.instances.iter().map(|r| r.resolved_count).sum();
+        last.post_submitted = merged.submitted;
+        last.post_errored = merged.errored;
+        last.post_resolved_count = post_resolved as usize;
+    }
+
+    let results_path = r.sweep.join("results.json");
+    write_sweep_results_atomic(&results_path, &merged)?;
+
+    if retry_cancelled {
+        // Merge and write succeeded so partial results are preserved, but exit
+        // non-zero so automation can detect the incomplete retry.
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench retry: retry was cancelled (status: {}) — partial results have been merged",
+            retry_results.sweep_status
+        ))));
+    }
+
+    tracing::info!(
+        retry_id = %retry_id,
+        count = selected.len(),
+        "bench retry complete"
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn retry_swebench_args(
+    r: &args::RetryCmd,
+    results: &crate::run::swebench::SweepResults,
+    instance_ids_csv: &str,
+) -> Result<crate::run::swebench::SwebenchArgs, Error> {
+    use crate::run::dataset::DatasetSource;
+
+    let manifest = results.manifest.as_ref();
+
+    let mut cfg = match &r.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+    if let Some(model) = &r.model {
+        cfg.root.model.name.clone_from(model);
+    } else if let Some(m) = manifest {
+        cfg.root.model.name.clone_from(&m.model.name);
+    }
+    if let Some(v) = r.step_limit {
+        cfg.root.agent.step_limit = v;
+    }
+    if let Some(v) = r.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if let Some(kind) = &r.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = r.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+
+    let dataset_cache_dir = crate::run::dataset::default_cache_dir();
+
+    let dataset_source = if let Some(path) = &r.dataset_path {
+        // Explicit --dataset-path is relative to cwd, matching bench swebench behavior.
+        DatasetSource::LocalPath(path.clone())
+    } else if let Some(alias_str) = &r.dataset {
+        let alias = alias_str
+            .parse::<crate::run::dataset::SwebenchAlias>()
+            .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+        // Reuse the manifest split when available so the correct dataset bytes
+        // are used; fall back to "test" only when there is no manifest.
+        let split_str = manifest
+            .and_then(|m| m.dataset.split.as_deref())
+            .unwrap_or("test");
+        let split = split_str
+            .parse::<crate::run::dataset::SwebenchSplit>()
+            .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+        DatasetSource::Named { alias, split }
+    } else if let Some(m) = manifest {
+        if m.dataset.source_kind.as_str() == "named" {
+            // When the manifest recorded an exact cache file path, use it as a
+            // local path directly so the dataset is not re-downloaded when the
+            // original sweep used a non-default cache location. Fall back to
+            // Named (which uses the default cache dir) when cache_path is absent.
+            if let Some(cp) = &m.dataset.cache_path {
+                DatasetSource::LocalPath(std::path::PathBuf::from(cp))
+            } else {
+                let alias_str = m.dataset.alias.as_deref().unwrap_or("verified");
+                let split_str = m.dataset.split.as_deref().unwrap_or("test");
+                let alias = alias_str
+                    .parse::<crate::run::dataset::SwebenchAlias>()
+                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+                let split = split_str
+                    .parse::<crate::run::dataset::SwebenchSplit>()
+                    .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+                DatasetSource::Named { alias, split }
+            }
+        } else {
+            // Resolve relative dataset paths recorded in the manifest
+            // against the sweep directory so the retry works from any cwd.
+            let recorded = std::path::PathBuf::from(&m.dataset.path);
+            let resolved = if recorded.is_relative() {
+                r.sweep.join(&recorded)
+            } else {
+                recorded
+            };
+            DatasetSource::LocalPath(resolved)
+        }
+    } else {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "bench retry: no dataset source available; pass --dataset-path or --dataset".into(),
+        )));
+    };
+
+    let cfg_max_rpm = cfg.root.sweep.max_rpm;
+    let cfg_max_input_tpm = cfg.root.sweep.max_input_tpm;
+
+    Ok(crate::run::swebench::SwebenchArgs {
+        dataset_source,
+        dataset_cache_dir,
+        output_dir: r.sweep.clone(),
+        parallel: r.parallel.unwrap_or(4),
+        config: cfg,
+        reruns: 1,
+        resume: false,
+        cost_limit_usd: r.sweep_cost_limit_usd,
+        task_timeout_secs: r.task_timeout_secs,
+        instance_ids: Some(instance_ids_csv.to_owned()),
+        limit: None,
+        sample: None,
+        seed: None,
+        stratify_by: None,
+        stratify_mode: crate::run::swebench::StratifyMode::Proportional,
+        max_retries: 0,
+        retry_on: None,
+        retry_backoff_base_ms: 1000,
+        retry_backoff_cap_s: 60,
+        retry_on_resume: false,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        config_overlay_paths: r
+            .config
+            .as_ref()
+            .map(|p| vec![p.clone()])
+            .unwrap_or_default(),
+        dry_run: false,
+        skip_preflight: false,
+        preflight_format: "text".into(),
+        skip_model_probe: false,
+        preflight_check_timeout_s: 10,
+        preflight_total_timeout_s: 60,
+        preflight_mode: "sweep".into(),
+        skip_patch_validation: false,
+        max_rpm: cfg_max_rpm,
+        max_input_tpm: cfg_max_input_tpm,
+        cancel_deadline_secs: 30,
+        install_os_signal_handlers: true,
+        cancellation_signals: None,
+        github_pr: None,
+        reproduced_from: None,
+        abort_on_systemic_failure: true,
+        systemic_failure_min_samples: 5,
+        systemic_failure_share_pct: 80,
+    })
+}
+
 fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {
     match err {
         crate::run::bundle::BundleError::MissingSource(message)
@@ -2089,6 +2414,7 @@ mod tests {
 
             model_mix: std::collections::BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         }
     }
 

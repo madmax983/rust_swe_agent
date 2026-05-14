@@ -2039,6 +2039,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -2070,6 +2072,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -3005,6 +3009,8 @@ mod tests {
             last_tests_passed: None,
             fallback_count: None,
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {

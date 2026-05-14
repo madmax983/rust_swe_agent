@@ -1168,6 +1168,8 @@ fn instance_result_from_trajectory(
                 Some(s.final_model.clone())
             }
         }),
+        retry_id: None,
+        previous_failure_category: None,
     }))
 }
 
@@ -2790,6 +2792,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -2821,6 +2825,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -2854,6 +2860,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }
     }
 
@@ -2915,6 +2923,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         std::fs::write(
             dir.join("results.json"),
@@ -3061,6 +3070,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -3139,6 +3149,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }]);
         let candidate = map_of([InstanceResult {
             instance_id: "cached".into(),
@@ -3167,6 +3179,8 @@ mod tests {
             fallback_count: None,
 
             final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
         }]);
         let r = diff(Path::new("/b"), Path::new("/c"), &baseline, &candidate);
         let t = r.human_table();
@@ -3428,6 +3442,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -3720,6 +3735,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -3789,6 +3805,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -3904,6 +3921,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4019,6 +4037,7 @@ mod tests {
 
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4156,6 +4175,7 @@ mod tests {
             total_fallbacks: 0,
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
+            retry_history: vec![],
         };
         std::fs::write(
             dir.path().join("results.json"),

@@ -889,6 +889,7 @@ fn sweep_results(
         total_fallbacks: 0,
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
+        retry_history: vec![],
     }
 }
 
@@ -922,6 +923,8 @@ fn instance(id: &str, submitted: bool, cost_usd: f64, duration_secs: f64) -> Ins
         last_tests_passed: None,
         fallback_count: None,
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 

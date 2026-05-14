@@ -600,6 +600,8 @@ fn instance_result_stub(id: &str) -> InstanceResult {
         last_tests_passed: None,
         fallback_count: None,
         final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
     }
 }
 
