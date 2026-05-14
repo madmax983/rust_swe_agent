@@ -2887,4 +2887,136 @@ mod tests {
         assert!(cmd.contains("dev"), "got: {cmd}");
         assert!(cmd.contains("test-run"), "got: {cmd}");
     }
+
+    #[test]
+    fn render_elision_stats_empty_when_no_elision() {
+        let behavioral = BehavioralMetrics::default();
+        assert!(
+            render_elision_stats(&behavioral).is_empty(),
+            "should be empty when no elision occurred"
+        );
+    }
+
+    #[test]
+    fn render_elision_stats_shows_counts_when_nonzero() {
+        let behavioral = BehavioralMetrics {
+            history_elision_instances: 3,
+            history_bytes_elided_total: 12_345,
+            history_compaction_failed: 1,
+            ..BehavioralMetrics::default()
+        };
+        let text = render_elision_stats(&behavioral);
+        assert!(
+            text.contains("history_elision_instances: 3"),
+            "missing instances count: {text}"
+        );
+        assert!(
+            text.contains("history_bytes_elided_total: 12345"),
+            "missing bytes total: {text}"
+        );
+        assert!(
+            text.contains("history_compaction_failed: 1"),
+            "missing compaction_failed count: {text}"
+        );
+    }
+
+    #[test]
+    fn build_elision_stats_counts_from_trajectory_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        // Instance a: one elided message → counts toward instances + bytes
+        let instance_a = sweep.join("inst-a");
+        std::fs::create_dir_all(&instance_a).unwrap();
+        let traj_a = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "cmd"},
+                {
+                    "role": "user",
+                    "content": "full content",
+                    "extra": {
+                        "history_elided": true,
+                        "history_bytes_elided": 500_u64
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_a.join("trajectory.json"),
+            serde_json::to_string(&traj_a).unwrap(),
+        )
+        .unwrap();
+
+        // Instance b: history_compaction_failed
+        let results: HashMap<String, InstanceResult> = [
+            (
+                "inst-a".to_owned(),
+                InstanceResult {
+                    instance_id: "inst-a".into(),
+                    exit_reason: "submitted".into(),
+                    outcome: Some(outcome::SUBMITTED.into()),
+                    failure_category: None,
+                    steps: None,
+                    cost_usd: None,
+                    prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    completion_tokens: None,
+                    duration_secs: None,
+                    error: None,
+                    github_pr_error: None,
+                    patch_present: true,
+                    non_empty_patch: true,
+                    attempts: 1,
+                    retry_reasons: vec![],
+                    runs: 0,
+                    resolved_count: 0,
+                    pass_at_1: false,
+                    tests_run_before_submit: false,
+                    last_tests_passed: None,
+                    fallback_count: None,
+                    final_model: None,
+                },
+            ),
+            (
+                "inst-b".to_owned(),
+                InstanceResult {
+                    instance_id: "inst-b".into(),
+                    exit_reason: "history_compaction_failed".into(),
+                    outcome: Some("error".into()),
+                    failure_category: Some(FailureCategory::HistoryCompactionFailed),
+                    steps: None,
+                    cost_usd: None,
+                    prompt_tokens: None,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    completion_tokens: None,
+                    duration_secs: None,
+                    error: None,
+                    github_pr_error: None,
+                    patch_present: false,
+                    non_empty_patch: false,
+                    attempts: 1,
+                    retry_reasons: vec![],
+                    runs: 0,
+                    resolved_count: 0,
+                    pass_at_1: false,
+                    tests_run_before_submit: false,
+                    last_tests_passed: None,
+                    fallback_count: None,
+                    final_model: None,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let (instances, bytes, compaction_failed) = build_elision_stats(sweep, &results);
+        assert_eq!(instances, 1, "one instance should be elided");
+        assert_eq!(bytes, 500, "should total 500 bytes elided");
+        assert_eq!(compaction_failed, 1, "one compaction_failed instance");
+    }
 }

@@ -1167,4 +1167,130 @@ mod tests {
             panic!("expected Instance output");
         }
     }
+
+    #[test]
+    fn elided_step_renders_two_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("task-elided");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let run_result = serde_json::json!({
+            "stdout": "full_observation_content",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        });
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "```bash\necho x\n```"},
+                {
+                    "role": "user",
+                    "content": "full_observation_content",
+                    "extra": {
+                        "run_result": run_result,
+                        "history_elided": true,
+                        "history_elision_marker": "[history-elided: step 0 observation, 23 bytes]",
+                        "history_bytes_elided": 23
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-elided".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+
+        assert!(
+            text.contains("[as-sent to model]"),
+            "elided step should show as-sent view:\n{text}"
+        );
+        assert!(
+            text.contains("[history-elided: step 0 observation"),
+            "elided step should include marker text:\n{text}"
+        );
+        assert!(
+            text.contains("[as-recorded stdout]"),
+            "elided step should show as-recorded label:\n{text}"
+        );
+        assert!(
+            text.contains("full_observation_content"),
+            "elided step should show full recorded content:\n{text}"
+        );
+
+        if let InspectOutput::Instance(report) = &output {
+            let elided_step = report.steps.iter().find(|s| s.history_elided);
+            assert!(elided_step.is_some(), "report must contain an elided step");
+            let step = elided_step.unwrap();
+            assert!(
+                step.as_sent_marker
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("[history-elided:"),
+                "as_sent_marker must contain the elision marker"
+            );
+        } else {
+            panic!("expected Instance output");
+        }
+    }
+
+    #[test]
+    fn elided_step_without_marker_shows_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("task-no-marker");
+        std::fs::create_dir_all(&instance_dir).unwrap();
+        let run_result = serde_json::json!({
+            "stdout": "content",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": false
+        });
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                {"role": "assistant", "content": "```bash\necho x\n```"},
+                {
+                    "role": "user",
+                    "content": "content",
+                    "extra": {
+                        "run_result": run_result,
+                        "history_elided": true
+                    }
+                }
+            ]
+        });
+        std::fs::write(
+            instance_dir.join("trajectory.json"),
+            serde_json::to_string(&traj).unwrap(),
+        )
+        .unwrap();
+
+        let args = InspectArgs {
+            sweep: dir.path().to_path_buf(),
+            instance: Some("task-no-marker".into()),
+            filter: None,
+            full: false,
+        };
+        let output = run(&args).unwrap();
+        let text = render_text(&output);
+        assert!(
+            text.contains("[elision marker unavailable]"),
+            "should show fallback when marker is absent:\n{text}"
+        );
+    }
 }
