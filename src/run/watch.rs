@@ -101,9 +101,10 @@ pub async fn run(args: &WatchArgs) -> Result<(), Error> {
 
         // Skip read when both size and mtime are unchanged (avoids O(N) read every poll).
         // When mtime is unavailable (rare filesystems) we always re-read for correctness.
-        let meta = tokio::fs::metadata(&traj_path).await.ok();
-        let current_len = meta.as_ref().map_or(0, |m| m.len());
-        let current_mtime = meta.as_ref().and_then(|m| m.modified().ok());
+        let (current_len, current_mtime) = match tokio::fs::metadata(&traj_path).await {
+            Ok(m) => (m.len(), m.modified().ok()),
+            Err(_) => (0, None),
+        };
         let skippable = emitted_steps > 0
             && current_len == last_file_len
             && current_mtime.is_some()
@@ -146,20 +147,7 @@ pub async fn run(args: &WatchArgs) -> Result<(), Error> {
         }
 
         if is_terminal_outcome(&traj) {
-            if !args.ndjson {
-                let traj_outcome = traj.info.outcome.as_deref().unwrap_or("?");
-                let cost = traj
-                    .info
-                    .total_cost_usd
-                    .map_or_else(|| "?".into(), |c| format!("{c:.4}"));
-                let steps_count = traj.info.steps.unwrap_or(0);
-                writeln!(
-                    stdout,
-                    "\n[watch] instance `{}` complete: outcome={} steps={} cost_usd={}",
-                    args.instance, traj_outcome, steps_count, cost
-                )?;
-                stdout.flush()?;
-            }
+            print_completion_summary(args, &traj, &mut stdout)?;
             return Ok(());
         }
 
@@ -186,6 +174,29 @@ fn resolve_watch_path(sweep: &Path, instance_id: &str, run_index: u32) -> Option
         }
     }
     None
+}
+
+fn print_completion_summary(
+    args: &WatchArgs,
+    traj: &Trajectory,
+    stdout: &mut std::io::Stdout,
+) -> Result<(), Error> {
+    if args.ndjson {
+        return Ok(());
+    }
+    let outcome = traj.info.outcome.as_deref().unwrap_or("?");
+    let cost = traj
+        .info
+        .total_cost_usd
+        .map_or_else(|| "?".into(), |c| format!("{c:.4}"));
+    let steps = traj.info.steps.unwrap_or(0);
+    writeln!(
+        stdout,
+        "\n[watch] instance `{}` complete: outcome={} steps={} cost_usd={}",
+        args.instance, outcome, steps, cost
+    )?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn emit_new_steps(
