@@ -30,7 +30,10 @@ fn unit_basic_match_returns_hits() {
     })
     .unwrap();
 
-    assert!(!report.matches.is_empty(), "should find ImportError matches");
+    assert!(
+        !report.matches.is_empty(),
+        "should find ImportError matches"
+    );
     assert!(
         report.matches.iter().any(|m| m.instance_id == "instance-a"),
         "instance-a should match"
@@ -309,7 +312,10 @@ fn unit_instances_scanned_counts_filtered_instances() {
         max_matches_per_instance: None,
     })
     .unwrap();
-    assert_eq!(all.instances_scanned, 3, "all 3 instances should be scanned");
+    assert_eq!(
+        all.instances_scanned, 3,
+        "all 3 instances should be scanned"
+    );
 
     let filtered = grep_run(&GrepArgs {
         sweep_dir: sweep.path().to_path_buf(),

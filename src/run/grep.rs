@@ -110,8 +110,14 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
         }
 
         instances_scanned += 1;
-        let instance_matches =
-            search_instance(instance_id, &args.sweep_dir, &re, &redactor, &role_filter, args);
+        let instance_matches = search_instance(
+            instance_id,
+            &args.sweep_dir,
+            &re,
+            &redactor,
+            &role_filter,
+            args,
+        );
         all_matches.extend(instance_matches);
     }
 
@@ -209,12 +215,17 @@ fn extract_snippet(text: &str, match_start: usize, match_end: usize, context: us
 
 fn char_boundary_floor(s: &str, pos: usize) -> usize {
     let pos = pos.min(s.len());
-    (0..=pos).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
+    (0..=pos)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0)
 }
 
 fn char_boundary_ceil(s: &str, pos: usize) -> usize {
     let pos = pos.min(s.len());
-    (pos..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len())
+    (pos..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len())
 }
 
 fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
