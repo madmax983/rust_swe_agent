@@ -1035,6 +1035,11 @@ pub struct InspectCmd {
     /// Disable stdout/stderr truncation in transcript mode.
     #[arg(long, default_value_t = false)]
     pub full: bool,
+
+    /// Also print PASS_TO_PASS / FAIL_TO_PASS expected-test groupings from the
+    /// sweep's dataset.jsonl (requires dataset.jsonl in the sweep directory).
+    #[arg(long, default_value_t = false)]
+    pub show_expected: bool,
 }
 
 #[derive(Debug, Args)]

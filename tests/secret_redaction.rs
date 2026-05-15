@@ -529,6 +529,7 @@ fn bench_inspect_redacts_legacy_raw_trajectory_and_warns() {
         instance: Some("legacy-raw".into()),
         filter: None,
         full: true,
+        show_expected: false,
     })
     .unwrap();
     let text = rust_swe_agent::run::inspect::render_text(&output);

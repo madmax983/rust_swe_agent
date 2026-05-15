@@ -12,9 +12,9 @@ use crate::cost::CostSource;
 use crate::env::RunResult;
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
-use crate::run::evaluate::EvaluationResults;
+use crate::run::evaluate::{EvalExitReason, EvaluationResults};
 use crate::run::patch_stats::PatchStats;
-use crate::run::swebench::{InstanceResult, ProvenanceManifest};
+use crate::run::swebench::{InstanceResult, ProvenanceManifest, SweBenchInstance};
 use crate::trajectory::{
     FailureCategory, FallbackSummary, TokenUsage, Trajectory, VerificationResult,
 };
@@ -34,6 +34,26 @@ pub struct InspectArgs {
     pub instance: Option<String>,
     pub filter: Option<String>,
     pub full: bool,
+    /// When true, load PASS_TO_PASS / FAIL_TO_PASS from the sweep's dataset.jsonl
+    /// and add them to the report.
+    pub show_expected: bool,
+}
+
+/// Failing tests from the evaluator, or an explanation of why names are unavailable.
+#[derive(Debug, Clone, Serialize)]
+pub struct FailingTests {
+    pub tests: Vec<String>,
+    /// `"evaluator"` when names come from evaluator output; `"unavailable"` otherwise.
+    pub source: String,
+    /// Human-readable reason when `source == "unavailable"`. Empty otherwise.
+    pub reason: String,
+}
+
+/// Expected test groupings read from the SWE-bench instance record.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExpectedTests {
+    pub pass_to_pass: Vec<String>,
+    pub fail_to_pass: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +145,14 @@ pub struct InspectReport {
     pub latency_share_pct: Option<LatencySharePct>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Failing tests from the evaluator, or a reason why names are unavailable.
+    /// `None` for resolved instances (silent on the happy path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing_tests: Option<FailingTests>,
+    /// PASS_TO_PASS / FAIL_TO_PASS groupings from the SWE-bench instance record.
+    /// Populated only when `--show-expected` is set and the dataset is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_tests: Option<ExpectedTests>,
     #[serde(default)]
     pub steps: Vec<InspectStep>,
 }
@@ -195,11 +223,17 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
 
     let instance_id = args.instance.clone().unwrap_or_default();
     let evaluation_overrides = load_evaluation_overrides(&args.sweep)?;
+    let dataset_instance = if args.show_expected {
+        load_dataset_instance(&args.sweep, &instance_id)
+    } else {
+        None
+    };
     let report = build_instance_report(
         &args.sweep,
         &instance_id,
         args.full,
         evaluation_overrides.as_ref(),
+        dataset_instance.as_ref(),
     )?;
     Ok(InspectOutput::Instance(Box::new(report)))
 }
@@ -240,6 +274,7 @@ fn build_instance_report(
     instance_id: &str,
     full: bool,
     evaluation_overrides: Option<&HashMap<String, EvaluationOverride>>,
+    dataset_instance: Option<&SweBenchInstance>,
 ) -> Result<InspectReport, Error> {
     let traj_path = resolve_trajectory_path(sweep, instance_id).ok_or_else(|| {
         Error::Trajectory(format!(
@@ -264,6 +299,10 @@ fn build_instance_report(
             warnings.push(format!(
                 "failed to parse trajectory as canonical schema: {err}; rendering minimal report"
             ));
+            let resolved = evaluation_overrides
+                .and_then(|m| m.get(instance_id))
+                .map(|value| value.resolved);
+            let eval_override = evaluation_overrides.and_then(|m| m.get(instance_id));
             return Ok(InspectReport {
                 sweep_dir: sweep.to_path_buf(),
                 instance_id: Some(instance_id.to_owned()),
@@ -280,12 +319,8 @@ fn build_instance_report(
                 cache_read_tokens: None,
                 cache_creation_tokens: None,
                 completion_tokens: None,
-                resolved: evaluation_overrides
-                    .and_then(|m| m.get(instance_id))
-                    .map(|value| value.resolved),
-                patch_stats: evaluation_overrides
-                    .and_then(|m| m.get(instance_id))
-                    .and_then(|value| value.patch_stats.clone()),
+                resolved,
+                patch_stats: eval_override.and_then(|value| value.patch_stats.clone()),
                 test_invocations_count: 0,
                 last_test_exit_code: None,
                 tests_run_before_submit: false,
@@ -298,6 +333,8 @@ fn build_instance_report(
                 harness_overhead_ms_total: None,
                 latency_share_pct: None,
                 warnings,
+                failing_tests: build_failing_tests(resolved, eval_override, None),
+                expected_tests: dataset_instance.map(extract_expected_tests),
                 steps: vec![],
             });
         }
@@ -328,6 +365,10 @@ fn build_instance_report(
     );
 
     let token_usage = traj.info.token_usage.as_ref();
+    let eval_override = evaluation_overrides.and_then(|m| m.get(instance_id));
+    let resolved = eval_override.map(|value| value.resolved);
+    let failing_tests = build_failing_tests(resolved, eval_override, traj.info.failure_category);
+    let expected_tests = dataset_instance.map(extract_expected_tests);
     Ok(InspectReport {
         sweep_dir: sweep.to_path_buf(),
         instance_id: Some(instance_id.to_owned()),
@@ -344,12 +385,8 @@ fn build_instance_report(
         cache_read_tokens: token_usage.map(|t| t.cache_read_tokens),
         cache_creation_tokens: token_usage.map(|t| t.cache_creation_tokens),
         completion_tokens: token_usage.map(|t| t.completion_tokens),
-        resolved: evaluation_overrides
-            .and_then(|m| m.get(instance_id))
-            .map(|value| value.resolved),
-        patch_stats: evaluation_overrides
-            .and_then(|m| m.get(instance_id))
-            .and_then(|value| value.patch_stats.clone()),
+        resolved,
+        patch_stats: eval_override.and_then(|value| value.patch_stats.clone()),
         test_invocations_count: traj.info.test_invocations.len(),
         last_test_exit_code: traj
             .info
@@ -366,6 +403,8 @@ fn build_instance_report(
         harness_overhead_ms_total,
         latency_share_pct,
         warnings,
+        failing_tests,
+        expected_tests,
         steps,
     })
 }
@@ -652,6 +691,26 @@ fn render_instance_text(report: &InspectReport) -> String {
     if let Some(r) = report.resolved {
         let _ = writeln!(s, "resolved:         {r}");
     }
+    if let Some(ft) = &report.failing_tests {
+        if ft.source == "evaluator" {
+            let _ = writeln!(s, "Failing tests ({}):", ft.tests.len());
+            for name in &ft.tests {
+                let _ = writeln!(s, "  {name}");
+            }
+        } else {
+            let _ = writeln!(s, "Failing tests: <{}>", ft.reason);
+        }
+    }
+    if let Some(et) = &report.expected_tests {
+        let _ = writeln!(s, "PASS_TO_PASS ({}):", et.pass_to_pass.len());
+        for name in &et.pass_to_pass {
+            let _ = writeln!(s, "  {name}");
+        }
+        let _ = writeln!(s, "FAIL_TO_PASS ({}):", et.fail_to_pass.len());
+        for name in &et.fail_to_pass {
+            let _ = writeln!(s, "  {name}");
+        }
+    }
     write_patch_stats_lines(&mut s, report.patch_stats.as_ref());
     let submitted_without_tests = report.outcome.as_deref()
         == Some(crate::trajectory::outcome::SUBMITTED)
@@ -930,6 +989,8 @@ pub(crate) fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option
 struct EvaluationOverride {
     resolved: bool,
     patch_stats: Option<PatchStats>,
+    tests_failed: Vec<String>,
+    eval_exit_reason: Option<EvalExitReason>,
 }
 
 fn load_evaluation_overrides(
@@ -957,11 +1018,96 @@ fn load_evaluation_overrides(
                     EvaluationOverride {
                         resolved: x.resolved,
                         patch_stats: x.patch_stats,
+                        tests_failed: x.tests_failed,
+                        eval_exit_reason: Some(x.eval_exit_reason),
                     },
                 )
             })
             .collect(),
     ))
+}
+
+fn build_failing_tests(
+    resolved: Option<bool>,
+    eval_override: Option<&EvaluationOverride>,
+    failure_category: Option<FailureCategory>,
+) -> Option<FailingTests> {
+    if resolved == Some(true) {
+        return None;
+    }
+    let Some(eval) = eval_override else {
+        return None;
+    };
+    if !eval.tests_failed.is_empty() {
+        return Some(FailingTests {
+            tests: eval.tests_failed.clone(),
+            source: "evaluator".into(),
+            reason: String::new(),
+        });
+    }
+    let reason = eval
+        .eval_exit_reason
+        .as_ref()
+        .map_or_else(
+            || {
+                failure_category
+                    .map_or_else(|| "unknown".into(), |c| failure_label(c).to_owned())
+            },
+            eval_exit_reason_label,
+        );
+    Some(FailingTests {
+        tests: vec![],
+        source: "unavailable".into(),
+        reason,
+    })
+}
+
+fn eval_exit_reason_label(reason: &EvalExitReason) -> String {
+    match reason {
+        EvalExitReason::Resolved => "resolved".into(),
+        EvalExitReason::Unresolved => "unresolved".into(),
+        EvalExitReason::PatchApplyFailed => "patch_apply_failed".into(),
+        EvalExitReason::EvalError => "eval_error".into(),
+        EvalExitReason::SkippedNoPatch => "skipped_no_patch".into(),
+    }
+}
+
+fn extract_expected_tests(inst: &SweBenchInstance) -> ExpectedTests {
+    let get_string_list = |key: &str| {
+        inst.other
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    ExpectedTests {
+        pass_to_pass: get_string_list("PASS_TO_PASS"),
+        fail_to_pass: get_string_list("FAIL_TO_PASS"),
+    }
+}
+
+fn load_dataset_instance(sweep: &Path, instance_id: &str) -> Option<SweBenchInstance> {
+    let dataset_path = sweep.join("dataset.jsonl");
+    if !dataset_path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&dataset_path).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(inst) = serde_json::from_str::<SweBenchInstance>(line) {
+            if inst.instance_id == instance_id {
+                return Some(inst);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -1135,6 +1281,7 @@ mod tests {
             instance: Some("task-a".into()),
             filter: None,
             full: false,
+            show_expected: false,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);
@@ -1178,6 +1325,7 @@ mod tests {
             instance: Some("task-b".into()),
             filter: None,
             full: false,
+            show_expected: false,
         };
         let output = run(&args).unwrap();
         if let InspectOutput::Instance(report) = &output {
@@ -1236,6 +1384,7 @@ mod tests {
             instance: Some("task-elided".into()),
             filter: None,
             full: false,
+            show_expected: false,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);
@@ -1312,6 +1461,7 @@ mod tests {
             instance: Some("task-no-marker".into()),
             filter: None,
             full: false,
+            show_expected: false,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);
