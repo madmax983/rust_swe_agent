@@ -92,6 +92,10 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
     let mut instances_scanned = 0usize;
 
     for instance_id in &sorted_ids {
+        if !instance_id_is_safe(instance_id) {
+            tracing::warn!("bench grep: skipping unsafe instance id {instance_id:?}");
+            continue;
+        }
         if let Some(ref inc) = include_set {
             if !inc.contains(instance_id.as_str()) {
                 continue;
@@ -249,16 +253,20 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
 
     let instance_dir = sweep.join(instance_id);
     if instance_dir.is_dir() {
-        let mut run_paths = Vec::new();
-        let mut n = 1usize;
-        loop {
-            let p = instance_dir.join(format!("run-{n}.traj.json"));
-            if !p.exists() {
-                break;
-            }
-            run_paths.push(p);
-            n += 1;
-        }
+        // Collect all run-*.traj.json files by reading the directory rather than
+        // probing sequentially — avoids false negatives when slots aren't contiguous.
+        let mut run_paths: Vec<PathBuf> = std::fs::read_dir(&instance_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
+            })
+            .collect();
+        run_paths.sort();
         if !run_paths.is_empty() {
             return run_paths;
         }
@@ -277,6 +285,13 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
     } else {
         vec![]
     }
+}
+
+/// Returns true when `id` is a single safe path component (no separators, no `..`).
+fn instance_id_is_safe(id: &str) -> bool {
+    use std::path::{Component, Path};
+    let mut components = Path::new(id).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 #[cfg(test)]
@@ -343,5 +358,40 @@ mod tests {
         assert_eq!(char_boundary_ceil(s, 0), 0);
         assert_eq!(char_boundary_ceil(s, 1), 1);
         assert_eq!(char_boundary_ceil(s, 2), 3); // mid-'é', ceil to 3 ('l' start)
+    }
+
+    #[test]
+    fn instance_id_is_safe_accepts_normal_ids() {
+        assert!(instance_id_is_safe("django__django-1234"));
+        assert!(instance_id_is_safe("instance-a"));
+        assert!(instance_id_is_safe("my.instance"));
+    }
+
+    #[test]
+    fn instance_id_is_safe_rejects_path_traversal() {
+        assert!(!instance_id_is_safe("../evil"));
+        assert!(!instance_id_is_safe("foo/bar"));
+        assert!(!instance_id_is_safe(".."));
+        assert!(!instance_id_is_safe("/absolute"));
+        assert!(!instance_id_is_safe("a/b/c"));
+    }
+
+    #[test]
+    fn resolve_trajectory_paths_handles_noncontiguous_run_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("my-instance");
+        std::fs::create_dir(&instance_dir).unwrap();
+        // run-1 and run-3 exist; run-2 is missing (gap)
+        std::fs::write(instance_dir.join("run-1.traj.json"), "{}").unwrap();
+        std::fs::write(instance_dir.join("run-3.traj.json"), "{}").unwrap();
+
+        let paths = resolve_trajectory_paths(dir.path(), "my-instance");
+        assert_eq!(
+            paths.len(),
+            2,
+            "both run files should be found despite the gap"
+        );
+        assert!(paths.iter().any(|p| p.ends_with("run-1.traj.json")));
+        assert!(paths.iter().any(|p| p.ends_with("run-3.traj.json")));
     }
 }
