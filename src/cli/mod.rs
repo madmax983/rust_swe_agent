@@ -88,6 +88,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Tail(t),
         } => bench_tail(t).await,
         Command::Bench {
+            cmd: args::BenchCmd::Watch(w),
+        } => bench_watch(w).await,
+        Command::Bench {
             cmd: args::BenchCmd::Triage(t),
         } => bench_triage(t),
         Command::Bench {
@@ -2320,6 +2323,20 @@ async fn bench_tail(t: args::TailCmd) -> Result<(), Error> {
         }
         tokio::time::sleep(Duration::from_millis(t.interval_ms)).await;
     }
+}
+
+async fn bench_watch(w: args::WatchCmd) -> Result<(), Error> {
+    crate::run::watch::run(&crate::run::watch::WatchArgs {
+        sweep: w.sweep,
+        instance: w.instance,
+        run_index: w.run_index,
+        wait_secs: w.wait_secs,
+        stall_secs: w.stall_secs,
+        full: w.full,
+        max_bytes: w.max_bytes,
+        ndjson: w.ndjson,
+    })
+    .await
 }
 
 fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {

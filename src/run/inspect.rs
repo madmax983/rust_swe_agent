@@ -421,6 +421,14 @@ fn compute_latency_share(
 }
 
 fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
+    build_inspect_steps_with_max(traj, full, TRUNCATE_MAX_BYTES)
+}
+
+pub(crate) fn build_inspect_steps_with_max(
+    traj: &Trajectory,
+    full: bool,
+    max_bytes: usize,
+) -> Vec<InspectStep> {
     let mut steps = Vec::new();
     for (msg_idx, msg) in traj.messages.iter().enumerate() {
         let current_index = steps.len();
@@ -470,9 +478,9 @@ fn build_inspect_steps(traj: &Trajectory, full: bool) -> Vec<InspectStep> {
             None
         };
         let (stdout, stdout_note, stdout_truncated) =
-            maybe_truncate(&run_result.stdout, full, current_index);
+            maybe_truncate(&run_result.stdout, full, max_bytes, current_index);
         let (stderr, stderr_note, stderr_truncated) =
-            maybe_truncate(&run_result.stderr, full, current_index);
+            maybe_truncate(&run_result.stderr, full, max_bytes, current_index);
         let mut note_parts = Vec::new();
         if let Some(n) = stdout_note {
             note_parts.push(format!("stdout: {n}"));
@@ -718,50 +726,59 @@ fn render_instance_text(report: &InspectReport) -> String {
     }
 
     for step in &report.steps {
-        let header = format!("[step {}] {}", step.index, step.role);
-        if color {
-            let _ = writeln!(s, "\n\x1b[1;36m{header}\x1b[0m");
-        } else {
-            let _ = writeln!(s, "\n{header}");
-        }
+        s.push_str(&render_step_text(step, color));
+    }
+    s
+}
 
-        if let Some(msg) = &step.message {
-            s.push_str(msg);
-            if !msg.ends_with('\n') {
-                s.push('\n');
-            }
-            continue;
-        }
+/// Render a single inspect step to a human-readable string.
+///
+/// `color` enables ANSI colour codes for the step header.
+pub(crate) fn render_step_text(step: &InspectStep, color: bool) -> String {
+    let mut s = String::new();
+    let header = format!("[step {}] {}", step.index, step.role);
+    if color {
+        let _ = writeln!(s, "\n\x1b[1;36m{header}\x1b[0m");
+    } else {
+        let _ = writeln!(s, "\n{header}");
+    }
 
-        if let Some(cmd) = &step.bash {
-            let _ = writeln!(s, "$ {cmd}");
+    if let Some(msg) = &step.message {
+        s.push_str(msg);
+        if !msg.ends_with('\n') {
+            s.push('\n');
         }
-        if let Some(code) = step.exit_code {
-            let _ = writeln!(s, "exit_code: {code}");
-        }
-        if step.history_elided {
-            let marker = step
-                .as_sent_marker
-                .as_deref()
-                .unwrap_or("[elision marker unavailable]");
-            let _ = writeln!(s, "[as-sent to model] {marker}");
-            if step.stdout.as_ref().is_some_and(|o| !o.is_empty()) {
-                let _ = writeln!(s, "[as-recorded stdout]");
-                if let Some(out) = &step.stdout {
-                    let _ = writeln!(s, "{out}");
-                }
+        return s;
+    }
+
+    if let Some(cmd) = &step.bash {
+        let _ = writeln!(s, "$ {cmd}");
+    }
+    if let Some(code) = step.exit_code {
+        let _ = writeln!(s, "exit_code: {code}");
+    }
+    if step.history_elided {
+        let marker = step
+            .as_sent_marker
+            .as_deref()
+            .unwrap_or("[elision marker unavailable]");
+        let _ = writeln!(s, "[as-sent to model] {marker}");
+        if step.stdout.as_ref().is_some_and(|o| !o.is_empty()) {
+            let _ = writeln!(s, "[as-recorded stdout]");
+            if let Some(out) = &step.stdout {
+                let _ = writeln!(s, "{out}");
             }
-        } else if let Some(out) = &step.stdout {
-            let _ = writeln!(s, "stdout:\n{out}");
         }
-        if let Some(err) = &step.stderr {
-            if !err.is_empty() {
-                let _ = writeln!(s, "stderr:\n{err}");
-            }
+    } else if let Some(out) = &step.stdout {
+        let _ = writeln!(s, "stdout:\n{out}");
+    }
+    if let Some(err) = &step.stderr {
+        if !err.is_empty() {
+            let _ = writeln!(s, "stderr:\n{err}");
         }
-        if let Some(note) = &step.truncation_note {
-            let _ = writeln!(s, "… {note}");
-        }
+    }
+    if let Some(note) = &step.truncation_note {
+        let _ = writeln!(s, "… {note}");
     }
     s
 }
@@ -830,12 +847,17 @@ fn infer_bash_from_previous_assistant(traj: &Trajectory, msg_idx: usize) -> Opti
         .and_then(|a| (a != "__SUBMIT__").then(|| a.clone()))
 }
 
-fn maybe_truncate(text: &str, full: bool, step_index: usize) -> (String, Option<String>, bool) {
+fn maybe_truncate(
+    text: &str,
+    full: bool,
+    max_bytes: usize,
+    step_index: usize,
+) -> (String, Option<String>, bool) {
     if full {
         return (text.to_owned(), None, false);
     }
     let line_count = text.lines().count();
-    if text.len() <= TRUNCATE_MAX_BYTES && line_count <= TRUNCATE_MAX_LINES {
+    if text.len() <= max_bytes && line_count <= TRUNCATE_MAX_LINES {
         return (text.to_owned(), None, false);
     }
 
@@ -843,10 +865,10 @@ fn maybe_truncate(text: &str, full: bool, step_index: usize) -> (String, Option<
     let mut consumed_bytes = 0usize;
     let mut shown_lines = 0usize;
     for line in text.split_inclusive('\n') {
-        if shown_lines >= TRUNCATE_MAX_LINES || consumed_bytes >= TRUNCATE_MAX_BYTES {
+        if shown_lines >= TRUNCATE_MAX_LINES || consumed_bytes >= max_bytes {
             break;
         }
-        let remaining = TRUNCATE_MAX_BYTES - consumed_bytes;
+        let remaining = max_bytes - consumed_bytes;
         let head = utf8_prefix_within_bytes(line, remaining);
         if head.is_empty() {
             break;
@@ -1009,7 +1031,10 @@ fn failure_label(c: FailureCategory) -> &'static str {
     }
 }
 
-fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redactor) -> bool {
+pub(crate) fn redact_trajectory_for_inspect(
+    trajectory: &mut Trajectory,
+    redactor: &Redactor,
+) -> bool {
     let mut redacted = false;
     if let Some(task) = &mut trajectory.info.task {
         let outcome = redactor.redact_text(task, surface::INSPECT);

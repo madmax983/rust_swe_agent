@@ -27,3 +27,4 @@ pub mod swebench;
 pub mod tail;
 pub mod trajectory_diff;
 pub mod triage;
+pub mod watch;
