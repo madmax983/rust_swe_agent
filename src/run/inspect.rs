@@ -303,6 +303,12 @@ fn build_instance_report(
                 .and_then(|m| m.get(instance_id))
                 .map(|value| value.resolved);
             let eval_override = evaluation_overrides.and_then(|m| m.get(instance_id));
+            let minimal_redactor = Redactor::default_enabled();
+            let failing_tests = redact_failing_tests(
+                build_failing_tests(resolved, eval_override, None),
+                &minimal_redactor,
+                &mut warnings,
+            );
             return Ok(InspectReport {
                 sweep_dir: sweep.to_path_buf(),
                 instance_id: Some(instance_id.to_owned()),
@@ -333,8 +339,9 @@ fn build_instance_report(
                 harness_overhead_ms_total: None,
                 latency_share_pct: None,
                 warnings,
-                failing_tests: build_failing_tests(resolved, eval_override, None),
-                expected_tests: dataset_instance.map(extract_expected_tests),
+                failing_tests,
+                expected_tests: dataset_instance
+                    .map(|inst| extract_expected_tests(inst, &minimal_redactor)),
                 steps: vec![],
             });
         }
@@ -367,13 +374,13 @@ fn build_instance_report(
     let token_usage = traj.info.token_usage.as_ref();
     let eval_override = evaluation_overrides.and_then(|m| m.get(instance_id));
     let resolved = eval_override.map(|value| value.resolved);
-    let failing_tests =
-        redact_failing_tests(
-            build_failing_tests(resolved, eval_override, traj.info.failure_category),
-            &inspect_redactor,
-            &mut warnings,
-        );
-    let expected_tests = dataset_instance.map(extract_expected_tests);
+    let failing_tests = redact_failing_tests(
+        build_failing_tests(resolved, eval_override, traj.info.failure_category),
+        &inspect_redactor,
+        &mut warnings,
+    );
+    let expected_tests =
+        dataset_instance.map(|inst| extract_expected_tests(inst, &inspect_redactor));
     Ok(InspectReport {
         sweep_dir: sweep.to_path_buf(),
         instance_id: Some(instance_id.to_owned()),
@@ -1040,9 +1047,7 @@ fn build_failing_tests(
     if resolved == Some(true) {
         return None;
     }
-    let Some(eval) = eval_override else {
-        return None;
-    };
+    let eval = eval_override?;
     if !eval.tests_failed.is_empty() {
         return Some(FailingTests {
             tests: eval.tests_failed.clone(),
@@ -1050,16 +1055,10 @@ fn build_failing_tests(
             reason: String::new(),
         });
     }
-    let reason = eval
-        .eval_exit_reason
-        .as_ref()
-        .map_or_else(
-            || {
-                failure_category
-                    .map_or_else(|| "unknown".into(), |c| failure_label(c).to_owned())
-            },
-            eval_exit_reason_label,
-        );
+    let reason = eval.eval_exit_reason.as_ref().map_or_else(
+        || failure_category.map_or_else(|| "unknown".into(), |c| failure_label(c).to_owned()),
+        eval_exit_reason_label,
+    );
     Some(FailingTests {
         tests: vec![],
         source: "unavailable".into(),
@@ -1097,14 +1096,15 @@ fn eval_exit_reason_label(reason: &EvalExitReason) -> String {
     }
 }
 
-fn extract_expected_tests(inst: &SweBenchInstance) -> ExpectedTests {
+fn extract_expected_tests(inst: &SweBenchInstance, redactor: &Redactor) -> ExpectedTests {
     let get_string_list = |key: &str| {
         inst.other
             .get(key)
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .filter_map(|v| v.as_str())
+                    .map(|s| redactor.redact_text(s, surface::INSPECT).text)
                     .collect()
             })
             .unwrap_or_default()
