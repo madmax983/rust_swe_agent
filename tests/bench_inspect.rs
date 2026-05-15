@@ -1413,10 +1413,10 @@ fn unresolved_with_evaluator_failures_shows_failing_tests() {
     // order must be preserved
     let render_pos = stdout
         .find("test_widget_render")
-        .expect("test_widget_render not found");
+        .unwrap_or_else(|| panic!("test_widget_render not found in:\n{stdout}"));
     let init_pos = stdout
         .find("test_widget_init")
-        .expect("test_widget_init not found");
+        .unwrap_or_else(|| panic!("test_widget_init not found in:\n{stdout}"));
     assert!(
         render_pos < init_pos,
         "test names should appear in evaluator-reported order"
@@ -1503,7 +1503,7 @@ fn json_format_includes_failing_tests_field() {
         .unwrap_or_else(|e| panic!("JSON parse failed: {e}\n{stdout}"));
     let ft = value
         .pointer("/failing_tests")
-        .expect("failing_tests missing from JSON output");
+        .unwrap_or_else(|| panic!("failing_tests missing from JSON output:\n{stdout}"));
     assert_eq!(
         ft["tests"],
         serde_json::json!(["tests/test_core.py::test_main"]),
