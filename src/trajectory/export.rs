@@ -50,6 +50,9 @@ pub struct CsvExporter;
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
+#[cfg(feature = "html-export")]
+pub struct HtmlExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -112,6 +115,81 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         md
+    }
+}
+
+#[cfg(feature = "html-export")]
+impl TrajectoryExporter for HtmlExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut html = String::new();
+
+        html.push_str("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n");
+        html.push_str("<title>Trajectory Export</title>\n");
+        html.push_str("<style>\n");
+        html.push_str(
+            "body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n",
+        );
+        html.push_str(".message { margin-bottom: 20px; padding: 15px; border-radius: 8px; }\n");
+        html.push_str(".system { background-color: #f8d7da; color: #721c24; }\n");
+        html.push_str(".user { background-color: #d1ecf1; color: #0c5460; }\n");
+        html.push_str(".assistant { background-color: #d4edda; color: #155724; }\n");
+        html.push_str(".tool { background-color: #e2e3e5; color: #383d41; font-family: monospace; white-space: pre-wrap; }\n");
+        html.push_str("</style>\n</head>\n<body>\n");
+
+        html.push_str("<h1>Trajectory Export</h1>\n");
+
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let safe_task = task
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = writeln!(html, "<p><strong>Task:</strong> {safe_task}</p>");
+        }
+
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome_redacted = redactor.redact_text(outcome, surface::EXPORT).text;
+            let safe_outcome = outcome_redacted
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace(';', "&#59;");
+            let _ = writeln!(html, "<p><strong>Outcome:</strong> {safe_outcome}</p>");
+        }
+
+        for msg in &trajectory.messages {
+            let role_class = msg.role.as_str();
+            let role_title = match role_class {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let safe_content = content
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('\n', "<br>");
+
+            let safe_role_title = role_title
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace(';', "&#59;");
+            let safe_role_class = role_class.replace('"', "&quot;");
+
+            let _ = writeln!(
+                html,
+                "<div class=\"message {safe_role_class}\">\n<h2>{safe_role_title}</h2>\n<p>{safe_content}</p>\n</div>"
+            );
+        }
+
+        html.push_str("</body>\n</html>");
+        html
     }
 }
 
@@ -239,5 +317,25 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "html-export")]
+    #[test]
+    fn test_html_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::user("Hello user"));
+
+        let html = HtmlExporter::export(&t);
+
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<title>Trajectory Export</title>"));
+        assert!(html.contains("Add a feature"));
+        assert!(html.contains("submitted"));
+        assert!(html.contains("Hello agent"));
+        assert!(html.contains("Hello user"));
     }
 }
