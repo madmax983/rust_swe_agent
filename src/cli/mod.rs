@@ -166,6 +166,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(v) = m.history_keep_last_observations {
         cfg.root.agent.history_keep_last_observations = Some(v);
     }
+    if let Some(kind) = &m.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = m.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
     if m.render_only {
@@ -180,12 +186,6 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         )));
     }
 
-    if let Some(kind) = &m.env {
-        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
-    }
-    if let Some(img) = m.docker_image.clone() {
-        cfg.root.environment.docker_image = Some(img);
-    }
     if let Some(v) = m.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(v);
     }

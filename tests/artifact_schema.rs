@@ -23,10 +23,11 @@ use support::binary_path;
 #[test]
 fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     // Additive minor bumps: 1.4 added replay fingerprinting, 1.5 added
-    // per-turn wall-clock attribution (model/tool/harness latency).
+    // per-turn wall-clock attribution (model/tool/harness latency),
+    // 1.6 added sweep-halt artifacts, 1.7 added render-only preview.
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
-        ArtifactSchemaVersion::new(1, 6)
+        ArtifactSchemaVersion::new(1, 7)
     );
 }
 
