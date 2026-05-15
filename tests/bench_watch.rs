@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use rust_swe_agent::trajectory::{Trajectory, outcome};
 
@@ -63,7 +64,72 @@ fn wait_secs_zero_missing_file_exits_1() {
     );
 }
 
-// Test (a): Complete trajectory exits 0 and shows turn content
+// Test (a): Attach to a trajectory being written by a test harness; observe turns in order
+#[test]
+fn streams_turns_from_in_flight_trajectory() {
+    let dir = tempfile::tempdir().unwrap();
+    let instance_id = "streaming-instance";
+    let traj_path = dir.path().join(format!("{instance_id}.traj.json"));
+
+    // Write an initial non-terminal trajectory with one turn (still in-flight)
+    {
+        let mut t = Trajectory::new();
+        let mut asst = rust_swe_agent::model::Message::assistant("turn-one-content");
+        asst.extra.actions = Some(vec!["echo turn1".into()]);
+        t.record_message(&asst);
+        std::fs::write(&traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+    }
+
+    // Start bench watch in background
+    let child = Command::new(binary_path())
+        .args([
+            "bench",
+            "watch",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+            "--instance",
+            instance_id,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Let watch read and print the first turn
+    std::thread::sleep(Duration::from_millis(400));
+
+    // Write a second turn and mark terminal — simulates the worker finishing
+    {
+        let mut t = Trajectory::new();
+        t.info.outcome = Some(outcome::SUBMITTED.into());
+        let mut asst1 = rust_swe_agent::model::Message::assistant("turn-one-content");
+        asst1.extra.actions = Some(vec!["echo turn1".into()]);
+        t.record_message(&asst1);
+        let mut asst2 = rust_swe_agent::model::Message::assistant("turn-two-content");
+        asst2.extra.actions = Some(vec!["echo turn2".into()]);
+        t.record_message(&asst2);
+        std::fs::write(&traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
+    }
+
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("turn-one-content"),
+        "expected turn 1 in stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("turn-two-content"),
+        "expected turn 2 in stdout, got: {stdout}"
+    );
+}
+
+// Test (a) also: complete pre-written trajectory exits 0 and shows turns
 #[test]
 fn complete_trajectory_exits_0_with_turns() {
     let dir = tempfile::tempdir().unwrap();
@@ -88,12 +154,10 @@ fn complete_trajectory_exits_0_with_turns() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Should contain turn output from the assistant step
     assert!(
         stdout.contains("assistant") || stdout.contains("step"),
         "expected turn output in stdout, got: {stdout}"
     );
-    // Should contain the final summary
     assert!(
         stdout.contains("complete") || stdout.contains("submitted"),
         "expected completion summary in stdout, got: {stdout}"
@@ -206,7 +270,7 @@ fn redaction_strips_secret_from_stdout() {
     );
 }
 
-// Test (e): Invalid sweep directory exits 2
+// Test: Invalid sweep directory exits 2
 #[test]
 fn invalid_sweep_dir_exits_2() {
     let out = Command::new(binary_path())
@@ -225,5 +289,59 @@ fn invalid_sweep_dir_exits_2() {
         Some(2),
         "expected exit 2 for invalid sweep dir, stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// Test (e): Stall warning fires after --stall-secs and watch keeps following
+#[test]
+fn stall_warning_fires_and_watch_keeps_following() {
+    let dir = tempfile::tempdir().unwrap();
+    let instance_id = "stall-instance";
+
+    // Write an in-flight (non-terminal) trajectory with one turn
+    let mut t = Trajectory::new();
+    let mut asst = rust_swe_agent::model::Message::assistant("initial turn");
+    asst.extra.actions = Some(vec!["echo hi".into()]);
+    t.record_message(&asst);
+    std::fs::write(
+        dir.path().join(format!("{instance_id}.traj.json")),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    // Start bench watch with stall-secs=1
+    let mut child = Command::new(binary_path())
+        .args([
+            "bench",
+            "watch",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+            "--instance",
+            instance_id,
+            "--stall-secs",
+            "1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // Wait long enough for the stall to fire (stall-secs=1, wait 2.5s)
+    std::thread::sleep(Duration::from_millis(2500));
+
+    // Watch should still be running — stall must not cause an exit
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "bench watch should still be running after a stall — stall must not exit"
+    );
+
+    // Kill the process and collect output
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[stalled:"),
+        "expected stall warning in stderr, got: {stderr}"
     );
 }
