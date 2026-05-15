@@ -73,8 +73,8 @@ Each object has the fields:
 | Code | Meaning |
 |---|---|
 | 0 | At least one match was found |
+| 1 | No matches found (mirrors the `grep` convention) |
 | 2 | Usage or configuration error (e.g., invalid regex, bad `--field`) |
-| 13 | No matches found (analogous to `grep`'s exit-1; this project reserves 1 for internal errors) |
 
 This exit-code contract makes `bench grep` composable in shell pipelines and CI
 gates. For example:

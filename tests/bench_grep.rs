@@ -500,7 +500,7 @@ fn cli_exit_code_nonzero_with_no_matches() {
 }
 
 #[test]
-fn cli_no_match_exit_code_is_13() {
+fn cli_no_match_exit_code_is_1() {
     let sweep = tempfile::tempdir().unwrap();
     copy_grep_fixture(sweep.path());
 
@@ -519,8 +519,8 @@ fn cli_no_match_exit_code_is_13() {
 
     assert_eq!(
         output.status.code(),
-        Some(13),
-        "no-match exit code should be 13"
+        Some(1),
+        "no-match exit code should be 1 (grep convention per AC)"
     );
 }
 
@@ -754,11 +754,11 @@ fn cli_invalid_regex_exits_nonzero_with_usage_error() {
         !output.status.success(),
         "invalid regex should exit non-zero"
     );
-    // Usage error or internal error exit code (2 or 1) — distinct from 13 (no matches)
-    assert_ne!(
+    // Usage errors map to exit 2 — distinct from 0 (hits) and 1 (no matches)
+    assert_eq!(
         output.status.code(),
-        Some(13),
-        "invalid regex should not exit 13 (no-matches code)"
+        Some(2),
+        "invalid regex should exit 2 (usage error)"
     );
 }
 
@@ -929,6 +929,112 @@ fn cli_pattern_field_and_instances_scanned_in_json() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     // At least one line should exist and be valid JSON with correct fields
     assert!(!stdout.trim().is_empty());
+}
+
+// ── performance test ─────────────────────────────────────────────────────────
+
+#[test]
+fn cli_300_trajectory_sweep_completes_in_under_5_seconds() {
+    let sweep = tempfile::tempdir().unwrap();
+    let n = 300usize;
+
+    let instances: Vec<serde_json::Value> = (0..n)
+        .map(|i| {
+            serde_json::json!({
+                "instance_id": format!("perf-{i:03}"),
+                "exit_reason": "submitted",
+                "outcome": "submitted",
+                "cost_usd": 0.01,
+                "attempts": 1,
+                "runs": 1,
+                "resolved_count": 1,
+                "pass_at_1": true,
+                "tests_run_before_submit": false
+            })
+        })
+        .collect();
+
+    std::fs::write(
+        sweep.path().join("results.json"),
+        serde_json::json!({
+            "artifact_kind": "sweep_results",
+            "schema_version": {"major": 1, "minor": 4},
+            "total": n,
+            "submitted": n,
+            "skipped": 0,
+            "errored": 0,
+            "total_cost_usd": 3.0,
+            "instances": instances
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    for i in 0..n {
+        let traj = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.2",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 4},
+            "info": {
+                "task": format!("Task {i}"),
+                "model_name": "fixture-model",
+                "outcome": "submitted",
+                "total_cost_usd": 0.01,
+                "steps": 3,
+                "test_invocations": [],
+                "tests_run_before_submit": false
+            },
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": format!("Investigating issue {i}. Running pytest -x to check."),
+                    "extra": {"actions": ["pytest -x tests/"], "cost": 0.01}
+                },
+                {
+                    "role": "user",
+                    "content": format!("1 passed in instance {i}"),
+                    "extra": {}
+                },
+                {
+                    "role": "assistant",
+                    "content": "Submitting the fix.",
+                    "extra": {"actions": ["__SUBMIT__"], "cost": 0.005}
+                }
+            ]
+        });
+        std::fs::write(
+            sweep.path().join(format!("perf-{i:03}.traj.json")),
+            traj.to_string(),
+        )
+        .unwrap();
+    }
+
+    let start = std::time::Instant::now();
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "grep",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "pytest -x",
+        ])
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    // pytest -x appears in all 300 instances → exit 0
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "should find matches across all 300 instances"
+    );
+    assert!(
+        elapsed.as_secs() < 5,
+        "bench grep over {n} trajectories must complete in under 5 seconds, took {:.2}s",
+        elapsed.as_secs_f64()
+    );
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

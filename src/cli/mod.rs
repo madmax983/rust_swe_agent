@@ -1695,7 +1695,8 @@ fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
         }
     }
     if !has_matches {
-        exit_with_outcome(ExitCode::GrepNoMatches, "no matches found");
+        // Exit 1 = no matches found (grep convention; AC requires this specific code).
+        std::process::exit(1);
     }
     Ok(())
 }

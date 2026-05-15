@@ -62,11 +62,6 @@ pub enum ExitCode {
     /// least K times within a trailing window of W steps. See
     /// `docs/spec-stagnation.md` for the full contract.
     AgentStagnation = 12,
-    /// 13 — `bench grep` found no matches. Analogous to grep's exit-1; this
-    /// project uses 1 for unexpected internal errors, so 13 is the grep
-    /// no-match code. Exit 0 means at least one match was found; exit 2 means
-    /// a usage or configuration error (e.g. invalid regex).
-    GrepNoMatches = 13,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -100,7 +95,6 @@ impl ExitCode {
             Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::SystemicHalt => "systemic_halt",
             Self::AgentStagnation => "agent_stagnation",
-            Self::GrepNoMatches => "grep_no_matches",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
