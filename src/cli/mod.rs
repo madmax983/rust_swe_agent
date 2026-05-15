@@ -444,6 +444,13 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
+    if s.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only is not supported for `bench doctor`; \
+             it only applies to `bench swebench`"
+                .into(),
+        )));
+    }
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
@@ -456,6 +463,13 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
+    if s.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only is not supported for `bench forecast`; \
+             it only applies to `bench swebench`"
+                .into(),
+        )));
+    }
     let output_format = s.format.clone();
     let fail_over_cap = s.fail_over_cap;
     match Box::pin(run_forecast_from_cmd(s)).await? {
