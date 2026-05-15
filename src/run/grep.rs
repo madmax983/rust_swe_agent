@@ -212,7 +212,7 @@ fn search_instance(
 
 fn extract_snippet(text: &str, match_start: usize, match_end: usize, context: usize) -> String {
     let raw_start = match_start.saturating_sub(context);
-    let raw_end = (match_end + context).min(text.len());
+    let raw_end = match_end.saturating_add(context).min(text.len());
     let start = char_boundary_floor(text, raw_start);
     let end = char_boundary_ceil(text, raw_end);
     text[start..end].to_owned()
@@ -325,6 +325,16 @@ mod tests {
         assert_eq!(char_boundary_floor(s, 0), 0);
         assert_eq!(char_boundary_floor(s, 1), 1); // 'é' starts at 1
         assert_eq!(char_boundary_floor(s, 2), 1); // mid-'é', floor to 1
+    }
+
+    #[test]
+    fn extract_snippet_huge_context_does_not_overflow() {
+        let text = "hello ImportError world";
+        let start = text.find("ImportError").unwrap();
+        let end = start + "ImportError".len();
+        // usize::MAX context must not overflow or panic
+        let snippet = extract_snippet(text, start, end, usize::MAX);
+        assert_eq!(snippet, text);
     }
 
     #[test]
