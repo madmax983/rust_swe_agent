@@ -94,6 +94,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::CommandStats(c),
         } => bench_command_stats(c),
         Command::Bench {
+            cmd: args::BenchCmd::Grep(g),
+        } => bench_grep(g),
+        Command::Bench {
             cmd: args::BenchCmd::Frontier(f),
         } => bench_frontier(f),
         Command::Bench {
@@ -1646,6 +1649,58 @@ fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_grep(g: args::GrepCmd) -> Result<(), Error> {
+    let format = match g.format.as_str() {
+        "text" => GrepOutputFormat::Text,
+        "json" => GrepOutputFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let instance_ids = g.instance_ids.as_deref().map(|s| {
+        s.split(',')
+            .map(|id| id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let exclude_instance_ids = g.exclude_instance_ids.as_deref().map(|s| {
+        s.split(',')
+            .map(|id| id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let report = crate::run::grep::run(&crate::run::grep::GrepArgs {
+        sweep_dir: g.sweep,
+        pattern: g.pattern,
+        roles: g.roles,
+        field: g.field,
+        instance_ids,
+        exclude_instance_ids,
+        outcomes: g.outcomes,
+        context_chars: g.context,
+        max_matches_per_instance: g.max_matches_per_instance,
+    })?;
+    let has_matches = !report.matches.is_empty();
+    match format {
+        GrepOutputFormat::Text => {
+            print!("{}", crate::run::grep::render_text(&report));
+        }
+        GrepOutputFormat::Json => {
+            let lines = crate::run::grep::render_json_lines(&report)?;
+            if !lines.is_empty() {
+                println!("{lines}");
+            }
+        }
+    }
+    if !has_matches {
+        // Exit 1 = no matches found (grep convention; AC requires this specific code).
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
     let format = match t.format.as_str() {
         "text" => TriageFormat::Text,
@@ -2214,6 +2269,12 @@ enum TriageFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandStatsFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrepOutputFormat {
     Text,
     Json,
 }

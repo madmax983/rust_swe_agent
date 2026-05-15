@@ -11,6 +11,7 @@ pub mod evaluator_selftest;
 pub mod forecast;
 pub mod frontier;
 pub mod github_pr;
+pub mod grep;
 pub mod hello_world;
 pub mod inspect;
 pub mod matrix;

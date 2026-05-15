@@ -323,6 +323,8 @@ pub enum BenchCmd {
     Triage(TriageCmd),
     /// Aggregate shell-command frequency and cost by outcome bucket.
     CommandStats(CommandStatsCmd),
+    /// Search every trajectory in a sweep for a regex pattern (zero-cost: reads only on-disk artifacts).
+    Grep(GrepCmd),
     /// Pareto frontier across multiple sweep runs: ASCII chart + JSON dataset.
     Frontier(FrontierCmd),
     /// Replay a saved sweep from its manifest and report reproducibility.
@@ -1107,6 +1109,56 @@ pub struct CommandStatsCmd {
     pub filter: Option<String>,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `bench grep` — search every trajectory in a sweep for a regex.
+///
+/// Reads only on-disk artifacts and never calls a model provider (zero-cost guarantee).
+/// Exit codes: 0 = at least one match found; 1 = no matches; 2 = usage/config error.
+#[derive(Debug, Args)]
+pub struct GrepCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Regex pattern to search across trajectory messages.
+    pub pattern: String,
+
+    /// Restrict search to specific message roles (repeatable; default: all roles).
+    /// Example: `--role assistant --role user`
+    #[arg(long = "role", value_name = "ROLE")]
+    pub roles: Vec<String>,
+
+    /// Restrict search to a specific field within each message.
+    /// `content` (default) searches the message text; `actions` searches bash commands.
+    #[arg(long, default_value = "content")]
+    pub field: String,
+
+    /// Comma-separated instance IDs to include (mirrors `bench inspect --filter`).
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Comma-separated instance IDs to exclude.
+    #[arg(long)]
+    pub exclude_instance_ids: Option<String>,
+
+    /// Filter to instances with one of the specified outcomes (repeatable).
+    /// Example: `--outcome error --outcome submitted`
+    #[arg(long = "outcome", value_name = "OUTCOME")]
+    pub outcomes: Vec<String>,
+
+    /// Characters of context before and after each match in the printed snippet (default: 80).
+    #[arg(long, default_value_t = 80)]
+    pub context: usize,
+
+    /// Cap per-instance match count to prevent flooding stdout on a broad pattern.
+    #[arg(long)]
+    pub max_matches_per_instance: Option<usize>,
+
+    /// Output format: `text` (default, tab-separated `instance_id\tturn_index\trole\tsnippet`)
+    /// or `json` (one JSON object per match, newline-delimited).
     #[arg(long, default_value = "text")]
     pub format: String,
 }
