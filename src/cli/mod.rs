@@ -130,6 +130,7 @@ fn init_logging(level: &str) {
         .try_init();
 }
 
+#[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let mut cfg = match &m.config {
         Some(p) => Config::load(p)?,
@@ -141,6 +142,14 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.step_limit = m.step_limit;
         apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
         return mini_render_only_cmd(m, cfg);
+    }
+
+    if m.format != "text" {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format requires --render-only; without it the agent runs normally and \
+             ignoring your format setting could result in an unexpected paid model call"
+                .into(),
+        )));
     }
 
     cfg.root.model.name.clone_from(&m.model);
@@ -242,6 +251,7 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
             stream: m.stream.as_deref(),
             has_verify_checks: !m.verify.is_empty(),
             open_pr: m.github_pr.open_pr,
+            pr_dry_run: m.github_pr.github_pr_dry_run,
         },
     )?;
 
@@ -257,8 +267,13 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
             let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
             println!("{json}");
         }
-        _ => {
+        "text" => {
             print!("{}", crate::run::render_only::format_text(&report));
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid for --render-only; use 'text' or 'json'"
+            ))));
         }
     }
     Ok(())
@@ -272,6 +287,7 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
             stream: None,
             has_verify_checks: false,
             open_pr: s.github_pr.open_prs,
+            pr_dry_run: s.github_pr.github_pr_dry_run,
         },
     )?;
     let format = s.format.clone();
@@ -323,8 +339,13 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
             let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
             println!("{json}");
         }
-        _ => {
+        "text" => {
             print!("{}", crate::run::render_only::format_text(&report));
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid for --render-only; use 'text' or 'json'"
+            ))));
         }
     }
     Ok(())

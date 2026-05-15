@@ -171,9 +171,13 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
     // Cumulative cost: every turn pays for the full prompt. Turn k has
     // initial_prompt_tokens + k*PER_STEP_GROWTH_TOKENS input tokens, so the
     // total across N turns is N*initial + N*(N-1)/2 * growth.
-    let sum_growth_tokens =
-        (step_limit * step_limit.saturating_sub(1) / 2) * PER_STEP_GROWTH_TOKENS;
-    let upper_bound_tokens = step_limit * initial_prompt_tokens + sum_growth_tokens;
+    // Use saturating arithmetic: u32::MAX step_limit still produces a finite
+    // (capped) estimate rather than panicking in debug or wrapping in release.
+    let sum_growth_tokens = (step_limit.saturating_mul(step_limit.saturating_sub(1)) / 2)
+        .saturating_mul(PER_STEP_GROWTH_TOKENS);
+    let upper_bound_tokens = step_limit
+        .saturating_mul(initial_prompt_tokens)
+        .saturating_add(sum_growth_tokens);
     let input_rate = input_usd_per_mtok(model_name);
     #[allow(clippy::cast_precision_loss)]
     let upper_bound_usd = upper_bound_tokens as f64 / 1_000_000.0 * input_rate;
@@ -217,6 +221,8 @@ pub struct IncompatibleFlags<'a> {
     pub has_verify_checks: bool,
     /// `--open-pr` / `--open-prs` publishes a patch that can only exist after a run.
     pub open_pr: bool,
+    /// `--github-pr-dry-run` is a PR-publishing mode that requires a completed trajectory.
+    pub pr_dry_run: bool,
 }
 
 /// Validate that `--render-only` is not combined with execution-time flags
@@ -228,6 +234,7 @@ pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Er
         ("--stream", flags.stream.is_some()),
         ("--verify", flags.has_verify_checks),
         ("--open-pr / --open-prs", flags.open_pr),
+        ("--github-pr-dry-run", flags.pr_dry_run),
     ];
     for (name, set) in conflicts {
         if *set {
@@ -400,6 +407,7 @@ mod tests {
             stream: None,
             has_verify_checks: false,
             open_pr: false,
+            pr_dry_run: false,
         }
     }
 
@@ -443,6 +451,15 @@ mod tests {
     fn reject_incompatible_flags_open_pr_err() {
         let flags = IncompatibleFlags {
             open_pr: true,
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_pr_dry_run_err() {
+        let flags = IncompatibleFlags {
+            pr_dry_run: true,
             ..clean_flags()
         };
         assert!(reject_incompatible_flags(&flags).is_err());
