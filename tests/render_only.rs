@@ -374,3 +374,306 @@ fn mini_render_only_json_includes_extra_context_in_user_message() {
         "user_message must contain extra context;\nuser_message:\n{user_msg}"
     );
 }
+
+// ── AC5: golden JSON snapshot regression gate ─────────────────────────────────
+
+#[test]
+fn mini_render_only_json_matches_committed_snapshot() {
+    let snapshot_path = "tests/fixtures/render_only/snapshot.json";
+    let snapshot_raw = std::fs::read_to_string(snapshot_path)
+        .expect("committed snapshot file must exist");
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_raw).expect("snapshot must be valid JSON");
+
+    // Run with the exact same args used to generate the snapshot.
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "mini", "--render-only",
+            "--task", "fix the bug in src/main.rs",
+            "--model", "claude-opus-4-7",
+            "--format", "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "snapshot regeneration run failed\nstderr:\n{stderr}"
+    );
+    let actual: serde_json::Value =
+        serde_json::from_str(&stdout).expect("live output must be valid JSON");
+
+    // Compare every field in the snapshot against the live output.
+    // We compare field-by-field so test output is diagnostic rather than a raw diff.
+    let fields = [
+        "artifact_kind",
+        "schema_version",
+        "model",
+        "system_message",
+        "user_message",
+        "tools",
+        "hooks",
+        "initial_prompt_tokens",
+        "context_window_tokens",
+        "context_window_pct",
+    ];
+    for field in fields {
+        assert_eq!(
+            snapshot[field], actual[field],
+            "snapshot regression: field '{field}' changed\n\
+             snapshot: {}\n\
+             actual:   {}",
+            snapshot[field], actual[field]
+        );
+    }
+    // Upper-bound cost structure (not the exact USD value, which is derived).
+    assert!(
+        actual["upper_bound_cost"]["caveat"].as_str().is_some(),
+        "upper_bound_cost.caveat must be present in live output"
+    );
+}
+
+// ── AC5: zero outbound network connections assertion ──────────────────────────
+
+#[test]
+fn mini_render_only_succeeds_with_invalid_api_key() {
+    // If --render-only made any outbound network call using an Anthropic API key,
+    // the invalid key would cause a non-zero exit. Exit 0 proves no API call was made.
+    let out = Command::new(binary())
+        .env("ANTHROPIC_API_KEY", "sk-ant-intentionally-invalid-key-for-test")
+        .args([
+            "--log", "error",
+            "mini", "--render-only",
+            "--task", "hello",
+            "--model", "claude-opus-4-7",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "--render-only must exit 0 even with an invalid API key \
+         (proves no outbound network call was made)\nstderr:\n{stderr}"
+    );
+}
+
+// ── AC2: bench swebench --render-only ────────────────────────────────────────
+
+#[test]
+fn bench_swebench_render_only_exits_zero_with_local_dataset() {
+    let temp = tempfile::tempdir().unwrap();
+    // Write a minimal JSONL dataset with one instance.
+    let dataset = temp.path().join("data.jsonl");
+    std::fs::write(
+        &dataset,
+        "{\"instance_id\":\"test-1\",\"problem_statement\":\"fix the memory leak\"}\n",
+    )
+    .unwrap();
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "bench", "swebench",
+            "--render-only",
+            "--dataset-path", &dataset.display().to_string(),
+            "--output", &output_dir.display().to_string(),
+            "--model", "claude-opus-4-7",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "bench swebench --render-only must exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("system_message") || stdout.contains("System message") || stdout.contains("render-only"),
+        "output must contain rendered content\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn bench_swebench_render_only_json_format_has_problem_statement_as_task() {
+    let temp = tempfile::tempdir().unwrap();
+    let dataset = temp.path().join("data.jsonl");
+    std::fs::write(
+        &dataset,
+        "{\"instance_id\":\"test-2\",\"problem_statement\":\"UNIQUE_PROBLEM_STATEMENT_MARKER\"}\n",
+    )
+    .unwrap();
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "bench", "swebench",
+            "--render-only",
+            "--dataset-path", &dataset.display().to_string(),
+            "--output", &output_dir.display().to_string(),
+            "--model", "claude-opus-4-7",
+            "--format", "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr:\n{stderr}");
+
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("--format json must produce valid JSON");
+    let user_msg = v["user_message"].as_str().unwrap_or("");
+    assert!(
+        user_msg.contains("UNIQUE_PROBLEM_STATEMENT_MARKER"),
+        "user_message must contain the instance problem_statement;\nuser_message:\n{user_msg}"
+    );
+}
+
+#[test]
+fn bench_swebench_render_only_selects_first_instance_by_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let dataset = temp.path().join("data.jsonl");
+    // Two instances; render-only with no --limit should pick the first.
+    std::fs::write(
+        &dataset,
+        "{\"instance_id\":\"inst-A\",\"problem_statement\":\"FIRST_INSTANCE_MARKER\"}\n\
+         {\"instance_id\":\"inst-B\",\"problem_statement\":\"second instance\"}\n",
+    )
+    .unwrap();
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "bench", "swebench",
+            "--render-only",
+            "--dataset-path", &dataset.display().to_string(),
+            "--output", &output_dir.display().to_string(),
+            "--model", "claude-opus-4-7",
+            "--format", "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let user_msg = v["user_message"].as_str().unwrap_or("");
+    assert!(
+        user_msg.contains("FIRST_INSTANCE_MARKER"),
+        "render-only with no --limit must use the first instance;\nuser_message:\n{user_msg}"
+    );
+}
+
+#[test]
+fn bench_swebench_render_only_does_not_write_trajectory() {
+    let temp = tempfile::tempdir().unwrap();
+    let dataset = temp.path().join("data.jsonl");
+    std::fs::write(
+        &dataset,
+        "{\"instance_id\":\"no-traj\",\"problem_statement\":\"test\"}\n",
+    )
+    .unwrap();
+    let output_dir = temp.path().join("out");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "bench", "swebench",
+            "--render-only",
+            "--dataset-path", &dataset.display().to_string(),
+            "--output", &output_dir.display().to_string(),
+            "--model", "claude-opus-4-7",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // The sweep output dir must not contain any trajectory or results JSON.
+    let written: Vec<_> = std::fs::read_dir(&output_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "bench swebench --render-only must not write any files to --output; found: {:?}",
+        written.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}
+
+// ── AC7: additional incompatible flags (--stream, --verify, --open-pr) ───────
+
+#[test]
+fn mini_render_only_conflicts_with_stream() {
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "mini", "--render-only",
+            "--task", "hello",
+            "--model", "claude-opus-4-7",
+            "--stream", "127.0.0.1:7878",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "--render-only combined with --stream must exit non-zero"
+    );
+    assert!(
+        stderr.contains("render-only") || stderr.contains("stream"),
+        "error message must reference the conflicting flags;\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn mini_render_only_conflicts_with_verify() {
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "mini", "--render-only",
+            "--task", "hello",
+            "--model", "claude-opus-4-7",
+            "--verify", "check:echo ok",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "--render-only combined with --verify must exit non-zero"
+    );
+    assert!(
+        stderr.contains("render-only") || stderr.contains("verify"),
+        "error message must reference the conflicting flags;\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn mini_render_only_conflicts_with_open_pr() {
+    let out = Command::new(binary())
+        .args([
+            "--log", "error",
+            "mini", "--render-only",
+            "--task", "hello",
+            "--model", "claude-opus-4-7",
+            "--open-pr",
+            "--target-repo", "owner/repo",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "--render-only combined with --open-pr must exit non-zero"
+    );
+    assert!(
+        stderr.contains("render-only") || stderr.contains("open-pr"),
+        "error message must reference the conflicting flags;\nstderr:\n{stderr}"
+    );
+}

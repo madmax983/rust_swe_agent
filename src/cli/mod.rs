@@ -238,7 +238,15 @@ fn mini_render_only_cmd(
     m: args::MiniCmd,
     cfg: crate::config::Config,
 ) -> Result<(), Error> {
-    crate::run::render_only::reject_incompatible_flags(m.per_task_budget_usd, m.task_timeout_secs)?;
+    crate::run::render_only::reject_incompatible_flags(
+        &crate::run::render_only::IncompatibleFlags {
+            per_task_budget_usd: m.per_task_budget_usd,
+            task_timeout_secs: m.task_timeout_secs,
+            stream: m.stream.as_deref(),
+            has_verify_checks: !m.verify.is_empty(),
+            open_pr: m.github_pr.open_pr,
+        },
+    )?;
 
     let args = crate::run::render_only::RenderOnlyArgs {
         task: m.task,
@@ -248,6 +256,60 @@ fn mini_render_only_cmd(
     let report = crate::run::render_only::render(args)?;
 
     match m.format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
+            println!("{json}");
+        }
+        _ => {
+            print!("{}", crate::run::render_only::format_text(&report));
+        }
+    }
+    Ok(())
+}
+
+fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
+    let format = s.format.clone();
+    let cfg = swebench_config_from_cmd(s)?;
+    let (dataset_source, dataset_cache_dir) = parse_dataset_source(s)?;
+    let (dataset_bytes, _meta) =
+        crate::run::dataset::resolve_dataset(&dataset_source, &dataset_cache_dir)?;
+    let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s.stratify_mode.unwrap_or(args::StratifyModeArg::Proportional) {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let (instances, _filter_spec) = crate::run::swebench::apply_subset(
+        instances,
+        &crate::run::swebench::ApplySubsetParams {
+            instance_ids_arg: s.instance_ids.as_deref(),
+            limit: s.limit.or(Some(1)),
+            sample: s.sample,
+            seed: s.seed,
+            stratify_by,
+            stratify_mode,
+        },
+    )?;
+
+    let instance = instances.into_iter().next().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only: dataset produced zero instances after filtering".into(),
+        ))
+    })?;
+
+    let task = instance.problem_statement.unwrap_or_default();
+    let render_args = crate::run::render_only::RenderOnlyArgs {
+        task,
+        extra_context: None,
+        config: cfg,
+    };
+    let report = crate::run::render_only::render(render_args)?;
+
+    match format.as_str() {
         "json" => {
             let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
             println!("{json}");
@@ -291,6 +353,11 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+
+    if sweep_cmd.render_only {
+        return bench_swebench_render_only(&sweep_cmd);
+    }
+
     validate_swebench_github_pr_args(&sweep_cmd.github_pr)?;
     if sweep_cmd.forecast_first {
         match Box::pin(run_forecast_from_cmd(sweep_cmd.clone())).await? {

@@ -198,25 +198,41 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
     })
 }
 
+/// Flags that are incompatible with `--render-only`.
+///
+/// Each entry is `(flag_name, is_set)`. The function returns the first
+/// conflict found, which is enough for a clear error message.
+pub struct IncompatibleFlags<'a> {
+    pub per_task_budget_usd: Option<f64>,
+    pub task_timeout_secs: Option<u64>,
+    /// `--stream <addr>` has no meaning without an agent loop.
+    pub stream: Option<&'a str>,
+    /// `--verify NAME:CMD` checks run after execution; meaningless without one.
+    pub has_verify_checks: bool,
+    /// `--open-pr` / `--open-prs` publishes a patch that can only exist after a run.
+    pub open_pr: bool,
+}
+
 /// Validate that `--render-only` is not combined with execution-time flags
 /// that have no meaning without an actual agent run.
-pub fn reject_incompatible_flags(
-    per_task_budget_usd: Option<f64>,
-    task_timeout_secs: Option<u64>,
-) -> Result<(), Error> {
-    if per_task_budget_usd.is_some() {
-        return Err(Error::Config(ConfigError::Invalid(
-            "--render-only is mutually exclusive with --per-task-budget-usd; \
-             the flag has no meaning without an agent run"
-                .into(),
-        )));
-    }
-    if task_timeout_secs.is_some() {
-        return Err(Error::Config(ConfigError::Invalid(
-            "--render-only is mutually exclusive with --task-timeout-secs; \
-             the flag has no meaning without an agent run"
-                .into(),
-        )));
+pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Error> {
+    let conflicts: &[(&str, bool)] = &[
+        (
+            "--per-task-budget-usd",
+            flags.per_task_budget_usd.is_some(),
+        ),
+        ("--task-timeout-secs", flags.task_timeout_secs.is_some()),
+        ("--stream", flags.stream.is_some()),
+        ("--verify", flags.has_verify_checks),
+        ("--open-pr / --open-prs", flags.open_pr),
+    ];
+    for (name, set) in conflicts {
+        if *set {
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--render-only is mutually exclusive with {name}; \
+                 the flag has no meaning without an agent run"
+            ))));
+        }
     }
     Ok(())
 }
@@ -374,19 +390,64 @@ mod tests {
         );
     }
 
+    fn clean_flags() -> IncompatibleFlags<'static> {
+        IncompatibleFlags {
+            per_task_budget_usd: None,
+            task_timeout_secs: None,
+            stream: None,
+            has_verify_checks: false,
+            open_pr: false,
+        }
+    }
+
     #[test]
     fn reject_incompatible_flags_budget_err() {
-        assert!(reject_incompatible_flags(Some(1.0), None).is_err());
+        let flags = IncompatibleFlags {
+            per_task_budget_usd: Some(1.0),
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
     }
 
     #[test]
     fn reject_incompatible_flags_timeout_err() {
-        assert!(reject_incompatible_flags(None, Some(60)).is_err());
+        let flags = IncompatibleFlags {
+            task_timeout_secs: Some(60),
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
     }
 
     #[test]
-    fn reject_incompatible_flags_both_none_ok() {
-        assert!(reject_incompatible_flags(None, None).is_ok());
+    fn reject_incompatible_flags_stream_err() {
+        let flags = IncompatibleFlags {
+            stream: Some("127.0.0.1:7878"),
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_verify_err() {
+        let flags = IncompatibleFlags {
+            has_verify_checks: true,
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_open_pr_err() {
+        let flags = IncompatibleFlags {
+            open_pr: true,
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_all_clear_ok() {
+        assert!(reject_incompatible_flags(&clean_flags()).is_ok());
     }
 
     #[test]

@@ -951,6 +951,12 @@ pub struct SwebenchCmd {
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
+
+    /// Render the initial prompt surface for the first selected instance and
+    /// exit without launching any tasks. Requires a dataset source. Use
+    /// `--instance-ids` or `--limit 1` to choose a specific row.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
 }
 
 #[derive(Debug, Args)]

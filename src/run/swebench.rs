@@ -4372,7 +4372,7 @@ fn load_fresh_trajectory_info(
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct ApplySubsetParams<'a> {
+pub struct ApplySubsetParams<'a> {
     pub instance_ids_arg: Option<&'a str>,
     pub limit: Option<usize>,
     pub sample: Option<usize>,
@@ -4408,7 +4408,7 @@ fn validate_subset_params(
     Ok(())
 }
 
-pub(crate) fn apply_subset(
+pub fn apply_subset(
     mut instances: Vec<SweBenchInstance>,
     params: &ApplySubsetParams<'_>,
 ) -> Result<(Vec<SweBenchInstance>, FilterSpec), Error> {
