@@ -48,9 +48,9 @@ struct WatchTurnEvent<'a> {
 }
 
 pub async fn run(args: &WatchArgs) -> Result<(), Error> {
-    if !args.sweep.exists() {
+    if !args.sweep.is_dir() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "watch: sweep directory does not exist: {}",
+            "watch: sweep path is not a directory: {}",
             args.sweep.display()
         ))));
     }

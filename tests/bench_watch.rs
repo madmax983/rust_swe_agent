@@ -295,6 +295,29 @@ fn invalid_sweep_dir_exits_2() {
     );
 }
 
+// Test: --sweep pointing at a file (not a directory) exits 2
+#[test]
+fn sweep_is_file_not_dir_exits_2() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "watch",
+            "--sweep",
+            file.path().to_str().unwrap(),
+            "--instance",
+            "some-instance",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected exit 2 when sweep is a file, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // Test (e): Stall warning fires after --stall-secs and watch keeps following
 #[test]
 fn stall_warning_fires_and_watch_keeps_following() {
