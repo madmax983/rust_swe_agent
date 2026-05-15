@@ -2329,6 +2329,7 @@ async fn bench_watch(w: args::WatchCmd) -> Result<(), Error> {
     crate::run::watch::run(&crate::run::watch::WatchArgs {
         sweep: w.sweep,
         instance: w.instance,
+        run_index: w.run_index,
         wait_secs: w.wait_secs,
         stall_secs: w.stall_secs,
         full: w.full,

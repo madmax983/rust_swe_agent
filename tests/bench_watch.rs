@@ -318,6 +318,96 @@ fn sweep_is_file_not_dir_exits_2() {
     );
 }
 
+// Test: --run-index 2 attaches to the correct run slot
+#[test]
+fn run_index_2_reads_correct_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let instance_id = "rerun-instance";
+    let instance_dir = dir.path().join(instance_id);
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    // Write run-1 as already-complete with a different outcome to ensure
+    // bench watch selects run-2 and not run-1.
+    write_traj(dir.path(), instance_id, None);
+    // write_traj writes to <sweep>/<id>.traj.json (flat); also write a nested run-1
+    std::fs::write(
+        instance_dir.join("run-1.traj.json"),
+        serde_json::to_string_pretty(&{
+            let mut t = rust_swe_agent::trajectory::Trajectory::new();
+            t.info.outcome = Some(rust_swe_agent::trajectory::outcome::SUBMITTED.into());
+            t
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    // run-2: complete trajectory with a unique assistant message
+    let mut t2 = rust_swe_agent::trajectory::Trajectory::new();
+    t2.info.outcome = Some(rust_swe_agent::trajectory::outcome::SUBMITTED.into());
+    let mut asst = rust_swe_agent::model::Message::assistant("run-two-unique-content");
+    asst.extra.actions = Some(vec!["echo run2".into()]);
+    t2.record_message(&asst);
+    std::fs::write(
+        instance_dir.join("run-2.traj.json"),
+        serde_json::to_string_pretty(&t2).unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "watch",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+            "--instance",
+            instance_id,
+            "--run-index",
+            "2",
+            "--wait-secs",
+            "0",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "expected exit 0 for run-index 2, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("run-two-unique-content"),
+        "expected run-2 content in stdout, got: {stdout}"
+    );
+}
+
+// Test: --run-index N for missing slot exits 1 when --wait-secs 0
+#[test]
+fn run_index_missing_slot_exits_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "watch",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+            "--instance",
+            "some-instance",
+            "--run-index",
+            "3",
+            "--wait-secs",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 for missing run-3 slot, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // Test (e): Stall warning fires after --stall-secs and watch keeps following
 #[test]
 fn stall_warning_fires_and_watch_keeps_following() {

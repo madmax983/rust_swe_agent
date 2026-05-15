@@ -1067,6 +1067,10 @@ pub struct WatchCmd {
     #[arg(long)]
     pub instance: String,
 
+    /// Run slot to follow (default 1). Use 2, 3, … for `--reruns` sweeps.
+    #[arg(long, default_value_t = 1)]
+    pub run_index: u32,
+
     /// Seconds to wait for the trajectory file to appear (0 = fail immediately if not found).
     #[arg(long, default_value_t = 30)]
     pub wait_secs: u64,

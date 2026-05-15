@@ -8,6 +8,7 @@
 bench watch \
   --sweep <DIR> \
   --instance <ID> \
+  [--run-index N]     # default 1
   [--wait-secs N]     # default 30
   [--stall-secs N]    # default 120
   [--full]
@@ -21,6 +22,7 @@ bench watch \
 |------|---------|-------------|
 | `--sweep <DIR>` | required | Sweep output directory produced by `bench swebench`. |
 | `--instance <ID>` | required | Instance id to follow. |
+| `--run-index <N>` | `1` | Run slot to follow. Use `2`, `3`, … for sweeps started with `--reruns`. |
 | `--wait-secs <N>` | `30` | Seconds to wait for the trajectory file to appear. Set to `0` to fail immediately if not found. |
 | `--stall-secs <N>` | `120` | After this many seconds of no new turns, print a stall warning and keep following. |
 | `--full` | off | Disable stdout/stderr truncation. |
