@@ -327,20 +327,27 @@ where
     (handle, buffer)
 }
 
+const MAX_PIPE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut remaining = MAX_PIPE_BUFFER_SIZE;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
-        buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+        if remaining > 0 {
+            let to_add = std::cmp::min(n, remaining);
+            buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(&chunk[..to_add]);
+            remaining = remaining.saturating_sub(to_add);
+        }
     }
 }
 
@@ -444,6 +451,24 @@ const _COMPILE_TIME_USED: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn read_pipe_to_buffer_respects_max_size() {
+        use std::sync::{Arc, Mutex};
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let mut reader = tokio::io::repeat(b'A');
+
+        let limit = super::MAX_PIPE_BUFFER_SIZE as u64 + 8192;
+        let mut limited_reader = tokio::io::AsyncReadExt::take(&mut reader, limit);
+
+        super::read_pipe_to_buffer(&mut limited_reader, Arc::clone(&buffer))
+            .await
+            .unwrap();
+
+        let len = buffer.lock().unwrap().len();
+        assert_eq!(len, super::MAX_PIPE_BUFFER_SIZE);
+    }
 
     fn test_env() -> DockerEnvironment {
         DockerEnvironment {
