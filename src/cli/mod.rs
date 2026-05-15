@@ -130,11 +130,18 @@ fn init_logging(level: &str) {
         .try_init();
 }
 
+#[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let mut cfg = match &m.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
     };
+
+    // Apply and validate all prompt-shaping overrides shared by both the
+    // render-only preview path and the normal execution path. This ensures
+    // that an invalid combination (e.g. --observation-head-ratio 2.0) is
+    // caught even when --render-only is set, rather than blessing a config
+    // that would fail on a real run.
     cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
     if let Some(v) = m.observation_max_bytes {
@@ -143,18 +150,6 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(v) = m.observation_head_ratio {
         validate_observation_head_ratio(v)?;
         cfg.root.agent.observation_head_ratio = v;
-    }
-    if let Some(kind) = &m.env {
-        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
-    }
-    if let Some(img) = m.docker_image.clone() {
-        cfg.root.environment.docker_image = Some(img);
-    }
-    if let Some(v) = m.per_task_budget_usd {
-        cfg.root.agent.per_task_budget_usd = Some(v);
-    }
-    if m.hide_budget_from_agent {
-        cfg.root.agent.hide_budget_from_agent = true;
     }
     if let Some(v) = m.detect_stagnation {
         cfg.root.agent.detect_stagnation = v;
@@ -171,7 +166,32 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(v) = m.history_keep_last_observations {
         cfg.root.agent.history_keep_last_observations = Some(v);
     }
+    if let Some(kind) = &m.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = m.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+
+    if m.render_only {
+        return mini_render_only_cmd(m, cfg);
+    }
+
+    if m.format != "text" {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format requires --render-only; without it the agent runs normally and \
+             ignoring your format setting could result in an unexpected paid model call"
+                .into(),
+        )));
+    }
+
+    if let Some(v) = m.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if m.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
 
     let trajectory_name = m
         .trajectory_name
@@ -226,6 +246,114 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<(), Error> {
+    crate::run::render_only::reject_incompatible_flags(
+        &crate::run::render_only::IncompatibleFlags {
+            per_task_budget_usd: m.per_task_budget_usd,
+            task_timeout_secs: m.task_timeout_secs,
+            stream: m.stream.as_deref(),
+            has_verify_checks: !m.verify.is_empty(),
+            open_pr: m.github_pr.open_pr,
+            pr_dry_run: m.github_pr.github_pr_dry_run,
+        },
+    )?;
+
+    let args = crate::run::render_only::RenderOnlyArgs {
+        task: m.task,
+        extra_context: m.extra_context,
+        config: cfg,
+    };
+    let report = crate::run::render_only::render(args)?;
+
+    match m.format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
+            println!("{json}");
+        }
+        "text" => {
+            print!("{}", crate::run::render_only::format_text(&report));
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid for --render-only; use 'text' or 'json'"
+            ))));
+        }
+    }
+    Ok(())
+}
+
+fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
+    crate::run::render_only::reject_incompatible_flags(
+        &crate::run::render_only::IncompatibleFlags {
+            per_task_budget_usd: s.per_task_budget_usd,
+            task_timeout_secs: s.task_timeout_secs,
+            stream: None,
+            has_verify_checks: false,
+            open_pr: s.github_pr.open_prs,
+            pr_dry_run: s.github_pr.github_pr_dry_run,
+        },
+    )?;
+    let format = s.format.clone();
+    let cfg = swebench_config_from_cmd(s)?;
+    let (dataset_source, dataset_cache_dir) = parse_dataset_source(s)?;
+    let (dataset_bytes, _meta) =
+        crate::run::dataset::resolve_dataset(&dataset_source, &dataset_cache_dir)?;
+    let instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(args::StratifyModeArg::Proportional)
+    {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let (instances, _filter_spec) = crate::run::swebench::apply_subset(
+        instances,
+        &crate::run::swebench::ApplySubsetParams {
+            instance_ids_arg: s.instance_ids.as_deref(),
+            limit: s.limit.or(Some(1)),
+            sample: s.sample,
+            seed: s.seed,
+            stratify_by,
+            stratify_mode,
+        },
+    )?;
+
+    let instance = instances.into_iter().next().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only: dataset produced zero instances after filtering".into(),
+        ))
+    })?;
+
+    let task = instance.problem_statement.unwrap_or_default();
+    let render_args = crate::run::render_only::RenderOnlyArgs {
+        task,
+        extra_context: None,
+        config: cfg,
+    };
+    let report = crate::run::render_only::render(render_args)?;
+
+    match format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
+            println!("{json}");
+        }
+        "text" => {
+            print!("{}", crate::run::render_only::format_text(&report));
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--format '{other}' is not valid for --render-only; use 'text' or 'json'"
+            ))));
+        }
+    }
+    Ok(())
+}
+
 async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
     let mut cfg = match &r.config {
         Some(p) => Config::load(p)?,
@@ -258,6 +386,11 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
 
 async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+
+    if sweep_cmd.render_only {
+        return bench_swebench_render_only(&sweep_cmd);
+    }
+
     validate_swebench_github_pr_args(&sweep_cmd.github_pr)?;
     if sweep_cmd.forecast_first {
         match Box::pin(run_forecast_from_cmd(sweep_cmd.clone())).await? {
@@ -335,6 +468,13 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
+    if s.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only is not supported for `bench doctor`; \
+             it only applies to `bench swebench`"
+                .into(),
+        )));
+    }
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
@@ -347,6 +487,13 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
 }
 
 async fn bench_forecast(s: args::SwebenchCmd) -> Result<(), Error> {
+    if s.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--render-only is not supported for `bench forecast`; \
+             it only applies to `bench swebench`"
+                .into(),
+        )));
+    }
     let output_format = s.format.clone();
     let fail_over_cap = s.fail_over_cap;
     match Box::pin(run_forecast_from_cmd(s)).await? {
@@ -2368,6 +2515,8 @@ mod tests {
                 github_pr_backoff_base_ms: 250,
                 github_pr_branch_prefix: "rust-swe-agent".into(),
             },
+            render_only: false,
+            format: "text".into(),
         }
     }
 

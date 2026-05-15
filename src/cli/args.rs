@@ -219,6 +219,19 @@ pub struct MiniCmd {
 
     #[command(flatten)]
     pub github_pr: MiniGithubPrArgs,
+
+    /// Render the initial prompt surface and exit without running the agent.
+    /// Prints the system message, first user message, registered tools, hook
+    /// config, token estimate, and upper-bound cost — at $0 and zero network
+    /// calls. Mutually exclusive with --per-task-budget-usd and
+    /// --task-timeout-secs.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
+
+    /// Output format for --render-only: `text` (default, human-readable) or
+    /// `json` (stable, schema-versioned, suitable for CI diffing).
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Debug, Args)]
@@ -938,6 +951,12 @@ pub struct SwebenchCmd {
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
+
+    /// Render the initial prompt surface for the first selected instance and
+    /// exit without launching any tasks. Requires a dataset source. Use
+    /// `--instance-ids` or `--limit 1` to choose a specific row.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
 }
 
 #[derive(Debug, Args)]

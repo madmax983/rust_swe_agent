@@ -443,11 +443,11 @@ fn merge_preserves_prior_retry_history_entries() {
 // ─── Schema tests ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_version_is_1_6() {
+fn schema_version_is_1_7() {
     assert_eq!(
         rust_swe_agent::artifact::ArtifactSchemaVersion::CURRENT,
-        rust_swe_agent::artifact::ArtifactSchemaVersion::new(1, 6),
-        "schema must be bumped to 1.6 for retry_history additive fields"
+        rust_swe_agent::artifact::ArtifactSchemaVersion::new(1, 7),
+        "schema bumped to 1.7 for render-only preview artifact kind"
     );
 }
 
@@ -638,7 +638,7 @@ fn cli_round_trip_inspect_retried_instance() {
         traj_dir.join("run-1.traj.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "artifact_kind": "trajectory",
-            "schema_version": {"major": 1, "minor": 6},
+            "schema_version": {"major": 1, "minor": 7},
             "trajectory_format": "mini-swe-agent-1.1",
             "info": {
                 "model_name": "test",
