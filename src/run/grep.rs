@@ -266,7 +266,14 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
                     .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
             })
             .collect();
-        run_paths.sort();
+        run_paths.sort_by_key(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix("run-"))
+                .and_then(|n| n.strip_suffix(".traj.json"))
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(u64::MAX)
+        });
         if !run_paths.is_empty() {
             return run_paths;
         }
@@ -393,5 +400,32 @@ mod tests {
         );
         assert!(paths.iter().any(|p| p.ends_with("run-1.traj.json")));
         assert!(paths.iter().any(|p| p.ends_with("run-3.traj.json")));
+    }
+
+    #[test]
+    fn resolve_trajectory_paths_sorts_runs_numerically() {
+        let dir = tempfile::tempdir().unwrap();
+        let instance_dir = dir.path().join("my-instance");
+        std::fs::create_dir(&instance_dir).unwrap();
+        // Without numeric sort, run-10 would precede run-2 lexicographically.
+        for i in [1u32, 2, 9, 10] {
+            std::fs::write(instance_dir.join(format!("run-{i}.traj.json")), "{}").unwrap();
+        }
+
+        let paths = resolve_trajectory_paths(dir.path(), "my-instance");
+        assert_eq!(paths.len(), 4);
+        let names: Vec<&str> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "run-1.traj.json",
+                "run-2.traj.json",
+                "run-9.traj.json",
+                "run-10.traj.json"
+            ]
+        );
     }
 }
