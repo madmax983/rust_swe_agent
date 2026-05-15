@@ -234,10 +234,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     Ok(())
 }
 
-fn mini_render_only_cmd(
-    m: args::MiniCmd,
-    cfg: crate::config::Config,
-) -> Result<(), Error> {
+fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<(), Error> {
     crate::run::render_only::reject_incompatible_flags(
         &crate::run::render_only::IncompatibleFlags {
             per_task_budget_usd: m.per_task_budget_usd,
@@ -268,6 +265,15 @@ fn mini_render_only_cmd(
 }
 
 fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
+    crate::run::render_only::reject_incompatible_flags(
+        &crate::run::render_only::IncompatibleFlags {
+            per_task_budget_usd: s.per_task_budget_usd,
+            task_timeout_secs: s.task_timeout_secs,
+            stream: None,
+            has_verify_checks: false,
+            open_pr: s.github_pr.open_prs,
+        },
+    )?;
     let format = s.format.clone();
     let cfg = swebench_config_from_cmd(s)?;
     let (dataset_source, dataset_cache_dir) = parse_dataset_source(s)?;
@@ -278,7 +284,10 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
     let stratify_by = s.stratify_by.map(|v| match v {
         args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
     });
-    let stratify_mode = match s.stratify_mode.unwrap_or(args::StratifyModeArg::Proportional) {
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(args::StratifyModeArg::Proportional)
+    {
         args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
         args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
     };

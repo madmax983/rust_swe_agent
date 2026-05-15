@@ -92,8 +92,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
     let renderer = Renderer::new();
 
     // Mirror the exact rendering path from `DefaultAgentBuilder`.
-    let tool_registry =
-        ToolRegistry::from_config_and_providers(&config.root.agent.tools, vec![])?;
+    let tool_registry = ToolRegistry::from_config_and_providers(&config.root.agent.tools, vec![])?;
     let prompt_tools = tool_registry.prompt_tools();
 
     let wrapped_task = PromptGuard::wrap(UntrustedKind::TaskText, &task);
@@ -169,7 +168,12 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
         (initial_prompt_tokens as f64 / context_window_tokens as f64 * 100.0).min(100.0);
 
     let step_limit = u64::from(config.root.agent.step_limit);
-    let upper_bound_tokens = initial_prompt_tokens + step_limit * PER_STEP_GROWTH_TOKENS;
+    // Cumulative cost: every turn pays for the full prompt. Turn k has
+    // initial_prompt_tokens + k*PER_STEP_GROWTH_TOKENS input tokens, so the
+    // total across N turns is N*initial + N*(N-1)/2 * growth.
+    let sum_growth_tokens =
+        (step_limit * step_limit.saturating_sub(1) / 2) * PER_STEP_GROWTH_TOKENS;
+    let upper_bound_tokens = step_limit * initial_prompt_tokens + sum_growth_tokens;
     let input_rate = input_usd_per_mtok(model_name);
     #[allow(clippy::cast_precision_loss)]
     let upper_bound_usd = upper_bound_tokens as f64 / 1_000_000.0 * input_rate;
@@ -177,8 +181,10 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
     let upper_bound_cost = UpperBoundCost {
         usd: upper_bound_usd,
         caveat: format!(
-            "Upper bound: ({initial_prompt_tokens} initial + {step_limit} steps \
-             × {PER_STEP_GROWTH_TOKENS} tokens/step) × ${input_rate:.2}/Mtok. \
+            "Upper bound: Estimated total input cost over {step_limit} steps \
+             ({step_limit} turns × {initial_prompt_tokens} initial + \
+             {sum_growth_tokens} cumulative growth tokens) \
+             × ${input_rate:.2}/Mtok. \
              Actual cost depends on agent behavior and output tokens."
         ),
     };
@@ -217,10 +223,7 @@ pub struct IncompatibleFlags<'a> {
 /// that have no meaning without an actual agent run.
 pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Error> {
     let conflicts: &[(&str, bool)] = &[
-        (
-            "--per-task-budget-usd",
-            flags.per_task_budget_usd.is_some(),
-        ),
+        ("--per-task-budget-usd", flags.per_task_budget_usd.is_some()),
         ("--task-timeout-secs", flags.task_timeout_secs.is_some()),
         ("--stream", flags.stream.is_some()),
         ("--verify", flags.has_verify_checks),

@@ -2,7 +2,7 @@
 //!
 //! Red phase: these tests FAIL until the feature is implemented.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod support;
 
@@ -15,7 +15,16 @@ fn binary() -> std::path::PathBuf {
 /// Run `mini --render-only` with the default config and return (status, stdout, stderr).
 fn run_mini_render_only(extra_args: &[&str]) -> (std::process::ExitStatus, String, String) {
     let out = Command::new(binary())
-        .args(["--log", "error", "mini", "--render-only", "--task", "hello world", "--model", "claude-opus-4-7"])
+        .args([
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello world",
+            "--model",
+            "claude-opus-4-7",
+        ])
         .args(extra_args)
         .output()
         .expect("failed to spawn binary");
@@ -45,7 +54,9 @@ fn mini_render_only_text_output_contains_required_sections() {
         "output must contain system message section;\nstdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("user_message") || stdout.contains("User message") || stdout.contains("Instance prompt"),
+        stdout.contains("user_message")
+            || stdout.contains("User message")
+            || stdout.contains("Instance prompt"),
         "output must contain user message section;\nstdout:\n{stdout}"
     );
     assert!(
@@ -63,33 +74,34 @@ fn mini_render_only_does_not_write_trajectory() {
     let temp = tempfile::tempdir().unwrap();
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "render only task",
-            "--model", "claude-opus-4-7",
-            "--output", &temp.path().display().to_string(),
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "render only task",
+            "--model",
+            "claude-opus-4-7",
+            "--output",
+            &temp.path().display().to_string(),
         ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "stderr:\n{stderr}\nstdout:\n{stdout}"
-    );
+    assert!(out.status.success(), "stderr:\n{stderr}\nstdout:\n{stdout}");
     let traj_files: Vec<_> = std::fs::read_dir(temp.path())
         .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "json")
-        })
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .collect();
     assert!(
         traj_files.is_empty(),
         "--render-only must not write trajectory files; found: {:?}",
-        traj_files.iter().map(|e| e.path()).collect::<Vec<_>>()
+        traj_files
+            .iter()
+            .map(std::fs::DirEntry::path)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -105,10 +117,7 @@ fn mini_render_only_json_format_is_valid_json() {
     );
     let v: serde_json::Value =
         serde_json::from_str(&stdout).expect("--format json output must be valid JSON");
-    assert!(
-        v.is_object(),
-        "JSON output must be an object; got: {v:?}"
-    );
+    assert!(v.is_object(), "JSON output must be an object; got: {v:?}");
 }
 
 #[test]
@@ -128,7 +137,10 @@ fn mini_render_only_json_has_artifact_kind_render_only() {
     assert!(status.success(), "stderr:\n{stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let kind = v["artifact_kind"].as_str().unwrap_or("");
-    assert_eq!(kind, "render_only", "artifact_kind must be 'render_only'; got '{kind}'");
+    assert_eq!(
+        kind, "render_only",
+        "artifact_kind must be 'render_only'; got '{kind}'"
+    );
 }
 
 #[test]
@@ -174,8 +186,13 @@ fn mini_render_only_json_initial_prompt_tokens_positive() {
     let (status, stdout, stderr) = run_mini_render_only(&["--format", "json"]);
     assert!(status.success(), "stderr:\n{stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let tokens = v["initial_prompt_tokens"].as_u64().expect("initial_prompt_tokens must be u64");
-    assert!(tokens > 0, "initial_prompt_tokens must be > 0; got {tokens}");
+    let tokens = v["initial_prompt_tokens"]
+        .as_u64()
+        .expect("initial_prompt_tokens must be u64");
+    assert!(
+        tokens > 0,
+        "initial_prompt_tokens must be > 0; got {tokens}"
+    );
 }
 
 #[test]
@@ -183,7 +200,9 @@ fn mini_render_only_json_context_window_pct_between_0_and_100() {
     let (status, stdout, stderr) = run_mini_render_only(&["--format", "json"]);
     assert!(status.success(), "stderr:\n{stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let pct = v["context_window_pct"].as_f64().expect("context_window_pct must be f64");
+    let pct = v["context_window_pct"]
+        .as_f64()
+        .expect("context_window_pct must be f64");
     assert!(
         (0.0..=100.0).contains(&pct),
         "context_window_pct must be in [0, 100]; got {pct}"
@@ -220,11 +239,16 @@ fn mini_render_only_broken_template_exits_nonzero() {
     .unwrap();
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "test",
-            "--model", "claude-opus-4-7",
-            "--config", &config_path.display().to_string(),
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "test",
+            "--model",
+            "claude-opus-4-7",
+            "--config",
+            &config_path.display().to_string(),
         ])
         .output()
         .unwrap();
@@ -241,11 +265,16 @@ fn mini_render_only_broken_template_exits_nonzero() {
 fn mini_render_only_conflicts_with_per_task_budget_usd() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
-            "--per-task-budget-usd", "1.0",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
+            "--per-task-budget-usd",
+            "1.0",
         ])
         .output()
         .unwrap();
@@ -264,11 +293,16 @@ fn mini_render_only_conflicts_with_per_task_budget_usd() {
 fn mini_render_only_conflicts_with_task_timeout_secs() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
-            "--task-timeout-secs", "60",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
+            "--task-timeout-secs",
+            "60",
         ])
         .output()
         .unwrap();
@@ -352,21 +386,24 @@ fn mini_render_only_json_hooks_has_pre_and_post_fields() {
 fn mini_render_only_json_includes_extra_context_in_user_message() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "do something",
-            "--model", "claude-opus-4-7",
-            "--extra-context", "EXTRA_MARKER_XYZ123",
-            "--format", "json",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "do something",
+            "--model",
+            "claude-opus-4-7",
+            "--extra-context",
+            "EXTRA_MARKER_XYZ123",
+            "--format",
+            "json",
         ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "stderr:\n{stderr}"
-    );
+    assert!(out.status.success(), "stderr:\n{stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let user_msg = v["user_message"].as_str().unwrap_or("");
     assert!(
@@ -380,19 +417,24 @@ fn mini_render_only_json_includes_extra_context_in_user_message() {
 #[test]
 fn mini_render_only_json_matches_committed_snapshot() {
     let snapshot_path = "tests/fixtures/render_only/snapshot.json";
-    let snapshot_raw = std::fs::read_to_string(snapshot_path)
-        .expect("committed snapshot file must exist");
+    let snapshot_raw =
+        std::fs::read_to_string(snapshot_path).expect("committed snapshot file must exist");
     let snapshot: serde_json::Value =
         serde_json::from_str(&snapshot_raw).expect("snapshot must be valid JSON");
 
     // Run with the exact same args used to generate the snapshot.
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "fix the bug in src/main.rs",
-            "--model", "claude-opus-4-7",
-            "--format", "json",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "fix the bug in src/main.rs",
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
         ])
         .output()
         .unwrap();
@@ -442,12 +484,19 @@ fn mini_render_only_succeeds_with_invalid_api_key() {
     // If --render-only made any outbound network call using an Anthropic API key,
     // the invalid key would cause a non-zero exit. Exit 0 proves no API call was made.
     let out = Command::new(binary())
-        .env("ANTHROPIC_API_KEY", "sk-ant-intentionally-invalid-key-for-test")
+        .env(
+            "ANTHROPIC_API_KEY",
+            "sk-ant-intentionally-invalid-key-for-test",
+        )
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
         ])
         .output()
         .unwrap();
@@ -476,12 +525,17 @@ fn bench_swebench_render_only_exits_zero_with_local_dataset() {
 
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "bench", "swebench",
+            "--log",
+            "error",
+            "bench",
+            "swebench",
             "--render-only",
-            "--dataset-path", &dataset.display().to_string(),
-            "--output", &output_dir.display().to_string(),
-            "--model", "claude-opus-4-7",
+            "--dataset-path",
+            &dataset.display().to_string(),
+            "--output",
+            &output_dir.display().to_string(),
+            "--model",
+            "claude-opus-4-7",
         ])
         .output()
         .unwrap();
@@ -492,7 +546,9 @@ fn bench_swebench_render_only_exits_zero_with_local_dataset() {
         "bench swebench --render-only must exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("system_message") || stdout.contains("System message") || stdout.contains("render-only"),
+        stdout.contains("system_message")
+            || stdout.contains("System message")
+            || stdout.contains("render-only"),
         "output must contain rendered content\nstdout:\n{stdout}"
     );
 }
@@ -511,13 +567,19 @@ fn bench_swebench_render_only_json_format_has_problem_statement_as_task() {
 
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "bench", "swebench",
+            "--log",
+            "error",
+            "bench",
+            "swebench",
             "--render-only",
-            "--dataset-path", &dataset.display().to_string(),
-            "--output", &output_dir.display().to_string(),
-            "--model", "claude-opus-4-7",
-            "--format", "json",
+            "--dataset-path",
+            &dataset.display().to_string(),
+            "--output",
+            &output_dir.display().to_string(),
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
         ])
         .output()
         .unwrap();
@@ -525,8 +587,8 @@ fn bench_swebench_render_only_json_format_has_problem_statement_as_task() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stderr:\n{stderr}");
 
-    let v: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("--format json must produce valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--format json must produce valid JSON");
     let user_msg = v["user_message"].as_str().unwrap_or("");
     assert!(
         user_msg.contains("UNIQUE_PROBLEM_STATEMENT_MARKER"),
@@ -550,13 +612,19 @@ fn bench_swebench_render_only_selects_first_instance_by_default() {
 
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "bench", "swebench",
+            "--log",
+            "error",
+            "bench",
+            "swebench",
             "--render-only",
-            "--dataset-path", &dataset.display().to_string(),
-            "--output", &output_dir.display().to_string(),
-            "--model", "claude-opus-4-7",
-            "--format", "json",
+            "--dataset-path",
+            &dataset.display().to_string(),
+            "--output",
+            &output_dir.display().to_string(),
+            "--model",
+            "claude-opus-4-7",
+            "--format",
+            "json",
         ])
         .output()
         .unwrap();
@@ -584,12 +652,17 @@ fn bench_swebench_render_only_does_not_write_trajectory() {
 
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "bench", "swebench",
+            "--log",
+            "error",
+            "bench",
+            "swebench",
             "--render-only",
-            "--dataset-path", &dataset.display().to_string(),
-            "--output", &output_dir.display().to_string(),
-            "--model", "claude-opus-4-7",
+            "--dataset-path",
+            &dataset.display().to_string(),
+            "--output",
+            &output_dir.display().to_string(),
+            "--model",
+            "claude-opus-4-7",
         ])
         .output()
         .unwrap();
@@ -597,12 +670,15 @@ fn bench_swebench_render_only_does_not_write_trajectory() {
     // The sweep output dir must not contain any trajectory or results JSON.
     let written: Vec<_> = std::fs::read_dir(&output_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .collect();
     assert!(
         written.is_empty(),
         "bench swebench --render-only must not write any files to --output; found: {:?}",
-        written.iter().map(|e| e.path()).collect::<Vec<_>>()
+        written
+            .iter()
+            .map(std::fs::DirEntry::path)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -612,11 +688,16 @@ fn bench_swebench_render_only_does_not_write_trajectory() {
 fn mini_render_only_conflicts_with_stream() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
-            "--stream", "127.0.0.1:7878",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
+            "--stream",
+            "127.0.0.1:7878",
         ])
         .output()
         .unwrap();
@@ -635,11 +716,16 @@ fn mini_render_only_conflicts_with_stream() {
 fn mini_render_only_conflicts_with_verify() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
-            "--verify", "check:echo ok",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
+            "--verify",
+            "check:echo ok",
         ])
         .output()
         .unwrap();
@@ -658,12 +744,17 @@ fn mini_render_only_conflicts_with_verify() {
 fn mini_render_only_conflicts_with_open_pr() {
     let out = Command::new(binary())
         .args([
-            "--log", "error",
-            "mini", "--render-only",
-            "--task", "hello",
-            "--model", "claude-opus-4-7",
+            "--log",
+            "error",
+            "mini",
+            "--render-only",
+            "--task",
+            "hello",
+            "--model",
+            "claude-opus-4-7",
             "--open-pr",
-            "--target-repo", "owner/repo",
+            "--target-repo",
+            "owner/repo",
         ])
         .output()
         .unwrap();

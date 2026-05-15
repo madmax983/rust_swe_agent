@@ -21,7 +21,7 @@
   "context_window_tokens": 200000,
   "context_window_pct": 0.097,
   "upper_bound_cost": {
-    "usd": 1.50291,
-    "caveat": "Upper bound: (194 initial + 50 steps × 2000 tokens/step) × $15.00/Mtok. Actual cost depends on agent behavior and output tokens."
+    "usd": 36.895500000000006,
+    "caveat": "Upper bound: Estimated total input cost over 50 steps (50 turns × 194 initial + 2450000 cumulative growth tokens) × $15.00/Mtok. Actual cost depends on agent behavior and output tokens."
   }
 }
