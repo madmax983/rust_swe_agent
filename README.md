@@ -188,6 +188,8 @@ a valid trajectory in hand:
   and secret handling guidance. Start here before tuning a sweep.
 - [`bench tail`](docs/spec-tail.md): live aggregate progress, cost burn, ETA,
   and failure mix for running SWE-bench sweeps.
+- [`bench watch`](docs/spec-watch.md): attach to a single in-flight instance
+  and stream its turns live; redaction-safe, NDJSON-pipeable.
 - [`bench evaluator-selftest`](docs/spec-evaluator-selftest.md): zero-cost
   preflight that verifies the evaluator pipeline against gold patches before
   launching a paid sweep. Run after switching dataset, evaluator image, or machine.

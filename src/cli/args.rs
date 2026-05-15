@@ -319,6 +319,8 @@ pub enum BenchCmd {
     Inspect(InspectCmd),
     /// Tail live aggregate progress for a running sweep directory.
     Tail(TailCmd),
+    /// Attach to a single in-flight instance and stream its turns live.
+    Watch(WatchCmd),
     /// Cluster unresolved sweep failures into ranked actionable groups.
     Triage(TriageCmd),
     /// Aggregate shell-command frequency and cost by outcome bucket.
@@ -1052,6 +1054,38 @@ pub struct TailCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+/// `bench watch` — attach to a single in-flight instance and stream turns live.
+#[derive(Debug, Args)]
+pub struct WatchCmd {
+    /// Sweep output directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Instance id to watch.
+    #[arg(long)]
+    pub instance: String,
+
+    /// Seconds to wait for the trajectory file to appear (0 = fail immediately if not found).
+    #[arg(long, default_value_t = 30)]
+    pub wait_secs: u64,
+
+    /// Seconds of no new turns before printing a stall warning (keeps following).
+    #[arg(long, default_value_t = 120)]
+    pub stall_secs: u64,
+
+    /// Disable stdout/stderr truncation.
+    #[arg(long, default_value_t = false)]
+    pub full: bool,
+
+    /// Truncation threshold in bytes (default 4096). Ignored when `--full` is set.
+    #[arg(long)]
+    pub max_bytes: Option<usize>,
+
+    /// Emit one newline-delimited JSON object per turn instead of human-readable text.
+    #[arg(long, default_value_t = false)]
+    pub ndjson: bool,
 }
 
 #[derive(Debug, Args)]
