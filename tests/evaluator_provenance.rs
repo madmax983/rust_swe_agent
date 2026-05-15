@@ -726,6 +726,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
         instance: None,
         filter: Some("resolved=true".into()),
         full: false,
+        show_expected: false,
     };
 
     let output = rust_swe_agent::run::inspect::run(&args).unwrap();

@@ -428,6 +428,7 @@ fn inspect_report_aggregates_stage_totals() {
         instance: Some("aa".into()),
         filter: None,
         full: true,
+        show_expected: false,
     };
     let out = rust_swe_agent::run::inspect::run(&args).unwrap();
     let report: &InspectReport = match &out {
@@ -468,6 +469,7 @@ fn legacy_trajectory_inspect_renders_latency_unknown() {
         instance: Some("legacy".into()),
         filter: None,
         full: true,
+        show_expected: false,
     };
     let out = rust_swe_agent::run::inspect::run(&args).unwrap();
     let text = render_text(&out);

@@ -309,6 +309,7 @@ fn help_lists_inspect_subcommand_and_flags() {
         "--full",
         "--diff",
         "--show-noise",
+        "--show-expected",
     ] {
         assert!(stdout.contains(flag), "missing {flag} in:\n{stdout}");
     }
@@ -1320,4 +1321,466 @@ fn filter_mode_lists_matching_instances() {
     assert!(stdout.contains("│ instance_id ┆ outcome"), "{stdout}");
     assert!(stdout.contains("│ a           ┆ error"), "{stdout}");
     assert!(!stdout.contains("│ b           ┆ error"), "{stdout}");
+}
+
+// ── issue-175: failing-test names in bench inspect ────────────────────────────
+
+#[test]
+fn resolved_instance_has_no_failing_tests_section() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": true,
+                "tests_passed": ["tests/test_widgets.py::test_render"],
+                "tests_failed": [],
+                "eval_exit_reason": "resolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("Failing tests"),
+        "resolved instance should not show Failing tests section:\n{stdout}"
+    );
+}
+
+#[test]
+fn unresolved_with_evaluator_failures_shows_failing_tests() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [
+                    "tests/test_widgets.py::test_widget_render",
+                    "tests/test_widgets.py::test_widget_init"
+                ],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Failing tests (2):"),
+        "expected count header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_widgets.py::test_widget_render"),
+        "expected first test name:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_widgets.py::test_widget_init"),
+        "expected second test name:\n{stdout}"
+    );
+    // order must be preserved
+    let render_pos = stdout
+        .find("test_widget_render")
+        .unwrap_or_else(|| panic!("test_widget_render not found in:\n{stdout}"));
+    let init_pos = stdout
+        .find("test_widget_init")
+        .unwrap_or_else(|| panic!("test_widget_init not found in:\n{stdout}"));
+    assert!(
+        render_pos < init_pos,
+        "test names should appear in evaluator-reported order"
+    );
+}
+
+#[test]
+fn unresolved_without_test_names_shows_reason_from_eval_exit_reason() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "eval_error"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Failing tests: <"),
+        "expected unavailable reason format:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("eval_error"),
+        "expected eval_error reason in output:\n{stdout}"
+    );
+}
+
+#[test]
+fn json_format_includes_failing_tests_field() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": ["tests/test_core.py::test_main"],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON parse failed: {e}\n{stdout}"));
+    let ft = value
+        .pointer("/failing_tests")
+        .unwrap_or_else(|| panic!("failing_tests missing from JSON output:\n{stdout}"));
+    assert_eq!(
+        ft["tests"],
+        serde_json::json!(["tests/test_core.py::test_main"]),
+        "failing_tests.tests mismatch"
+    );
+    assert_eq!(ft["source"], "evaluator", "failing_tests.source mismatch");
+}
+
+#[test]
+fn json_format_resolved_instance_has_no_failing_tests_field() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": true,
+                "tests_passed": ["tests/test_core.py::test_main"],
+                "tests_failed": [],
+                "eval_exit_reason": "resolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON parse failed: {e}\n{stdout}"));
+    assert!(
+        value.pointer("/failing_tests").is_none(),
+        "resolved instance should not have failing_tests in JSON:\n{stdout}"
+    );
+}
+
+#[test]
+fn show_expected_parses_json_encoded_string_form() {
+    // SWE-bench Hugging Face exports store PASS_TO_PASS / FAIL_TO_PASS as
+    // a JSON-encoded string (e.g. "[\"test_a\"]") not a native JSON array.
+    // Verify --show-expected handles that form correctly.
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Store PASS_TO_PASS / FAIL_TO_PASS as JSON-encoded strings (HF export format)
+    std::fs::write(
+        sweep.path().join("dataset.jsonl"),
+        serde_json::json!({
+            "instance_id": "my-instance",
+            "repo": "test/repo",
+            "PASS_TO_PASS": "[\"tests/test_core.py::test_existing\"]",
+            "FAIL_TO_PASS": "[\"tests/test_core.py::test_target\"]"
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--show-expected",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tests/test_core.py::test_existing"),
+        "expected PASS_TO_PASS test from JSON-encoded string:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_core.py::test_target"),
+        "expected FAIL_TO_PASS test from JSON-encoded string:\n{stdout}"
+    );
+}
+
+#[test]
+fn show_expected_renders_pass_to_pass_and_fail_to_pass() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": ["tests/test_core.py::test_fail"],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Write a minimal dataset.jsonl with PASS_TO_PASS / FAIL_TO_PASS
+    std::fs::write(
+        sweep.path().join("dataset.jsonl"),
+        serde_json::json!({
+            "instance_id": "my-instance",
+            "repo": "test/repo",
+            "PASS_TO_PASS": ["tests/test_core.py::test_existing"],
+            "FAIL_TO_PASS": ["tests/test_core.py::test_fail"]
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--show-expected",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PASS_TO_PASS"),
+        "expected PASS_TO_PASS section:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("FAIL_TO_PASS"),
+        "expected FAIL_TO_PASS section:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_core.py::test_existing"),
+        "expected PASS_TO_PASS test:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_core.py::test_fail"),
+        "expected FAIL_TO_PASS test:\n{stdout}"
+    );
+}
+
+#[test]
+fn failing_tests_json_shape_round_trips() {
+    // Verify the JSON schema documented in the spec: { tests, source, reason }
+    let ft = rust_swe_agent::run::inspect::FailingTests {
+        tests: vec!["tests/test_core.py::test_foo".into()],
+        source: "evaluator".into(),
+        reason: String::new(),
+    };
+    let json = serde_json::to_string(&ft).unwrap();
+    let back: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(back["tests"][0], "tests/test_core.py::test_foo");
+    assert_eq!(back["source"], "evaluator");
+
+    let ft_unavail = rust_swe_agent::run::inspect::FailingTests {
+        tests: vec![],
+        source: "unavailable".into(),
+        reason: "eval_error".into(),
+    };
+    let json2 = serde_json::to_string(&ft_unavail).unwrap();
+    let back2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+    assert_eq!(back2["source"], "unavailable");
+    assert_eq!(back2["reason"], "eval_error");
+}
+
+#[test]
+fn unresolved_with_patch_apply_failed_shows_reason() {
+    // eval_exit_reason other than eval_error is also surfaced as the reason.
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Failing tests: <patch_apply_failed>"),
+        "expected patch_apply_failed reason:\n{stdout}"
+    );
+}
+
+#[test]
+fn failing_test_names_are_redacted_at_view_time() {
+    // A secret-shaped string embedded in a test name should be redacted.
+    // The token uses a bracket delimiter so the regex \b word-boundary fires.
+    let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [format!("tests/test_core.py::test_secret[{secret}]")],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(secret),
+        "secret should be redacted from failing test name:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Failing tests"),
+        "Failing tests section should still appear:\n{stdout}"
+    );
 }

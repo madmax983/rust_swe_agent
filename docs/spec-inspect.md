@@ -10,6 +10,7 @@ instances in filter mode.
 rust-swe-agent bench inspect --sweep <dir> --instance <instance_id>
 rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --full
 rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --format json
+rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --show-expected
 rust-swe-agent bench inspect --sweep <dir> --filter resolved=false
 rust-swe-agent bench inspect --sweep <dir> --filter failure_category=step_limit
 rust-swe-agent bench inspect --diff <baseline.traj.json> <candidate.traj.json>
@@ -27,6 +28,8 @@ rust-swe-agent bench compare --baseline <dir> --candidate <dir> --emit-diff-scri
 * `--filter`: summary-table mode (`resolved=true|false` or `failure_category=<snake_case>`).
 * `--format`: `text` (default) or `json`.
 * `--full`: disable stdout/stderr truncation in transcript mode.
+* `--show-expected`: also print `PASS_TO_PASS` / `FAIL_TO_PASS` expected-test groupings read
+  from `<sweep>/dataset.jsonl`. Silently skipped when the file is absent.
 * `--diff`: compare two trajectory JSON files for the same `instance_id`.
 * `--show-noise`: in diff mode, include whitespace-only and timestamp-only differences.
 * `--inspect-diff`: compare sugar that resolves `<instance_id>.traj.json` or `<instance_id>/run-1.traj.json` inside both sweep directories.
@@ -49,6 +52,66 @@ Header fields:
 * `baseline_cost_usd` and `baseline_cost_model` when available
 * token totals (`prompt`, `completion`)
 * `resolved` when `evaluation.json` exists
+* `Failing tests` section when the instance is unresolved (see below)
+* `PASS_TO_PASS` / `FAIL_TO_PASS` sections when `--show-expected` is set
+
+### Failing tests section
+
+When the instance is **unresolved** and `evaluation.json` is present, a
+`Failing tests` section follows the `resolved` line:
+
+* When the evaluator reported individual test names:
+  ```
+  Failing tests (N):
+    tests/test_widgets.py::test_widget_render
+    tests/test_widgets.py::test_widget_init
+  ```
+* When test names are unavailable (evaluator error, timeout, build failure, etc.):
+  ```
+  Failing tests: <eval_error>
+  ```
+  The reason is taken from the `eval_exit_reason` field in `evaluation.json`,
+  or falls back to `failure_category` from the trajectory.
+
+When the instance is **resolved**, no `Failing tests` section is printed
+(silent on the happy path).
+
+### `--show-expected` sections
+
+When `--show-expected` is set and `<sweep>/dataset.jsonl` contains a record for
+the instance, two additional sections are printed:
+
+```
+PASS_TO_PASS (N):
+  tests/test_core.py::test_existing
+FAIL_TO_PASS (M):
+  tests/test_core.py::test_targeted
+```
+
+The lists are read directly from the `PASS_TO_PASS` and `FAIL_TO_PASS` arrays
+in the SWE-bench instance record. If `dataset.jsonl` is absent or has no
+matching record, both sections are silently omitted.
+
+### `failing_tests` JSON shape
+
+`--format json` includes a `failing_tests` field on the instance record when
+the instance is unresolved:
+
+```json
+{
+  "failing_tests": {
+    "tests": ["tests/test_widgets.py::test_widget_render"],
+    "source": "evaluator",
+    "reason": ""
+  }
+}
+```
+
+* `source`: `"evaluator"` when names come from evaluator output; `"unavailable"` otherwise.
+* `reason`: human-readable explanation when `source == "unavailable"`; empty string when `source == "evaluator"`.
+* `tests`: array of test names in the order reported by the evaluator; empty when `source == "unavailable"`.
+
+The `failing_tests` field is absent for resolved instances.
 
 Step rendering:
 

@@ -1611,6 +1611,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         instance: i.instance,
         filter: i.filter,
         full: i.full,
+        show_expected: i.show_expected,
     })?;
     match format {
         crate::run::inspect::InspectFormat::Text => {
