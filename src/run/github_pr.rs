@@ -882,6 +882,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validate_branch_prefix_rules() {
+        assert!(validate_branch_prefix("valid").is_ok());
+        assert!(validate_branch_prefix("valid/prefix").is_ok());
+        assert!(validate_branch_prefix("/valid/").is_ok());
+        assert!(validate_branch_prefix("VALID").is_ok());
+
+        assert!(validate_branch_prefix("").is_err());
+        assert!(validate_branch_prefix("   ").is_err());
+        assert!(validate_branch_prefix("///").is_err());
+        assert!(validate_branch_prefix("@@@").is_err());
+    }
+
+    #[test]
     fn percent_encode_escapes_token_delimiters() {
         assert_eq!(percent_encode("abc:def@x/y"), "abc%3Adef%40x%2Fy");
     }
