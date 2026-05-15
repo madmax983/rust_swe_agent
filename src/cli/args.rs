@@ -1116,7 +1116,7 @@ pub struct CommandStatsCmd {
 /// `bench grep` — search every trajectory in a sweep for a regex.
 ///
 /// Reads only on-disk artifacts and never calls a model provider (zero-cost guarantee).
-/// Exit codes: 0 = at least one match found; 13 = no matches; 2 = usage/config error.
+/// Exit codes: 0 = at least one match found; 1 = no matches; 2 = usage/config error.
 #[derive(Debug, Args)]
 pub struct GrepCmd {
     /// Completed sweep directory produced by `bench swebench`.

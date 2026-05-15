@@ -193,13 +193,13 @@ fn unit_max_matches_per_instance_caps_hits() {
     })
     .unwrap();
 
-    let instance_a_matches: Vec<_> = report
+    let instance_a_count = report
         .matches
         .iter()
         .filter(|m| m.instance_id == "instance-a")
-        .collect();
+        .count();
     assert_eq!(
-        instance_a_matches.len(),
+        instance_a_count,
         1,
         "should have at most 1 match for instance-a"
     );
@@ -446,9 +446,9 @@ fn cli_text_output_shows_tab_separated_columns() {
     // Each line: instance_id\tturn_index\trole\tsnippet
     assert!(!stdout.is_empty(), "stdout should not be empty");
     for line in stdout.lines() {
-        let cols: Vec<&str> = line.splitn(4, '\t').collect();
+        let col_count = line.splitn(4, '\t').count();
         assert_eq!(
-            cols.len(),
+            col_count,
             4,
             "each line should have 4 tab-separated columns: {line:?}"
         );

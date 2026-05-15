@@ -115,7 +115,7 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
             &args.sweep_dir,
             &re,
             &redactor,
-            &role_filter,
+            role_filter.as_ref(),
             args,
         );
         all_matches.extend(instance_matches);
@@ -132,10 +132,11 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
 pub fn render_text(report: &GrepReport) -> String {
     let mut out = String::new();
     for m in &report.matches {
+        let snippet = m.snippet.replace(['\n', '\r', '\t'], " ");
         let _ = writeln!(
             out,
             "{}\t{}\t{}\t{}",
-            m.instance_id, m.turn_index, m.role, m.snippet
+            m.instance_id, m.turn_index, m.role, snippet
         );
     }
     out
@@ -156,14 +157,18 @@ fn search_instance(
     sweep_dir: &Path,
     re: &Regex,
     redactor: &Redactor,
-    role_filter: &Option<HashSet<&str>>,
+    role_filter: Option<&HashSet<&str>>,
     args: &GrepArgs,
 ) -> Vec<GrepMatch> {
     let mut instance_matches: Vec<GrepMatch> = Vec::new();
 
     'traj: for path in resolve_trajectory_paths(sweep_dir, instance_id) {
-        let Ok(trajectory) = load_trajectory(&path) else {
-            continue;
+        let trajectory = match load_trajectory(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("bench grep: skipping {}: {e}", path.display());
+                continue;
+            }
         };
 
         for (turn_index, message) in trajectory.messages.iter().enumerate() {
@@ -275,6 +280,7 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
