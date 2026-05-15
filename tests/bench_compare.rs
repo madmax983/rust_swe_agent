@@ -848,6 +848,9 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
     assert_eq!(
@@ -871,6 +874,9 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
     assert_eq!(
@@ -1503,6 +1509,9 @@ fn compare_uses_manifest_model_for_fallback_cost_repricing() {
             min_delta_pp: 0.0,
             cost_attribution: false,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
 
@@ -2568,5 +2577,625 @@ fn evaluate_breakdown_csv_includes_cost_per_resolved_usd_column() {
     assert!(
         stdout.contains("NaN"),
         "expected NaN for zero-resolved bucket; got:\n{stdout}"
+    );
+}
+
+// -- Issue #176: resolved_rate_significance block --
+
+#[test]
+fn compare_json_has_resolved_rate_significance_block() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(
+        baseline_dir.path(),
+        vec![
+            submitted("id-1"),
+            submitted("id-2"),
+            errored("id-3", FailureCategory::StepLimit),
+        ],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![submitted("id-1"), submitted("id-2"), submitted("id-3")],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let sig = &v["resolved_rate_significance"];
+    assert!(
+        sig.is_object(),
+        "expected resolved_rate_significance object; got: {sig}"
+    );
+    assert_eq!(
+        sig["test_name"].as_str().unwrap(),
+        "mcnemar_exact",
+        "expected test_name=mcnemar_exact"
+    );
+    assert!(
+        sig["paired_n"].as_u64().is_some(),
+        "expected paired_n field"
+    );
+    assert!(
+        sig["pass_to_fail"].as_u64().is_some(),
+        "expected pass_to_fail field"
+    );
+    assert!(
+        sig["fail_to_pass"].as_u64().is_some(),
+        "expected fail_to_pass field"
+    );
+    assert!(
+        sig["underpowered"].as_bool().is_some(),
+        "expected underpowered bool field"
+    );
+}
+
+#[test]
+fn compare_significance_identical_sweeps_is_underpowered() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..10).map(|i| submitted(&format!("id-{i}"))).collect();
+    write_results(baseline_dir.path(), instances.clone());
+    write_results(candidate_dir.path(), instances);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+    assert_eq!(sig["paired_n"].as_u64().unwrap(), 10);
+    assert_eq!(sig["pass_to_fail"].as_u64().unwrap(), 0);
+    assert_eq!(sig["fail_to_pass"].as_u64().unwrap(), 0);
+    assert!(
+        sig["underpowered"].as_bool().unwrap(),
+        "identical sweeps have no discordant pairs and must be underpowered"
+    );
+    let lower = sig["ci95_lower_pp"].as_f64().unwrap();
+    let upper = sig["ci95_upper_pp"].as_f64().unwrap();
+    assert!(
+        lower <= 0.0 && upper >= 0.0,
+        "CI should straddle zero for identical sweeps; got [{lower}, {upper}]"
+    );
+}
+
+#[test]
+fn compare_significance_clearly_significant_delta() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..5 {
+        b.push(submitted(&format!("pp-{i}")));
+        c.push(submitted(&format!("pp-{i}")));
+    }
+    for i in 0..5 {
+        b.push(errored(&format!("ff-{i}"), FailureCategory::StepLimit));
+        c.push(errored(&format!("ff-{i}"), FailureCategory::StepLimit));
+    }
+    // 10 fail->pass
+    for i in 0..10 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+
+    assert_eq!(sig["paired_n"].as_u64().unwrap(), 20);
+    assert_eq!(sig["pass_to_fail"].as_u64().unwrap(), 0);
+    assert_eq!(sig["fail_to_pass"].as_u64().unwrap(), 10);
+    assert!(
+        !sig["underpowered"].as_bool().unwrap(),
+        "10 discordant pairs should not be underpowered"
+    );
+    let p = sig["p_value"].as_f64().unwrap();
+    assert!(
+        p < 0.01,
+        "10 one-sided discordant pairs should yield p < 0.01; got p={p}"
+    );
+}
+
+#[test]
+fn compare_significance_clearly_noisy_delta() {
+    // 10 fail->pass AND 10 pass->fail: symmetric -> p=1.0
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..10 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    for i in 0..10 {
+        b.push(submitted(&format!("pf-{i}")));
+        c.push(errored(&format!("pf-{i}"), FailureCategory::StepLimit));
+    }
+    for i in 0..10 {
+        b.push(submitted(&format!("pp-{i}")));
+        c.push(submitted(&format!("pp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+
+    assert_eq!(sig["pass_to_fail"].as_u64().unwrap(), 10);
+    assert_eq!(sig["fail_to_pass"].as_u64().unwrap(), 10);
+    assert!(
+        !sig["underpowered"].as_bool().unwrap(),
+        "20 discordant pairs should not be underpowered"
+    );
+    let p = sig["p_value"].as_f64().unwrap();
+    assert!(
+        p > 0.5,
+        "symmetric discordant pairs yield p > 0.5; got p={p}"
+    );
+}
+
+#[test]
+fn compare_significance_zero_overlap_is_underpowered() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    write_results(
+        baseline_dir.path(),
+        vec![submitted("baseline-only-1"), submitted("baseline-only-2")],
+    );
+    write_results(
+        candidate_dir.path(),
+        vec![
+            submitted("candidate-only-1"),
+            submitted("candidate-only-2"),
+        ],
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+
+    assert_eq!(sig["paired_n"].as_u64().unwrap(), 0);
+    assert!(
+        sig["underpowered"].as_bool().unwrap(),
+        "paired_n=0 must be underpowered"
+    );
+    assert!(
+        sig["only_in_baseline"].as_u64().unwrap() >= 2,
+        "only_in_baseline should count baseline-only instances"
+    );
+    assert!(
+        sig["only_in_candidate"].as_u64().unwrap() >= 2,
+        "only_in_candidate should count candidate-only instances"
+    );
+    assert!(
+        sig["p_value"].is_null(),
+        "p_value must be null when paired_n=0"
+    );
+}
+
+#[test]
+fn compare_significance_few_discordant_pairs_is_underpowered() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..10 {
+        b.push(errored(&format!("ff-{i}"), FailureCategory::StepLimit));
+        c.push(errored(&format!("ff-{i}"), FailureCategory::StepLimit));
+    }
+    for i in 0..3 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+
+    assert_eq!(sig["fail_to_pass"].as_u64().unwrap(), 3);
+    assert!(
+        sig["underpowered"].as_bool().unwrap(),
+        "3 discordant pairs < threshold -> must be underpowered"
+    );
+    assert!(
+        sig["underpowered_reason"].as_str().is_some(),
+        "underpowered_reason must be present"
+    );
+}
+
+#[test]
+fn compare_text_output_has_significance_line() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..10 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Significance:"),
+        "text output must include a Significance: line; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("paired N="),
+        "text output must include paired N=; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("p="),
+        "text output must include p= value; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn compare_text_output_prints_underpowered_tag() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..5).map(|i| submitted(&format!("id-{i}"))).collect();
+    write_results(baseline_dir.path(), instances.clone());
+    write_results(candidate_dir.path(), instances);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("(underpowered)"),
+        "text output must print (underpowered) tag; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn compare_min_significance_exits_nonzero_on_noisy_win() {
+    // 11 fail->pass and 10 pass->fail: slight positive delta but p >> 0.05.
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..11 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    for i in 0..10 {
+        b.push(submitted(&format!("pf-{i}")));
+        c.push(errored(&format!("pf-{i}"), FailureCategory::StepLimit));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    // Without flag: exit 0
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "no gate flag -> always exit 0");
+
+    // With --min-significance 0.05: positive delta but p >> 0.05 -> exit non-zero
+    let out2 = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out2.status.success(),
+        "positive-but-noisy delta must fail --min-significance gate"
+    );
+}
+
+#[test]
+fn compare_min_significance_passes_when_delta_is_significant() {
+    // 10 fail->pass, 0 pass->fail: p ~= 0.002 < 0.05 -> gate passes
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..10 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "significant positive delta should pass --min-significance gate; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn compare_regression_significance_exits_nonzero_on_significant_regression() {
+    // 10 pass->fail, 0 fail->pass: p ~= 0.002 < 0.05 -> regression gate fires
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..10 {
+        b.push(submitted(&format!("pf-{i}")));
+        c.push(errored(&format!("pf-{i}"), FailureCategory::StepLimit));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--regression-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "significant regression should exit non-zero"
+    );
+}
+
+#[test]
+fn compare_regression_significance_passes_on_insignificant_regression() {
+    // 11 pass->fail, 10 fail->pass: slight negative delta but p >> 0.05
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..11 {
+        b.push(submitted(&format!("pf-{i}")));
+        c.push(errored(&format!("pf-{i}"), FailureCategory::StepLimit));
+    }
+    for i in 0..10 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--regression-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "insignificant regression must not trigger --regression-significance gate"
+    );
+}
+
+#[test]
+fn compare_min_significance_gate_blocked_when_underpowered() {
+    // 3 fail->pass: underpowered -> blocked without --allow-underpowered
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..3 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "underpowered without --allow-underpowered must exit non-zero"
+    );
+}
+
+#[test]
+fn compare_allow_underpowered_overrides_underpowered_block_for_significant_delta() {
+    // 7 fail->pass: p = 2/128 ~= 0.0156 < 0.05, but underpowered (7 < 10)
+    // With --allow-underpowered: p < alpha, delta positive -> passes gate
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+    let mut b = vec![];
+    let mut c = vec![];
+    for i in 0..7 {
+        b.push(errored(&format!("fp-{i}"), FailureCategory::StepLimit));
+        c.push(submitted(&format!("fp-{i}")));
+    }
+    write_results(baseline_dir.path(), b);
+    write_results(candidate_dir.path(), c);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "underpowered without --allow-underpowered must exit non-zero"
+    );
+
+    let out2 = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+            "--allow-underpowered",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out2.status.success(),
+        "with --allow-underpowered and p < alpha, positive delta passes; stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
     );
 }

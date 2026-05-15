@@ -111,6 +111,9 @@ fn baseline_compare_report(args: &ReportArgs) -> Result<Option<CompareReport>, E
         min_delta_pp: 0.05,
         cost_attribution: false,
         cost_attribution_min_delta_usd: 1.0,
+        min_significance: None,
+        regression_significance: None,
+        allow_underpowered: false,
     })?;
     Ok(Some(report))
 }

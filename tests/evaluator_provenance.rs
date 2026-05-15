@@ -155,6 +155,9 @@ fn compare_args(baseline: &Path, candidate: &Path) -> CompareArgs {
         min_delta_pp: 0.0,
         cost_attribution: false,
         cost_attribution_min_delta_usd: 0.0,
+        min_significance: None,
+        regression_significance: None,
+        allow_underpowered: false,
     }
 }
 
