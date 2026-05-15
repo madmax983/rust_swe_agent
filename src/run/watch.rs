@@ -99,10 +99,7 @@ pub async fn run(args: &WatchArgs) -> Result<(), Error> {
         }
 
         // Skip read if file size is unchanged (avoids O(N) read every poll).
-        let current_len = tokio::fs::metadata(&traj_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let current_len = tokio::fs::metadata(&traj_path).await.map_or(0, |m| m.len());
         if current_len == last_file_len && emitted_steps > 0 {
             maybe_warn_stall(last_activity_at.as_ref(), &mut stall_warned, stall_duration);
             tokio::time::sleep(POLL_INTERVAL).await;
