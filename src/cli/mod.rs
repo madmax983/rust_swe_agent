@@ -137,21 +137,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         None => Config::defaults()?,
     };
 
-    if m.render_only {
-        cfg.root.model.name.clone_from(&m.model);
-        cfg.root.agent.step_limit = m.step_limit;
-        apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
-        return mini_render_only_cmd(m, cfg);
-    }
-
-    if m.format != "text" {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(
-            "--format requires --render-only; without it the agent runs normally and \
-             ignoring your format setting could result in an unexpected paid model call"
-                .into(),
-        )));
-    }
-
+    // Apply and validate all prompt-shaping overrides shared by both the
+    // render-only preview path and the normal execution path. This ensures
+    // that an invalid combination (e.g. --observation-head-ratio 2.0) is
+    // caught even when --render-only is set, rather than blessing a config
+    // that would fail on a real run.
     cfg.root.model.name.clone_from(&m.model);
     cfg.root.agent.step_limit = m.step_limit;
     if let Some(v) = m.observation_max_bytes {
@@ -160,18 +150,6 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(v) = m.observation_head_ratio {
         validate_observation_head_ratio(v)?;
         cfg.root.agent.observation_head_ratio = v;
-    }
-    if let Some(kind) = &m.env {
-        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
-    }
-    if let Some(img) = m.docker_image.clone() {
-        cfg.root.environment.docker_image = Some(img);
-    }
-    if let Some(v) = m.per_task_budget_usd {
-        cfg.root.agent.per_task_budget_usd = Some(v);
-    }
-    if m.hide_budget_from_agent {
-        cfg.root.agent.hide_budget_from_agent = true;
     }
     if let Some(v) = m.detect_stagnation {
         cfg.root.agent.detect_stagnation = v;
@@ -189,6 +167,31 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.history_keep_last_observations = Some(v);
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+
+    if m.render_only {
+        return mini_render_only_cmd(m, cfg);
+    }
+
+    if m.format != "text" {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format requires --render-only; without it the agent runs normally and \
+             ignoring your format setting could result in an unexpected paid model call"
+                .into(),
+        )));
+    }
+
+    if let Some(kind) = &m.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = m.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = m.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if m.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
 
     let trajectory_name = m
         .trajectory_name

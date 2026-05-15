@@ -638,7 +638,7 @@ fn cli_round_trip_inspect_retried_instance() {
         traj_dir.join("run-1.traj.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "artifact_kind": "trajectory",
-            "schema_version": {"major": 1, "minor": 6},
+            "schema_version": {"major": 1, "minor": 7},
             "trajectory_format": "mini-swe-agent-1.1",
             "info": {
                 "model_name": "test",

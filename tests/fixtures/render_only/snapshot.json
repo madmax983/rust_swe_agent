@@ -2,7 +2,7 @@
   "artifact_kind": "render_only",
   "schema_version": {
     "major": 1,
-    "minor": 6
+    "minor": 7
   },
   "model": "claude-opus-4-7",
   "system_message": "You are a skilled software engineer working at a terminal. You have\naccess to these tools:\n\n- `bash`: Run shell commands in the configured environment.\n\n\n\nEach response must contain exactly one action:\neither a single fenced block for one listed tool, or the literal sentinel\n`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its own line followed by a\nfinal output block.\n\nDo not install dependencies unless they are strictly required to produce the\nfinal patch. Prefer inspecting code and tests already present in the repository.\nIf a local dependency problem blocks validation, explain it briefly and continue\nwith the patch. Once you have a useful patch, submit it instead of continuing\nexploratory work.",
