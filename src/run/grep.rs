@@ -60,7 +60,12 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
     }
 
     let redactor = Redactor::default_enabled();
-    let sweep = load_sweep(&args.sweep_dir)?;
+    let sweep = load_sweep(&args.sweep_dir).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "grep: failed to load sweep `{}`: {e}",
+            args.sweep_dir.display()
+        )))
+    })?;
 
     let include_set: Option<HashSet<&str>> = args
         .instance_ids
