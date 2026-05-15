@@ -199,8 +199,7 @@ fn unit_max_matches_per_instance_caps_hits() {
         .filter(|m| m.instance_id == "instance-a")
         .count();
     assert_eq!(
-        instance_a_count,
-        1,
+        instance_a_count, 1,
         "should have at most 1 match for instance-a"
     );
 }
@@ -448,8 +447,7 @@ fn cli_text_output_shows_tab_separated_columns() {
     for line in stdout.lines() {
         let col_count = line.splitn(4, '\t').count();
         assert_eq!(
-            col_count,
-            4,
+            col_count, 4,
             "each line should have 4 tab-separated columns: {line:?}"
         );
     }
