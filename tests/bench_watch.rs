@@ -211,7 +211,10 @@ fn ndjson_mode_produces_valid_ndjson() {
         );
         found_turn = true;
     }
-    assert!(found_turn, "expected at least one NDJSON turn line, stdout: {stdout}");
+    assert!(
+        found_turn,
+        "expected at least one NDJSON turn line, stdout: {stdout}"
+    );
 }
 
 // Test (d): Redaction strips a planted secret token before stdout
