@@ -367,7 +367,12 @@ fn build_instance_report(
     let token_usage = traj.info.token_usage.as_ref();
     let eval_override = evaluation_overrides.and_then(|m| m.get(instance_id));
     let resolved = eval_override.map(|value| value.resolved);
-    let failing_tests = build_failing_tests(resolved, eval_override, traj.info.failure_category);
+    let failing_tests =
+        redact_failing_tests(
+            build_failing_tests(resolved, eval_override, traj.info.failure_category),
+            &inspect_redactor,
+            &mut warnings,
+        );
     let expected_tests = dataset_instance.map(extract_expected_tests);
     Ok(InspectReport {
         sweep_dir: sweep.to_path_buf(),
@@ -1062,6 +1067,26 @@ fn build_failing_tests(
     })
 }
 
+fn redact_failing_tests(
+    failing_tests: Option<FailingTests>,
+    redactor: &Redactor,
+    warnings: &mut Vec<String>,
+) -> Option<FailingTests> {
+    let mut ft = failing_tests?;
+    let mut any_redacted = false;
+    for name in &mut ft.tests {
+        let outcome = redactor.redact_text(name, surface::INSPECT);
+        if outcome.redacted {
+            any_redacted = true;
+        }
+        *name = outcome.text;
+    }
+    if any_redacted {
+        warnings.push("bench inspect redacted secret-shaped content at view time".into());
+    }
+    Some(ft)
+}
+
 fn eval_exit_reason_label(reason: &EvalExitReason) -> String {
     match reason {
         EvalExitReason::Resolved => "resolved".into(),
@@ -1469,5 +1494,35 @@ mod tests {
             text.contains("[elision marker unavailable]"),
             "should show fallback when marker is absent:\n{text}"
         );
+    }
+
+    #[test]
+    fn build_failing_tests_falls_back_to_failure_category_when_eval_exit_reason_absent() {
+        let eval_override = EvaluationOverride {
+            resolved: false,
+            patch_stats: None,
+            tests_failed: vec![],
+            eval_exit_reason: None,
+        };
+        let ft = build_failing_tests(
+            Some(false),
+            Some(&eval_override),
+            Some(FailureCategory::WallclockTimeout),
+        );
+        let ft = ft.unwrap();
+        assert_eq!(ft.source, "unavailable");
+        assert_eq!(ft.reason, "wallclock_timeout");
+    }
+
+    #[test]
+    fn build_failing_tests_returns_none_for_resolved() {
+        let eval_override = EvaluationOverride {
+            resolved: true,
+            patch_stats: None,
+            tests_failed: vec!["tests/test.py::test_foo".into()],
+            eval_exit_reason: Some(crate::run::evaluate::EvalExitReason::Resolved),
+        };
+        let ft = build_failing_tests(Some(true), Some(&eval_override), None);
+        assert!(ft.is_none(), "resolved instances must return None");
     }
 }

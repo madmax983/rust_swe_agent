@@ -1641,3 +1641,87 @@ fn failing_tests_json_shape_round_trips() {
     assert_eq!(back2["source"], "unavailable");
     assert_eq!(back2["reason"], "eval_error");
 }
+
+#[test]
+fn unresolved_with_patch_apply_failed_shows_reason() {
+    // eval_exit_reason other than eval_error is also surfaced as the reason.
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Failing tests: <patch_apply_failed>"),
+        "expected patch_apply_failed reason:\n{stdout}"
+    );
+}
+
+#[test]
+fn failing_test_names_are_redacted_at_view_time() {
+    // A secret-shaped string embedded in a test name should be redacted.
+    // The token uses a bracket delimiter so the regex \b word-boundary fires.
+    let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [format!("tests/test_core.py::test_secret[{secret}]")],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(secret),
+        "secret should be redacted from failing test name:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Failing tests"),
+        "Failing tests section should still appear:\n{stdout}"
+    );
+}
