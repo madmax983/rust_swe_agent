@@ -198,6 +198,9 @@ a valid trajectory in hand:
 - [`bench command-stats`](docs/spec-command-stats.md): shell-command frequency
   and cost aggregated by outcome bucket, delta view for resolved-vs-unresolved
   comparison, and the `command-stats.json` schema.
+- [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
+  in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
+  (reads only on-disk artifacts).
 - [`bench matrix`](docs/spec-matrix.md): multi-arm experiment runner — compare
   models or configs against the same instance set, shared budget enforcement,
   `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.
