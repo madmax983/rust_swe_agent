@@ -1097,17 +1097,25 @@ fn eval_exit_reason_label(reason: &EvalExitReason) -> String {
 }
 
 fn extract_expected_tests(inst: &SweBenchInstance, redactor: &Redactor) -> ExpectedTests {
-    let get_string_list = |key: &str| {
-        inst.other
-            .get(key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| redactor.redact_text(s, surface::INSPECT).text)
-                    .collect()
-            })
-            .unwrap_or_default()
+    let get_string_list = |key: &str| -> Vec<String> {
+        let Some(val) = inst.other.get(key) else {
+            return vec![];
+        };
+        // SWE-bench Hugging Face exports store these as a JSON-encoded string
+        // (e.g. "[\"test_a\", \"test_b\"]"). Accept both that form and a native
+        // JSON array so synthetic fixtures and real datasets both work.
+        let items: Vec<serde_json::Value> = if let Some(arr) = val.as_array() {
+            arr.clone()
+        } else if let Some(s) = val.as_str() {
+            serde_json::from_str(s).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| redactor.redact_text(s, surface::INSPECT).text)
+            .collect()
     };
     ExpectedTests {
         pass_to_pass: get_string_list("PASS_TO_PASS"),

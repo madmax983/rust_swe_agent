@@ -1555,6 +1555,65 @@ fn json_format_resolved_instance_has_no_failing_tests_field() {
 }
 
 #[test]
+fn show_expected_parses_json_encoded_string_form() {
+    // SWE-bench Hugging Face exports store PASS_TO_PASS / FAIL_TO_PASS as
+    // a JSON-encoded string (e.g. "[\"test_a\"]") not a native JSON array.
+    // Verify --show-expected handles that form correctly.
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "unresolved"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Store PASS_TO_PASS / FAIL_TO_PASS as JSON-encoded strings (HF export format)
+    std::fs::write(
+        sweep.path().join("dataset.jsonl"),
+        serde_json::json!({
+            "instance_id": "my-instance",
+            "repo": "test/repo",
+            "PASS_TO_PASS": "[\"tests/test_core.py::test_existing\"]",
+            "FAIL_TO_PASS": "[\"tests/test_core.py::test_target\"]"
+        })
+        .to_string()
+            + "\n",
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--show-expected",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tests/test_core.py::test_existing"),
+        "expected PASS_TO_PASS test from JSON-encoded string:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tests/test_core.py::test_target"),
+        "expected FAIL_TO_PASS test from JSON-encoded string:\n{stdout}"
+    );
+}
+
+#[test]
 fn show_expected_renders_pass_to_pass_and_fail_to_pass() {
     let sweep = tempfile::tempdir().unwrap();
     write_traj(sweep.path(), "my-instance", false);
