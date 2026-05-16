@@ -999,6 +999,9 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         min_delta_pp: c.breakdown_min_delta_pp / 100.0,
         cost_attribution: matches!(c.cost_attribution, args::OnOffArg::On),
         cost_attribution_min_delta_usd: c.cost_attribution_min_delta_usd,
+        min_significance: c.min_significance,
+        regression_significance: c.regression_significance,
+        allow_underpowered: c.allow_underpowered,
     })?;
     match format {
         crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
@@ -1046,7 +1049,95 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             );
         }
     }
+    apply_significance_gates(
+        &report,
+        c.min_significance,
+        c.regression_significance,
+        c.allow_underpowered,
+    );
     Ok(())
+}
+
+fn apply_significance_gates(
+    report: &crate::run::compare::CompareReport,
+    min_significance: Option<f64>,
+    regression_significance: Option<f64>,
+    allow_underpowered: bool,
+) {
+    let sig = &report.resolved_rate_significance;
+
+    // Validate alpha values before any gating: must be a finite probability in (0, 1).
+    for (flag, alpha) in [
+        ("--min-significance", min_significance),
+        ("--regression-significance", regression_significance),
+    ] {
+        if let Some(a) = alpha {
+            if !a.is_finite() || a <= 0.0 || a >= 1.0 {
+                exit_with_outcome(
+                    ExitCode::RegressionGateFailure,
+                    &format!("compare: {flag} alpha must be a probability in (0, 1), got {a}"),
+                );
+            }
+        }
+    }
+
+    // Check underpowered block first — applies whenever a significance gate is active.
+    let any_gate_active = min_significance.is_some() || regression_significance.is_some();
+    if any_gate_active && sig.underpowered && !allow_underpowered {
+        tracing::error!(
+            paired_n = sig.paired_n,
+            underpowered_reason = sig.underpowered_reason.as_deref().unwrap_or(""),
+            "compare: significance test is underpowered; pass --allow-underpowered to override"
+        );
+        exit_with_outcome(
+            ExitCode::RegressionGateFailure,
+            "compare: significance test is underpowered (add --allow-underpowered to override)",
+        );
+    }
+
+    // Use the paired-subset delta direction (fail_to_pass vs pass_to_fail) for gating.
+    // This ensures the gate direction matches the data the p-value was computed from,
+    // which is important when sweeps have non-overlapping instances.
+    let paired_positive = sig.fail_to_pass > sig.pass_to_fail;
+    let paired_negative = sig.pass_to_fail > sig.fail_to_pass;
+
+    if let Some(alpha) = min_significance {
+        // Gate fires when the paired delta is positive AND p > alpha (noise win).
+        if paired_positive {
+            let p = sig.p_value.unwrap_or(1.0);
+            if p > alpha {
+                tracing::error!(
+                    p_value = p,
+                    alpha = alpha,
+                    "compare: positive paired delta is not significant at --min-significance threshold"
+                );
+                exit_with_outcome(
+                    ExitCode::RegressionGateFailure,
+                    &format!(
+                        "compare: positive paired delta is not significant (p={p:.4} > alpha={alpha})"
+                    ),
+                );
+            }
+        }
+    }
+
+    if let Some(alpha) = regression_significance {
+        // Gate fires when the paired delta is negative AND p <= alpha (significant regression).
+        if paired_negative {
+            let p = sig.p_value.unwrap_or(1.0);
+            if p <= alpha {
+                tracing::error!(
+                    p_value = p,
+                    alpha = alpha,
+                    "compare: negative paired delta is significant at --regression-significance threshold"
+                );
+                exit_with_outcome(
+                    ExitCode::RegressionGateFailure,
+                    &format!("compare: significant regression (p={p:.4} <= alpha={alpha})"),
+                );
+            }
+        }
+    }
 }
 
 fn parse_compare_format(raw: &str) -> Result<crate::run::compare::CompareFormat, Error> {

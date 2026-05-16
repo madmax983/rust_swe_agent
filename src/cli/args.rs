@@ -683,6 +683,25 @@ pub struct CompareCmd {
     /// inspect-diff output.
     #[arg(long, default_value_t = false)]
     pub show_noise: bool,
+
+    /// Exit non-zero when the resolved-rate delta is positive but p > alpha
+    /// (suspected-noise wins fail CI gates). Unset disables this gate.
+    /// Example: --min-significance 0.05
+    #[arg(long, value_name = "ALPHA")]
+    pub min_significance: Option<f64>,
+
+    /// Exit non-zero when the resolved-rate delta is negative and p <= alpha
+    /// (significant regressions are blocked). Unset disables this gate;
+    /// insignificant regressions are not blocked by this flag.
+    /// Example: --regression-significance 0.05
+    #[arg(long, value_name = "ALPHA")]
+    pub regression_significance: Option<f64>,
+
+    /// When set, allow significance-based gating to proceed even when the
+    /// paired test is underpowered. Without this flag, any underpowered result
+    /// causes gating flags to exit non-zero.
+    #[arg(long, default_value_t = false)]
+    pub allow_underpowered: bool,
 }
 
 #[derive(Debug, Clone, Args)]

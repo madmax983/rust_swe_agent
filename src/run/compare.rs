@@ -49,6 +49,16 @@ pub struct CompareArgs {
     pub min_delta_pp: f64,
     pub cost_attribution: bool,
     pub cost_attribution_min_delta_usd: f64,
+    /// Exit non-zero when the resolved-rate delta is positive but p > alpha
+    /// (suspected-noise wins). `None` disables this gate.
+    pub min_significance: Option<f64>,
+    /// Exit non-zero when the resolved-rate delta is negative and p <= alpha
+    /// (significant regressions). `None` disables this gate.
+    pub regression_significance: Option<f64>,
+    /// When true, significance-based gating proceeds even when the paired
+    /// sample is underpowered. Without this flag, gating exits non-zero
+    /// whenever the test is underpowered.
+    pub allow_underpowered: bool,
 }
 
 /// Per-task transition between baseline and candidate. `pass` prefers
@@ -207,6 +217,8 @@ pub struct CompareReport {
     /// Empty when `evaluator_provenance_status == Matching`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evaluator_provenance_warnings: Vec<String>,
+    /// Paired McNemar significance test on the resolved-rate delta.
+    pub resolved_rate_significance: ResolvedRateSignificance,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -247,6 +259,48 @@ pub enum EvaluatorProvenanceStatus {
     Mismatched,
     /// One or both evaluations lack provenance.
     Unavailable,
+}
+
+/// Minimum number of discordant pairs required for the paired significance test
+/// to be considered powered. Below this threshold `underpowered` is `true`.
+pub const UNDERPOWERED_DISCORDANT_THRESHOLD: usize = 10;
+
+/// Paired McNemar significance test result for the resolved-rate delta.
+///
+/// Computed on the overlap subset (instances present in both sweeps). Instances
+/// only in one sweep are counted in `only_in_baseline` / `only_in_candidate`
+/// and excluded from the test.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedRateSignificance {
+    /// Statistical test applied: always `"mcnemar_exact"`.
+    pub test_name: String,
+    /// Two-sided exact McNemar p-value. `null` when `paired_n == 0`.
+    pub p_value: Option<f64>,
+    /// Lower bound of the 95% Wilson-score CI on the rate delta (percentage points).
+    pub ci95_lower_pp: f64,
+    /// Upper bound of the 95% Wilson-score CI on the rate delta (percentage points).
+    pub ci95_upper_pp: f64,
+    /// Number of instances present in both sweeps (the paired overlap).
+    pub paired_n: usize,
+    /// Discordant pairs where baseline passed and candidate failed.
+    pub pass_to_fail: usize,
+    /// Discordant pairs where baseline failed and candidate passed.
+    pub fail_to_pass: usize,
+    /// Rate delta within the paired overlap subset: candidate_rate − baseline_rate.
+    /// Equals `(fail_to_pass − pass_to_fail) / paired_n`. Zero when `paired_n == 0`.
+    /// Use this — not the population `resolved_delta_rate` — for interpreting the
+    /// CI and p-value, which are also computed on the paired subset.
+    pub paired_delta_rate: f64,
+    /// True when the test lacks statistical power (fewer than
+    /// `UNDERPOWERED_DISCORDANT_THRESHOLD` discordant pairs, or `paired_n == 0`).
+    pub underpowered: bool,
+    /// Human-readable reason why the test is underpowered. `null` when powered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub underpowered_reason: Option<String>,
+    /// Instance IDs present only in the baseline sweep (excluded from the test).
+    pub only_in_baseline: usize,
+    /// Instance IDs present only in the candidate sweep (excluded from the test).
+    pub only_in_candidate: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -400,6 +454,27 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         if report.within_noise { "true" } else { "false" }
     );
     let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
+    write_significance_line(s, &report.resolved_rate_significance);
+}
+
+fn write_significance_line(s: &mut String, sig: &ResolvedRateSignificance) {
+    let underpowered_tag = if sig.underpowered {
+        " (underpowered)"
+    } else {
+        ""
+    };
+    let sig_str = match sig.p_value {
+        Some(p) => format!(
+            "resolved-rate \u{394} {:+.2}pp [95% CI: {:+.2}\u{2013}{:+.2} pp], p={:.4} (paired N={}){underpowered_tag}",
+            sig.paired_delta_rate * 100.0,
+            sig.ci95_lower_pp,
+            sig.ci95_upper_pp,
+            p,
+            sig.paired_n,
+        ),
+        None => "(underpowered)".to_string(),
+    };
+    let _ = writeln!(s, "Significance:       {sig_str}");
 }
 
 fn write_patch_stats_delta_lines(s: &mut String, report: &CompareReport) {
@@ -1585,6 +1660,23 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_cost_per_resolved_usd.unwrap_or(f64::NAN),
     );
 
+    let mut resolved_rate_significance =
+        compute_paired_significance(&transition_summary.transitions);
+    // For rerun sweeps the transition matrix uses resolved_count > 0 (pass@k),
+    // which does not reflect the multi-run resolved rate used by the population
+    // metrics.  Mark the significance block underpowered so gating flags require
+    // --allow-underpowered and operators are not silently misled.
+    let either_is_rerun =
+        baseline.values().any(|r| r.runs > 1) || candidate.values().any(|r| r.runs > 1);
+    if either_is_rerun {
+        resolved_rate_significance.underpowered = true;
+        resolved_rate_significance.underpowered_reason = Some(
+            "rerun sweep detected: paired test uses pass@k (resolved_count > 0), \
+             not the multi-run resolved rate; significance gating is unreliable"
+                .to_owned(),
+        );
+    }
+
     CompareReport {
         baseline_dir: baseline_dir.to_path_buf(),
         candidate_dir: candidate_dir.to_path_buf(),
@@ -1651,6 +1743,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         model_mix_warnings: Vec::new(),
         evaluator_provenance_status: EvaluatorProvenanceStatus::Unavailable,
         evaluator_provenance_warnings: Vec::new(),
+        resolved_rate_significance,
     }
 }
 
@@ -2563,6 +2656,115 @@ fn compare_evaluator_provenance(
     }
 }
 
+// ── Paired significance (McNemar exact test) ──────────────────────────────
+
+/// Two-sided exact McNemar p-value.
+///
+/// `pass_to_fail` = n01 (baseline pass, candidate fail)
+/// `fail_to_pass` = n10 (baseline fail, candidate pass)
+///
+/// Under H0 each discordant pair is equally likely to go either way, so
+/// the smaller count follows Binomial(n_discordant, 0.5). The two-sided
+/// p-value is 2 * Σ_{k=0}^{min(n01,n10)} C(n,k) * 0.5^n, capped at 1.
+///
+/// log C(n,k) is accumulated incrementally via the recurrence
+/// log C(n,k) = log C(n,k-1) + log(n-k+1) - log(k), giving O(m) time.
+#[allow(clippy::cast_precision_loss)]
+fn mcnemar_exact_p_value(pass_to_fail: usize, fail_to_pass: usize) -> f64 {
+    let n = pass_to_fail + fail_to_pass;
+    if n == 0 {
+        return 1.0;
+    }
+    let m = pass_to_fail.min(fail_to_pass);
+    let log_half_n = -(n as f64) * std::f64::consts::LN_2;
+    let mut log_binom = 0.0_f64; // log C(n, 0) = 0
+    let mut tail = 0.0_f64;
+    for k in 0..=m {
+        tail += (log_binom + log_half_n).exp();
+        if k < m {
+            // recurrence: log C(n,k+1) = log C(n,k) + log(n-k) - log(k+1)
+            log_binom += ((n - k) as f64).ln() - ((k + 1) as f64).ln();
+        }
+    }
+    (2.0 * tail).min(1.0)
+}
+
+/// Build the `ResolvedRateSignificance` block from the transition counts.
+fn compute_paired_significance(
+    transitions: &BTreeMap<TransitionKind, usize>,
+) -> ResolvedRateSignificance {
+    let pass_pass = *transitions.get(&TransitionKind::PassPass).unwrap_or(&0);
+    let pass_fail = *transitions.get(&TransitionKind::PassFail).unwrap_or(&0);
+    let fail_pass = *transitions.get(&TransitionKind::FailPass).unwrap_or(&0);
+    let fail_fail = *transitions.get(&TransitionKind::FailFail).unwrap_or(&0);
+    let missing_present = *transitions
+        .get(&TransitionKind::MissingPresent)
+        .unwrap_or(&0);
+    let present_missing = *transitions
+        .get(&TransitionKind::PresentMissing)
+        .unwrap_or(&0);
+
+    let paired_n = pass_pass + pass_fail + fail_pass + fail_fail;
+    let pass_to_fail = pass_fail;
+    let fail_to_pass = fail_pass;
+    let discordant = pass_to_fail + fail_to_pass;
+
+    // Wilson-score CI on the rate delta within the paired subset.
+    let baseline_resolved_paired = pass_pass + pass_fail;
+    let candidate_resolved_paired = pass_pass + fail_pass;
+    let ci = wilson_delta_ci95(
+        usize_to_u64(candidate_resolved_paired),
+        usize_to_u64(paired_n),
+        usize_to_u64(baseline_resolved_paired),
+        usize_to_u64(paired_n),
+    );
+
+    // Paired delta rate: candidate rate - baseline rate, restricted to the overlap.
+    // = (fail_to_pass - pass_to_fail) / paired_n.  Zero when paired_n==0.
+    #[allow(clippy::cast_precision_loss)]
+    let paired_delta_rate = if paired_n == 0 {
+        0.0
+    } else {
+        (fail_to_pass as f64 - pass_to_fail as f64) / paired_n as f64
+    };
+
+    let p_value = if paired_n == 0 {
+        None
+    } else if discordant == 0 {
+        Some(1.0)
+    } else {
+        Some(mcnemar_exact_p_value(pass_to_fail, fail_to_pass))
+    };
+
+    let (underpowered, underpowered_reason) = if paired_n == 0 {
+        (true, Some("no shared instance_ids (paired_n=0)".to_owned()))
+    } else if discordant < UNDERPOWERED_DISCORDANT_THRESHOLD {
+        (
+            true,
+            Some(format!(
+                "fewer than {UNDERPOWERED_DISCORDANT_THRESHOLD} discordant pairs (got {discordant})"
+            )),
+        )
+    } else {
+        (false, None)
+    };
+
+    ResolvedRateSignificance {
+        test_name: "mcnemar_exact".to_owned(),
+        p_value,
+        ci95_lower_pp: ci.lower * 100.0,
+        ci95_upper_pp: ci.upper * 100.0,
+        paired_n,
+        pass_to_fail,
+        fail_to_pass,
+        paired_delta_rate,
+        underpowered,
+        underpowered_reason,
+        only_in_baseline: present_missing,
+        only_in_candidate: missing_present,
+    }
+}
+
 #[cfg(test)]
 fn cost_attribution_map<S: std::hash::BuildHasher>(
     items: &HashMap<String, InstanceResult, S>,
@@ -3097,6 +3299,9 @@ mod tests {
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
         assert_eq!(r.regressions.len(), 1);
@@ -3518,6 +3723,9 @@ mod tests {
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 1);
@@ -3568,6 +3776,9 @@ mod tests {
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
+            min_significance: None,
+            regression_significance: None,
+            allow_underpowered: false,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 10);
