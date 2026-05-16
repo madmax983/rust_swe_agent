@@ -556,6 +556,7 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.model_latency_ms.is_none()
         && e.tool_latency_ms.is_none()
         && e.harness_overhead_ms.is_none()
+        && e.sampling.is_none()
         && e.other.is_empty()
 }
 

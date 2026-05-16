@@ -765,7 +765,9 @@ impl Agent for DefaultAgent {
         // 3. model.query (using the elided prompt, not the raw history).
         let opts = QueryOpts {
             temperature: self.config.root.model.temperature,
+            top_p: None,
             max_tokens: Some(self.config.root.model.max_tokens),
+            seed: None,
             extra: serde_json::Map::new(),
         };
         // Harness overhead leading up to this assistant turn = time since
@@ -842,6 +844,27 @@ impl Agent for DefaultAgent {
         asst.extra.timestamp = Some(asst_ts.clone());
         asst.extra.model_latency_ms = model_latency_recorded;
         asst.extra.harness_overhead_ms = Some(assistant_harness_ms);
+        // Sampling block: resolved model name + the opts sent to this call.
+        // Redact extra before persisting so provider auth knobs cannot leak.
+        let mut sampling_extra = opts.extra.clone();
+        let mut extra_val = serde_json::Value::Object(sampling_extra);
+        self.redactor
+            .redact_json_value(&mut extra_val, crate::redaction::surface::TRAJECTORY);
+        sampling_extra = match extra_val {
+            serde_json::Value::Object(m) => m,
+            _ => serde_json::Map::new(),
+        };
+        asst.extra.sampling = Some(crate::model::SamplingParams {
+            model: resp
+                .responding_model
+                .clone()
+                .unwrap_or_else(|| self.model.name().to_owned()),
+            temperature: opts.temperature,
+            top_p: opts.top_p,
+            max_tokens: opts.max_tokens,
+            seed: opts.seed,
+            extra: sampling_extra,
+        });
 
         // Store input fingerprint + canonical for replay drift detection (issue #155).
         // Fingerprint the TRAJECTORY-redacted, marker-normalized view of history so

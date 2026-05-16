@@ -1,6 +1,6 @@
 {
   "artifact_kind": "forecast_report",
-  "schema_version": {"major": 1, "minor": 7},
+  "schema_version": {"major": 1, "minor": 8},
   "calibration": {
     "n": 1,
     "seed": 42,

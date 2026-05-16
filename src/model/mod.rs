@@ -47,6 +47,53 @@ pub enum CacheHint {
     Breakpoint,
 }
 
+/// Sampling parameters that were sent to the model for a single call.
+///
+/// Embedded in the `extra` block of every assistant `MessageRecord` so that
+/// trajectory consumers can verify sampling was held constant across sweeps.
+/// `sampling.extra` is treated as a redaction-eligible region: values whose
+/// key names match the existing sensitive-key pattern (token, secret, key, …)
+/// are masked before the trajectory is written.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SamplingParams {
+    /// Resolved model name actually used for this call — the fallback model
+    /// when a fallback occurred, otherwise the configured primary.
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// Provider-specific knobs forwarded opaquely. Sensitive-named keys are
+    /// redacted before the trajectory is persisted.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl SamplingParams {
+    /// One-line human-readable summary, e.g. `model=claude-opus-4-7 temp=0 max_tokens=4096`.
+    #[must_use]
+    pub fn summary_line(&self) -> String {
+        let mut parts = vec![format!("model={}", self.model)];
+        if let Some(t) = self.temperature {
+            parts.push(format!("temp={t}"));
+        }
+        if let Some(tp) = self.top_p {
+            parts.push(format!("top_p={tp}"));
+        }
+        if let Some(mt) = self.max_tokens {
+            parts.push(format!("max_tokens={mt}"));
+        }
+        if let Some(s) = self.seed {
+            parts.push(format!("seed={s}"));
+        }
+        parts.join(" ")
+    }
+}
+
 /// Per-message extra payload. Keeps the trajectory format forward-compatible
 /// with Python mini-swe-agent emitting extra keys we don't know about yet.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -82,6 +129,12 @@ pub struct MessageExtra {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub harness_overhead_ms: Option<u64>,
 
+    /// Sampling parameters used for the model call that produced this
+    /// assistant turn. `None` on non-assistant turns and on legacy
+    /// trajectories written before schema 1.8.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sampling: Option<SamplingParams>,
+
     #[serde(flatten, default)]
     pub other: BTreeMap<String, serde_json::Value>,
 }
@@ -109,6 +162,7 @@ fn message_extra_is_empty(e: &MessageExtra) -> bool {
         && e.model_latency_ms.is_none()
         && e.tool_latency_ms.is_none()
         && e.harness_overhead_ms.is_none()
+        && e.sampling.is_none()
         && e.other.is_empty()
 }
 
@@ -180,7 +234,9 @@ pub struct ModelResponse {
 #[derive(Debug, Clone, Default)]
 pub struct QueryOpts {
     pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub seed: Option<u64>,
     /// Extra provider-specific knobs — passed through opaquely.
     pub extra: serde_json::Map<String, serde_json::Value>,
 }

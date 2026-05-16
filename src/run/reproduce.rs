@@ -109,6 +109,15 @@ pub struct ReproducedFrom {
     pub sweep_dir: String,
 }
 
+/// Per-call sampling drift between source and replay trajectories.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SamplingDriftBlock {
+    /// Count of instances where at least one step's sampling params differed.
+    pub instances_drifted: usize,
+    /// Total steps across all instances where sampling differed.
+    pub steps_drifted: usize,
+}
+
 /// The `reproducibility.json` artifact written to the output directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReproducibilityReport {
@@ -122,6 +131,10 @@ pub struct ReproducibilityReport {
     pub instances: Vec<InstanceComparisonEntry>,
     /// Aggregate counts over all instances.
     pub aggregate: ReproducibilityAggregate,
+    /// Per-call sampling drift between source and replay. Populated when
+    /// trajectory files are available for comparison; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_drift: Option<SamplingDriftBlock>,
 }
 
 // ── public functions ─────────────────────────────────────────────────────────
@@ -327,6 +340,11 @@ pub fn build_reproducibility_report(
         });
     }
 
+    // Sampling drift: scan trajectory files for source vs replay.
+    let common_ids: Vec<String> = instances.iter().map(|e| e.instance_id.clone()).collect();
+    let sampling_drift =
+        compute_sampling_drift_for_reproduce(source_dir, output_dir, &common_ids);
+
     ReproducibilityReport {
         source_sweep: source_dir.display().to_string(),
         source_manifest_hash: source_manifest_hash.clone(),
@@ -336,7 +354,78 @@ pub fn build_reproducibility_report(
         },
         instances,
         aggregate,
+        sampling_drift,
     }
+}
+
+fn load_trajectory_for_instance(dir: &Path, instance_id: &str) -> Option<crate::trajectory::Trajectory> {
+    let candidates = [
+        dir.join(format!("{instance_id}.traj.json")),
+        dir.join(instance_id).join("run-1.traj.json"),
+    ];
+    for path in &candidates {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) {
+                return Some(traj);
+            }
+        }
+    }
+    None
+}
+
+fn compute_sampling_drift_for_reproduce(
+    source_dir: &Path,
+    replay_dir: &Path,
+    instance_ids: &[String],
+) -> Option<SamplingDriftBlock> {
+    let mut instances_drifted = 0usize;
+    let mut steps_drifted = 0usize;
+    let mut any_loaded = false;
+
+    for id in instance_ids {
+        let Some(src) = load_trajectory_for_instance(source_dir, id) else {
+            continue;
+        };
+        let Some(rep) = load_trajectory_for_instance(replay_dir, id) else {
+            continue;
+        };
+        any_loaded = true;
+
+        let src_sampling: Vec<&crate::model::SamplingParams> = src
+            .messages
+            .iter()
+            .filter_map(|m| m.extra.sampling.as_ref())
+            .collect();
+        let rep_sampling: Vec<&crate::model::SamplingParams> = rep
+            .messages
+            .iter()
+            .filter_map(|m| m.extra.sampling.as_ref())
+            .collect();
+
+        let mut instance_drifted = false;
+        for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
+            if ss.model != rs.model
+                || ss.temperature != rs.temperature
+                || ss.top_p != rs.top_p
+                || ss.max_tokens != rs.max_tokens
+                || ss.seed != rs.seed
+            {
+                steps_drifted += 1;
+                instance_drifted = true;
+            }
+        }
+        if instance_drifted {
+            instances_drifted += 1;
+        }
+    }
+
+    if !any_loaded {
+        return None;
+    }
+    Some(SamplingDriftBlock {
+        instances_drifted,
+        steps_drifted,
+    })
 }
 
 /// Compare patch files for an instance across two sweep directories.

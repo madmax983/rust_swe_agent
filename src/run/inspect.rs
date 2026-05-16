@@ -80,6 +80,11 @@ pub struct InspectStep {
     /// The marker text that was sent to the model in place of the full content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_sent_marker: Option<String>,
+    /// Sampling parameters used for the model call that produced this
+    /// assistant turn. `None` on non-assistant turns and on legacy
+    /// trajectories written before schema 1.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<crate::model::SamplingParams>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -497,6 +502,7 @@ pub(crate) fn build_inspect_steps_with_max(
                 truncation_note: None,
                 history_elided: false,
                 as_sent_marker: None,
+                sampling: msg.extra.sampling.clone(),
             });
             continue;
         }
@@ -551,6 +557,7 @@ pub(crate) fn build_inspect_steps_with_max(
             truncation_note: (!note_parts.is_empty()).then(|| note_parts.join("; ")),
             history_elided,
             as_sent_marker,
+            sampling: None,
         });
     }
     steps
@@ -812,6 +819,9 @@ pub(crate) fn render_step_text(step: &InspectStep, color: bool) -> String {
         let _ = writeln!(s, "\n\x1b[1;36m{header}\x1b[0m");
     } else {
         let _ = writeln!(s, "\n{header}");
+    }
+    if let Some(sampling) = &step.sampling {
+        let _ = writeln!(s, "sampling: {}", sampling.summary_line());
     }
 
     if let Some(msg) = &step.message {

@@ -41,6 +41,7 @@ pub use exit_code::ExitCode;
 pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, FallbackAttemptRecord, FallbackModel,
     LitellmBackend, Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, Role,
+    SamplingParams,
 };
 pub use policy::{
     PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
