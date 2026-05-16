@@ -2658,15 +2658,6 @@ fn compare_evaluator_provenance(
 
 // ── Paired significance (McNemar exact test) ──────────────────────────────
 
-/// Compute log of binomial coefficient C(n, k) in log-space to avoid overflow.
-#[allow(clippy::cast_precision_loss)]
-fn log_binomial_coeff(n: usize, k: usize) -> f64 {
-    let k = k.min(n - k); // use symmetry: C(n,k) = C(n,n-k)
-    (0..k)
-        .map(|i| ((n - i) as f64).ln() - ((i + 1) as f64).ln())
-        .sum()
-}
-
 /// Two-sided exact McNemar p-value.
 ///
 /// `pass_to_fail` = n01 (baseline pass, candidate fail)
@@ -2675,6 +2666,9 @@ fn log_binomial_coeff(n: usize, k: usize) -> f64 {
 /// Under H0 each discordant pair is equally likely to go either way, so
 /// the smaller count follows Binomial(n_discordant, 0.5). The two-sided
 /// p-value is 2 * Σ_{k=0}^{min(n01,n10)} C(n,k) * 0.5^n, capped at 1.
+///
+/// log C(n,k) is accumulated incrementally via the recurrence
+/// log C(n,k) = log C(n,k-1) + log(n-k+1) - log(k), giving O(m) time.
 #[allow(clippy::cast_precision_loss)]
 fn mcnemar_exact_p_value(pass_to_fail: usize, fail_to_pass: usize) -> f64 {
     let n = pass_to_fail + fail_to_pass;
@@ -2683,9 +2677,15 @@ fn mcnemar_exact_p_value(pass_to_fail: usize, fail_to_pass: usize) -> f64 {
     }
     let m = pass_to_fail.min(fail_to_pass);
     let log_half_n = -(n as f64) * std::f64::consts::LN_2;
-    let tail: f64 = (0..=m)
-        .map(|k| (log_binomial_coeff(n, k) + log_half_n).exp())
-        .sum();
+    let mut log_binom = 0.0_f64; // log C(n, 0) = 0
+    let mut tail = 0.0_f64;
+    for k in 0..=m {
+        tail += (log_binom + log_half_n).exp();
+        if k < m {
+            // recurrence: log C(n,k+1) = log C(n,k) + log(n-k) - log(k+1)
+            log_binom += ((n - k) as f64).ln() - ((k + 1) as f64).ln();
+        }
+    }
     (2.0 * tail).min(1.0)
 }
 
