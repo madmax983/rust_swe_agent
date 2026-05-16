@@ -1,0 +1,47 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "unknown-head-errored",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "failure_category": "model_parse",
+    "total_cost_usd": 0.02,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Run a custom tool.",
+      "extra": {
+        "actions": ["myweirdtool --flag value"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "command not found",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "command not found", "exit_code": 127, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Try another unknown tool.",
+      "extra": {
+        "actions": ["anotherspecialtool --arg"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "command not found",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "command not found", "exit_code": 127, "timed_out": false}
+      }
+    }
+  ]
+}

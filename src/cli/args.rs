@@ -341,6 +341,8 @@ pub enum BenchCmd {
     Report(ReportCmd),
     /// Re-run only the failed instances of a completed sweep and merge results.
     Retry(RetryCmd),
+    /// Surface agent action-class mix (read/write/test/…) by outcome bucket.
+    Behavior(BehaviorCmd),
 }
 
 /// `bench retry` — re-run selected failed instances and merge into sweep dir.
@@ -1303,4 +1305,35 @@ pub struct EvaluatorSelftestCmd {
     /// Parallel worker count for the `sb-cli` evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+}
+
+/// `bench behavior` — surface agent action-class mix by outcome bucket.
+#[derive(Debug, Args)]
+pub struct BehaviorCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Restrict output to one outcome bucket: `resolved`, `unresolved`,
+    /// `errored`, or `all`.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Hide action classes whose `all`-bucket share is below this threshold
+    /// in text output (0.0–1.0).
+    #[arg(long)]
+    pub min_share: Option<f64>,
+
+    /// Filter instances using the same syntax as `bench inspect --filter`.
+    /// Example: `failure_category=model_parse`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Emit per-instance class counts in the JSON output and artifact.
+    #[arg(long, default_value_t = false)]
+    pub per_instance: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }

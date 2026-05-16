@@ -1,6 +1,7 @@
 //! Runners: thin glue that wires (config + model + env + agent) together
 //! and writes trajectories to disk.
 
+pub mod behavior;
 pub mod bundle;
 pub mod calibrate;
 pub mod command_stats;

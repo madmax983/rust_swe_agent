@@ -120,6 +120,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Retry(r),
         } => Box::pin(bench_retry(r)).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Behavior(b),
+        } => bench_behavior(b),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1004,7 +1007,15 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         allow_underpowered: c.allow_underpowered,
     })?;
     match format {
-        crate::run::compare::CompareFormat::Text => print!("{}", report.human_table()),
+        crate::run::compare::CompareFormat::Text => {
+            print!("{}", report.human_table());
+            if let Some(diff) = crate::run::behavior::behavior_compare_section(
+                &c.baseline,
+                &c.candidate,
+            ) {
+                print!("{diff}");
+            }
+        }
         crate::run::compare::CompareFormat::Json => {
             println!("{}", report.to_json_pretty()?);
         }
@@ -1740,6 +1751,38 @@ fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
         CommandStatsFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+    }
+    Ok(())
+}
+
+fn bench_behavior(b: args::BehaviorCmd) -> Result<(), Error> {
+    let is_json = match b.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "behavior: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::behavior::run(&crate::run::behavior::BehaviorArgs {
+        sweep_dir: b.sweep,
+        bucket: b.bucket.clone(),
+        min_share: b.min_share,
+        filter: b.filter,
+        per_instance: b.per_instance,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            crate::run::behavior::render_text(
+                &report,
+                b.bucket.as_deref(),
+                b.min_share.unwrap_or(0.0),
+            )
+        );
     }
     Ok(())
 }
