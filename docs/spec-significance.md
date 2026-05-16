@@ -41,10 +41,21 @@ via `--min-significance` or `--regression-significance`.
 ## 95% Confidence Interval
 
 The `ci95_lower_pp` / `ci95_upper_pp` fields (and the text `[95% CI: …]` line)
-are computed using the Wilson-score delta method on the **paired** overlap
-subset, not on the full sweep populations. This is the same Wilson CI method
-used by the existing `resolved_delta_ci95` field (which uses the full
-populations).
+are computed using the Wilson-score delta method (Newcombe's method) on the
+**paired** overlap subset, not on the full sweep populations. This is a
+conservative choice: because Newcombe treats the two proportions as independent
+it overestimates variance for paired data, so intervals are wider than necessary
+(safe, not dangerous). A more efficient alternative such as Tango's score
+interval is a candidate for a future improvement; the McNemar p-value, which
+correctly accounts for pairing, is the primary decision metric.
+
+**Paired delta**: the `paired_delta_rate` field and the `Δ` shown in text output
+use the rate difference within the overlap subset only — `(fail_to_pass −
+pass_to_fail) / paired_n`. The gating logic also uses this paired delta
+direction, ensuring the sign of the delta used for gating is consistent with the
+p-value (both derived from the same paired data). When sweeps have
+non-overlapping instances, this may differ from the population-level
+`resolved_delta_rate`.
 
 ## Underpowered threshold
 
@@ -120,6 +131,7 @@ on the computed p-value (e.g., 7 discordant pairs, p=0.016 < 0.05).
     "paired_n": 100,
     "pass_to_fail": 2,
     "fail_to_pass": 12,
+    "paired_delta_rate": 0.10,
     "underpowered": false,
     "underpowered_reason": null,
     "only_in_baseline": 0,
@@ -139,6 +151,7 @@ Fields:
 | `paired_n` | integer | Instances present in both sweeps (overlap). |
 | `pass_to_fail` | integer | Discordant pairs: baseline pass, candidate fail. |
 | `fail_to_pass` | integer | Discordant pairs: baseline fail, candidate pass. |
+| `paired_delta_rate` | number | Rate delta within the overlap: `(fail_to_pass − pass_to_fail) / paired_n`. Use this for interpreting the CI and p-value; it may differ from the population `resolved_delta_rate` when sweeps have non-overlapping instances. |
 | `underpowered` | boolean | True when `discordant < 10` or `paired_n == 0`. |
 | `underpowered_reason` | string or null | Human-readable reason; null when powered. |
 | `only_in_baseline` | integer | Instances present only in the baseline sweep. |

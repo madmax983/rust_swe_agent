@@ -1066,6 +1066,21 @@ fn apply_significance_gates(
 ) {
     let sig = &report.resolved_rate_significance;
 
+    // Validate alpha values before any gating: must be a finite probability in (0, 1).
+    for (flag, alpha) in [
+        ("--min-significance", min_significance),
+        ("--regression-significance", regression_significance),
+    ] {
+        if let Some(a) = alpha {
+            if !a.is_finite() || a <= 0.0 || a >= 1.0 {
+                exit_with_outcome(
+                    ExitCode::RegressionGateFailure,
+                    &format!("compare: {flag} alpha must be a probability in (0, 1), got {a}"),
+                );
+            }
+        }
+    }
+
     // Check underpowered block first — applies whenever a significance gate is active.
     let any_gate_active = min_significance.is_some() || regression_significance.is_some();
     if any_gate_active && sig.underpowered && !allow_underpowered {
@@ -1080,21 +1095,26 @@ fn apply_significance_gates(
         );
     }
 
+    // Use the paired-subset delta direction (fail_to_pass vs pass_to_fail) for gating.
+    // This ensures the gate direction matches the data the p-value was computed from,
+    // which is important when sweeps have non-overlapping instances.
+    let paired_positive = sig.fail_to_pass > sig.pass_to_fail;
+    let paired_negative = sig.pass_to_fail > sig.fail_to_pass;
+
     if let Some(alpha) = min_significance {
-        // Gate fires when the delta is positive AND p > alpha (noise win).
-        let positive_delta = report.resolved_delta_rate > 0.0;
-        if positive_delta {
+        // Gate fires when the paired delta is positive AND p > alpha (noise win).
+        if paired_positive {
             let p = sig.p_value.unwrap_or(1.0);
             if p > alpha {
                 tracing::error!(
                     p_value = p,
                     alpha = alpha,
-                    "compare: positive resolved-rate delta is not significant at --min-significance threshold"
+                    "compare: positive paired delta is not significant at --min-significance threshold"
                 );
                 exit_with_outcome(
                     ExitCode::RegressionGateFailure,
                     &format!(
-                        "compare: positive delta is not significant (p={p:.4} > alpha={alpha})"
+                        "compare: positive paired delta is not significant (p={p:.4} > alpha={alpha})"
                     ),
                 );
             }
@@ -1102,15 +1122,14 @@ fn apply_significance_gates(
     }
 
     if let Some(alpha) = regression_significance {
-        // Gate fires when the delta is negative AND p <= alpha (significant regression).
-        let negative_delta = report.resolved_delta_rate < 0.0;
-        if negative_delta {
+        // Gate fires when the paired delta is negative AND p <= alpha (significant regression).
+        if paired_negative {
             let p = sig.p_value.unwrap_or(1.0);
             if p <= alpha {
                 tracing::error!(
                     p_value = p,
                     alpha = alpha,
-                    "compare: negative resolved-rate delta is significant at --regression-significance threshold"
+                    "compare: negative paired delta is significant at --regression-significance threshold"
                 );
                 exit_with_outcome(
                     ExitCode::RegressionGateFailure,

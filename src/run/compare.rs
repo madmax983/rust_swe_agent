@@ -286,6 +286,11 @@ pub struct ResolvedRateSignificance {
     pub pass_to_fail: usize,
     /// Discordant pairs where baseline failed and candidate passed.
     pub fail_to_pass: usize,
+    /// Rate delta within the paired overlap subset: candidate_rate − baseline_rate.
+    /// Equals `(fail_to_pass − pass_to_fail) / paired_n`. Zero when `paired_n == 0`.
+    /// Use this — not the population `resolved_delta_rate` — for interpreting the
+    /// CI and p-value, which are also computed on the paired subset.
+    pub paired_delta_rate: f64,
     /// True when the test lacks statistical power (fewer than
     /// `UNDERPOWERED_DISCORDANT_THRESHOLD` discordant pairs, or `paired_n == 0`).
     pub underpowered: bool,
@@ -449,18 +454,10 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         if report.within_noise { "true" } else { "false" }
     );
     let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
-    write_significance_line(
-        s,
-        &report.resolved_rate_significance,
-        report.resolved_delta_rate,
-    );
+    write_significance_line(s, &report.resolved_rate_significance);
 }
 
-fn write_significance_line(
-    s: &mut String,
-    sig: &ResolvedRateSignificance,
-    resolved_delta_rate: f64,
-) {
+fn write_significance_line(s: &mut String, sig: &ResolvedRateSignificance) {
     let underpowered_tag = if sig.underpowered {
         " (underpowered)"
     } else {
@@ -469,7 +466,7 @@ fn write_significance_line(
     let sig_str = match sig.p_value {
         Some(p) => format!(
             "resolved-rate \u{394} {:+.2}pp [95% CI: {:+.2}\u{2013}{:+.2} pp], p={:.4} (paired N={}){underpowered_tag}",
-            resolved_delta_rate * 100.0,
+            sig.paired_delta_rate * 100.0,
             sig.ci95_lower_pp,
             sig.ci95_upper_pp,
             p,
@@ -2707,6 +2704,15 @@ fn compute_paired_significance(
         usize_to_u64(paired_n),
     );
 
+    // Paired delta rate: candidate rate - baseline rate, restricted to the overlap.
+    // = (fail_to_pass - pass_to_fail) / paired_n.  Zero when paired_n==0.
+    #[allow(clippy::cast_precision_loss)]
+    let paired_delta_rate = if paired_n == 0 {
+        0.0
+    } else {
+        (fail_to_pass as f64 - pass_to_fail as f64) / paired_n as f64
+    };
+
     let p_value = if paired_n == 0 {
         None
     } else if discordant == 0 {
@@ -2736,6 +2742,7 @@ fn compute_paired_significance(
         paired_n,
         pass_to_fail,
         fail_to_pass,
+        paired_delta_rate,
         underpowered,
         underpowered_reason,
         only_in_baseline: present_missing,
