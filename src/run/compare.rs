@@ -2913,7 +2913,11 @@ fn detect_sampling_drift(
                 .map(|m| m.extra.sampling.as_ref())
                 .collect();
 
-            for (bs, cs) in b_sampling.iter().zip(c_sampling.iter()) {
+            // zip-longest: extra turns on either side count as drift.
+            let len = b_sampling.len().max(c_sampling.len());
+            for i in 0..len {
+                let bs = b_sampling.get(i).copied().flatten();
+                let cs = c_sampling.get(i).copied().flatten();
                 let drifted = match (bs, cs) {
                     (None, None) => false,
                     (Some(a), Some(b)) => sampling_differs(a, b),
@@ -2924,8 +2928,8 @@ fn detect_sampling_drift(
                     if example.is_none() {
                         example = Some(SamplingDriftExample {
                             instance_id: id.clone(),
-                            baseline_sampling: bs.map(|s| (*s).clone()),
-                            candidate_sampling: cs.map(|s| (*s).clone()),
+                            baseline_sampling: bs.cloned(),
+                            candidate_sampling: cs.cloned(),
                         });
                     }
                 }

@@ -1408,7 +1408,7 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     if let Some(sd) = &report.sampling_drift {
         if sd.steps_drifted > 0 {
             let drift_field = sd.as_drift_field(r.strict_sampling);
-            if r.strict_sampling {
+            if r.strict_sampling && !drift_field.is_whitelisted(&r.allow_drift) {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                     "reproduce: hard sampling drift (--strict-sampling): {}",
                     drift_field.message

@@ -708,19 +708,33 @@ pub fn load_trajectory_for_instance(
     None
 }
 
-/// Load all trajectories for `instance_id` from `dir`, covering multi-run sweeps.
+/// Load all trajectories for `instance_id` from `dir`, covering all known layouts.
 ///
-/// Returns the root-format file as a single-element vec if present; otherwise
-/// scans for `{dir}/{instance_id}/run-1.traj.json`, `run-2.traj.json`, etc.
-/// until the sequence breaks. Returns an empty vec when no trajectory files exist.
+/// Checks these single-file layouts first (in priority order) and returns a
+/// single-element vec when one is found:
+/// - `{dir}/{id}.traj.json` (flat / root format)
+/// - `{dir}/{id}/trajectory.json` (nested single-run format)
+/// - `{dir}/trajectories/{id}.traj.json` (extracted bundle format)
+///
+/// When none of the above exist, scans for `{dir}/{id}/run-1.traj.json`,
+/// `run-2.traj.json`, … until the sequence breaks (multi-run sweeps).
+/// Returns an empty vec when no trajectory files are found.
 pub fn load_all_trajectories_for_instance(
     dir: &std::path::Path,
     instance_id: &str,
 ) -> Vec<Trajectory> {
-    let root = dir.join(format!("{instance_id}.traj.json"));
-    if let Ok(text) = std::fs::read_to_string(&root) {
-        if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
-            return vec![traj];
+    // Single-file layouts (tried in priority order).
+    let single_candidates = [
+        dir.join(format!("{instance_id}.traj.json")),
+        dir.join(instance_id).join("trajectory.json"),
+        dir.join("trajectories")
+            .join(format!("{instance_id}.traj.json")),
+    ];
+    for path in &single_candidates {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                return vec![traj];
+            }
         }
     }
     let mut trajs = Vec::new();

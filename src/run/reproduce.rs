@@ -418,7 +418,11 @@ fn compute_sampling_drift_for_reproduce(
                 .map(|m| m.extra.sampling.as_ref())
                 .collect();
 
-            for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
+            // zip-longest: extra turns on either side count as drift.
+            let len = src_sampling.len().max(rep_sampling.len());
+            for i in 0..len {
+                let ss = src_sampling.get(i).copied().flatten();
+                let rs = rep_sampling.get(i).copied().flatten();
                 let drifted = match (ss, rs) {
                     (None, None) => false,
                     (Some(a), Some(b)) => a != b,
