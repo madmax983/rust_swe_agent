@@ -232,20 +232,28 @@ where
     (handle, buffer)
 }
 
+const MAX_PIPE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut remaining = MAX_PIPE_BUFFER_SIZE;
     loop {
+        if remaining == 0 {
+            return Ok(());
+        }
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
+        let take = std::cmp::min(n, remaining);
         buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+            .extend_from_slice(&chunk[..take]);
+        remaining = remaining.saturating_sub(take);
     }
 }
 
@@ -522,6 +530,23 @@ mod tests {
         req.env.insert("RSA_TEST_VAR".into(), "from_test".into());
         let r = env.run(req).await.unwrap();
         assert_eq!(r.stdout.trim(), "from_test");
+    }
+
+    #[tokio::test]
+    async fn read_pipe_to_buffer_caps_memory() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let mut pipe = tokio::io::repeat(b'A');
+        let task_buffer = Arc::clone(&buffer);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_pipe_to_buffer(&mut pipe, task_buffer),
+        )
+        .await;
+        let len = buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        assert_eq!(len, MAX_PIPE_BUFFER_SIZE);
     }
 
     #[tokio::test]
