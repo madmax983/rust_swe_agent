@@ -412,42 +412,19 @@ impl DefaultAgentBuilder {
         self.build_with_tool_providers(Vec::new())
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn build_with_tool_providers(
         self,
         tool_providers: Vec<Arc<dyn ToolProvider>>,
     ) -> Result<DefaultAgent, Error> {
-        let renderer = self.renderer.unwrap_or_else(|| Arc::new(Renderer::new()));
+        let renderer = self
+            .renderer
+            .clone()
+            .unwrap_or_else(|| Arc::new(Renderer::new()));
         let tool_registry =
             ToolRegistry::from_config_and_providers(&self.config.root.agent.tools, tool_providers)?;
         let prompt_tools = tool_registry.prompt_tools();
 
-        let wrapped_task = PromptGuard::wrap(UntrustedKind::TaskText, &self.task);
-        let wrapped_extra_context = self
-            .extra_context
-            .as_deref()
-            .map(|ctx| PromptGuard::wrap(UntrustedKind::ExtraContext, ctx));
-        let system_rendered = renderer.render_str(
-            &self.config.root.prompts.system,
-            &serde_json::json!({
-                "task": wrapped_task,
-                "extra_context": wrapped_extra_context,
-                "tools": &prompt_tools,
-            }),
-        )?;
-        let instance_rendered = renderer.render_str(
-            &self.config.root.prompts.instance,
-            &serde_json::json!({
-                "task": wrapped_task,
-                "extra_context": wrapped_extra_context,
-                "tools": &prompt_tools,
-            }),
-        )?;
-
-        let history = vec![
-            Message::system(system_rendered),
-            Message::user(instance_rendered),
-        ];
+        let history = self.build_history(&renderer, &prompt_tools)?;
 
         let started_at = chrono::Utc::now().to_rfc3339();
         let redactor = Redactor::from_config(&self.config.root.redaction).map_err(|err| {
@@ -456,19 +433,10 @@ impl DefaultAgentBuilder {
             )))
         })?;
 
-        let mut trajectory = Trajectory::new();
-        trajectory.info.task = Some(redactor.redact_text(&self.task, surface::TRAJECTORY).text);
-        trajectory.info.model_name = Some(self.model.name().to_owned());
-        trajectory.info.started_at = Some(started_at.clone());
-        trajectory.info.other.insert(
-            "toolset".into(),
-            serde_json::to_value(tool_registry.manifest())?,
-        );
-        for m in &history {
-            record_redacted_message(&mut trajectory, m, m.extra.clone(), &redactor);
-        }
+        let trajectory =
+            self.initialize_trajectory(&started_at, &redactor, &tool_registry, &history)?;
 
-        let stream: Arc<dyn StreamSink> = self.stream.map_or_else(
+        let stream: Arc<dyn StreamSink> = self.stream.clone().map_or_else(
             || Arc::new(NullSink) as Arc<dyn StreamSink>,
             |sink| Arc::new(RedactingSink::new(sink, redactor.clone())) as Arc<dyn StreamSink>,
         );
@@ -487,29 +455,7 @@ impl DefaultAgentBuilder {
             )))
         })?;
         // Validate and build the stagnation detector.
-        let agent_cfg = &self.config.root.agent;
-        let stagnation_detector = if agent_cfg.detect_stagnation {
-            let k = agent_cfg.stagnation_repeat_threshold;
-            let w = agent_cfg.stagnation_window;
-            if k == 0 {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "--stagnation-repeat-threshold must be >= 1".into(),
-                )));
-            }
-            if w == 0 {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "--stagnation-window must be >= 1".into(),
-                )));
-            }
-            if w < k {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "--stagnation-window ({w}) must be >= --stagnation-repeat-threshold ({k})"
-                ))));
-            }
-            Some(StagnationDetector::new(k, w))
-        } else {
-            None
-        };
+        let stagnation_detector = self.build_stagnation_detector()?;
 
         stream.emit(StreamEvent::RunStarted {
             task: self.task.clone(),
@@ -547,6 +493,85 @@ impl DefaultAgentBuilder {
             all_step_responders: Vec::new(),
             stagnation_detector,
         })
+    }
+
+    fn build_history(
+        &self,
+        renderer: &Renderer,
+        prompt_tools: &[crate::tool::ToolPromptInfo],
+    ) -> Result<Vec<Message>, Error> {
+        let wrapped_task = PromptGuard::wrap(UntrustedKind::TaskText, &self.task);
+        let wrapped_extra_context = self
+            .extra_context
+            .as_deref()
+            .map(|ctx| PromptGuard::wrap(UntrustedKind::ExtraContext, ctx));
+        let system_rendered = renderer.render_str(
+            &self.config.root.prompts.system,
+            &serde_json::json!({
+                "task": wrapped_task,
+                "extra_context": wrapped_extra_context,
+                "tools": prompt_tools,
+            }),
+        )?;
+        let instance_rendered = renderer.render_str(
+            &self.config.root.prompts.instance,
+            &serde_json::json!({
+                "task": wrapped_task,
+                "extra_context": wrapped_extra_context,
+                "tools": prompt_tools,
+            }),
+        )?;
+
+        Ok(vec![
+            Message::system(system_rendered),
+            Message::user(instance_rendered),
+        ])
+    }
+
+    fn initialize_trajectory(
+        &self,
+        started_at: &str,
+        redactor: &Redactor,
+        tool_registry: &ToolRegistry,
+        history: &[Message],
+    ) -> Result<Trajectory, Error> {
+        let mut trajectory = Trajectory::new();
+        trajectory.info.task = Some(redactor.redact_text(&self.task, surface::TRAJECTORY).text);
+        trajectory.info.model_name = Some(self.model.name().to_owned());
+        trajectory.info.started_at = Some(started_at.to_owned());
+        trajectory.info.other.insert(
+            "toolset".into(),
+            serde_json::to_value(tool_registry.manifest())?,
+        );
+        for m in history {
+            record_redacted_message(&mut trajectory, m, m.extra.clone(), redactor);
+        }
+        Ok(trajectory)
+    }
+
+    fn build_stagnation_detector(&self) -> Result<Option<StagnationDetector>, Error> {
+        let agent_cfg = &self.config.root.agent;
+        if !agent_cfg.detect_stagnation {
+            return Ok(None);
+        }
+        let k = agent_cfg.stagnation_repeat_threshold;
+        let w = agent_cfg.stagnation_window;
+        if k == 0 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--stagnation-repeat-threshold must be >= 1".into(),
+            )));
+        }
+        if w == 0 {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--stagnation-window must be >= 1".into(),
+            )));
+        }
+        if w < k {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--stagnation-window ({w}) must be >= --stagnation-repeat-threshold ({k})"
+            ))));
+        }
+        Ok(Some(StagnationDetector::new(k, w)))
     }
 }
 
