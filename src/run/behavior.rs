@@ -697,6 +697,17 @@ fn split_pipeline(command: &str) -> Vec<&str> {
     segments
 }
 
+/// Return the first arg in `args` that is a member of `known`, skipping over flags.
+///
+/// This lets dispatch commands like `cargo --locked test` or `gradle --no-daemon test`
+/// find their subcommand even when global options appear before it.
+fn find_subcommand<'a>(args: &[&'a str], known: &[&str]) -> &'a str {
+    args.iter()
+        .find(|&&t| known.contains(&t))
+        .copied()
+        .unwrap_or("")
+}
+
 /// Classify one pipeline segment. Returns `(ActionClass, Some(head))` when class is `Other`.
 fn classify_segment(segment: &str) -> (ActionClass, Option<String>) {
     let segment = segment.trim();
@@ -713,35 +724,44 @@ fn classify_segment(segment: &str) -> (ActionClass, Option<String>) {
 
     let head = tokens[start];
     let rest = &tokens[start + 1..];
-    let first_arg = rest.first().copied().unwrap_or("");
 
     let class = match head {
         // Test (direct invocation)
         "pytest" | "tox" | "nose" | "jest" | "mocha" | "vitest" | "phpunit" | "rspec" => {
             ActionClass::Test
         }
-        // Dispatch commands: test vs build depends on subcommand
-        "cargo" => match first_arg {
-            "test" | "nextest" => ActionClass::Test,
-            "build" | "check" | "clippy" | "fmt" => ActionClass::Build,
-            _ => ActionClass::Other,
-        },
-        "npm" | "yarn" => match first_arg {
-            "test" => ActionClass::Test,
-            "build" => ActionClass::Build,
-            "run" => match rest.get(1).copied().unwrap_or("") {
-                "build" => ActionClass::Build,
-                "test" => ActionClass::Test,
+        // Dispatch commands: test vs build depends on subcommand.
+        // Use find_subcommand so global flags (e.g. `cargo --locked test`,
+        // `gradle --no-daemon build`, `mvn -q test`) don't mask the subcommand.
+        "cargo" => {
+            match find_subcommand(
+                rest,
+                &["test", "nextest", "build", "check", "clippy", "fmt"],
+            ) {
+                "test" | "nextest" => ActionClass::Test,
+                "build" | "check" | "clippy" | "fmt" => ActionClass::Build,
                 _ => ActionClass::Other,
-            },
+            }
+        }
+        "npm" | "yarn" => match find_subcommand(rest, &["test", "build", "run"]) {
+            "test" => ActionClass::Test,
+            "build" => ActionClass::Build,
+            "run" => {
+                let run_pos = rest.iter().position(|&t| t == "run").unwrap_or(rest.len());
+                match find_subcommand(&rest[run_pos + 1..], &["build", "test"]) {
+                    "build" => ActionClass::Build,
+                    "test" => ActionClass::Test,
+                    _ => ActionClass::Other,
+                }
+            }
             _ => ActionClass::Other,
         },
-        "go" | "gradle" => match first_arg {
+        "go" | "gradle" => match find_subcommand(rest, &["test", "build"]) {
             "test" => ActionClass::Test,
             "build" => ActionClass::Build,
             _ => ActionClass::Other,
         },
-        "mvn" => match first_arg {
+        "mvn" => match find_subcommand(rest, &["test", "package"]) {
             "test" => ActionClass::Test,
             "package" => ActionClass::Build,
             _ => ActionClass::Other,
@@ -810,8 +830,23 @@ fn prefix_start_index(tokens: &[&str]) -> usize {
 
         if token == "env" {
             i += 1;
-            while i < tokens.len() && (tokens[i].starts_with('-') || tokens[i].contains('=')) {
-                i += 1;
+            while i < tokens.len() {
+                let t = tokens[i];
+                if !t.starts_with('-') && t.contains('=') {
+                    // VAR=val assignment
+                    i += 1;
+                } else if t == "-u" || t == "--unset" || t == "-C" || t == "--chdir" {
+                    // env flags that each take one argument
+                    i += 1;
+                    if i < tokens.len() {
+                        i += 1;
+                    }
+                } else if t.starts_with('-') {
+                    // boolean env flag (e.g. -i / --ignore-environment)
+                    i += 1;
+                } else {
+                    break;
+                }
             }
             continue;
         }
