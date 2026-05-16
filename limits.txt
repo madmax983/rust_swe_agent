@@ -1,0 +1,81 @@
+            return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+        }
+
+        // 1. Limit checks.
+        if self.steps >= self.config.root.agent.step_limit {
+            self.trajectory.info.exit_reason = Some("step_limit".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
+            self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+            self.emit_run_ended("step_limit", Some(FailureCategory::StepLimit), None);
+            return Ok(StepOutcome::Terminate(ExitReason::StepLimit {
+                limit: self.config.root.agent.step_limit,
+            }));
+        }
+        if let Some(limit) = self.config.root.agent.cost_limit_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("cost_limit".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::CostLimit);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                // Cost limit is also a resource limit; map to the same
+                // coarse outcome as step limit per the three-value spec.
+                self.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
+                self.emit_run_ended("cost_limit", Some(FailureCategory::CostLimit), None);
+                return Ok(StepOutcome::Terminate(ExitReason::CostLimit {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                }));
+            }
+        }
+        if let Some(limit) = self.config.root.agent.per_task_budget_usd {
+            if self.total_cost_usd >= limit {
+                self.trajectory.info.exit_reason = Some("budget_exhausted".into());
+                self.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
+                self.trajectory.info.steps = Some(self.steps);
+                self.trajectory.info.total_cost_usd = Some(self.total_cost_usd);
+                self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
+                self.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+                self.emit_run_ended(
+                    "budget_exhausted",
+                    Some(FailureCategory::BudgetExhausted),
+                    None,
+                );
+                return Ok(StepOutcome::Terminate(ExitReason::BudgetExhausted {
+                    limit_usd: limit,
+                    spent_usd: self.total_cost_usd,
+                }));
+            }
+        }
+        self.maybe_warn_wallclock_deadline();
+
+        // 2. Retag cache hints (one line; backend handles capping).
+        retag_cache_hints(&mut self.history);
+
+        // 2.5. Elide stale observations from the model-visible prompt per
+        //      history_max_input_tokens / history_keep_last_observations config.
+        //      The full content is kept in self.history and the trajectory.
+        let elision = elide_history_for_model(
+            &self.history,
+            self.config.root.agent.history_keep_last_observations,
+            self.config.root.agent.history_max_input_tokens,
+        );
+        if elision.compaction_failed {
+            self.trajectory.info.exit_reason = Some("history_compaction_failed".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::HistoryCompactionFailed);
+            self.trajectory.info.steps = Some(self.steps);
+            self.finalize_run_metadata(outcome::ERROR);
+            self.emit_run_ended(
+                "history_compaction_failed",
+                Some(FailureCategory::HistoryCompactionFailed),
+                None,
+            );
+            return Ok(StepOutcome::Terminate(ExitReason::HistoryCompactionFailed));
+        }
+        // Retroactively mark elided observations in the trajectory.
+        // We also store the marker text so bench-inspect can reconstruct
+        // "as-sent-to-model" view without re-running elision logic.
+        for (hist_idx, orig_bytes) in &elision.elided {
+            if let Some(rec) = self.trajectory.messages.get_mut(*hist_idx) {
+                // The elided prompt slice at hist_idx holds the marker.
+                let marker = elision.prompt[*hist_idx].content.clone();
