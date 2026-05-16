@@ -224,10 +224,9 @@ fn raw_tool_arguments_to_input(tool_name: &str, arguments: &Value) -> Option<Str
     match arguments {
         Value::String(s) => {
             if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                raw_tool_arguments_to_input(tool_name, &parsed)
-            } else {
-                Some(s.clone())
+                return raw_tool_arguments_to_input(tool_name, &parsed);
             }
+            Some(s.clone())
         }
         Value::Object(map) if tool_name == BASH_TOOL_NAME => map
             .get("command")
@@ -459,6 +458,30 @@ mod tests {
         assert_eq!(
             extract_action_from_model_response(content, &raw, &["bash".into()]),
             Action::Submit("final".into())
+        );
+    }
+
+    #[test]
+    fn raw_tool_arguments_fall_back_to_json_string() {
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "custom_tool",
+                            "arguments": {"key": "value"}
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert_eq!(
+            extract_action_from_model_response("Let me run that.", &raw, &["custom_tool".into()]),
+            Action::Tool(ToolCall {
+                name: "custom_tool".into(),
+                input: "{\"key\":\"value\"}".into()
+            })
         );
     }
 }
