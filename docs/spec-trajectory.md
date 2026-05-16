@@ -170,5 +170,4 @@ when trajectory files from the source and replay sweeps are available:
 
 A mismatch here is classified as a **soft** divergence: the run is still
 considered reproducible for outcome purposes, but the drift is recorded for
-audit. Pass `--strict-sampling` to escalate this to a hard divergence (future
-work).
+audit. Pass `--strict-sampling` to escalate this to a hard divergence.

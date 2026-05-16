@@ -384,24 +384,6 @@ pub fn build_reproducibility_report(
     }
 }
 
-fn load_trajectory_for_instance(
-    dir: &Path,
-    instance_id: &str,
-) -> Option<crate::trajectory::Trajectory> {
-    let candidates = [
-        dir.join(format!("{instance_id}.traj.json")),
-        dir.join(instance_id).join("run-1.traj.json"),
-    ];
-    for path in &candidates {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) {
-                return Some(traj);
-            }
-        }
-    }
-    None
-}
-
 fn compute_sampling_drift_for_reproduce(
     source_dir: &Path,
     replay_dir: &Path,
@@ -412,10 +394,10 @@ fn compute_sampling_drift_for_reproduce(
     let mut any_loaded = false;
 
     for id in instance_ids {
-        let Some(src) = load_trajectory_for_instance(source_dir, id) else {
+        let Some(src) = crate::trajectory::load_trajectory_for_instance(source_dir, id) else {
             continue;
         };
-        let Some(rep) = load_trajectory_for_instance(replay_dir, id) else {
+        let Some(rep) = crate::trajectory::load_trajectory_for_instance(replay_dir, id) else {
             continue;
         };
         any_loaded = true;
@@ -431,19 +413,14 @@ fn compute_sampling_drift_for_reproduce(
             .filter_map(|m| m.extra.sampling.as_ref())
             .collect();
 
-        let mut instance_drifted = false;
+        let mut any_step_drifted = false;
         for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
-            if ss.model != rs.model
-                || ss.temperature != rs.temperature
-                || ss.top_p != rs.top_p
-                || ss.max_tokens != rs.max_tokens
-                || ss.seed != rs.seed
-            {
+            if ss != rs {
                 steps_drifted += 1;
-                instance_drifted = true;
+                any_step_drifted = true;
             }
         }
-        if instance_drifted {
+        if any_step_drifted {
             instances_drifted += 1;
         }
     }

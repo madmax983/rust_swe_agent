@@ -1413,14 +1413,13 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
                     "reproduce: hard sampling drift (--strict-sampling): {}",
                     drift_field.message
                 ))));
-            } else {
-                tracing::warn!(
-                    steps_drifted = sd.steps_drifted,
-                    instances_drifted = sd.instances_drifted,
-                    "reproduce: soft sampling drift — {}",
-                    drift_field.message
-                );
             }
+            tracing::warn!(
+                steps_drifted = sd.steps_drifted,
+                instances_drifted = sd.instances_drifted,
+                "reproduce: soft sampling drift — {}",
+                drift_field.message
+            );
         }
     }
 

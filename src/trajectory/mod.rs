@@ -685,6 +685,29 @@ impl Trajectory {
     }
 }
 
+/// Load a trajectory for `instance_id` from `dir`.
+///
+/// Checks `{dir}/{instance_id}.traj.json` (root format) first, then
+/// `{dir}/{instance_id}/run-1.traj.json` (nested format). Returns `None` if
+/// neither file exists or can be parsed.
+pub fn load_trajectory_for_instance(
+    dir: &std::path::Path,
+    instance_id: &str,
+) -> Option<Trajectory> {
+    let candidates = [
+        dir.join(format!("{instance_id}.traj.json")),
+        dir.join(instance_id).join("run-1.traj.json"),
+    ];
+    for path in &candidates {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                return Some(traj);
+            }
+        }
+    }
+    None
+}
+
 fn role_to_string(r: crate::model::Role) -> String {
     match r {
         crate::model::Role::System => "system".into(),

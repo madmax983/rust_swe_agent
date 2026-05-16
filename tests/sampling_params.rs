@@ -8,9 +8,8 @@
 //!   (d) fallback records the post-fallback model name in `sampling.model`
 //!   (e) redaction masks a synthetic secret-shaped key in `sampling.extra`
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,9 +27,7 @@ use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
 use rust_swe_agent::trajectory::{
     FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo, outcome,
 };
-use rust_swe_agent::{
-    Agent, Config, DeterministicModel, Environment, ExitReason, FallbackModel, RunResult,
-};
+use rust_swe_agent::{Agent, Config, DeterministicModel, Environment, FallbackModel, RunResult};
 
 mod support;
 
@@ -78,7 +75,6 @@ max_tokens = 4096
 }
 
 fn write_sweep_results(dir: &Path, instances: &[&str], passed: bool) {
-    use rust_swe_agent::run::swebench::FilterSpec;
     let instance_results: Vec<InstanceResult> = instances
         .iter()
         .map(|id| InstanceResult {
@@ -137,15 +133,17 @@ fn write_sweep_results(dir: &Path, instances: &[&str], passed: bool) {
 }
 
 fn write_traj_with_temperature(dir: &Path, instance_id: &str, temperature: f32) {
-    let mut assistant_extra = MessageExtra::default();
-    assistant_extra.sampling = Some(SamplingParams {
-        model: "deterministic".to_owned(),
-        temperature: Some(temperature),
-        top_p: None,
-        max_tokens: Some(4096),
-        seed: None,
-        extra: serde_json::Map::new(),
-    });
+    let assistant_extra = MessageExtra {
+        sampling: Some(SamplingParams {
+            model: "deterministic".to_owned(),
+            temperature: Some(temperature),
+            top_p: None,
+            max_tokens: Some(4096),
+            seed: None,
+            extra: serde_json::Map::new(),
+        }),
+        ..MessageExtra::default()
+    };
     let traj = Trajectory {
         trajectory_format: FORMAT_VERSION.into(),
         info: TrajectoryInfo {
@@ -263,8 +261,8 @@ fn bench_compare_flags_sampling_only_difference() {
     write_traj_with_temperature(&candidate_dir, "task1", 0.7);
 
     let args = CompareArgs {
-        baseline: baseline_dir.clone(),
-        candidate: candidate_dir.clone(),
+        baseline: baseline_dir,
+        candidate: candidate_dir,
         format: CompareFormat::Json,
         max_regressions: None,
         max_patch_size_regression_pct: None,

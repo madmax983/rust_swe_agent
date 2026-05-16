@@ -2842,35 +2842,8 @@ fn build_cost_attribution_rows_from_run_slots(
 
 // ── sampling drift ───────────────────────────────────────────────────────────
 
-/// Try to load a trajectory for `instance_id` from `dir`.
-/// Looks for `{dir}/{instance_id}.traj.json` (root format) first, then
-/// `{dir}/{instance_id}/run-1.traj.json` (nested format).
-fn load_trajectory_for_instance(
-    dir: &Path,
-    instance_id: &str,
-) -> Option<crate::trajectory::Trajectory> {
-    let candidates = [
-        dir.join(format!("{instance_id}.traj.json")),
-        dir.join(instance_id).join("run-1.traj.json"),
-    ];
-    for path in &candidates {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) {
-                return Some(traj);
-            }
-        }
-    }
-    None
-}
-
-/// Compare sampling params from two `SamplingParams` instances.
-/// Returns `true` when the parameters differ in any meaningful dimension.
 fn sampling_differs(a: &crate::model::SamplingParams, b: &crate::model::SamplingParams) -> bool {
-    a.model != b.model
-        || a.temperature != b.temperature
-        || a.top_p != b.top_p
-        || a.max_tokens != b.max_tokens
-        || a.seed != b.seed
+    a != b
 }
 
 /// Scan trajectory files for both sweeps and count per-step sampling drift.
@@ -2885,10 +2858,11 @@ fn detect_sampling_drift(
     let mut any_loaded = false;
 
     for id in instance_ids {
-        let Some(b_traj) = load_trajectory_for_instance(baseline_dir, id) else {
+        let Some(b_traj) = crate::trajectory::load_trajectory_for_instance(baseline_dir, id) else {
             continue;
         };
-        let Some(c_traj) = load_trajectory_for_instance(candidate_dir, id) else {
+        let Some(c_traj) = crate::trajectory::load_trajectory_for_instance(candidate_dir, id)
+        else {
             continue;
         };
         any_loaded = true;
