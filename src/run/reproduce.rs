@@ -369,8 +369,7 @@ pub fn build_reproducibility_report(
 
     // Sampling drift: scan trajectory files for source vs replay.
     let common_ids: Vec<String> = instances.iter().map(|e| e.instance_id.clone()).collect();
-    let sampling_drift =
-        compute_sampling_drift_for_reproduce(source_dir, output_dir, &common_ids);
+    let sampling_drift = compute_sampling_drift_for_reproduce(source_dir, output_dir, &common_ids);
 
     ReproducibilityReport {
         source_sweep: source_dir.display().to_string(),
@@ -385,7 +384,10 @@ pub fn build_reproducibility_report(
     }
 }
 
-fn load_trajectory_for_instance(dir: &Path, instance_id: &str) -> Option<crate::trajectory::Trajectory> {
+fn load_trajectory_for_instance(
+    dir: &Path,
+    instance_id: &str,
+) -> Option<crate::trajectory::Trajectory> {
     let candidates = [
         dir.join(format!("{instance_id}.traj.json")),
         dir.join(instance_id).join("run-1.traj.json"),

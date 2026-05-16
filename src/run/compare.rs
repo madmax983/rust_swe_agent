@@ -1486,8 +1486,7 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         .filter(|id| candidate.instances.contains_key(*id))
         .cloned()
         .collect();
-    report.sampling_drift =
-        detect_sampling_drift(&args.baseline, &args.candidate, &common_ids);
+    report.sampling_drift = detect_sampling_drift(&args.baseline, &args.candidate, &common_ids);
     Ok(report)
 }
 
@@ -2866,10 +2865,7 @@ fn load_trajectory_for_instance(
 
 /// Compare sampling params from two `SamplingParams` instances.
 /// Returns `true` when the parameters differ in any meaningful dimension.
-fn sampling_differs(
-    a: &crate::model::SamplingParams,
-    b: &crate::model::SamplingParams,
-) -> bool {
+fn sampling_differs(a: &crate::model::SamplingParams, b: &crate::model::SamplingParams) -> bool {
     a.model != b.model
         || a.temperature != b.temperature
         || a.top_p != b.top_p

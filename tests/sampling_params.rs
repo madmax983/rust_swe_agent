@@ -18,13 +18,19 @@ use async_trait::async_trait;
 use rust_swe_agent::agent::default::DefaultAgentBuilder;
 use rust_swe_agent::env::RunRequest;
 use rust_swe_agent::error::{EnvError, ModelError};
-use rust_swe_agent::model::{Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, SamplingParams};
+use rust_swe_agent::model::{
+    Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, SamplingParams,
+};
 use rust_swe_agent::redaction::Redactor;
 use rust_swe_agent::run::compare::{CompareArgs, CompareFormat, compute as compare_compute};
 use rust_swe_agent::run::evaluate::BreakdownSelection;
 use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo, outcome};
-use rust_swe_agent::{Agent, Config, DeterministicModel, Environment, ExitReason, FallbackModel, RunResult};
+use rust_swe_agent::trajectory::{
+    FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo, outcome,
+};
+use rust_swe_agent::{
+    Agent, Config, DeterministicModel, Environment, ExitReason, FallbackModel, RunResult,
+};
 
 mod support;
 
@@ -77,8 +83,16 @@ fn write_sweep_results(dir: &Path, instances: &[&str], passed: bool) {
         .iter()
         .map(|id| InstanceResult {
             instance_id: (*id).to_owned(),
-            exit_reason: if passed { "submitted".into() } else { "error".into() },
-            outcome: Some(if passed { outcome::SUBMITTED.into() } else { outcome::ERROR.into() }),
+            exit_reason: if passed {
+                "submitted".into()
+            } else {
+                "error".into()
+            },
+            outcome: Some(if passed {
+                outcome::SUBMITTED.into()
+            } else {
+                outcome::ERROR.into()
+            }),
             failure_category: None,
             steps: Some(2),
             cost_usd: Some(0.0),
