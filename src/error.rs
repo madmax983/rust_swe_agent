@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+/// The central error enumeration for `rust_swe_agent`, consolidating failures across models, parsing, configuration, and execution.
 pub enum Error {
     #[error(transparent)]
     Model(#[from] ModelError),
@@ -27,6 +28,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
+    /// A JSON parsing or serialization error occurred.
     Json(#[from] serde_json::Error),
 
     /// One or more operator-supplied verification checks did not pass.

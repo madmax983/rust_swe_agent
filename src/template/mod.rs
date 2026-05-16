@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// A template renderer backed by minijinja for generating system prompts, format errors, and other dynamic content.
 pub struct Renderer {
+    /// The internal minijinja environment containing compiled templates.
     env: Environment<'static>,
 }
 
@@ -23,6 +25,16 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` initialized with all the required built-in templates.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::template::Renderer;
+    ///
+    /// let renderer = Renderer::new();
+    /// // renderer is now ready to render templates like "format_error.j2"
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +55,21 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Renders a specific template with the provided minijinja `Value` context.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// let result = renderer.render_with("format_error.j2", context! {
+    ///     format_error => "Missing required fields",
+    ///     suggestion => "Please provide the missing fields"
+    /// });
+    /// assert!(result.is_ok());
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }

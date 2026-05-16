@@ -18,11 +18,16 @@ use crate::redaction::{Redactor, surface};
 use crate::trajectory::TrajectoryInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A parsed manifest defining a single skill, typically loaded from a `skill.json` file.
 pub struct SkillManifest {
+    /// The unique identifier or name of the skill.
     pub name: String,
+    /// A human-readable description of what the skill does.
     pub description: String,
+    /// The absolute or relative path to the skill directory.
     pub path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// The optional version of the skill.
     pub version: Option<String>,
     #[serde(skip)]
     normalized_name: String,
@@ -31,55 +36,91 @@ pub struct SkillManifest {
 }
 
 #[derive(Debug, Clone, Default)]
+/// The global registry of available skills, parsed from manifest files during initialization.
 pub struct SkillRegistry {
     manifests: Vec<SkillManifest>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// The reason why a particular skill was chosen to be activated.
 pub enum SkillActivationReason {
+    /// Activated because the skill was explicitly mentioned by name or pattern.
     ExplicitMention,
+    /// Activated automatically via keyword matching or configuration rules.
     AutoMatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Represents a skill that has been selected and activated for the current agent run.
 pub struct ActiveSkill {
+    /// The unique identifier or name of the skill.
     pub name: String,
+    /// A human-readable description of what the skill does.
     pub description: String,
+    /// The absolute or relative path to the skill directory.
     pub path: PathBuf,
+    /// The loaded content or script of the active skill.
     pub content: String,
+    /// The SHA256 checksum of the skill content for verification and provenance tracking.
     pub sha256: String,
+    /// The specific reason this skill was activated.
     pub activation_reason: SkillActivationReason,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// A collection of skills that are currently active for the agent.
 pub struct ActiveSkillSet {
+    /// The list of active skills.
     pub skills: Vec<ActiveSkill>,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Parameters required for resolving which skills should be active.
 pub struct SkillResolveRequest<'a> {
+    /// The primary task or query given to the agent.
     pub task: &'a str,
+    /// Whether to automatically load skills based on dynamic rules.
     pub auto_load: bool,
+    /// The maximum number of skills that can be active simultaneously.
     pub max_active: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A summary of an active skill used for provenance logging and trajectory output.
 pub struct ActiveSkillManifest {
+    /// The unique identifier or name of the skill.
     pub name: String,
+    /// A human-readable description of what the skill does.
     pub description: String,
+    /// The absolute or relative path to the skill directory.
     pub path: PathBuf,
+    /// The SHA256 checksum of the skill content for verification and provenance tracking.
     pub sha256: String,
+    /// The specific reason this skill was activated.
     pub activation_reason: SkillActivationReason,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The complete context resulting from skill resolution, including active skills and any extra system instructions.
 pub struct ResolvedSkillContext {
+    /// The set of skills that were resolved and are now active.
     pub active_skills: ActiveSkillSet,
+    /// Any combined extra context strings provided by the active skills, to be appended to the system prompt.
     pub merged_extra_context: Option<String>,
 }
 
 impl SkillRegistry {
+    /// Scans a series of directory paths to locate and parse `skill.json` files.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust,no_run
+    /// use rust_swe_agent::skills::SkillRegistry;
+    /// use std::path::PathBuf;
+    ///
+    /// let lib = SkillRegistry::scan_paths(vec![PathBuf::from("./skills")]).unwrap();
+    /// ```
     pub fn scan_paths(paths: impl IntoIterator<Item = PathBuf>) -> Result<Self, Error> {
         let mut skill_files = Vec::new();
         for path in paths {
@@ -117,10 +158,25 @@ impl SkillRegistry {
         Ok(Self { manifests })
     }
 
+    /// Returns a slice of all parsed `SkillManifest`s in this library.
     pub fn manifests(&self) -> &[SkillManifest] {
         &self.manifests
     }
 
+    /// Determines which skills should be activated based on the provided request parameters.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust,no_run
+    /// use rust_swe_agent::skills::{SkillRegistry, SkillResolveRequest};
+    ///
+    /// let lib = SkillRegistry::default();
+    /// let active = lib.resolve(SkillResolveRequest {
+    ///     task: "Fix a bug",
+    ///     auto_load: true,
+    ///     max_active: 5,
+    /// }).unwrap();
+    /// ```
     pub fn resolve(&self, request: SkillResolveRequest<'_>) -> Result<ActiveSkillSet, Error> {
         if request.max_active == 0 {
             return Ok(ActiveSkillSet::default());
@@ -178,10 +234,12 @@ impl SkillRegistry {
 }
 
 impl ActiveSkillSet {
+    /// Returns `true` if there are no active skills in the set.
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
 
+    /// Renders the active skills into a single string format suitable for inclusion in prompts or logs.
     pub fn render_context(&self) -> String {
         if self.skills.is_empty() {
             return String::new();
@@ -207,6 +265,7 @@ impl ActiveSkillSet {
         rendered
     }
 
+    /// Merges an existing string of extra context with any context provided by the active skills.
     pub fn merge_extra_context(&self, extra_context: Option<String>) -> Option<String> {
         let skill_context = self.render_context();
         if skill_context.is_empty() {
@@ -218,6 +277,7 @@ impl ActiveSkillSet {
         })
     }
 
+    /// Returns a list of manifest summaries for tracking which skills were used during a run.
     pub fn provenance(&self) -> Vec<ActiveSkillManifest> {
         self.skills
             .iter()
@@ -231,6 +291,7 @@ impl ActiveSkillSet {
             .collect()
     }
 
+    /// Returns a JSON value containing the provenance data, passing paths through the provided `Redactor`.
     pub fn redacted_provenance_value(
         &self,
         redactor: &Redactor,
@@ -240,6 +301,7 @@ impl ActiveSkillSet {
         Ok(value)
     }
 
+    /// Records the redacted provenance of the active skills directly into the provided `TrajectoryInfo`.
     pub fn record_redacted_provenance(
         &self,
         info: &mut TrajectoryInfo,
@@ -256,6 +318,17 @@ impl ActiveSkillSet {
     }
 }
 
+/// A convenience helper to resolve active skills from configuration options based on the task description.
+///
+/// ## Examples
+///
+/// ```rust,no_run
+/// use rust_swe_agent::skills::resolve_for_task;
+/// use rust_swe_agent::config::SkillCfg;
+///
+/// let cfg = SkillCfg::default();
+/// let resolved = resolve_for_task(&cfg, "Build the project", None).unwrap();
+/// ```
 pub fn resolve_for_task(
     cfg: &SkillCfg,
     task: &str,
