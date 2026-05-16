@@ -177,6 +177,7 @@ pub fn run(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
 
 // ── text rendering ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_share: f64) -> String {
     use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
