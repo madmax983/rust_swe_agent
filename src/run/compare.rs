@@ -2898,25 +2898,34 @@ fn detect_sampling_drift(
         any_loaded = true;
 
         for (b_traj, c_traj) in b_trajs.iter().zip(c_trajs.iter()) {
-            let b_sampling: Vec<&crate::model::SamplingParams> = b_traj
+            // Collect Option<&SamplingParams> for every assistant turn so that
+            // Some(params) vs None (legacy trajectory) is counted as drift.
+            let b_sampling: Vec<Option<&crate::model::SamplingParams>> = b_traj
                 .messages
                 .iter()
-                .filter_map(|m| m.extra.sampling.as_ref())
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
                 .collect();
-            let c_sampling: Vec<&crate::model::SamplingParams> = c_traj
+            let c_sampling: Vec<Option<&crate::model::SamplingParams>> = c_traj
                 .messages
                 .iter()
-                .filter_map(|m| m.extra.sampling.as_ref())
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
                 .collect();
 
             for (bs, cs) in b_sampling.iter().zip(c_sampling.iter()) {
-                if sampling_differs(bs, cs) {
+                let drifted = match (bs, cs) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => sampling_differs(a, b),
+                    _ => true,
+                };
+                if drifted {
                     steps_drifted += 1;
                     if example.is_none() {
                         example = Some(SamplingDriftExample {
                             instance_id: id.clone(),
-                            baseline_sampling: Some((*bs).clone()),
-                            candidate_sampling: Some((*cs).clone()),
+                            baseline_sampling: bs.map(|s| (*s).clone()),
+                            candidate_sampling: cs.map(|s| (*s).clone()),
                         });
                     }
                 }

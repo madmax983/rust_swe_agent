@@ -595,3 +595,73 @@ fn inspect_redaction_masks_sampling_extra_secret_key() {
         "non-secret key should be unchanged"
     );
 }
+
+// ── test (f): Some vs None sampling counts as drift ──────────────────────────
+
+fn write_legacy_traj(dir: &Path, instance_id: &str) {
+    let traj = Trajectory {
+        trajectory_format: FORMAT_VERSION.into(),
+        info: TrajectoryInfo {
+            outcome: Some(outcome::SUBMITTED.into()),
+            model_name: Some("deterministic".into()),
+            ..Default::default()
+        },
+        messages: vec![
+            MessageRecord {
+                role: "user".into(),
+                content: "task".into(),
+                extra: MessageExtra::default(),
+            },
+            MessageRecord {
+                role: "assistant".into(),
+                content: "response".into(),
+                extra: MessageExtra::default(), // no sampling block
+            },
+        ],
+    };
+    std::fs::write(
+        dir.join(format!("{instance_id}.traj.json")),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn bench_compare_flags_sampling_presence_vs_absence_as_drift() {
+    let work = tempfile::tempdir().unwrap();
+    let baseline_dir = work.path().join("baseline");
+    let candidate_dir = work.path().join("candidate");
+    std::fs::create_dir_all(&baseline_dir).unwrap();
+    std::fs::create_dir_all(&candidate_dir).unwrap();
+
+    write_sweep_results(&baseline_dir, &["task1"], true);
+    write_sweep_results(&candidate_dir, &["task1"], true);
+    // Baseline has a sampling block; candidate is a legacy trajectory without one.
+    write_traj_with_temperature(&baseline_dir, "task1", 0.0);
+    write_legacy_traj(&candidate_dir, "task1");
+
+    let args = rust_swe_agent::run::compare::CompareArgs {
+        baseline: baseline_dir,
+        candidate: candidate_dir,
+        format: CompareFormat::Json,
+        max_regressions: None,
+        max_patch_size_regression_pct: None,
+        breakdown: BreakdownSelection::none(),
+        min_delta_pp: 0.0,
+        cost_attribution: false,
+        cost_attribution_min_delta_usd: 0.0,
+        min_significance: None,
+        regression_significance: None,
+        allow_underpowered: true,
+    };
+    let report = compare_compute(&args).unwrap();
+    let drift = report
+        .sampling_drift
+        .as_ref()
+        .expect("should detect sampling drift when one side is legacy");
+    assert!(
+        drift.steps_drifted > 0,
+        "Some(params) vs null should count as drift, got steps_drifted={}",
+        drift.steps_drifted
+    );
+}

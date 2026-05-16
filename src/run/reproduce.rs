@@ -403,19 +403,28 @@ fn compute_sampling_drift_for_reproduce(
 
         let mut any_step_drifted = false;
         for (src, rep) in src_trajs.iter().zip(rep_trajs.iter()) {
-            let src_sampling: Vec<&crate::model::SamplingParams> = src
+            // Use Option<&SamplingParams> so Some vs None (legacy trajectory)
+            // is treated as drift rather than silently skipped.
+            let src_sampling: Vec<Option<&crate::model::SamplingParams>> = src
                 .messages
                 .iter()
-                .filter_map(|m| m.extra.sampling.as_ref())
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
                 .collect();
-            let rep_sampling: Vec<&crate::model::SamplingParams> = rep
+            let rep_sampling: Vec<Option<&crate::model::SamplingParams>> = rep
                 .messages
                 .iter()
-                .filter_map(|m| m.extra.sampling.as_ref())
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
                 .collect();
 
             for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
-                if ss != rs {
+                let drifted = match (ss, rs) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => a != b,
+                    _ => true,
+                };
+                if drifted {
                     steps_drifted += 1;
                     any_step_drifted = true;
                 }
