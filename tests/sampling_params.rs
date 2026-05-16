@@ -439,3 +439,159 @@ fn redaction_masks_secret_shaped_extra_key_in_sampling_extra() {
         "safe_setting should not be redacted"
     );
 }
+
+// ── unit coverage helpers ─────────────────────────────────────────────────────
+
+#[test]
+fn sampling_params_summary_line_all_fields() {
+    let s = SamplingParams {
+        model: "claude-opus-4-7".into(),
+        temperature: Some(0.5),
+        top_p: Some(0.9),
+        max_tokens: Some(4096),
+        seed: Some(42),
+        extra: serde_json::Map::new(),
+    };
+    let line = s.summary_line();
+    assert!(line.contains("model=claude-opus-4-7"), "{line}");
+    assert!(line.contains("temp=0.5"), "{line}");
+    assert!(line.contains("top_p=0.9"), "{line}");
+    assert!(line.contains("max_tokens=4096"), "{line}");
+    assert!(line.contains("seed=42"), "{line}");
+}
+
+#[test]
+fn sampling_params_summary_line_minimal() {
+    let s = SamplingParams {
+        model: "deterministic".into(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        seed: None,
+        extra: serde_json::Map::new(),
+    };
+    assert_eq!(s.summary_line(), "model=deterministic");
+}
+
+#[test]
+fn sampling_drift_block_as_drift_field_soft() {
+    use rust_swe_agent::run::reproduce::{DriftSeverity, SamplingDriftBlock};
+    let block = SamplingDriftBlock {
+        instances_drifted: 2,
+        steps_drifted: 5,
+    };
+    let field = block.as_drift_field(false);
+    assert_eq!(field.field, "sampling");
+    assert_eq!(field.severity, DriftSeverity::Soft);
+    assert!(field.message.contains("5 step(s)"), "{}", field.message);
+    assert!(field.message.contains("2 instance(s)"), "{}", field.message);
+}
+
+#[test]
+fn sampling_drift_block_as_drift_field_hard() {
+    use rust_swe_agent::run::reproduce::{DriftSeverity, SamplingDriftBlock};
+    let block = SamplingDriftBlock {
+        instances_drifted: 1,
+        steps_drifted: 3,
+    };
+    let field = block.as_drift_field(true);
+    assert_eq!(field.severity, DriftSeverity::Hard);
+}
+
+#[test]
+fn bench_compare_text_output_includes_sampling_drift() {
+    let work = tempfile::tempdir().unwrap();
+    let baseline_dir = work.path().join("baseline");
+    let candidate_dir = work.path().join("candidate");
+    std::fs::create_dir_all(&baseline_dir).unwrap();
+    std::fs::create_dir_all(&candidate_dir).unwrap();
+
+    write_sweep_results(&baseline_dir, &["task1"], true);
+    write_sweep_results(&candidate_dir, &["task1"], true);
+    write_traj_with_temperature(&baseline_dir, "task1", 0.0);
+    write_traj_with_temperature(&candidate_dir, "task1", 0.9);
+
+    let args = rust_swe_agent::run::compare::CompareArgs {
+        baseline: baseline_dir,
+        candidate: candidate_dir,
+        format: rust_swe_agent::run::compare::CompareFormat::Text,
+        max_regressions: None,
+        max_patch_size_regression_pct: None,
+        breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+        min_delta_pp: 0.0,
+        cost_attribution: false,
+        cost_attribution_min_delta_usd: 0.0,
+        min_significance: None,
+        regression_significance: None,
+        allow_underpowered: true,
+    };
+    let report = compare_compute(&args).unwrap();
+    let text = report.human_table();
+    assert!(
+        text.contains("Sampling drift"),
+        "text output should mention sampling drift, got:\n{text}"
+    );
+}
+
+#[test]
+fn load_all_trajectories_finds_multi_run_files() {
+    let work = tempfile::tempdir().unwrap();
+    let instance_id = "my_instance";
+    let inst_dir = work.path().join(instance_id);
+    std::fs::create_dir_all(&inst_dir).unwrap();
+
+    // write_traj_with_temperature writes "{id}.traj.json" in the given dir.
+    // Place run-1 and run-2 inside the instance subdirectory.
+    write_traj_with_temperature(&inst_dir, "run-1", 0.1);
+    write_traj_with_temperature(&inst_dir, "run-2", 0.2);
+
+    let trajs =
+        rust_swe_agent::trajectory::load_all_trajectories_for_instance(work.path(), instance_id);
+    assert_eq!(trajs.len(), 2, "should load both run-1 and run-2");
+}
+
+#[test]
+fn inspect_redaction_masks_sampling_extra_secret_key() {
+    use rust_swe_agent::run::inspect::redact_trajectory_for_inspect;
+    use rust_swe_agent::trajectory::{MessageRecord, Trajectory, TrajectoryInfo};
+
+    let mut secret_extra = serde_json::Map::new();
+    secret_extra.insert("api_key".into(), serde_json::json!("sk-1234567890abcdef"));
+    secret_extra.insert("window".into(), serde_json::json!(8192));
+
+    let mut traj = Trajectory {
+        trajectory_format: rust_swe_agent::trajectory::FORMAT_VERSION.into(),
+        info: TrajectoryInfo::default(),
+        messages: vec![MessageRecord {
+            role: "assistant".into(),
+            content: "ok".into(),
+            extra: rust_swe_agent::model::MessageExtra {
+                sampling: Some(SamplingParams {
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    max_tokens: None,
+                    seed: None,
+                    extra: secret_extra,
+                }),
+                ..Default::default()
+            },
+        }],
+    };
+
+    let redactor = Redactor::default_enabled();
+    let changed = redact_trajectory_for_inspect(&mut traj, &redactor);
+    assert!(changed, "should report redaction happened");
+
+    let sampling = traj.messages[0].extra.sampling.as_ref().unwrap();
+    let key_val = sampling.extra["api_key"].as_str().unwrap();
+    assert!(
+        key_val.starts_with("[REDACTED"),
+        "api_key should be redacted in sampling.extra, got: {key_val}"
+    );
+    assert_eq!(
+        sampling.extra["window"],
+        serde_json::json!(8192),
+        "non-secret key should be unchanged"
+    );
+}

@@ -1220,10 +1220,7 @@ fn failure_label(c: FailureCategory) -> &'static str {
     }
 }
 
-pub(crate) fn redact_trajectory_for_inspect(
-    trajectory: &mut Trajectory,
-    redactor: &Redactor,
-) -> bool {
+pub fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redactor) -> bool {
     let mut redacted = false;
     if let Some(task) = &mut trajectory.info.task {
         let outcome = redactor.redact_text(task, surface::INSPECT);
