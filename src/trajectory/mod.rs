@@ -708,6 +708,36 @@ pub fn load_trajectory_for_instance(
     None
 }
 
+/// Load all trajectories for `instance_id` from `dir`, covering multi-run sweeps.
+///
+/// Returns the root-format file as a single-element vec if present; otherwise
+/// scans for `{dir}/{instance_id}/run-1.traj.json`, `run-2.traj.json`, etc.
+/// until the sequence breaks. Returns an empty vec when no trajectory files exist.
+pub fn load_all_trajectories_for_instance(
+    dir: &std::path::Path,
+    instance_id: &str,
+) -> Vec<Trajectory> {
+    let root = dir.join(format!("{instance_id}.traj.json"));
+    if let Ok(text) = std::fs::read_to_string(&root) {
+        if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+            return vec![traj];
+        }
+    }
+    let mut trajs = Vec::new();
+    for n in 1u32.. {
+        let path = dir.join(instance_id).join(format!("run-{n}.traj.json"));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                    trajs.push(traj);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    trajs
+}
+
 fn role_to_string(r: crate::model::Role) -> String {
     match r {
         crate::model::Role::System => "system".into(),

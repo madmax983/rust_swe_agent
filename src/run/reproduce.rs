@@ -394,30 +394,31 @@ fn compute_sampling_drift_for_reproduce(
     let mut any_loaded = false;
 
     for id in instance_ids {
-        let Some(src) = crate::trajectory::load_trajectory_for_instance(source_dir, id) else {
+        let src_trajs = crate::trajectory::load_all_trajectories_for_instance(source_dir, id);
+        let rep_trajs = crate::trajectory::load_all_trajectories_for_instance(replay_dir, id);
+        if src_trajs.is_empty() || rep_trajs.is_empty() {
             continue;
-        };
-        let Some(rep) = crate::trajectory::load_trajectory_for_instance(replay_dir, id) else {
-            continue;
-        };
+        }
         any_loaded = true;
 
-        let src_sampling: Vec<&crate::model::SamplingParams> = src
-            .messages
-            .iter()
-            .filter_map(|m| m.extra.sampling.as_ref())
-            .collect();
-        let rep_sampling: Vec<&crate::model::SamplingParams> = rep
-            .messages
-            .iter()
-            .filter_map(|m| m.extra.sampling.as_ref())
-            .collect();
-
         let mut any_step_drifted = false;
-        for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
-            if ss != rs {
-                steps_drifted += 1;
-                any_step_drifted = true;
+        for (src, rep) in src_trajs.iter().zip(rep_trajs.iter()) {
+            let src_sampling: Vec<&crate::model::SamplingParams> = src
+                .messages
+                .iter()
+                .filter_map(|m| m.extra.sampling.as_ref())
+                .collect();
+            let rep_sampling: Vec<&crate::model::SamplingParams> = rep
+                .messages
+                .iter()
+                .filter_map(|m| m.extra.sampling.as_ref())
+                .collect();
+
+            for (ss, rs) in src_sampling.iter().zip(rep_sampling.iter()) {
+                if ss != rs {
+                    steps_drifted += 1;
+                    any_step_drifted = true;
+                }
             }
         }
         if any_step_drifted {

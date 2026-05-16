@@ -416,6 +416,7 @@ impl CompareReport {
         write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
+        write_sampling_drift_section(&mut s, self.sampling_drift.as_ref());
         s
     }
 }
@@ -844,6 +845,37 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
             "  - {id}  {old} -> {new}  category={cat}  exit_reason={exit}",
             id = r.instance_id
         );
+    }
+}
+
+fn write_sampling_drift_section(s: &mut String, drift: Option<&SamplingDriftSummary>) {
+    match drift {
+        None
+        | Some(SamplingDriftSummary {
+            steps_drifted: 0, ..
+        }) => {}
+        Some(sd) => {
+            let _ = writeln!(
+                s,
+                "\nSampling drift:     {steps} step(s) had different per-call sampling params",
+                steps = sd.steps_drifted
+            );
+            if let Some(ex) = &sd.example {
+                let b = ex
+                    .baseline_sampling
+                    .as_ref()
+                    .map_or_else(|| "null".into(), crate::model::SamplingParams::summary_line);
+                let c = ex
+                    .candidate_sampling
+                    .as_ref()
+                    .map_or_else(|| "null".into(), crate::model::SamplingParams::summary_line);
+                let _ = writeln!(
+                    s,
+                    "  example ({id}): baseline=[{b}] candidate=[{c}]",
+                    id = ex.instance_id
+                );
+            }
+        }
     }
 }
 
@@ -2858,35 +2890,35 @@ fn detect_sampling_drift(
     let mut any_loaded = false;
 
     for id in instance_ids {
-        let Some(b_traj) = crate::trajectory::load_trajectory_for_instance(baseline_dir, id) else {
+        let b_trajs = crate::trajectory::load_all_trajectories_for_instance(baseline_dir, id);
+        let c_trajs = crate::trajectory::load_all_trajectories_for_instance(candidate_dir, id);
+        if b_trajs.is_empty() || c_trajs.is_empty() {
             continue;
-        };
-        let Some(c_traj) = crate::trajectory::load_trajectory_for_instance(candidate_dir, id)
-        else {
-            continue;
-        };
+        }
         any_loaded = true;
 
-        let b_sampling: Vec<&crate::model::SamplingParams> = b_traj
-            .messages
-            .iter()
-            .filter_map(|m| m.extra.sampling.as_ref())
-            .collect();
-        let c_sampling: Vec<&crate::model::SamplingParams> = c_traj
-            .messages
-            .iter()
-            .filter_map(|m| m.extra.sampling.as_ref())
-            .collect();
+        for (b_traj, c_traj) in b_trajs.iter().zip(c_trajs.iter()) {
+            let b_sampling: Vec<&crate::model::SamplingParams> = b_traj
+                .messages
+                .iter()
+                .filter_map(|m| m.extra.sampling.as_ref())
+                .collect();
+            let c_sampling: Vec<&crate::model::SamplingParams> = c_traj
+                .messages
+                .iter()
+                .filter_map(|m| m.extra.sampling.as_ref())
+                .collect();
 
-        for (bs, cs) in b_sampling.iter().zip(c_sampling.iter()) {
-            if sampling_differs(bs, cs) {
-                steps_drifted += 1;
-                if example.is_none() {
-                    example = Some(SamplingDriftExample {
-                        instance_id: id.clone(),
-                        baseline_sampling: Some((*bs).clone()),
-                        candidate_sampling: Some((*cs).clone()),
-                    });
+            for (bs, cs) in b_sampling.iter().zip(c_sampling.iter()) {
+                if sampling_differs(bs, cs) {
+                    steps_drifted += 1;
+                    if example.is_none() {
+                        example = Some(SamplingDriftExample {
+                            instance_id: id.clone(),
+                            baseline_sampling: Some((*bs).clone()),
+                            candidate_sampling: Some((*cs).clone()),
+                        });
+                    }
                 }
             }
         }

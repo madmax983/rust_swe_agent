@@ -1263,6 +1263,17 @@ pub(crate) fn redact_trajectory_for_inspect(
         if let Some(response) = &mut message.extra.response {
             redacted |= redactor.redact_json_value(response, surface::INSPECT);
         }
+        if let Some(sampling) = &mut message.extra.sampling {
+            let mut extra_val = serde_json::Value::Object(sampling.extra.clone());
+            let changed = redactor.redact_json_value(&mut extra_val, surface::INSPECT);
+            redacted |= changed;
+            if changed {
+                sampling.extra = match extra_val {
+                    serde_json::Value::Object(m) => m,
+                    _ => serde_json::Map::new(),
+                };
+            }
+        }
         for value in message.extra.other.values_mut() {
             redacted |= redactor.redact_json_value(value, surface::INSPECT);
         }
