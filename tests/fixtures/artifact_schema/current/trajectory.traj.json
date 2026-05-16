@@ -1,7 +1,7 @@
 {
   "trajectory_format": "mini-swe-agent-1.1",
   "artifact_kind": "trajectory",
-  "schema_version": {"major": 1, "minor": 7},
+  "schema_version": {"major": 1, "minor": 8},
   "info": {
     "task": "task-a",
     "model_name": "fixture-model",

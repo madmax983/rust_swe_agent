@@ -80,6 +80,11 @@ pub struct InspectStep {
     /// The marker text that was sent to the model in place of the full content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_sent_marker: Option<String>,
+    /// Sampling parameters used for the model call that produced this
+    /// assistant turn. `None` on non-assistant turns and on legacy
+    /// trajectories written before schema 1.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<crate::model::SamplingParams>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -497,6 +502,7 @@ pub(crate) fn build_inspect_steps_with_max(
                 truncation_note: None,
                 history_elided: false,
                 as_sent_marker: None,
+                sampling: msg.extra.sampling.clone(),
             });
             continue;
         }
@@ -551,6 +557,7 @@ pub(crate) fn build_inspect_steps_with_max(
             truncation_note: (!note_parts.is_empty()).then(|| note_parts.join("; ")),
             history_elided,
             as_sent_marker,
+            sampling: None,
         });
     }
     steps
@@ -812,6 +819,9 @@ pub(crate) fn render_step_text(step: &InspectStep, color: bool) -> String {
         let _ = writeln!(s, "\n\x1b[1;36m{header}\x1b[0m");
     } else {
         let _ = writeln!(s, "\n{header}");
+    }
+    if let Some(sampling) = &step.sampling {
+        let _ = writeln!(s, "sampling: {}", sampling.summary_line());
     }
 
     if let Some(msg) = &step.message {
@@ -1210,10 +1220,7 @@ fn failure_label(c: FailureCategory) -> &'static str {
     }
 }
 
-pub(crate) fn redact_trajectory_for_inspect(
-    trajectory: &mut Trajectory,
-    redactor: &Redactor,
-) -> bool {
+pub fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Redactor) -> bool {
     let mut redacted = false;
     if let Some(task) = &mut trajectory.info.task {
         let outcome = redactor.redact_text(task, surface::INSPECT);
@@ -1252,6 +1259,17 @@ pub(crate) fn redact_trajectory_for_inspect(
         }
         if let Some(response) = &mut message.extra.response {
             redacted |= redactor.redact_json_value(response, surface::INSPECT);
+        }
+        if let Some(sampling) = &mut message.extra.sampling {
+            let mut extra_val = serde_json::Value::Object(sampling.extra.clone());
+            let changed = redactor.redact_json_value(&mut extra_val, surface::INSPECT);
+            redacted |= changed;
+            if changed {
+                sampling.extra = match extra_val {
+                    serde_json::Value::Object(m) => m,
+                    _ => serde_json::Map::new(),
+                };
+            }
         }
         for value in message.extra.other.values_mut() {
             redacted |= redactor.redact_json_value(value, surface::INSPECT);

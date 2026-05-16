@@ -443,11 +443,11 @@ fn merge_preserves_prior_retry_history_entries() {
 // ─── Schema tests ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_version_is_1_7() {
+fn schema_version_is_1_8() {
     assert_eq!(
         rust_swe_agent::artifact::ArtifactSchemaVersion::CURRENT,
-        rust_swe_agent::artifact::ArtifactSchemaVersion::new(1, 7),
-        "schema bumped to 1.7 for render-only preview artifact kind"
+        rust_swe_agent::artifact::ArtifactSchemaVersion::new(1, 8),
+        "schema bumped to 1.8 for per-call sampling parameters (issue #177)"
     );
 }
 

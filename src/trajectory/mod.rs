@@ -556,6 +556,7 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.model_latency_ms.is_none()
         && e.tool_latency_ms.is_none()
         && e.harness_overhead_ms.is_none()
+        && e.sampling.is_none()
         && e.other.is_empty()
 }
 
@@ -682,6 +683,73 @@ impl Trajectory {
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
+}
+
+/// Load a trajectory for `instance_id` from `dir`.
+///
+/// Checks `{dir}/{instance_id}.traj.json` (root format) first, then
+/// `{dir}/{instance_id}/run-1.traj.json` (nested format). Returns `None` if
+/// neither file exists or can be parsed.
+pub fn load_trajectory_for_instance(
+    dir: &std::path::Path,
+    instance_id: &str,
+) -> Option<Trajectory> {
+    let candidates = [
+        dir.join(format!("{instance_id}.traj.json")),
+        dir.join(instance_id).join("run-1.traj.json"),
+    ];
+    for path in &candidates {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                return Some(traj);
+            }
+        }
+    }
+    None
+}
+
+/// Load all trajectories for `instance_id` from `dir`, covering all known layouts.
+///
+/// Checks these single-file layouts first (in priority order) and returns a
+/// single-element vec when one is found:
+/// - `{dir}/{id}.traj.json` (flat / root format)
+/// - `{dir}/{id}/trajectory.json` (nested single-run format)
+/// - `{dir}/trajectories/{id}.traj.json` (extracted bundle format)
+///
+/// When none of the above exist, scans for `{dir}/{id}/run-1.traj.json`,
+/// `run-2.traj.json`, … until the sequence breaks (multi-run sweeps).
+/// Returns an empty vec when no trajectory files are found.
+pub fn load_all_trajectories_for_instance(
+    dir: &std::path::Path,
+    instance_id: &str,
+) -> Vec<Trajectory> {
+    // Single-file layouts (tried in priority order).
+    let single_candidates = [
+        dir.join(format!("{instance_id}.traj.json")),
+        dir.join(instance_id).join("trajectory.json"),
+        dir.join("trajectories")
+            .join(format!("{instance_id}.traj.json")),
+    ];
+    for path in &single_candidates {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                return vec![traj];
+            }
+        }
+    }
+    let mut trajs = Vec::new();
+    for n in 1u32.. {
+        let path = dir.join(instance_id).join(format!("run-{n}.traj.json"));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Ok(traj) = serde_json::from_str::<Trajectory>(&text) {
+                    trajs.push(traj);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    trajs
 }
 
 fn role_to_string(r: crate::model::Role) -> String {

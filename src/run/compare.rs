@@ -219,6 +219,11 @@ pub struct CompareReport {
     pub evaluator_provenance_warnings: Vec<String>,
     /// Paired McNemar significance test on the resolved-rate delta.
     pub resolved_rate_significance: ResolvedRateSignificance,
+    /// Sampling drift between the two sweeps. `None` when no trajectory files
+    /// were loadable for either sweep. Present (possibly with `steps_drifted=0`)
+    /// when at least one instance pair had loadable trajectories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_drift: Option<SamplingDriftSummary>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -259,6 +264,24 @@ pub enum EvaluatorProvenanceStatus {
     Mismatched,
     /// One or both evaluations lack provenance.
     Unavailable,
+}
+
+/// Summary of per-step sampling drift between a baseline and candidate sweep.
+#[derive(Debug, Clone, Serialize)]
+pub struct SamplingDriftSummary {
+    /// Total steps across all instance pairs where sampling params differed.
+    pub steps_drifted: usize,
+    /// Representative example of a drifted step, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example: Option<SamplingDriftExample>,
+}
+
+/// One example of a sampling mismatch between baseline and candidate.
+#[derive(Debug, Clone, Serialize)]
+pub struct SamplingDriftExample {
+    pub instance_id: String,
+    pub baseline_sampling: Option<crate::model::SamplingParams>,
+    pub candidate_sampling: Option<crate::model::SamplingParams>,
 }
 
 /// Minimum number of discordant pairs required for the paired significance test
@@ -393,6 +416,7 @@ impl CompareReport {
         write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
+        write_sampling_drift_section(&mut s, self.sampling_drift.as_ref());
         s
     }
 }
@@ -821,6 +845,37 @@ fn write_regressions(s: &mut String, regressions: &[TaskTransition]) {
             "  - {id}  {old} -> {new}  category={cat}  exit_reason={exit}",
             id = r.instance_id
         );
+    }
+}
+
+fn write_sampling_drift_section(s: &mut String, drift: Option<&SamplingDriftSummary>) {
+    match drift {
+        None
+        | Some(SamplingDriftSummary {
+            steps_drifted: 0, ..
+        }) => {}
+        Some(sd) => {
+            let _ = writeln!(
+                s,
+                "\nSampling drift:     {steps} step(s) had different per-call sampling params",
+                steps = sd.steps_drifted
+            );
+            if let Some(ex) = &sd.example {
+                let b = ex
+                    .baseline_sampling
+                    .as_ref()
+                    .map_or_else(|| "null".into(), crate::model::SamplingParams::summary_line);
+                let c = ex
+                    .candidate_sampling
+                    .as_ref()
+                    .map_or_else(|| "null".into(), crate::model::SamplingParams::summary_line);
+                let _ = writeln!(
+                    s,
+                    "  example ({id}): baseline=[{b}] candidate=[{c}]",
+                    id = ex.instance_id
+                );
+            }
+        }
     }
 }
 
@@ -1456,6 +1511,14 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         },
     );
     apply_evaluator_provenance(&mut report, baseline_eval.as_ref(), candidate_eval.as_ref());
+    // Sampling drift: scan trajectory files for both sweeps.
+    let common_ids: Vec<String> = baseline
+        .instances
+        .keys()
+        .filter(|id| candidate.instances.contains_key(*id))
+        .cloned()
+        .collect();
+    report.sampling_drift = detect_sampling_drift(&args.baseline, &args.candidate, &common_ids);
     Ok(report)
 }
 
@@ -1744,6 +1807,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         evaluator_provenance_status: EvaluatorProvenanceStatus::Unavailable,
         evaluator_provenance_warnings: Vec::new(),
         resolved_rate_significance,
+        sampling_drift: None,
     }
 }
 
@@ -2806,6 +2870,80 @@ fn build_cost_attribution_rows_from_run_slots(
     model_name: Option<&str>,
 ) -> Vec<CostAttributionBucket> {
     build_cost_attribution_rows_from_map(cost_attribution_map_from_run_slots(slots, model_name))
+}
+
+// ── sampling drift ───────────────────────────────────────────────────────────
+
+fn sampling_differs(a: &crate::model::SamplingParams, b: &crate::model::SamplingParams) -> bool {
+    a != b
+}
+
+/// Scan trajectory files for both sweeps and count per-step sampling drift.
+/// Returns `None` when no trajectory files were found in either directory.
+fn detect_sampling_drift(
+    baseline_dir: &Path,
+    candidate_dir: &Path,
+    instance_ids: &[String],
+) -> Option<SamplingDriftSummary> {
+    let mut steps_drifted = 0usize;
+    let mut example: Option<SamplingDriftExample> = None;
+    let mut any_loaded = false;
+
+    for id in instance_ids {
+        let b_trajs = crate::trajectory::load_all_trajectories_for_instance(baseline_dir, id);
+        let c_trajs = crate::trajectory::load_all_trajectories_for_instance(candidate_dir, id);
+        if b_trajs.is_empty() || c_trajs.is_empty() {
+            continue;
+        }
+        any_loaded = true;
+
+        for (b_traj, c_traj) in b_trajs.iter().zip(c_trajs.iter()) {
+            // Collect Option<&SamplingParams> for every assistant turn so that
+            // Some(params) vs None (legacy trajectory) is counted as drift.
+            let b_sampling: Vec<Option<&crate::model::SamplingParams>> = b_traj
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
+                .collect();
+            let c_sampling: Vec<Option<&crate::model::SamplingParams>> = c_traj
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
+                .collect();
+
+            // zip-longest: extra turns on either side count as drift.
+            let len = b_sampling.len().max(c_sampling.len());
+            for i in 0..len {
+                let bs = b_sampling.get(i).copied().flatten();
+                let cs = c_sampling.get(i).copied().flatten();
+                let drifted = match (bs, cs) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => sampling_differs(a, b),
+                    _ => true,
+                };
+                if drifted {
+                    steps_drifted += 1;
+                    if example.is_none() {
+                        example = Some(SamplingDriftExample {
+                            instance_id: id.clone(),
+                            baseline_sampling: bs.cloned(),
+                            candidate_sampling: cs.cloned(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if !any_loaded {
+        return None;
+    }
+    Some(SamplingDriftSummary {
+        steps_drifted,
+        example,
+    })
 }
 
 #[cfg(test)]

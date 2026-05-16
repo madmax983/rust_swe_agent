@@ -34,6 +34,9 @@ pub struct ReproduceArgs {
     pub per_task_budget_usd: Option<f64>,
     /// Skip the model-endpoint probe during preflight (useful in CI/dry-run).
     pub skip_model_probe: bool,
+    /// Treat per-call sampling drift as a hard divergence (abort on drift).
+    /// When `false` (the default), sampling drift is a soft divergence (warn only).
+    pub strict_sampling: bool,
 }
 
 // ── drift types ─────────────────────────────────────────────────────────────
@@ -109,6 +112,39 @@ pub struct ReproducedFrom {
     pub sweep_dir: String,
 }
 
+/// Per-call sampling drift between source and replay trajectories.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SamplingDriftBlock {
+    /// Count of instances where at least one step's sampling params differed.
+    pub instances_drifted: usize,
+    /// Total steps across all instances where sampling differed.
+    pub steps_drifted: usize,
+}
+
+impl SamplingDriftBlock {
+    /// Convert this block into a `DriftField` with appropriate severity.
+    ///
+    /// `strict` promotes the severity from `Soft` to `Hard`.
+    #[must_use]
+    pub fn as_drift_field(&self, strict: bool) -> DriftField {
+        DriftField {
+            field: "sampling".into(),
+            severity: if strict {
+                DriftSeverity::Hard
+            } else {
+                DriftSeverity::Soft
+            },
+            source_value: None,
+            current_value: None,
+            message: format!(
+                "sampling drift: {} step(s) across {} instance(s) had different per-call \
+                 sampling params (model/temperature/top_p/max_tokens/seed)",
+                self.steps_drifted, self.instances_drifted
+            ),
+        }
+    }
+}
+
 /// The `reproducibility.json` artifact written to the output directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReproducibilityReport {
@@ -122,6 +158,10 @@ pub struct ReproducibilityReport {
     pub instances: Vec<InstanceComparisonEntry>,
     /// Aggregate counts over all instances.
     pub aggregate: ReproducibilityAggregate,
+    /// Per-call sampling drift between source and replay. Populated when
+    /// trajectory files are available for comparison; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_drift: Option<SamplingDriftBlock>,
 }
 
 // ── public functions ─────────────────────────────────────────────────────────
@@ -327,6 +367,10 @@ pub fn build_reproducibility_report(
         });
     }
 
+    // Sampling drift: scan trajectory files for source vs replay.
+    let common_ids: Vec<String> = instances.iter().map(|e| e.instance_id.clone()).collect();
+    let sampling_drift = compute_sampling_drift_for_reproduce(source_dir, output_dir, &common_ids);
+
     ReproducibilityReport {
         source_sweep: source_dir.display().to_string(),
         source_manifest_hash: source_manifest_hash.clone(),
@@ -336,7 +380,72 @@ pub fn build_reproducibility_report(
         },
         instances,
         aggregate,
+        sampling_drift,
     }
+}
+
+fn compute_sampling_drift_for_reproduce(
+    source_dir: &Path,
+    replay_dir: &Path,
+    instance_ids: &[String],
+) -> Option<SamplingDriftBlock> {
+    let mut instances_drifted = 0usize;
+    let mut steps_drifted = 0usize;
+    let mut any_loaded = false;
+
+    for id in instance_ids {
+        let src_trajs = crate::trajectory::load_all_trajectories_for_instance(source_dir, id);
+        let rep_trajs = crate::trajectory::load_all_trajectories_for_instance(replay_dir, id);
+        if src_trajs.is_empty() || rep_trajs.is_empty() {
+            continue;
+        }
+        any_loaded = true;
+
+        let mut any_step_drifted = false;
+        for (src, rep) in src_trajs.iter().zip(rep_trajs.iter()) {
+            // Use Option<&SamplingParams> so Some vs None (legacy trajectory)
+            // is treated as drift rather than silently skipped.
+            let src_sampling: Vec<Option<&crate::model::SamplingParams>> = src
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
+                .collect();
+            let rep_sampling: Vec<Option<&crate::model::SamplingParams>> = rep
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.extra.sampling.as_ref())
+                .collect();
+
+            // zip-longest: extra turns on either side count as drift.
+            let len = src_sampling.len().max(rep_sampling.len());
+            for i in 0..len {
+                let ss = src_sampling.get(i).copied().flatten();
+                let rs = rep_sampling.get(i).copied().flatten();
+                let drifted = match (ss, rs) {
+                    (None, None) => false,
+                    (Some(a), Some(b)) => a != b,
+                    _ => true,
+                };
+                if drifted {
+                    steps_drifted += 1;
+                    any_step_drifted = true;
+                }
+            }
+        }
+        if any_step_drifted {
+            instances_drifted += 1;
+        }
+    }
+
+    if !any_loaded {
+        return None;
+    }
+    Some(SamplingDriftBlock {
+        instances_drifted,
+        steps_drifted,
+    })
 }
 
 /// Compare patch files for an instance across two sweep directories.
@@ -430,6 +539,16 @@ pub fn render_summary(report: &ReproducibilityReport) -> String {
             let _ = write!(out, " {cat}×{count}");
         }
         out.push('\n');
+    }
+
+    if let Some(sd) = &report.sampling_drift {
+        if sd.steps_drifted > 0 {
+            let _ = writeln!(
+                out,
+                "  sampling drift: {} step(s) across {} instance(s)",
+                sd.steps_drifted, sd.instances_drifted
+            );
+        }
     }
 
     out
