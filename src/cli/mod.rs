@@ -1049,7 +1049,12 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             );
         }
     }
-    apply_significance_gates(&report, c.min_significance, c.regression_significance, c.allow_underpowered);
+    apply_significance_gates(
+        &report,
+        c.min_significance,
+        c.regression_significance,
+        c.allow_underpowered,
+    );
     Ok(())
 }
 
@@ -1109,9 +1114,7 @@ fn apply_significance_gates(
                 );
                 exit_with_outcome(
                     ExitCode::RegressionGateFailure,
-                    &format!(
-                        "compare: significant regression (p={p:.4} <= alpha={alpha})"
-                    ),
+                    &format!("compare: significant regression (p={p:.4} <= alpha={alpha})"),
                 );
             }
         }

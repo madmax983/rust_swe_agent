@@ -461,7 +461,11 @@ fn write_significance_line(
     sig: &ResolvedRateSignificance,
     resolved_delta_rate: f64,
 ) {
-    let underpowered_tag = if sig.underpowered { " (underpowered)" } else { "" };
+    let underpowered_tag = if sig.underpowered {
+        " (underpowered)"
+    } else {
+        ""
+    };
     let sig_str = match sig.p_value {
         Some(p) => format!(
             "resolved-rate \u{394} {:+.2}pp [95% CI: {:+.2}\u{2013}{:+.2} pp], p={:.4} (paired N={}){underpowered_tag}",
@@ -1659,8 +1663,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_cost_per_resolved_usd.unwrap_or(f64::NAN),
     );
 
-    let resolved_rate_significance =
-        compute_paired_significance(&transition_summary.transitions);
+    let resolved_rate_significance = compute_paired_significance(&transition_summary.transitions);
 
     CompareReport {
         baseline_dir: baseline_dir.to_path_buf(),
@@ -2682,8 +2685,12 @@ fn compute_paired_significance(
     let pass_fail = *transitions.get(&TransitionKind::PassFail).unwrap_or(&0);
     let fail_pass = *transitions.get(&TransitionKind::FailPass).unwrap_or(&0);
     let fail_fail = *transitions.get(&TransitionKind::FailFail).unwrap_or(&0);
-    let missing_present = *transitions.get(&TransitionKind::MissingPresent).unwrap_or(&0);
-    let present_missing = *transitions.get(&TransitionKind::PresentMissing).unwrap_or(&0);
+    let missing_present = *transitions
+        .get(&TransitionKind::MissingPresent)
+        .unwrap_or(&0);
+    let present_missing = *transitions
+        .get(&TransitionKind::PresentMissing)
+        .unwrap_or(&0);
 
     let paired_n = pass_pass + pass_fail + fail_pass + fail_fail;
     let pass_to_fail = pass_fail;
@@ -2709,10 +2716,7 @@ fn compute_paired_significance(
     };
 
     let (underpowered, underpowered_reason) = if paired_n == 0 {
-        (
-            true,
-            Some("no shared instance_ids (paired_n=0)".to_owned()),
-        )
+        (true, Some("no shared instance_ids (paired_n=0)".to_owned()))
     } else if discordant < UNDERPOWERED_DISCORDANT_THRESHOLD {
         (
             true,

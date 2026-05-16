@@ -2802,10 +2802,7 @@ fn compare_significance_zero_overlap_is_underpowered() {
     );
     write_results(
         candidate_dir.path(),
-        vec![
-            submitted("candidate-only-1"),
-            submitted("candidate-only-2"),
-        ],
+        vec![submitted("candidate-only-1"), submitted("candidate-only-2")],
     );
 
     let out = Command::new(binary_path())
