@@ -1009,10 +1009,9 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
     match format {
         crate::run::compare::CompareFormat::Text => {
             print!("{}", report.human_table());
-            if let Some(diff) = crate::run::behavior::behavior_compare_section(
-                &c.baseline,
-                &c.candidate,
-            ) {
+            if let Some(diff) =
+                crate::run::behavior::behavior_compare_section(&c.baseline, &c.candidate)
+            {
                 print!("{diff}");
             }
         }

@@ -30,8 +30,14 @@ fn classify_search_commands() {
 
 #[test]
 fn classify_write_commands() {
-    assert_eq!(classify_action("sed -i 's/foo/bar/' file.py"), ActionClass::Write);
-    assert_eq!(classify_action("awk '{print $1}' data.txt"), ActionClass::Write);
+    assert_eq!(
+        classify_action("sed -i 's/foo/bar/' file.py"),
+        ActionClass::Write
+    );
+    assert_eq!(
+        classify_action("awk '{print $1}' data.txt"),
+        ActionClass::Write
+    );
     assert_eq!(classify_action("patch -p1 < fix.patch"), ActionClass::Write);
     assert_eq!(classify_action("tee output.txt"), ActionClass::Write);
 }
@@ -71,26 +77,41 @@ fn classify_git_commands() {
 #[test]
 fn classify_unknown_heads_land_in_other() {
     assert_eq!(classify_action("myweirdtool --flag"), ActionClass::Other);
-    assert_eq!(classify_action("anotherspecialtool --arg"), ActionClass::Other);
+    assert_eq!(
+        classify_action("anotherspecialtool --arg"),
+        ActionClass::Other
+    );
 }
 
 #[test]
 fn classify_turn_applies_priority_order_test_beats_write() {
     // A turn with both test and write actions → test wins (higher priority)
     let class = classify_turn(&["sed -i 's/x/y/' f.py", "pytest tests/"]);
-    assert_eq!(class, ActionClass::Test, "test should beat write in priority");
+    assert_eq!(
+        class,
+        ActionClass::Test,
+        "test should beat write in priority"
+    );
 }
 
 #[test]
 fn classify_turn_applies_priority_write_beats_read() {
     let class = classify_turn(&["cat file.py", "sed -i 's/x/y/' f.py"]);
-    assert_eq!(class, ActionClass::Write, "write should beat read in priority");
+    assert_eq!(
+        class,
+        ActionClass::Write,
+        "write should beat read in priority"
+    );
 }
 
 #[test]
 fn classify_turn_applies_priority_search_beats_read() {
     let class = classify_turn(&["cat file.py", "grep -r pattern ."]);
-    assert_eq!(class, ActionClass::Search, "search should beat read in priority");
+    assert_eq!(
+        class,
+        ActionClass::Search,
+        "search should beat read in priority"
+    );
 }
 
 #[test]
@@ -107,12 +128,18 @@ fn classify_turn_submit_only_is_noop() {
 
 #[test]
 fn classify_turn_strips_sudo_prefix() {
-    assert_eq!(classify_action("sudo sed -i 's/x/y/' f.py"), ActionClass::Write);
+    assert_eq!(
+        classify_action("sudo sed -i 's/x/y/' f.py"),
+        ActionClass::Write
+    );
 }
 
 #[test]
 fn classify_turn_strips_env_prefix() {
-    assert_eq!(classify_action("env RUST_LOG=debug cargo test"), ActionClass::Test);
+    assert_eq!(
+        classify_action("env RUST_LOG=debug cargo test"),
+        ActionClass::Test
+    );
 }
 
 // ── CLI integration tests ─────────────────────────────────────────────────────
@@ -195,10 +222,16 @@ fn cli_writes_behavior_json_artifact() {
 
     assert!(report["sweep"].is_string(), "sweep field required");
     assert!(report["generated_at"].is_string(), "generated_at required");
-    assert!(report["taxonomy_version"].is_number(), "taxonomy_version required");
+    assert!(
+        report["taxonomy_version"].is_number(),
+        "taxonomy_version required"
+    );
     assert!(report["totals"].is_object(), "totals required");
     assert!(report["by_outcome"].is_object(), "by_outcome required");
-    assert!(report["unclassified_heads"].is_object(), "unclassified_heads required");
+    assert!(
+        report["unclassified_heads"].is_object(),
+        "unclassified_heads required"
+    );
 }
 
 #[test]
@@ -385,8 +418,14 @@ fn per_instance_flag_emits_per_instance_data() {
     );
 
     let first = &per_instance[0];
-    assert!(first["instance_id"].is_string(), "instance_id required in per-instance row");
-    assert!(first["class_counts"].is_object(), "class_counts required in per-instance row");
+    assert!(
+        first["instance_id"].is_string(),
+        "instance_id required in per-instance row"
+    );
+    assert!(
+        first["class_counts"].is_object(),
+        "class_counts required in per-instance row"
+    );
 }
 
 #[test]
@@ -397,14 +436,7 @@ fn determinism_same_output_on_two_runs() {
     let run = |sweep_path: &str| -> serde_json::Value {
         let output = Command::new(binary_path())
             .args([
-                "--log",
-                "error",
-                "bench",
-                "behavior",
-                "--sweep",
-                sweep_path,
-                "--format",
-                "json",
+                "--log", "error", "bench", "behavior", "--sweep", sweep_path, "--format", "json",
             ])
             .output()
             .unwrap();
@@ -551,9 +583,18 @@ fn by_outcome_schema_includes_all_required_buckets() {
     assert!(output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let by_outcome = report["by_outcome"].as_object().unwrap();
-    assert!(by_outcome.contains_key("resolved"), "resolved bucket required");
-    assert!(by_outcome.contains_key("unresolved"), "unresolved bucket required");
-    assert!(by_outcome.contains_key("errored"), "errored bucket required");
+    assert!(
+        by_outcome.contains_key("resolved"),
+        "resolved bucket required"
+    );
+    assert!(
+        by_outcome.contains_key("unresolved"),
+        "unresolved bucket required"
+    );
+    assert!(
+        by_outcome.contains_key("errored"),
+        "errored bucket required"
+    );
     assert!(by_outcome.contains_key("all"), "all bucket required");
 }
 
@@ -580,11 +621,20 @@ fn class_metrics_include_required_fields() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     // Find a class with turns in the all bucket
     let all_bucket = report["by_outcome"]["all"].as_object().unwrap();
-    let first_class = all_bucket.values().next().expect("at least one class in all bucket");
+    let first_class = all_bucket
+        .values()
+        .next()
+        .expect("at least one class in all bucket");
     assert!(first_class["turn_count"].is_number(), "turn_count required");
     assert!(first_class["share"].is_number(), "share required");
-    assert!(first_class["mean_turns_per_instance"].is_number(), "mean_turns_per_instance required");
-    assert!(first_class["attributed_cost_usd"].is_number(), "attributed_cost_usd required");
+    assert!(
+        first_class["mean_turns_per_instance"].is_number(),
+        "mean_turns_per_instance required"
+    );
+    assert!(
+        first_class["attributed_cost_usd"].is_number(),
+        "attributed_cost_usd required"
+    );
 }
 
 #[test]
@@ -612,7 +662,10 @@ fn totals_include_all_classes_with_share_fields() {
     // Totals should have at least one class
     assert!(!totals.is_empty(), "totals should not be empty");
     let first = totals.values().next().unwrap();
-    assert!(first["turn_count"].is_number(), "turn_count required in totals");
+    assert!(
+        first["turn_count"].is_number(),
+        "turn_count required in totals"
+    );
     assert!(first["share"].is_number(), "share required in totals");
 }
 

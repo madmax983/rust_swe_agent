@@ -90,7 +90,11 @@ pub fn classify_turn(actions: &[&str]) -> ActionClass {
         .filter(|&&a| a != "__SUBMIT__")
         .map(|&a| classify_action(a))
         .fold(ActionClass::Noop, |best, class| {
-            if class.priority() > best.priority() { class } else { best }
+            if class.priority() > best.priority() {
+                class
+            } else {
+                best
+            }
         })
 }
 
@@ -182,7 +186,11 @@ pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_sha
     out.push_str("\n=== bench behavior ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
     let total_turns: usize = report.totals.values().map(|m| m.turn_count).sum();
-    let _ = writeln!(out, "Taxonomy version: {}  total turns: {}", report.taxonomy_version, total_turns);
+    let _ = writeln!(
+        out,
+        "Taxonomy version: {}  total turns: {}",
+        report.taxonomy_version, total_turns
+    );
     out.push('\n');
 
     let buckets_to_show: Vec<&str> = match bucket_filter {
@@ -213,7 +221,10 @@ pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_sha
             .collect();
 
         if visible.is_empty() {
-            let _ = writeln!(out, "--- Outcome: {bucket_name} --- (no classes above min-share threshold)");
+            let _ = writeln!(
+                out,
+                "--- Outcome: {bucket_name} --- (no classes above min-share threshold)"
+            );
             continue;
         }
 
@@ -249,7 +260,11 @@ pub fn render_text(report: &BehaviorReport, bucket_filter: Option<&str>, min_sha
     if !deltas.is_empty() {
         // Produce a headline for the biggest delta
         if let Some(top) = deltas.first() {
-            let direction = if top.share_delta > 0.0 { "more" } else { "less" };
+            let direction = if top.share_delta > 0.0 {
+                "more"
+            } else {
+                "less"
+            };
             let _ = writeln!(
                 out,
                 "Action-shape headline: agent is {direction} {}-heavy in resolved vs unresolved ({:+.0}pp)",
@@ -327,7 +342,9 @@ pub fn behavior_compare_section(baseline: &Path, candidate: &Path) -> Option<Str
 
     let biggest = deltas.first()?;
     if biggest.1.abs() < 0.01 {
-        return Some("\n--- Action-Shape Diff ---\nNo significant action-shape shift detected.\n".to_owned());
+        return Some(
+            "\n--- Action-Shape Diff ---\nNo significant action-shape shift detected.\n".to_owned(),
+        );
     }
 
     let direction = if biggest.1 > 0.0 { "more" } else { "less" };
@@ -513,7 +530,10 @@ fn build_report(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
     let mut totals: BTreeMap<String, TotalsMetrics> = BTreeMap::new();
     for &class_name in ALL_CLASSES {
         #[allow(clippy::cast_precision_loss)]
-        let count = turns.iter().filter(|t| t.action_class == class_name).count();
+        let count = turns
+            .iter()
+            .filter(|t| t.action_class == class_name)
+            .count();
         if count > 0 {
             totals.insert(
                 class_name.to_owned(),
@@ -553,7 +573,8 @@ fn build_report(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
 fn build_comparisons(
     by_outcome: &BTreeMap<String, BTreeMap<String, ClassMetrics>>,
 ) -> BehaviorComparisons {
-    let (Some(resolved), Some(unresolved)) = (by_outcome.get("resolved"), by_outcome.get("unresolved"))
+    let (Some(resolved), Some(unresolved)) =
+        (by_outcome.get("resolved"), by_outcome.get("unresolved"))
     else {
         return BehaviorComparisons::default();
     };
