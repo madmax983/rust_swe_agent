@@ -1131,7 +1131,8 @@ fn find_trajectory_paths_for_bundle(
     }
     let runs = effective_runs_value(row);
     if runs > 1 {
-        let mut out = Vec::new();
+        // Pre-allocate the vector with exactly the required capacity to avoid reallocation
+        let mut out = Vec::with_capacity(runs as usize);
         for run_index in 1..=runs {
             let path = required_rerun_trajectory_path(sweep_dir, instance_id, run_index)?;
             out.push((path, format!("{instance_id}/run-{run_index}.traj.json")));
