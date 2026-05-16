@@ -1513,9 +1513,11 @@ fn build_latency_summary_from_slots(
     sweep_dir: &Path,
     slots: &[crate::run::compare::LoadedRunSlot],
 ) -> Option<LatencySummary> {
-    let mut model_totals: Vec<u64> = Vec::new();
-    let mut tool_totals: Vec<u64> = Vec::new();
-    let mut harness_totals: Vec<u64> = Vec::new();
+    // ⚡ Bolt: Pre-allocate vectors using the number of slots since we push at most one
+    // item per slot. This avoids heap reallocation overhead during large sweep evaluations.
+    let mut model_totals: Vec<u64> = Vec::with_capacity(slots.len());
+    let mut tool_totals: Vec<u64> = Vec::with_capacity(slots.len());
+    let mut harness_totals: Vec<u64> = Vec::with_capacity(slots.len());
     for slot in slots {
         let path = swebench::trajectory_path_for_run(sweep_dir, &slot.instance_id, slot.run_index);
         let path = if path.exists() {
