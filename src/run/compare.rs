@@ -449,15 +449,27 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         if report.within_noise { "true" } else { "false" }
     );
     let _ = writeln!(s, "Verdict:            {}", report.verdict.label());
-    write_significance_line(s, &report.resolved_rate_significance);
+    write_significance_line(
+        s,
+        &report.resolved_rate_significance,
+        report.resolved_delta_rate,
+    );
 }
 
-fn write_significance_line(s: &mut String, sig: &ResolvedRateSignificance) {
+fn write_significance_line(
+    s: &mut String,
+    sig: &ResolvedRateSignificance,
+    resolved_delta_rate: f64,
+) {
     let underpowered_tag = if sig.underpowered { " (underpowered)" } else { "" };
     let sig_str = match sig.p_value {
         Some(p) => format!(
-            "[95% CI: {:+.2}\u{2013}{:+.2} pp], p={:.4} (paired N={}){underpowered_tag}",
-            sig.ci95_lower_pp, sig.ci95_upper_pp, p, sig.paired_n,
+            "resolved-rate \u{394} {:+.2}pp [95% CI: {:+.2}\u{2013}{:+.2} pp], p={:.4} (paired N={}){underpowered_tag}",
+            resolved_delta_rate * 100.0,
+            sig.ci95_lower_pp,
+            sig.ci95_upper_pp,
+            p,
+            sig.paired_n,
         ),
         None => "(underpowered)".to_string(),
     };

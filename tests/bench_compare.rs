@@ -2921,6 +2921,10 @@ fn compare_text_output_has_significance_line() {
         "text output must include a Significance: line; got:\n{stdout}"
     );
     assert!(
+        stdout.contains("resolved-rate"),
+        "significance line must include 'resolved-rate'; got:\n{stdout}"
+    );
+    assert!(
         stdout.contains("paired N="),
         "text output must include paired N=; got:\n{stdout}"
     );
