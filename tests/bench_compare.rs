@@ -2617,7 +2617,7 @@ fn compare_json_has_resolved_rate_significance_block() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let sig = &v["resolved_rate_significance"];
     assert!(
         sig.is_object(),
