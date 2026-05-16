@@ -1404,6 +1404,26 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     std::fs::create_dir_all(&r.output).map_err(Error::Io)?;
     write_report(&report, &r.output)?;
 
+    // Handle per-call sampling drift as soft (warn) or hard (abort) divergence.
+    if let Some(sd) = &report.sampling_drift {
+        if sd.steps_drifted > 0 {
+            let drift_field = sd.as_drift_field(r.strict_sampling);
+            if r.strict_sampling {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "reproduce: hard sampling drift (--strict-sampling): {}",
+                    drift_field.message
+                ))));
+            } else {
+                tracing::warn!(
+                    steps_drifted = sd.steps_drifted,
+                    instances_drifted = sd.instances_drifted,
+                    "reproduce: soft sampling drift — {}",
+                    drift_field.message
+                );
+            }
+        }
+    }
+
     print!("{}", render_summary(&report));
 
     Ok(())

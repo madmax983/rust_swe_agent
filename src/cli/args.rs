@@ -549,6 +549,12 @@ pub struct ReproduceCmd {
     /// and dry-run modes that don't spend model credits).
     #[arg(long, default_value_t = false)]
     pub skip_model_probe: bool,
+
+    /// Treat per-call sampling drift (between source and replay trajectories)
+    /// as a hard divergence that aborts with a non-zero exit.
+    /// By default sampling drift is a soft divergence that only warns.
+    #[arg(long, default_value_t = false)]
+    pub strict_sampling: bool,
 }
 
 #[derive(Debug, Args)]

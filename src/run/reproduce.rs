@@ -34,6 +34,9 @@ pub struct ReproduceArgs {
     pub per_task_budget_usd: Option<f64>,
     /// Skip the model-endpoint probe during preflight (useful in CI/dry-run).
     pub skip_model_probe: bool,
+    /// Treat per-call sampling drift as a hard divergence (abort on drift).
+    /// When `false` (the default), sampling drift is a soft divergence (warn only).
+    pub strict_sampling: bool,
 }
 
 // ── drift types ─────────────────────────────────────────────────────────────
@@ -116,6 +119,30 @@ pub struct SamplingDriftBlock {
     pub instances_drifted: usize,
     /// Total steps across all instances where sampling differed.
     pub steps_drifted: usize,
+}
+
+impl SamplingDriftBlock {
+    /// Convert this block into a `DriftField` with appropriate severity.
+    ///
+    /// `strict` promotes the severity from `Soft` to `Hard`.
+    #[must_use]
+    pub fn as_drift_field(&self, strict: bool) -> DriftField {
+        DriftField {
+            field: "sampling".into(),
+            severity: if strict {
+                DriftSeverity::Hard
+            } else {
+                DriftSeverity::Soft
+            },
+            source_value: None,
+            current_value: None,
+            message: format!(
+                "sampling drift: {} step(s) across {} instance(s) had different per-call \
+                 sampling params (model/temperature/top_p/max_tokens/seed)",
+                self.steps_drifted, self.instances_drifted
+            ),
+        }
+    }
 }
 
 /// The `reproducibility.json` artifact written to the output directory.
@@ -519,6 +546,16 @@ pub fn render_summary(report: &ReproducibilityReport) -> String {
             let _ = write!(out, " {cat}×{count}");
         }
         out.push('\n');
+    }
+
+    if let Some(sd) = &report.sampling_drift {
+        if sd.steps_drifted > 0 {
+            let _ = writeln!(
+                out,
+                "  sampling drift: {} step(s) across {} instance(s)",
+                sd.steps_drifted, sd.instances_drifted
+            );
+        }
     }
 
     out
