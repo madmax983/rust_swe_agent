@@ -615,3 +615,80 @@ fn totals_include_all_classes_with_share_fields() {
     assert!(first["turn_count"].is_number(), "turn_count required in totals");
     assert!(first["share"].is_number(), "share required in totals");
 }
+
+#[test]
+fn rerun_sweep_classifies_turns_from_all_runs() {
+    // Fixture has one instance with run-1.traj.json (3 read turns) and
+    // run-2.traj.json (2 write + 1 test turn). Both runs must contribute
+    // to the totals, proving classification is per-turn, not per-instance.
+    let sweep = tempfile::tempdir().unwrap();
+    let src = Path::new("tests/fixtures/behavior/rerun_sweep");
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let dest = sweep.path().join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            std::fs::create_dir_all(&dest).unwrap();
+            for sub in std::fs::read_dir(entry.path()).unwrap() {
+                let sub = sub.unwrap();
+                std::fs::copy(sub.path(), dest.join(sub.file_name())).unwrap();
+            }
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "behavior",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "bench behavior on rerun sweep failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let all_bucket = &report["by_outcome"]["all"];
+
+    // run-1 contributes 3 read turns; run-2 contributes 2 write + 1 test.
+    // Total = 6, so both runs were processed.
+    let total_turns: u64 = report["totals"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|m| m["turn_count"].as_u64().unwrap_or(0))
+        .sum();
+    assert_eq!(
+        total_turns, 6,
+        "expected 6 turns across both runs (3 + 3), got {total_turns}"
+    );
+
+    // read class should appear (from run-1)
+    assert!(
+        all_bucket["read"]["turn_count"].as_u64().unwrap_or(0) >= 3,
+        "expected at least 3 read turns from run-1"
+    );
+
+    // write class should appear (from run-2)
+    assert!(
+        all_bucket["write"]["turn_count"].as_u64().unwrap_or(0) >= 2,
+        "expected at least 2 write turns from run-2"
+    );
+
+    // test class should appear (from run-2)
+    assert!(
+        all_bucket["test"]["turn_count"].as_u64().unwrap_or(0) >= 1,
+        "expected at least 1 test turn from run-2"
+    );
+}

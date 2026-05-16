@@ -1,0 +1,46 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "rerun-instance",
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "total_cost_usd": 0.06,
+    "steps": 3,
+    "test_invocations": [],
+    "tests_run_before_submit": true
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Apply the fix.",
+      "extra": {"actions": ["sed -i 's/pass/return 42/' main.py"], "cost": 0.02}
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {"run_result": {"stdout": "", "stderr": "", "exit_code": 0, "timed_out": false}}
+    },
+    {
+      "role": "assistant",
+      "content": "Apply another fix.",
+      "extra": {"actions": ["sed -i 's/foo/bar/' main.py"], "cost": 0.02}
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {"run_result": {"stdout": "", "stderr": "", "exit_code": 0, "timed_out": false}}
+    },
+    {
+      "role": "assistant",
+      "content": "Run the tests.",
+      "extra": {"actions": ["pytest tests/"], "cost": 0.02}
+    },
+    {
+      "role": "user",
+      "content": "1 passed",
+      "extra": {"run_result": {"stdout": "1 passed", "stderr": "", "exit_code": 0, "timed_out": false}}
+    }
+  ]
+}
