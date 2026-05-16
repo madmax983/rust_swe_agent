@@ -339,7 +339,7 @@ pub fn behavior_compare_section(baseline: &Path, candidate: &Path) -> Option<Str
         })
         .collect();
 
-    deltas.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    deltas.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()).then_with(|| a.0.cmp(&b.0)));
 
     let biggest = deltas.first()?;
     if biggest.1.abs() < 0.01 {
@@ -607,7 +607,8 @@ fn build_comparisons(
 
     deltas.sort_by(|a, b| {
         b.share_delta
-            .total_cmp(&a.share_delta)
+            .abs()
+            .total_cmp(&a.share_delta.abs())
             .then_with(|| a.action_class.cmp(&b.action_class))
     });
 
@@ -676,7 +677,7 @@ fn classify_turn_tracking(
 
 // ── classification internals ──────────────────────────────────────────────────
 
-/// Split on `|` but not `||`.
+/// Split on `|` but not `||` (logical-OR stops pipeline classification).
 fn split_pipeline(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let bytes = command.as_bytes();
@@ -684,10 +685,7 @@ fn split_pipeline(command: &str) -> Vec<&str> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
-            segments.push(&command[start..i]);
-            start = i + 2;
-            i += 2;
-            continue;
+            break;
         }
         if bytes[i] == b'|' {
             segments.push(&command[start..i]);
@@ -755,9 +753,9 @@ fn classify_segment(segment: &str) -> (ActionClass, Option<String>) {
         "grep" | "rg" | "find" | "fd" | "ack" | "ag" | "locate" => ActionClass::Search,
         // Write (direct head match)
         "sed" | "awk" | "tee" | "patch" | "dd" => ActionClass::Write,
-        // Write only when followed by output redirection
+        // Write only when followed by output redirection (handles `echo > f` and `echo foo>f`)
         "echo" => {
-            if rest.iter().any(|t| t.starts_with('>')) {
+            if rest.iter().any(|t| t.contains('>')) {
                 ActionClass::Write
             } else {
                 ActionClass::Other
@@ -788,14 +786,24 @@ fn prefix_start_index(tokens: &[&str]) -> usize {
     while i < tokens.len() {
         let token = tokens[i];
 
-        if token == "sudo" || token == "time" {
+        if token == "sudo" {
             i += 1;
             while i < tokens.len() && tokens[i].starts_with('-') {
                 let flag = tokens[i];
                 i += 1;
+                // These sudo flags each take one argument
                 if ["-u", "-g", "-p", "-C", "-R", "-T"].contains(&flag) && i < tokens.len() {
                     i += 1;
                 }
+            }
+            continue;
+        }
+
+        if token == "time" {
+            i += 1;
+            // time flags (e.g. -p for POSIX format) never take arguments
+            while i < tokens.len() && tokens[i].starts_with('-') {
+                i += 1;
             }
             continue;
         }
