@@ -14,6 +14,7 @@ use crate::artifact::{ArtifactCompatibility, ArtifactKind, classify_json_value};
 use crate::error::{ConfigError, Error};
 use crate::run::forecast::{ForecastReport, IntervalEstimate, QuantileSummary};
 use crate::run::swebench::{self, ProvenanceManifest, SweepResults};
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 /// Inputs for a calibration comparison.
 #[derive(Debug, Clone)]
@@ -293,31 +294,47 @@ pub fn render_text(report: &CalibrationReport) -> String {
         "Instances:          forecast target {} / actual {}",
         report.forecast_target_n, report.actual_instance_count
     );
-    write_scalar_line(&mut out, "Total USD", "$", &report.metrics.total_usd);
-    write_scalar_line(
-        &mut out,
-        "Input tokens",
-        "",
-        &report.metrics.total_input_tokens,
-    );
-    write_scalar_line(
-        &mut out,
-        "Output tokens",
-        "",
-        &report.metrics.total_output_tokens,
-    );
-    write_scalar_line(
-        &mut out,
-        "Wall-clock sec",
-        "",
-        &report.metrics.wall_clock_seconds,
-    );
-    write_scalar_line(
-        &mut out,
-        "Resolution rate",
-        "",
-        &report.metrics.resolution_rate,
-    );
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Metric",
+            "Actual",
+            "Forecast",
+            "Intervals",
+            "Verdict",
+            "Abs Error",
+            "Rel Error",
+        ]);
+
+    let mut add_row =
+        |label: &str, prefix: &str, metric: &crate::run::calibrate::ScalarCalibration| {
+            let rel = metric.relative_error.map_or_else(
+                || "n/a".to_owned(),
+                |value| format!("{:+.2}%", value * 100.0),
+            );
+            table.add_row(vec![
+                label.to_owned(),
+                format!("{prefix}{:.4}", metric.actual),
+                format!("{prefix}{:.4}", metric.forecast.point),
+                format!(
+                    "[{prefix}{:.4}, {prefix}{:.4}]",
+                    metric.forecast.lower, metric.forecast.upper
+                ),
+                metric.status.label().to_owned(),
+                format!("{prefix}{:.4}", metric.absolute_error),
+                rel,
+            ]);
+        };
+
+    add_row("Total USD", "$", &report.metrics.total_usd);
+    add_row("Input tokens", "", &report.metrics.total_input_tokens);
+    add_row("Output tokens", "", &report.metrics.total_output_tokens);
+    add_row("Wall-clock sec", "", &report.metrics.wall_clock_seconds);
+    add_row("Resolution rate", "", &report.metrics.resolution_rate);
+
+    let _ = writeln!(out, "{table}");
     if !report.mismatches.is_empty() {
         out.push_str("Mismatches:\n");
         for mismatch in &report.mismatches {
@@ -780,23 +797,6 @@ fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
         let weight = pos - as_f64_usize(lo);
         sorted[lo].mul_add(1.0 - weight, sorted[hi] * weight)
     }
-}
-
-fn write_scalar_line(out: &mut String, label: &str, prefix: &str, metric: &ScalarCalibration) {
-    let rel = metric.relative_error.map_or_else(
-        || "n/a".to_owned(),
-        |value| format!("{:+.2}%", value * 100.0),
-    );
-    let _ = writeln!(
-        out,
-        "  {label:<16} actual {prefix}{:.4} vs forecast {prefix}{:.4} [{prefix}{:.4}, {prefix}{:.4}] => {} (abs {:.4}, rel {rel})",
-        metric.actual,
-        metric.forecast.point,
-        metric.forecast.lower,
-        metric.forecast.upper,
-        metric.status.label(),
-        metric.absolute_error
-    );
 }
 
 fn as_f64_u64(value: u64) -> f64 {
