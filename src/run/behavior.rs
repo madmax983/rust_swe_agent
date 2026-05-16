@@ -371,7 +371,6 @@ pub fn behavior_compare_section(baseline: &Path, candidate: &Path) -> Option<Str
 
 #[derive(Debug, Clone)]
 struct TurnRecord {
-    instance_id: String,
     bucket: String,
     action_class: String,
     cost_usd: f64,
@@ -480,6 +479,15 @@ fn build_report(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
             .filter(|t| bucket_name == "all" || t.bucket == bucket_name)
             .collect();
 
+        // Total instances in this bucket — used as the denominator for
+        // mean_turns_per_instance so the metric is a population mean (all
+        // instances, not just those with at least one turn of the class).
+        #[allow(clippy::cast_precision_loss)]
+        let bucket_instance_count = instance_buckets
+            .iter()
+            .filter(|(_, b)| bucket_name == "all" || b.as_str() == bucket_name)
+            .count();
+
         let total_turns = bucket_turns.len();
         let mut class_map: BTreeMap<String, ClassMetrics> = BTreeMap::new();
 
@@ -494,9 +502,6 @@ fn build_report(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
             }
 
             let turn_count = class_turns.len();
-            let unique_instances: HashSet<&str> =
-                class_turns.iter().map(|t| t.instance_id.as_str()).collect();
-            let instance_count = unique_instances.len();
 
             #[allow(clippy::cast_precision_loss)]
             let share = if total_turns > 0 {
@@ -505,8 +510,8 @@ fn build_report(args: &BehaviorArgs) -> Result<BehaviorReport, Error> {
                 0.0
             };
             #[allow(clippy::cast_precision_loss)]
-            let mean_turns_per_instance = if instance_count > 0 {
-                turn_count as f64 / instance_count as f64
+            let mean_turns_per_instance = if bucket_instance_count > 0 {
+                turn_count as f64 / bucket_instance_count as f64
             } else {
                 0.0
             };
@@ -613,7 +618,7 @@ fn build_comparisons(
 
 fn extract_turns_from_trajectory(
     trajectory: &Trajectory,
-    instance_id: &str,
+    _instance_id: &str,
     bucket: &OutcomeBucket,
     unclassified_heads: &mut BTreeMap<String, usize>,
 ) -> Vec<TurnRecord> {
@@ -635,7 +640,6 @@ fn extract_turns_from_trajectory(
         };
 
         records.push(TurnRecord {
-            instance_id: instance_id.to_owned(),
             bucket: bucket_str.clone(),
             action_class: action_class.as_str().to_owned(),
             cost_usd: cost,
@@ -680,7 +684,10 @@ fn split_pipeline(command: &str) -> Vec<&str> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
-            break;
+            segments.push(&command[start..i]);
+            start = i + 2;
+            i += 2;
+            continue;
         }
         if bytes[i] == b'|' {
             segments.push(&command[start..i]);
@@ -750,7 +757,7 @@ fn classify_segment(segment: &str) -> (ActionClass, Option<String>) {
         "sed" | "awk" | "tee" | "patch" | "dd" => ActionClass::Write,
         // Write only when followed by output redirection
         "echo" => {
-            if segment.contains('>') {
+            if rest.iter().any(|t| t.starts_with('>')) {
                 ActionClass::Write
             } else {
                 ActionClass::Other
@@ -783,12 +790,19 @@ fn prefix_start_index(tokens: &[&str]) -> usize {
 
         if token == "sudo" || token == "time" {
             i += 1;
+            while i < tokens.len() && tokens[i].starts_with('-') {
+                let flag = tokens[i];
+                i += 1;
+                if ["-u", "-g", "-p", "-C", "-R", "-T"].contains(&flag) && i < tokens.len() {
+                    i += 1;
+                }
+            }
             continue;
         }
 
         if token == "env" {
             i += 1;
-            while i < tokens.len() && tokens[i].contains('=') && !tokens[i].starts_with('-') {
+            while i < tokens.len() && (tokens[i].starts_with('-') || tokens[i].contains('=')) {
                 i += 1;
             }
             continue;
