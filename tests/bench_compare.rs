@@ -3200,3 +3200,86 @@ fn compare_allow_underpowered_overrides_underpowered_block_for_significant_delta
         String::from_utf8_lossy(&out2.stderr)
     );
 }
+
+#[test]
+fn compare_significance_rerun_sweep_is_underpowered() {
+    // Rerun sweeps: each instance has runs=10.
+    // Baseline: 1/10 reruns resolved (pass@k=true, resolved_count=1).
+    // Candidate: 10/10 reruns resolved (pass@k=true, resolved_count=10).
+    // Both sweeps have resolved_count > 0, so all instances are PassPass.
+    // paired_delta_rate = 0, but population resolved rate went from 10% to 100%.
+    // The significance block must be marked underpowered to prevent misleading gating.
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let baseline_instances: Vec<InstanceResult> = (0..10)
+        .map(|i| rerun_result(&format!("id-{i}"), 10, 1))
+        .collect();
+    let candidate_instances: Vec<InstanceResult> = (0..10)
+        .map(|i| rerun_result(&format!("id-{i}"), 10, 10))
+        .collect();
+    write_results(baseline_dir.path(), baseline_instances);
+    write_results(candidate_dir.path(), candidate_instances);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let sig = &v["resolved_rate_significance"];
+
+    assert!(
+        sig["underpowered"].as_bool().unwrap(),
+        "rerun sweep must be marked underpowered; got: {sig}"
+    );
+    let reason = sig["underpowered_reason"].as_str().unwrap_or("");
+    assert!(
+        reason.contains("rerun"),
+        "underpowered_reason must mention rerun; got: {reason}"
+    );
+}
+
+#[test]
+fn compare_min_significance_gate_blocked_for_rerun_sweep() {
+    // --min-significance must exit non-zero for rerun sweeps without --allow-underpowered.
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let baseline_instances: Vec<InstanceResult> = (0..10)
+        .map(|i| rerun_result(&format!("id-{i}"), 10, 1))
+        .collect();
+    let candidate_instances: Vec<InstanceResult> = (0..10)
+        .map(|i| rerun_result(&format!("id-{i}"), 10, 10))
+        .collect();
+    write_results(baseline_dir.path(), baseline_instances);
+    write_results(candidate_dir.path(), candidate_instances);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--min-significance",
+            "0.05",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "rerun sweep without --allow-underpowered must exit non-zero; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

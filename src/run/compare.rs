@@ -1660,7 +1660,22 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_cost_per_resolved_usd.unwrap_or(f64::NAN),
     );
 
-    let resolved_rate_significance = compute_paired_significance(&transition_summary.transitions);
+    let mut resolved_rate_significance =
+        compute_paired_significance(&transition_summary.transitions);
+    // For rerun sweeps the transition matrix uses resolved_count > 0 (pass@k),
+    // which does not reflect the multi-run resolved rate used by the population
+    // metrics.  Mark the significance block underpowered so gating flags require
+    // --allow-underpowered and operators are not silently misled.
+    let either_is_rerun =
+        baseline.values().any(|r| r.runs > 1) || candidate.values().any(|r| r.runs > 1);
+    if either_is_rerun {
+        resolved_rate_significance.underpowered = true;
+        resolved_rate_significance.underpowered_reason = Some(
+            "rerun sweep detected: paired test uses pass@k (resolved_count > 0), \
+             not the multi-run resolved rate; significance gating is unreliable"
+                .to_owned(),
+        );
+    }
 
     CompareReport {
         baseline_dir: baseline_dir.to_path_buf(),
