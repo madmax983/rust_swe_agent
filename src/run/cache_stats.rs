@@ -21,7 +21,9 @@ use crate::run::compare::load_sweep;
 /// `cache_read / (input + cache_read + cache_creation)`; returns 0.0 for all-zero.
 #[must_use]
 pub fn compute_cache_hit_rate(input: u64, cache_read: u64, cache_creation: u64) -> f64 {
-    let total = input.saturating_add(cache_read).saturating_add(cache_creation);
+    let total = input
+        .saturating_add(cache_read)
+        .saturating_add(cache_creation);
     if total == 0 {
         return 0.0;
     }
@@ -39,10 +41,12 @@ pub fn compute_estimated_savings_usd_vs_cold(cache_read: u64) -> f64 {
 /// Actual cost of cache operations (reads + creations).
 #[must_use]
 pub fn compute_realized_cache_spend_usd(cache_read: u64, cache_creation: u64) -> f64 {
-    cache_read as f64 / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK * ANTHROPIC_CACHE_READ_MULTIPLIER
-        + cache_creation as f64 / 1_000_000.0
+    (cache_read as f64 / 1_000_000.0 * SONNET_INPUT_USD_PER_MTOK).mul_add(
+        ANTHROPIC_CACHE_READ_MULTIPLIER,
+        cache_creation as f64 / 1_000_000.0
             * SONNET_INPUT_USD_PER_MTOK
-            * ANTHROPIC_CACHE_CREATION_MULTIPLIER
+            * ANTHROPIC_CACHE_CREATION_MULTIPLIER,
+    )
 }
 
 // ── public data types ─────────────────────────────────────────────────────────
@@ -242,14 +246,12 @@ fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
         .map(|baseline_dir| build_baseline_delta(baseline_dir, &sweep_totals))
         .transpose()?;
 
-    let top_rows = rows.into_iter().take(args.top).collect();
-
     Ok(CacheStatsReport {
         sweep: args.sweep_dir.display().to_string(),
         generated_at: utc_now_iso8601(),
         cache_disabled,
         sweep_totals,
-        instances: top_rows,
+        instances: rows,
         baseline,
     })
 }

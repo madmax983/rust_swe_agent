@@ -49,7 +49,10 @@ fn estimated_savings_zero_reads_is_zero() {
 fn estimated_savings_one_million_reads() {
     // 1 M reads × $3/M × (1 − 0.10) = $2.70
     let savings = compute_estimated_savings_usd_vs_cold(1_000_000);
-    assert!((savings - 2.70).abs() < 1e-9, "expected 2.70, got {savings}");
+    assert!(
+        (savings - 2.70).abs() < 1e-9,
+        "expected 2.70, got {savings}"
+    );
 }
 
 #[test]
@@ -81,18 +84,15 @@ fn realized_spend_mixed() {
 // ── CLI integration tests ─────────────────────────────────────────────────────
 
 fn cache_stats_sweep_fixture() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/cache_stats/sweep")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cache_stats/sweep")
 }
 
 fn no_cache_fixture() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/cache_stats/no_cache")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cache_stats/no_cache")
 }
 
 fn baseline_fixture() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/cache_stats/baseline")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cache_stats/baseline")
 }
 
 fn run_cache_stats(sweep: &Path, extra_args: &[&str]) -> std::process::Output {
@@ -206,8 +206,7 @@ fn cli_json_has_required_sweep_total_fields() {
         "estimated_savings_usd_vs_cold required"
     );
     assert!(
-        totals["realized_cache_spend_usd"].is_f64()
-            || totals["realized_cache_spend_usd"].is_u64(),
+        totals["realized_cache_spend_usd"].is_f64() || totals["realized_cache_spend_usd"].is_u64(),
         "realized_cache_spend_usd required"
     );
 }
@@ -299,15 +298,46 @@ fn cli_json_instance_row_has_required_fields() {
 }
 
 #[test]
-fn cli_top_flag_limits_instance_rows() {
+fn cli_top_flag_limits_text_display() {
+    // --top only clips the rendered text table; JSON artifact keeps all instances.
+    let sweep = tempfile::tempdir().unwrap();
+    copy_dir(&cache_stats_sweep_fixture(), sweep.path());
+
+    // Text output with --top 1: only the single worst instance row should appear.
+    let output = run_cache_stats(sweep.path(), &["--top", "1"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("top 1"),
+        "text output should reflect --top 1 limit:\n{stdout}"
+    );
+
+    // JSON artifact on disk should contain all 3 instances regardless of --top.
+    let artifact: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sweep.path().join("cache-stats.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        artifact["instances"].as_array().unwrap().len(),
+        3,
+        "JSON artifact must contain all instances regardless of --top"
+    );
+}
+
+#[test]
+fn cli_json_format_includes_all_instances_regardless_of_top() {
     let sweep = tempfile::tempdir().unwrap();
     copy_dir(&cache_stats_sweep_fixture(), sweep.path());
 
     let output = run_cache_stats(sweep.path(), &["--format", "json", "--top", "1"]);
     assert!(output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let instances = report["instances"].as_array().unwrap();
-    assert_eq!(instances.len(), 1, "expected exactly 1 instance with --top 1");
+    // JSON output (stdout) always includes full instance list; --top is a text-rendering flag.
+    assert_eq!(
+        report["instances"].as_array().unwrap().len(),
+        3,
+        "JSON stdout should include all instances even with --top 1"
+    );
 }
 
 #[test]
