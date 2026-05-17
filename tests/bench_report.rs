@@ -1286,7 +1286,9 @@ fn bench_report_cache_effectiveness_section_present_with_cache_data() {
         "report should contain 'Cache Effectiveness' section\ncontent:\n{content}"
     );
     assert!(
-        content.contains("cache_hit_rate") || content.contains("hit rate") || content.contains("Cache hit"),
+        content.contains("cache_hit_rate")
+            || content.contains("hit rate")
+            || content.contains("Cache hit"),
         "cache effectiveness section should show hit rate\ncontent:\n{content}"
     );
     assert!(

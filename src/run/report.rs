@@ -412,17 +412,10 @@ fn md_cache_effectiveness(buf: &mut String, instances: &[&InstanceResult]) {
         return;
     }
 
-    let total_input: u64 = instances
-        .iter()
-        .map(|i| i.prompt_tokens.unwrap_or(0))
-        .sum();
-    let hit_rate = crate::run::cache_stats::compute_cache_hit_rate(
-        total_input,
-        total_reads,
-        total_creation,
-    );
-    let savings =
-        crate::run::cache_stats::compute_estimated_savings_usd_vs_cold(total_reads);
+    let total_input: u64 = instances.iter().map(|i| i.prompt_tokens.unwrap_or(0)).sum();
+    let hit_rate =
+        crate::run::cache_stats::compute_cache_hit_rate(total_input, total_reads, total_creation);
+    let savings = crate::run::cache_stats::compute_estimated_savings_usd_vs_cold(total_reads);
     let spend =
         crate::run::cache_stats::compute_realized_cache_spend_usd(total_reads, total_creation);
 

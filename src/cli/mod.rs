@@ -1903,14 +1903,13 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         baseline: c.baseline,
     })?;
     if is_json {
-        let json =
-            crate::artifact::to_string_pretty(crate::artifact::ArtifactKind::CacheStatsReport, &report)?;
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::CacheStatsReport,
+            &report,
+        )?;
         println!("{json}");
     } else {
-        print!(
-            "{}",
-            crate::run::cache_stats::render_text(&report, c.top)
-        );
+        print!("{}", crate::run::cache_stats::render_text(&report, c.top));
     }
     Ok(())
 }
