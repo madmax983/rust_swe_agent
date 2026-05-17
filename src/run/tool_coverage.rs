@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
 use crate::run::swebench::InstanceResult;
 use crate::trajectory::{FailureCategory, Trajectory};
+
+const VALID_BUCKETS: &[&str] = &["resolved", "unresolved", "errored", "all"];
 
 // ── public argument struct ────────────────────────────────────────────────────
 
@@ -115,15 +118,25 @@ pub fn run(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
 
 // ── text rendering ────────────────────────────────────────────────────────────
 
-pub fn render_text(report: &ToolCoverageReport, min_invocations: usize) -> String {
+pub fn render_text(
+    report: &ToolCoverageReport,
+    bucket_filter: Option<&str>,
+    min_invocations: usize,
+) -> String {
     use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
+
+    // Which by_outcome slice to show in the main table.
+    let display_bucket = bucket_filter.unwrap_or("all");
 
     let mut out = String::new();
     out.push_str("\n=== bench tool-coverage ===\n");
     let _ = writeln!(out, "Sweep: {}", report.sweep);
     let _ = writeln!(out, "Tool universe: {} tools", report.tool_universe.len());
+    if bucket_filter.is_some() {
+        let _ = writeln!(out, "Bucket filter: {display_bucket}");
+    }
     out.push('\n');
 
     if let Some(drift) = &report.toolset_drift {
@@ -143,7 +156,8 @@ pub fn render_text(report: &ToolCoverageReport, min_invocations: usize) -> Strin
         out.push('\n');
     }
 
-    // Build table with tools sorted by total_invocations desc
+    // Build table with tools sorted by total_invocations desc.
+    // Apply --min-invocations filter against all-bucket total (never against JSON).
     let mut rows: Vec<(&str, &ToolMetrics)> = report
         .by_tool
         .iter()
@@ -175,7 +189,7 @@ pub fn render_text(report: &ToolCoverageReport, min_invocations: usize) -> Strin
         for (name, m) in &rows {
             let (rr_used, rr_not_used) = m
                 .by_outcome
-                .get("all")
+                .get(display_bucket)
                 .map_or_else(
                     || ("—".to_owned(), "—".to_owned()),
                     |o| {
@@ -433,6 +447,17 @@ fn parse_toolset(trajectory: &Trajectory) -> Option<RawToolsetManifest> {
 
 #[allow(clippy::too_many_lines)]
 fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
+    if let Some(b) = &args.bucket {
+        if !VALID_BUCKETS.contains(&b.as_str()) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "tool-coverage: unknown --bucket `{b}`; valid values: resolved, unresolved, errored, all"
+            ))));
+        }
+    }
+
+    // Redactor for tool names and mcp_server values (built-in pattern set; no config needed).
+    let redactor = Redactor::default_enabled();
+
     let sweep = load_sweep(&args.sweep_dir)?;
     let evaluation = load_evaluation_results_checked(&args.sweep_dir)?;
 
@@ -497,10 +522,16 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         if let Some(ts) = &data.toolset {
             for entry in &ts.tools {
                 universe_map.entry(entry.name.clone()).or_insert_with(|| {
+                    // Redact tool name and mcp_server before storing.
+                    let name =
+                        redactor.redact_text(&entry.name, surface::TRAJECTORY).text;
+                    let mcp_server = entry.mcp_server.as_deref().map(|s| {
+                        redactor.redact_text(s, surface::TRAJECTORY).text
+                    });
                     ToolUniverseEntry {
-                        name: entry.name.clone(),
+                        name,
                         source: map_source(&entry.source).to_owned(),
-                        mcp_server: entry.mcp_server.clone(),
+                        mcp_server,
                     }
                 });
             }

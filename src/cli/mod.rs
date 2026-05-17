@@ -1818,6 +1818,7 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
             ))));
         }
     };
+    let bucket = t.bucket.clone();
     let report =
         crate::run::tool_coverage::run(&crate::run::tool_coverage::ToolCoverageArgs {
             sweep_dir: t.sweep,
@@ -1831,7 +1832,11 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
     } else {
         print!(
             "{}",
-            crate::run::tool_coverage::render_text(&report, t.min_invocations)
+            crate::run::tool_coverage::render_text(
+                &report,
+                bucket.as_deref(),
+                t.min_invocations,
+            )
         );
     }
     Ok(())

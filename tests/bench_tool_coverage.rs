@@ -456,3 +456,54 @@ fn invalid_format_exits_nonzero() {
         "invalid --format should exit nonzero"
     );
 }
+
+#[test]
+fn invalid_bucket_exits_nonzero() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("main_sweep", sweep.path());
+
+    let out = run_tool_coverage(sweep.path(), &["--bucket", "unknown_bucket"]);
+    assert!(
+        !out.status.success(),
+        "invalid --bucket should exit nonzero"
+    );
+}
+
+#[test]
+fn bucket_filter_shows_in_text_output() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("main_sweep", sweep.path());
+
+    let out = run_tool_coverage(sweep.path(), &["--bucket", "resolved"]);
+    assert!(
+        out.status.success(),
+        "valid --bucket should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("resolved"),
+        "text output should mention the active bucket filter: {stdout}"
+    );
+}
+
+#[test]
+fn bucket_filter_does_not_affect_json_artifact() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("main_sweep", sweep.path());
+
+    let out = run_tool_coverage(sweep.path(), &["--bucket", "resolved"]);
+    assert!(out.status.success());
+
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(sweep.path().join("tool-coverage.json")).unwrap())
+            .unwrap();
+
+    // JSON artifact always has all by_outcome buckets
+    let bash = &artifact["by_tool"]["bash"]["by_outcome"];
+    assert!(bash["resolved"].is_object(), "resolved bucket in JSON");
+    assert!(bash["unresolved"].is_object(), "unresolved bucket in JSON");
+    assert!(bash["errored"].is_object(), "errored bucket in JSON");
+    assert!(bash["all"].is_object(), "all bucket in JSON");
+}
