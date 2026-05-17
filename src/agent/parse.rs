@@ -10,16 +10,23 @@
 //! * Anything else: `Action::None`, so the agent loop emits a
 //!   format_error_template message.
 
+/// The magic string that signals the agent has completed its task and wishes to submit
+/// the following text block as its final answer.
 pub const SUBMIT_SENTINEL: &str = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT";
 
 use crate::tool::{BASH_TOOL_NAME, ToolCall};
 use serde_json::Value;
 
+/// Represents a parsed action extracted from the model's textual response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// A bash command block to be executed in the environment.
     Bash(String),
+    /// A structured tool call.
     Tool(ToolCall),
+    /// A final submission indicating the task is complete, containing the answer text.
     Submit(String),
+    /// No valid action or submission sentinel was found in the text.
     None,
 }
 

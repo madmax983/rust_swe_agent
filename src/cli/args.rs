@@ -10,14 +10,20 @@ pub enum StratifyByArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+/// Defines how the sampling logic should weight different stratification strata.
 pub enum StratifyModeArg {
+    /// Samples points proportionally to the size of the underlying stratum.
     Proportional,
+    /// Attempts to draw an equal number of samples from each available stratum.
     Balanced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// A standard toggle argument for command line parsing.
 pub enum OnOffArg {
+    /// Represents the boolean 'true'.
     On,
+    /// Represents the boolean 'false'.
     Off,
 }
 

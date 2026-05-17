@@ -9,16 +9,23 @@ use async_trait::async_trait;
 use super::{Agent, DefaultAgent, ExitReason, StepOutcome};
 use crate::error::Error;
 
+/// An agent wrapper that processes actions interactively, pausing to ask the user
+/// before executing commands when running in a real terminal.
 pub struct InteractiveAgent {
+    /// The underlying agent that handles generation and execution.
     pub inner: DefaultAgent,
+    /// If true, bypasses all interactive confirmation prompts (You Only Live Once).
     pub yolo: bool,
 }
 
 impl InteractiveAgent {
+    /// Creates a new `InteractiveAgent` wrapping a standard `DefaultAgent`.
     pub fn new(inner: DefaultAgent, yolo: bool) -> Self {
         Self { inner, yolo }
     }
 
+    /// Returns a formatted string detailing the agent's current token usage and costs,
+    /// suitable for displaying in a terminal UI status bar.
     pub fn status_line(&self) -> String {
         let cache_str = if self.inner.model.supports_explicit_cache() {
             "cache:explicit"

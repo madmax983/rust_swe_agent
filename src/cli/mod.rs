@@ -17,7 +17,9 @@ pub mod args;
     version,
     about = "Measure-first SWE agent harness"
 )]
+/// The top-level struct parsing command line arguments.
 pub struct Cli {
+    /// The specific subcommand to execute.
     #[command(subcommand)]
     pub command: Command,
 
@@ -28,6 +30,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
+/// The available subcommands for the application.
 pub enum Command {
     /// Run one task end-to-end and write a trajectory.
     Mini(args::MiniCmd),
@@ -37,6 +40,7 @@ pub enum Command {
     Replay(args::ReplayCmd),
     /// SWE-bench parallel sweep.
     Bench {
+        /// The specific benchmarking subcommand.
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
@@ -44,6 +48,7 @@ pub enum Command {
     Cleanup,
 }
 
+/// The main entry point for the CLI application.
 pub async fn run() -> Result<(), Error> {
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         // Print clap's formatted error or help text, then add the outcome label

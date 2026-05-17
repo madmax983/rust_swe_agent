@@ -15,14 +15,19 @@ use thiserror::Error;
 /// contract. Major bumps are breaking; minor bumps must remain additive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ArtifactSchemaVersion {
+    /// The major version component (incremented for breaking changes).
     pub major: u16,
+    /// The minor version component (incremented for backwards-compatible additions).
     pub minor: u16,
 }
 
 impl ArtifactSchemaVersion {
+    /// The current schema version used by this build of `rust_swe_agent`.
     pub const CURRENT: Self = Self { major: 1, minor: 7 };
+    /// A fallback version used for legacy trajectory files lacking a version stamp.
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 
+    /// Creates a new `ArtifactSchemaVersion` from major and minor components.
     #[must_use]
     pub const fn new(major: u16, minor: u16) -> Self {
         Self { major, minor }
@@ -46,19 +51,30 @@ impl fmt::Display for ArtifactSchemaVersion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
+    /// A step-by-step record of an agent's run on a single task.
     Trajectory,
+    /// The aggregated results of a bulk sweep over multiple tasks.
     SweepResults,
+    /// The output of an evaluation phase comparing predictions to true labels.
     EvaluationResults,
+    /// A predictive report estimating costs and durations for a potential sweep.
     ForecastReport,
+    /// Results from calibrating environment overhead limits.
     CalibrationReport,
+    /// The output of a preflight environment integrity check.
     PreflightReport,
+    /// Metadata specifically associated with SWE-bench formatting predictions.
     SwebenchPredictionsMetadata,
+    /// A manifest describing the contents of a compiled bundle.
     BundleManifest,
+    /// A report generated when a sweep is prematurely halted (e.g., due to errors).
     SweepHaltReport,
+    /// Used internally when generating visual rendering outputs without saving state.
     RenderOnly,
 }
 
 impl ArtifactKind {
+    /// Returns a standardized string label for the artifact kind.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -85,11 +101,14 @@ impl fmt::Display for ArtifactKind {
 /// Standard top-level artifact metadata fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactHeader {
+    /// The kind of artifact this header describes.
     pub artifact_kind: ArtifactKind,
+    /// The schema version governing the format of this artifact.
     pub schema_version: ArtifactSchemaVersion,
 }
 
 impl ArtifactHeader {
+    /// Creates a new `ArtifactHeader` stamped with the provided kind and the current version.
     #[must_use]
     pub const fn current(kind: ArtifactKind) -> Self {
         Self {
@@ -103,11 +122,14 @@ impl ArtifactHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompatibilityClass {
+    /// The artifact perfectly matches the current schema version.
     SupportedCurrent,
+    /// The artifact is from an older schema version but can be safely processed.
     SupportedLegacy,
 }
 
 impl CompatibilityClass {
+    /// Returns a standardized string label for the compatibility class.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -120,13 +142,19 @@ impl CompatibilityClass {
 /// Result of classifying a specific artifact payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactCompatibility {
+    /// The identified kind of the artifact.
     pub kind: ArtifactKind,
+    /// The schema version of the artifact, if explicitly stated.
     pub version: Option<ArtifactSchemaVersion>,
+    /// The resulting compatibility classification.
     pub class: CompatibilityClass,
+    /// Any warnings generated during classification (e.g., unrecognized fields).
     pub warnings: Vec<String>,
 }
 
 impl ArtifactCompatibility {
+    /// Returns a combined string representing the artifact kind and its version,
+    /// e.g. "trajectory@1.7".
     #[must_use]
     pub fn identity_label(&self) -> String {
         let version = self.version.map_or_else(
@@ -138,24 +166,40 @@ impl ArtifactCompatibility {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Errors resulting from incompatible or malformed artifact headers.
 pub enum ArtifactSchemaError {
+    /// The artifact kind found in the file does not match the expected kind.
     #[error("{path}: artifact kind mismatch: expected {expected}, found {found}")]
     KindMismatch {
+        /// The path to the failing file.
         path: String,
+        /// The kind we were trying to load.
         expected: ArtifactKind,
+        /// The kind actually found in the file.
         found: ArtifactKind,
     },
+    /// The artifact belongs to a major schema version newer than what this binary supports.
     #[error(
         "{path}: unsupported future artifact schema for {kind}: version {version}; this binary supports major {supported_major}. Re-run with a newer rust-swe-agent."
     )]
     UnsupportedFuture {
+        /// The path to the failing file.
         path: String,
+        /// The artifact kind.
         kind: ArtifactKind,
+        /// The unsupported future version found in the file.
         version: ArtifactSchemaVersion,
+        /// The highest major version supported by this binary.
         supported_major: u16,
     },
+    /// The artifact header exists but is malformed or missing required fields.
     #[error("{path}: malformed artifact schema header: {message}")]
-    MalformedHeader { path: String, message: String },
+    MalformedHeader {
+        /// The path to the failing file.
+        path: String,
+        /// A specific description of what was malformed.
+        message: String,
+    },
 }
 
 /// Classify a decoded JSON artifact against the expected artifact family.

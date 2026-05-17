@@ -351,15 +351,25 @@ fn ceil_char_boundary(input: &str, idx: usize) -> usize {
     i
 }
 
+/// The primary implementation of the `Agent` loop, maintaining state and driving the interaction.
 pub struct DefaultAgent {
+    /// Configuration specifying the agent's behavior and limits.
     pub config: Config,
+    /// The language model powering the agent's decision making.
     pub model: Arc<dyn Model>,
+    /// The sandbox execution environment.
     pub env: Box<dyn Environment>,
+    /// The renderer responsible for managing system prompts and chat history layout.
     pub renderer: Arc<Renderer>,
+    /// The chat history tracking the conversation with the model.
     pub history: Vec<Message>,
+    /// The step-by-step record of actions and observations for this run.
     pub trajectory: Trajectory,
+    /// The number of steps executed so far.
     pub steps: u32,
+    /// Total cumulative cost in USD.
     pub total_cost_usd: f64,
+    /// The source from which cost data was obtained, if available.
     pub actual_cost_source: Option<CostSource>,
     /// Wall-clock start, used to compute `duration_secs` on terminate.
     pub started_at_instant: Instant,
@@ -379,9 +389,13 @@ pub struct DefaultAgent {
     /// Real-time event sink. Defaults to `NullSink` so non-streaming
     /// callers pay no cost beyond a vtable call.
     pub stream: Arc<dyn StreamSink>,
+    /// A redactor to mask sensitive data before emitting logs or trajectories.
     pub redactor: Redactor,
+    /// An optional cancellation token for user interruption.
     pub cancellation: Option<CancellationToken>,
+    /// The engine used to evaluate stagnation policies.
     pub policy_engine: PolicyEngine,
+    /// The registry containing the tools available to the agent.
     pub tool_registry: ToolRegistry,
     raw_task: String,
     test_command_patterns: Vec<TestCommandPattern>,
@@ -397,21 +411,32 @@ pub struct DefaultAgent {
     stagnation_detector: Option<StagnationDetector>,
 }
 
+/// A builder for constructing a `DefaultAgent`.
 pub struct DefaultAgentBuilder {
+    /// Configuration specifying the agent's behavior and limits.
     pub config: Config,
+    /// The language model powering the agent's decision making.
     pub model: Arc<dyn Model>,
+    /// The sandbox execution environment.
     pub env: Box<dyn Environment>,
+    /// The problem description or task statement for the agent to solve.
     pub task: String,
+    /// Optional supplemental instructions to inject into the system prompt.
     pub extra_context: Option<String>,
+    /// Optional renderer for managing system prompts and chat history layout.
     pub renderer: Option<Arc<Renderer>>,
+    /// Optional stream sink for emitting real-time events.
     pub stream: Option<Arc<dyn StreamSink>>,
 }
 
 impl DefaultAgentBuilder {
+    /// Consumes the builder and returns a `DefaultAgent` using the standard system prompt
+    /// and built-in tools.
     pub fn build(self) -> Result<DefaultAgent, Error> {
         self.build_with_tool_providers(Vec::new())
     }
 
+    /// Consumes the builder and returns a `DefaultAgent` using additional external tool providers.
     #[allow(clippy::too_many_lines)]
     pub fn build_with_tool_providers(
         self,
@@ -1333,6 +1358,7 @@ impl Agent for DefaultAgent {
 }
 
 impl DefaultAgent {
+    /// Assigns a wallclock deadline indicating how long the agent may run.
     pub fn set_wallclock_deadline(&mut self, timeout: Duration) {
         self.wallclock_deadline = Some(WallclockDeadline {
             deadline: Instant::now() + timeout,
@@ -1526,6 +1552,7 @@ impl DefaultAgent {
         }
     }
 
+    /// Finalizes the trajectory due to a wallclock timeout.
     pub fn finalize_wallclock_timeout(&mut self, timeout: Duration) {
         self.trajectory.info.exit_reason = Some(exit_reason::WALLCLOCK_TIMEOUT.into());
         self.trajectory.info.failure_category = Some(FailureCategory::WallclockTimeout);
@@ -1572,6 +1599,7 @@ impl DefaultAgent {
         })
     }
 
+    /// Finalizes the trajectory due to manual user cancellation.
     pub fn finalize_cancelled(&mut self) {
         self.trajectory.info.exit_reason = Some(exit_reason::CANCELLED.into());
         self.trajectory.info.failure_category = None;
