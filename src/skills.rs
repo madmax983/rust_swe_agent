@@ -500,16 +500,23 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes a search string by keeping only alphanumeric characters and
+/// a few select symbols, lowercasing them, and separating them by single spaces.
+/// This implementation avoids intermediate vector allocations (`collect::<Vec<_>>().join()`).
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
-            out.push(ch.to_ascii_lowercase());
-        } else {
+    for token in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '$' || c == '@' || c == '/')) {
+        if token.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
             out.push(' ');
         }
+        for ch in token.chars() {
+            out.push(ch.to_ascii_lowercase());
+        }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
