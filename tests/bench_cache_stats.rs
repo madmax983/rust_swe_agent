@@ -379,6 +379,31 @@ fn cli_cache_disabled_exits_zero_and_prints_message() {
 }
 
 #[test]
+fn cli_cache_disabled_still_shows_baseline_delta() {
+    // A no-cache sweep compared against a cached baseline should still surface
+    // the delta — that regression is exactly what --baseline is meant to expose.
+    let sweep = tempfile::tempdir().unwrap();
+    copy_dir(&no_cache_fixture(), sweep.path());
+    let baseline_dir = tempfile::tempdir().unwrap();
+    copy_dir(&baseline_fixture(), baseline_dir.path());
+
+    let output = run_cache_stats(
+        sweep.path(),
+        &["--baseline", baseline_dir.path().to_str().unwrap()],
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("cache disabled") || stdout.contains("unsupported"),
+        "should still report disabled:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("delta") || stdout.contains("Δ") || stdout.contains("baseline"),
+        "baseline delta must appear even when current sweep has no cache data:\n{stdout}"
+    );
+}
+
+#[test]
 fn cli_json_cache_disabled_sets_flag() {
     let sweep = tempfile::tempdir().unwrap();
     copy_dir(&no_cache_fixture(), sweep.path());

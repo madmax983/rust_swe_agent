@@ -83,7 +83,7 @@ diffing in CI.
 ```json
 {
   "artifact_kind": "cache_stats_report",
-  "schema_version": { "major": 1, "minor": 0 },
+  "schema_version": { "major": 1, "minor": 8 },
   "sweep": "/path/to/sweep",
   "generated_at": "2026-01-01T00:00:00Z",
   "cache_disabled": false,
@@ -118,9 +118,12 @@ diffing in CI.
 
 ### Schema version
 
-`cache_stats_report` artifacts use `schema_version: { "major": 1, "minor": 0 }`.
-The version contract follows the rules in `docs/artifact-contract.md`: major
-bumps are breaking, minor bumps are additive.
+`cache_stats_report` artifacts carry the harness-wide `schema_version` (currently
+`{ "major": 1, "minor": 8 }`), the same value written into every other artifact
+produced by this binary. There is no per-artifact override. The version contract
+follows the rules in `docs/artifact-contract.md`: major bumps are breaking, minor
+bumps are additive. Snapshot tests should match against `schema_version.major`
+rather than the full `major.minor` pair to remain stable across minor releases.
 
 ### Redaction safety
 

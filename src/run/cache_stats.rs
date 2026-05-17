@@ -123,6 +123,16 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
             out,
             "cache disabled or unsupported by provider (no cache tokens recorded)"
         );
+        // Still show the baseline delta when supplied — a no-cache sweep compared
+        // against a cached baseline is the exact regression this flag surfaces.
+        if let Some(delta) = &report.baseline {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_spend_usd={:+.6}",
+                delta.baseline_sweep, delta.delta_hit_rate, delta.delta_realized_spend_usd
+            );
+        }
         return out;
     }
 
