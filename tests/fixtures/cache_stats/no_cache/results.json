@@ -1,0 +1,36 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 8
+  },
+  "total": 2,
+  "submitted": 1,
+  "skipped": 0,
+  "errored": 0,
+  "total_cost_usd": 0.04,
+  "instances": [
+    {
+      "instance_id": "no-cache-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "total_input_tokens": 20000,
+      "cost_usd": 0.02,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true
+    },
+    {
+      "instance_id": "no-cache-2",
+      "exit_reason": "step_limit_reached",
+      "outcome": "step_limit_reached",
+      "total_input_tokens": 20000,
+      "cost_usd": 0.02,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false
+    }
+  ]
+}

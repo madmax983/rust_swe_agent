@@ -3,6 +3,7 @@
 
 pub mod behavior;
 pub mod bundle;
+pub mod cache_stats;
 pub mod calibrate;
 pub mod command_stats;
 pub mod compare;

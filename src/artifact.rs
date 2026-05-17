@@ -56,6 +56,7 @@ pub enum ArtifactKind {
     BundleManifest,
     SweepHaltReport,
     RenderOnly,
+    CacheStatsReport,
 }
 
 impl ArtifactKind {
@@ -72,6 +73,7 @@ impl ArtifactKind {
             Self::BundleManifest => "bundle_manifest",
             Self::SweepHaltReport => "sweep_halt_report",
             Self::RenderOnly => "render_only",
+            Self::CacheStatsReport => "cache_stats_report",
         }
     }
 }

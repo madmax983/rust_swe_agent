@@ -1228,3 +1228,134 @@ fn bench_report_resolved_instance_not_in_failed_table() {
     // at least verify the report was generated successfully.
     assert!(!content.is_empty(), "report should not be empty");
 }
+
+// ── Cache Effectiveness section (issue #265) ──────────────────────────────────
+
+fn submitted_with_cache(id: &str, input: u64, reads: u64, creation: u64) -> InstanceResult {
+    InstanceResult {
+        instance_id: id.into(),
+        exit_reason: "submitted".into(),
+        outcome: Some(outcome::SUBMITTED.into()),
+        failure_category: None,
+        steps: Some(4),
+        cost_usd: Some(0.05),
+        prompt_tokens: Some(input),
+        cache_read_tokens: Some(reads),
+        cache_creation_tokens: Some(creation),
+        completion_tokens: Some(100),
+        duration_secs: Some(8.0),
+        error: None,
+        github_pr_error: None,
+        patch_present: true,
+        non_empty_patch: true,
+        attempts: 1,
+        retry_reasons: Vec::new(),
+        runs: 1,
+        resolved_count: 1,
+        pass_at_1: true,
+        tests_run_before_submit: false,
+        last_tests_passed: None,
+        fallback_count: None,
+        final_model: None,
+        retry_id: None,
+        previous_failure_category: None,
+    }
+}
+
+#[test]
+fn bench_report_cache_effectiveness_section_present_with_cache_data() {
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(
+        work.path(),
+        vec![
+            submitted_with_cache("django__django-001", 10_000, 80_000, 10_000),
+            submitted_with_cache("django__django-002", 5_000, 40_000, 5_000),
+        ],
+    );
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("Cache Effectiveness"),
+        "report should contain 'Cache Effectiveness' section\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("cache_hit_rate")
+            || content.contains("hit rate")
+            || content.contains("Cache hit"),
+        "cache effectiveness section should show hit rate\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("savings") || content.contains("Savings"),
+        "cache effectiveness section should show savings\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("spend") || content.contains("Spend"),
+        "cache effectiveness section should show realized spend\ncontent:\n{content}"
+    );
+}
+
+#[test]
+fn bench_report_cache_effectiveness_renders_no_cache_data_gracefully() {
+    let work = tempfile::tempdir().unwrap();
+    // submitted() helper creates instances with cache_read=0 and cache_creation=0
+    write_sweep(
+        work.path(),
+        vec![
+            submitted("django__django-001"),
+            submitted("django__django-002"),
+        ],
+    );
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        content.contains("Cache Effectiveness"),
+        "Cache Effectiveness section should be present even with no cache data\ncontent:\n{content}"
+    );
+    assert!(
+        content.contains("no cache data"),
+        "should render '_no cache data_' gracefully\ncontent:\n{content}"
+    );
+}
+
+#[test]
+fn bench_report_cache_effectiveness_hit_rate_value_is_correct() {
+    // 80 000 reads / (10 000 input + 80 000 reads + 10 000 creation) = 80%
+    let work = tempfile::tempdir().unwrap();
+    write_sweep(
+        work.path(),
+        vec![submitted_with_cache(
+            "django__django-001",
+            10_000,
+            80_000,
+            10_000,
+        )],
+    );
+    let out_file = work.path().join("report.md");
+    let out = bench_report(&[
+        "--sweep",
+        &work.path().display().to_string(),
+        "--output",
+        &out_file.display().to_string(),
+    ]);
+    assert!(out.status.success());
+    let content = std::fs::read_to_string(&out_file).unwrap();
+    // 80.00 % hit rate should appear
+    assert!(
+        content.contains("80.00"),
+        "expected 80.00% hit rate in report\ncontent:\n{content}"
+    );
+}

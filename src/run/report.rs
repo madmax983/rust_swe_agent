@@ -142,6 +142,7 @@ fn render_markdown(
         &args.sweep_dir,
     );
     md_eval_section(&mut buf, eval);
+    md_cache_effectiveness(&mut buf, instances);
     if let Some(report) = baseline_report {
         md_baseline_delta(&mut buf, report);
     }
@@ -389,6 +390,41 @@ fn md_top_failures(
         )
         .ok();
     }
+    writeln!(buf).ok();
+}
+
+fn md_cache_effectiveness(buf: &mut String, instances: &[&InstanceResult]) {
+    writeln!(buf, "## Cache Effectiveness").ok();
+    writeln!(buf).ok();
+
+    let total_reads: u64 = instances
+        .iter()
+        .map(|i| i.cache_read_tokens.unwrap_or(0))
+        .sum();
+    let total_creation: u64 = instances
+        .iter()
+        .map(|i| i.cache_creation_tokens.unwrap_or(0))
+        .sum();
+
+    if total_reads == 0 && total_creation == 0 {
+        writeln!(buf, "_no cache data_").ok();
+        writeln!(buf).ok();
+        return;
+    }
+
+    let total_input: u64 = instances.iter().map(|i| i.prompt_tokens.unwrap_or(0)).sum();
+    let hit_rate =
+        crate::run::cache_stats::compute_cache_hit_rate(total_input, total_reads, total_creation);
+    let savings =
+        crate::run::cache_stats::compute_estimated_savings_usd_vs_cold(total_reads, total_creation);
+    let spend =
+        crate::run::cache_stats::compute_realized_cache_spend_usd(total_reads, total_creation);
+
+    writeln!(buf, "| Metric | Value |").ok();
+    writeln!(buf, "|---|---|").ok();
+    writeln!(buf, "| Cache hit rate | {:.2}% |", hit_rate * 100.0).ok();
+    writeln!(buf, "| Realized cache spend USD | ${spend:.6} |").ok();
+    writeln!(buf, "| Estimated savings vs cold USD | ${savings:.6} |").ok();
     writeln!(buf).ok();
 }
 

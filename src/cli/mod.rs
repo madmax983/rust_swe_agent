@@ -129,6 +129,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::InstanceHistory(h),
         } => bench_instance_history(h),
+        Command::Bench {
+            cmd: args::BenchCmd::CacheStats(c),
+        } => bench_cache_stats(c),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1881,6 +1884,33 @@ fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
         );
     }
 
+    Ok(())
+}
+
+fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
+    let is_json = match c.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "cache-stats: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::cache_stats::run(&crate::run::cache_stats::CacheStatsArgs {
+        sweep_dir: c.sweep,
+        top: c.top,
+        baseline: c.baseline,
+    })?;
+    if is_json {
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::CacheStatsReport,
+            &report,
+        )?;
+        println!("{json}");
+    } else {
+        print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
     Ok(())
 }
 
