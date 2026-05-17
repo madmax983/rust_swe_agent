@@ -187,20 +187,17 @@ pub fn render_text(
             ]);
 
         for (name, m) in &rows {
-            let (rr_used, rr_not_used) = m
-                .by_outcome
-                .get(display_bucket)
-                .map_or_else(
-                    || ("—".to_owned(), "—".to_owned()),
-                    |o| {
-                        (
-                            o.resolved_rate_when_used
-                                .map_or_else(|| "—".to_owned(), |v| format!("{v:.3}")),
-                            o.resolved_rate_when_not_used
-                                .map_or_else(|| "—".to_owned(), |v| format!("{v:.3}")),
-                        )
-                    },
-                );
+            let (rr_used, rr_not_used) = m.by_outcome.get(display_bucket).map_or_else(
+                || ("—".to_owned(), "—".to_owned()),
+                |o| {
+                    (
+                        o.resolved_rate_when_used
+                            .map_or_else(|| "—".to_owned(), |v| format!("{v:.3}")),
+                        o.resolved_rate_when_not_used
+                            .map_or_else(|| "—".to_owned(), |v| format!("{v:.3}")),
+                    )
+                },
+            );
 
             table.add_row(vec![
                 (*name).to_owned(),
@@ -523,11 +520,11 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
             for entry in &ts.tools {
                 universe_map.entry(entry.name.clone()).or_insert_with(|| {
                     // Redact tool name and mcp_server before storing.
-                    let name =
-                        redactor.redact_text(&entry.name, surface::TRAJECTORY).text;
-                    let mcp_server = entry.mcp_server.as_deref().map(|s| {
-                        redactor.redact_text(s, surface::TRAJECTORY).text
-                    });
+                    let name = redactor.redact_text(&entry.name, surface::TRAJECTORY).text;
+                    let mcp_server = entry
+                        .mcp_server
+                        .as_deref()
+                        .map(|s| redactor.redact_text(s, surface::TRAJECTORY).text);
                     ToolUniverseEntry {
                         name,
                         source: map_source(&entry.source).to_owned(),
@@ -539,11 +536,13 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
     }
 
     // Also ensure bash is in the universe (it's always available as a builtin).
-    universe_map.entry("bash".to_owned()).or_insert_with(|| ToolUniverseEntry {
-        name: "bash".to_owned(),
-        source: "builtin".to_owned(),
-        mcp_server: None,
-    });
+    universe_map
+        .entry("bash".to_owned())
+        .or_insert_with(|| ToolUniverseEntry {
+            name: "bash".to_owned(),
+            source: "builtin".to_owned(),
+            mcp_server: None,
+        });
 
     let tool_universe: Vec<ToolUniverseEntry> = {
         let mut v: Vec<_> = universe_map.values().cloned().collect();
@@ -566,7 +565,9 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
             })
             .unwrap_or_default();
         let fp = toolset_fingerprint(&tool_names);
-        let entry = fingerprint_groups.entry(fp.clone()).or_insert_with(|| (Vec::new(), BTreeSet::new()));
+        let entry = fingerprint_groups
+            .entry(fp.clone())
+            .or_insert_with(|| (Vec::new(), BTreeSet::new()));
         entry.0.push(data.id.clone());
         for n in &tool_names {
             entry.1.insert(n.clone());
@@ -582,8 +583,14 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
                 tools: tools.into_iter().collect(),
             })
             .collect();
-        drift_entries.sort_by(|a, b| b.instance_count.cmp(&a.instance_count).then_with(|| a.toolset_fingerprint.cmp(&b.toolset_fingerprint)));
-        Some(ToolsetDrift { toolsets: drift_entries })
+        drift_entries.sort_by(|a, b| {
+            b.instance_count
+                .cmp(&a.instance_count)
+                .then_with(|| a.toolset_fingerprint.cmp(&b.toolset_fingerprint))
+        });
+        Some(ToolsetDrift {
+            toolsets: drift_entries,
+        })
     } else {
         None
     };
@@ -724,11 +731,7 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
     // Unused tools: registered but 0 invocations.
     let mut unused_tools: Vec<String> = universe_names
         .iter()
-        .filter(|name| {
-            by_tool
-                .get(*name)
-                .is_none_or(|m| m.total_invocations == 0)
-        })
+        .filter(|name| by_tool.get(*name).is_none_or(|m| m.total_invocations == 0))
         .cloned()
         .collect();
     unused_tools.sort();

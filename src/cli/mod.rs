@@ -1819,24 +1819,19 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
         }
     };
     let bucket = t.bucket.clone();
-    let report =
-        crate::run::tool_coverage::run(&crate::run::tool_coverage::ToolCoverageArgs {
-            sweep_dir: t.sweep,
-            bucket: t.bucket,
-            filter: t.filter,
-            min_invocations: t.min_invocations,
-            per_instance: t.per_instance,
-        })?;
+    let report = crate::run::tool_coverage::run(&crate::run::tool_coverage::ToolCoverageArgs {
+        sweep_dir: t.sweep,
+        bucket: t.bucket,
+        filter: t.filter,
+        min_invocations: t.min_invocations,
+        per_instance: t.per_instance,
+    })?;
     if is_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!(
             "{}",
-            crate::run::tool_coverage::render_text(
-                &report,
-                bucket.as_deref(),
-                t.min_invocations,
-            )
+            crate::run::tool_coverage::render_text(&report, bucket.as_deref(), t.min_invocations,)
         );
     }
     Ok(())

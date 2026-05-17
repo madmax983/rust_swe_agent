@@ -44,7 +44,10 @@ fn cli_produces_text_output_with_tool_table() {
 
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("bench tool-coverage"), "{stdout}");
-    assert!(stdout.contains("bash"), "bash tool should be present: {stdout}");
+    assert!(
+        stdout.contains("bash"),
+        "bash tool should be present: {stdout}"
+    );
     assert!(
         stdout.contains("diagnostic_search"),
         "MCP tool should be present: {stdout}"
@@ -211,7 +214,10 @@ fn per_instance_mcp_calls_match_trajectory() {
     let diag_calls = resolved_row["tool_calls"]["diagnostic_search"]
         .as_u64()
         .unwrap_or(0);
-    assert_eq!(diag_calls, 2, "mcp-heavy-resolved should have 2 diagnostic_search calls");
+    assert_eq!(
+        diag_calls, 2,
+        "mcp-heavy-resolved should have 2 diagnostic_search calls"
+    );
 
     // bash-only-unresolved should have 0 diagnostic_search calls
     let unresolved_row = per_instance
@@ -244,7 +250,10 @@ fn toolset_drift_detected_when_instances_have_different_toolsets() {
 
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let drift = &report["toolset_drift"];
-    assert!(!drift.is_null(), "toolset_drift should be present when drift detected");
+    assert!(
+        !drift.is_null(),
+        "toolset_drift should be present when drift detected"
+    );
 
     let toolsets = drift["toolsets"].as_array().unwrap();
     assert!(
@@ -353,9 +362,18 @@ fn by_outcome_contains_required_fields() {
             outcome.is_object(),
             "by_outcome[{bucket}] should be object for bash"
         );
-        assert!(outcome["instances_used"].is_number(), "instances_used required in {bucket}");
-        assert!(outcome["instances_total"].is_number(), "instances_total required in {bucket}");
-        assert!(outcome["usage_rate"].is_number(), "usage_rate required in {bucket}");
+        assert!(
+            outcome["instances_used"].is_number(),
+            "instances_used required in {bucket}"
+        );
+        assert!(
+            outcome["instances_total"].is_number(),
+            "instances_total required in {bucket}"
+        );
+        assert!(
+            outcome["usage_rate"].is_number(),
+            "usage_rate required in {bucket}"
+        );
     }
 }
 
@@ -432,9 +450,10 @@ fn min_invocations_hides_low_use_tools_in_text_but_not_json() {
     let out = run_tool_coverage(sweep.path(), &["--min-invocations", "999"]);
     assert!(out.status.success());
 
-    let artifact: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(sweep.path().join("tool-coverage.json")).unwrap())
-            .unwrap();
+    let artifact: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sweep.path().join("tool-coverage.json")).unwrap(),
+    )
+    .unwrap();
 
     // diagnostic_search should still be in JSON artifact
     assert!(
@@ -496,9 +515,10 @@ fn bucket_filter_does_not_affect_json_artifact() {
     let out = run_tool_coverage(sweep.path(), &["--bucket", "resolved"]);
     assert!(out.status.success());
 
-    let artifact: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(sweep.path().join("tool-coverage.json")).unwrap())
-            .unwrap();
+    let artifact: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(sweep.path().join("tool-coverage.json")).unwrap(),
+    )
+    .unwrap();
 
     // JSON artifact always has all by_outcome buckets
     let bash = &artifact["by_tool"]["bash"]["by_outcome"];
