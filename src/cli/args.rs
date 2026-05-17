@@ -343,6 +343,8 @@ pub enum BenchCmd {
     Retry(RetryCmd),
     /// Surface agent action-class mix (read/write/test/…) by outcome bucket.
     Behavior(BehaviorCmd),
+    /// Measure MCP tool usage and correlate with outcome across a sweep.
+    ToolCoverage(ToolCoverageCmd),
 }
 
 /// `bench retry` — re-run selected failed instances and merge into sweep dir.
@@ -1311,6 +1313,37 @@ pub struct EvaluatorSelftestCmd {
     /// Parallel worker count for the `sb-cli` evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+}
+
+/// `bench tool-coverage` — measure MCP tool usage by outcome bucket.
+#[derive(Debug, Args)]
+pub struct ToolCoverageCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Restrict output to one outcome bucket: `resolved`, `unresolved`,
+    /// `errored`, or `all`.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Filter instances using the same syntax as `bench inspect --filter`.
+    /// Example: `failure_category=model_parse`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Hide tools with fewer than N total invocations from the text table.
+    /// The JSON artifact always contains all tools so dead-tool surfacing is intact.
+    #[arg(long, default_value_t = 0)]
+    pub min_invocations: usize,
+
+    /// Emit per-instance tool call counts in the JSON output and artifact.
+    #[arg(long, default_value_t = false)]
+    pub per_instance: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// `bench behavior` — surface agent action-class mix by outcome bucket.

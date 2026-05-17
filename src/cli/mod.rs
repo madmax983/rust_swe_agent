@@ -123,6 +123,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Behavior(b),
         } => bench_behavior(b),
+        Command::Bench {
+            cmd: args::BenchCmd::ToolCoverage(t),
+        } => bench_tool_coverage(t),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1800,6 +1803,35 @@ fn bench_behavior(b: args::BehaviorCmd) -> Result<(), Error> {
                 b.bucket.as_deref(),
                 b.min_share.unwrap_or(0.0),
             )
+        );
+    }
+    Ok(())
+}
+
+fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "tool-coverage: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let bucket = t.bucket.clone();
+    let report = crate::run::tool_coverage::run(&crate::run::tool_coverage::ToolCoverageArgs {
+        sweep_dir: t.sweep,
+        bucket: t.bucket,
+        filter: t.filter,
+        min_invocations: t.min_invocations,
+        per_instance: t.per_instance,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            crate::run::tool_coverage::render_text(&report, bucket.as_deref(), t.min_invocations,)
         );
     }
     Ok(())

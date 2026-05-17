@@ -1,0 +1,90 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "mcp-heavy-resolved",
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "total_cost_usd": 0.10,
+    "steps": 6,
+    "test_invocations": [],
+    "tests_run_before_submit": true,
+    "toolset": {
+      "tools": [
+        {"name": "bash", "description": "Run shell commands.", "source": "built_in"},
+        {"name": "diagnostic_search", "description": "Search diagnostics.", "source": "mcp_server", "mcp_server": "diagnostic-mcp"}
+      ]
+    }
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Let me search for the issue.",
+      "extra": {
+        "actions": ["diagnostic_search:{\"query\": \"find bug\"}"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "Found: line 42",
+      "extra": {
+        "run_result": {"stdout": "Found: line 42", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Search again for context.",
+      "extra": {
+        "actions": ["diagnostic_search:{\"query\": \"context around bug\"}"],
+        "cost": 0.02
+      }
+    },
+    {
+      "role": "user",
+      "content": "def foo(): pass",
+      "extra": {
+        "run_result": {"stdout": "def foo(): pass", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Fix it.",
+      "extra": {
+        "actions": ["sed -i 's/pass/return 42/' solution.py"],
+        "cost": 0.02
+      }
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Run tests.",
+      "extra": {
+        "actions": ["pytest tests/"],
+        "cost": 0.03
+      }
+    },
+    {
+      "role": "user",
+      "content": "1 passed",
+      "extra": {
+        "run_result": {"stdout": "1 passed", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Submit.",
+      "extra": {
+        "actions": ["__SUBMIT__"],
+        "cost": 0.02
+      }
+    }
+  ]
+}
