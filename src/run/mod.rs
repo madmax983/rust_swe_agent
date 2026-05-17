@@ -27,5 +27,6 @@ pub mod retry;
 pub mod swebench;
 pub mod tail;
 pub mod trajectory_diff;
+pub mod tool_coverage;
 pub mod triage;
 pub mod watch;

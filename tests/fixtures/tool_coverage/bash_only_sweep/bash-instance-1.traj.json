@@ -1,0 +1,59 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "bash-instance-1",
+    "model_name": "fixture-model",
+    "outcome": "submitted",
+    "total_cost_usd": 0.05,
+    "steps": 3,
+    "test_invocations": [],
+    "tests_run_before_submit": true,
+    "toolset": {
+      "tools": [
+        {"name": "bash", "description": "Run shell commands.", "source": "built_in"}
+      ]
+    }
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Read file.",
+      "extra": {
+        "actions": ["cat main.py"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "def main(): pass",
+      "extra": {
+        "run_result": {"stdout": "def main(): pass", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Fix.",
+      "extra": {
+        "actions": ["sed -i 's/pass/return 0/' main.py"],
+        "cost": 0.02
+      }
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Submit.",
+      "extra": {
+        "actions": ["__SUBMIT__"],
+        "cost": 0.02
+      }
+    }
+  ]
+}

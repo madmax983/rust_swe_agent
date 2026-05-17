@@ -1,0 +1,37 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "dead-tool-errored",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "total_cost_usd": 0.02,
+    "steps": 1,
+    "test_invocations": [],
+    "tests_run_before_submit": false,
+    "toolset": {
+      "tools": [
+        {"name": "bash", "description": "Run shell commands.", "source": "built_in"},
+        {"name": "diagnostic_search", "description": "Search diagnostics.", "source": "mcp_server", "mcp_server": "diagnostic-mcp"}
+      ]
+    }
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Let me read the file.",
+      "extra": {
+        "actions": ["cat solution.py"],
+        "cost": 0.02
+      }
+    },
+    {
+      "role": "user",
+      "content": "error",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "error occurred", "exit_code": 1, "timed_out": false}
+      }
+    }
+  ]
+}

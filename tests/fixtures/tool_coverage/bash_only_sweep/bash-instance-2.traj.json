@@ -1,0 +1,51 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "bash-instance-2",
+    "model_name": "fixture-model",
+    "outcome": "step_limit_reached",
+    "total_cost_usd": 0.03,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false,
+    "toolset": {
+      "tools": [
+        {"name": "bash", "description": "Run shell commands.", "source": "built_in"}
+      ]
+    }
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Read.",
+      "extra": {
+        "actions": ["cat main.py"],
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "def main(): pass",
+      "extra": {
+        "run_result": {"stdout": "def main(): pass", "stderr": "", "exit_code": 0, "timed_out": false}
+      }
+    },
+    {
+      "role": "assistant",
+      "content": "Read again.",
+      "extra": {
+        "actions": ["grep -r pattern ."],
+        "cost": 0.02
+      }
+    },
+    {
+      "role": "user",
+      "content": "",
+      "extra": {
+        "run_result": {"stdout": "", "stderr": "", "exit_code": 1, "timed_out": false}
+      }
+    }
+  ]
+}
