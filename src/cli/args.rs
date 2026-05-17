@@ -345,6 +345,53 @@ pub enum BenchCmd {
     Behavior(BehaviorCmd),
     /// Measure MCP tool usage and correlate with outcome across a sweep.
     ToolCoverage(ToolCoverageCmd),
+    /// Join historical sweeps on instance_id and report resolution history,
+    /// stability class, and flip provenance.
+    InstanceHistory(InstanceHistoryCmd),
+}
+
+/// `bench instance-history` — longitudinal view of instance resolution across sweeps.
+#[derive(Debug, Args)]
+pub struct InstanceHistoryCmd {
+    /// Paths to sweep directories to join. Must be given at least twice.
+    #[arg(long = "sweeps", value_name = "DIR", required = true, action = clap::ArgAction::Append)]
+    pub sweeps: Vec<std::path::PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Output file path. Use `-` to write JSON to stdout.
+    #[arg(long, default_value = "instance-history.json", value_name = "PATH")]
+    pub output: std::path::PathBuf,
+
+    /// Resolved-rate threshold for stable classification (default 1.0: only
+    /// 0/N or N/N are stable; lower values subdivide the middle band).
+    #[arg(long, default_value = "1.0", value_name = "THRESHOLD")]
+    pub stable_threshold: f64,
+
+    /// Exit non-zero when the partial-coverage fraction exceeds
+    /// `--max-partial-share` or when the intersection is empty.
+    #[arg(long)]
+    pub require_full_coverage: bool,
+
+    /// Maximum fraction (0.0–1.0) of instances allowed to have partial
+    /// coverage, used with `--require-full-coverage`.
+    #[arg(long, value_name = "SHARE")]
+    pub max_partial_share: Option<f64>,
+
+    /// Restrict the text table to one stability class
+    /// (stable_win | stable_loss | flipper | unstable_minority_win | unstable_minority_loss).
+    #[arg(long, value_name = "CLASS")]
+    pub class: Option<String>,
+
+    /// Maximum rows to print in the text table.
+    #[arg(long, default_value = "50", value_name = "N")]
+    pub top: usize,
+
+    /// Print only the flipper subset ("operator quick-glance" mode).
+    #[arg(long)]
+    pub focus: bool,
 }
 
 /// `bench retry` — re-run selected failed instances and merge into sweep dir.

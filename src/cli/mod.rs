@@ -126,6 +126,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::ToolCoverage(t),
         } => bench_tool_coverage(t),
+        Command::Bench {
+            cmd: args::BenchCmd::InstanceHistory(h),
+        } => bench_instance_history(h),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1805,6 +1808,79 @@ fn bench_behavior(b: args::BehaviorCmd) -> Result<(), Error> {
             )
         );
     }
+    Ok(())
+}
+
+fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
+    // Threshold must be in (0.5, 1.0] — values outside this range produce
+    // nonsensical or misleading stability labels.
+    if h.stable_threshold <= 0.5 || h.stable_threshold > 1.0 || !h.stable_threshold.is_finite() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "instance-history: --stable-threshold must be in (0.5, 1.0], got {}",
+            h.stable_threshold
+        ))));
+    }
+    if let Some(share) = h.max_partial_share {
+        if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "instance-history: --max-partial-share must be in [0.0, 1.0], got {share}"
+            ))));
+        }
+    }
+
+    let format = h
+        .format
+        .parse::<crate::run::instance_history::HistoryFormat>()
+        .map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "instance-history: {e}"
+            )))
+        })?;
+
+    let class_filter = h
+        .class
+        .as_deref()
+        .map(|s| {
+            use crate::run::instance_history::StabilityClass;
+            match s {
+                "stable_win" => Ok(StabilityClass::StableWin),
+                "stable_loss" => Ok(StabilityClass::StableLoss),
+                "flipper" => Ok(StabilityClass::Flipper),
+                "unstable_minority_win" => Ok(StabilityClass::UnstableMinorityWin),
+                "unstable_minority_loss" => Ok(StabilityClass::UnstableMinorityLoss),
+                other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "instance-history: unknown --class `{other}`"
+                )))),
+            }
+        })
+        .transpose()?;
+
+    let report = crate::run::instance_history::compute(
+        &crate::run::instance_history::InstanceHistoryArgs {
+            sweeps: h.sweeps,
+            stable_threshold: h.stable_threshold,
+            require_full_coverage: h.require_full_coverage,
+            max_partial_share: h.max_partial_share,
+            format,
+            output: h.output.clone(),
+            top: h.top,
+            focus: h.focus,
+            class_filter,
+        },
+    )?;
+
+    crate::run::instance_history::write_output(&report, &h.output)?;
+
+    // When --output - is combined with --format text the JSON has already been
+    // written to stdout by write_output; skip the text render to avoid mixing.
+    let output_is_stdout = h.output == std::path::Path::new("-");
+    if format == crate::run::instance_history::HistoryFormat::Text && !output_is_stdout {
+        print!(
+            "{}",
+            crate::run::instance_history::render_text(&report, h.top, h.focus, class_filter,)
+        );
+    }
+
     Ok(())
 }
 

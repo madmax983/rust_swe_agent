@@ -15,6 +15,7 @@ pub mod github_pr;
 pub mod grep;
 pub mod hello_world;
 pub mod inspect;
+pub mod instance_history;
 pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
