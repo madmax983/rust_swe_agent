@@ -502,7 +502,13 @@ fn count_tool_invocations(trajectory: &Trajectory) -> BTreeMap<String, usize> {
 /// Parse the toolset manifest from `info.other["toolset"]` if present.
 fn parse_toolset(trajectory: &Trajectory) -> Option<RawToolsetManifest> {
     let raw = trajectory.info.other.get("toolset")?;
-    serde_json::from_value(raw.clone()).ok()
+    match serde_json::from_value(raw.clone()) {
+        Ok(ts) => Some(ts),
+        Err(e) => {
+            eprintln!("tool-coverage: warning: failed to parse toolset manifest: {e}");
+            None
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
