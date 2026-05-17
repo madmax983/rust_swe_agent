@@ -418,16 +418,21 @@ fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
 
     let instance_dir = sweep.join(instance_id);
     if instance_dir.is_dir() {
-        let mut run_paths = Vec::new();
-        let mut n = 1usize;
-        loop {
-            let p = instance_dir.join(format!("run-{n}.traj.json"));
-            if !p.exists() {
-                break;
-            }
-            run_paths.push(p);
-            n += 1;
-        }
+        let run_paths: Vec<PathBuf> = std::fs::read_dir(&instance_dir)
+            .map(|entries| {
+                let mut paths: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
+                    })
+                    .collect();
+                paths.sort();
+                paths
+            })
+            .unwrap_or_default();
         if !run_paths.is_empty() {
             return run_paths;
         }
@@ -545,8 +550,20 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         for traj_path in resolve_trajectory_paths(&args.sweep_dir, id) {
             match load_trajectory(&traj_path) {
                 Ok(traj) => {
-                    if toolset.is_none() {
-                        toolset = parse_toolset(&traj);
+                    // Merge toolsets from all run files so tools introduced in
+                    // later retries/resumes are not reported as rogue.
+                    if let Some(new_ts) = parse_toolset(&traj) {
+                        if let Some(existing) = &mut toolset {
+                            let existing_names: HashSet<_> =
+                                existing.tools.iter().map(|t| t.name.clone()).collect();
+                            for entry in new_ts.tools {
+                                if !existing_names.contains(&entry.name) {
+                                    existing.tools.push(entry);
+                                }
+                            }
+                        } else {
+                            toolset = Some(new_ts);
+                        }
                     }
                     for (tool, count) in count_tool_invocations(&traj) {
                         *combined_counts.entry(tool).or_default() += count;
@@ -688,7 +705,11 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
                             .cloned()
                             .unwrap_or_else(|| t.name.clone());
                         let src = map_source(&t.source);
-                        let mcp = t.mcp_server.as_deref().unwrap_or("");
+                        let mcp = t
+                            .mcp_server
+                            .as_deref()
+                            .map(|s| redactor.redact_text(s, surface::TRAJECTORY).text)
+                            .unwrap_or_default();
                         format!("{redacted}::{src}::{mcp}")
                     })
                     .collect();
@@ -733,6 +754,45 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         None
     };
 
+    // Build per-tool scope sets: which instances had each tool in their manifest.
+    // Per spec: instances_total counts only instances where the tool was in scope.
+    // Instances with no recorded toolset are treated as all-in-scope.
+    // Bash is always in scope (builtin). Rogue tools (not in any manifest) are
+    // treated as globally in scope via map_or(true, …) in the aggregation loop.
+    let mut tool_scope: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for data in &instance_data {
+        match &data.toolset {
+            None => {
+                // No toolset recorded: treat all universe tools as in scope.
+                for name in &universe_names {
+                    tool_scope
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(data.id.clone());
+                }
+            }
+            Some(ts) => {
+                for entry in &ts.tools {
+                    let redacted_name = raw_to_redacted
+                        .get(&entry.name)
+                        .cloned()
+                        .unwrap_or_else(|| entry.name.clone());
+                    tool_scope
+                        .entry(redacted_name)
+                        .or_default()
+                        .insert(data.id.clone());
+                }
+            }
+        }
+    }
+    // Bash is always available in every instance.
+    {
+        let bash_scope = tool_scope.entry("bash".to_owned()).or_default();
+        for data in &instance_data {
+            bash_scope.insert(data.id.clone());
+        }
+    }
+
     // Grand total calls across all instances (for share computation).
     let grand_total_calls: usize = instance_data
         .iter()
@@ -774,10 +834,16 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
             per_bucket_resolved_total.insert(bname, 0);
         }
 
+        // Whether this tool was in scope for a given instance.
+        // Rogue tools (not in any manifest) hit map_or(true,…): all instances
+        // count toward the denominator since we have no manifest to restrict by.
+        let scope = tool_scope.get(tool_name);
+
         for data in &instance_data {
             let calls = data.tool_counts.get(tool_name).copied().unwrap_or(0);
             let used = calls > 0;
             let is_resolved = data.bucket == OutcomeBucket::Resolved;
+            let in_scope = scope.is_none_or(|s| s.contains(&data.id));
 
             total_invocations += calls;
             if used {
@@ -789,12 +855,16 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
                 if !in_bucket {
                     continue;
                 }
-                *per_bucket_total.entry(bname).or_default() += 1;
                 *per_bucket_invocations.entry(bname).or_default() += calls;
                 if used {
                     *per_bucket_used.entry(bname).or_default() += 1;
                 }
-                *per_bucket_resolved_total.entry(bname).or_default() += usize::from(is_resolved);
+                // Only count toward denominator when the tool was in scope.
+                if in_scope {
+                    *per_bucket_total.entry(bname).or_default() += 1;
+                    *per_bucket_resolved_total.entry(bname).or_default() +=
+                        usize::from(is_resolved);
+                }
                 if used && is_resolved {
                     *per_bucket_resolved_used.entry(bname).or_default() += 1;
                 }
