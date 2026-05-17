@@ -1820,6 +1820,13 @@ fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
             h.stable_threshold
         ))));
     }
+    if let Some(share) = h.max_partial_share {
+        if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "instance-history: --max-partial-share must be in [0.0, 1.0], got {share}"
+            ))));
+        }
+    }
 
     let format = h
         .format
@@ -1864,14 +1871,14 @@ fn bench_instance_history(h: args::InstanceHistoryCmd) -> Result<(), Error> {
 
     crate::run::instance_history::write_output(&report, &h.output)?;
 
-    match format {
-        crate::run::instance_history::HistoryFormat::Json => {}
-        crate::run::instance_history::HistoryFormat::Text => {
-            print!(
-                "{}",
-                crate::run::instance_history::render_text(&report, h.top, h.focus, class_filter,)
-            );
-        }
+    // When --output - is combined with --format text the JSON has already been
+    // written to stdout by write_output; skip the text render to avoid mixing.
+    let output_is_stdout = h.output == std::path::Path::new("-");
+    if format == crate::run::instance_history::HistoryFormat::Text && !output_is_stdout {
+        print!(
+            "{}",
+            crate::run::instance_history::render_text(&report, h.top, h.focus, class_filter,)
+        );
     }
 
     Ok(())

@@ -296,8 +296,11 @@ fn expand_glob(pattern: &str) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            let s = p.to_string_lossy();
-            re.is_match(&s) && p.is_dir()
+            let raw = p.to_string_lossy();
+            // read_dir(".") prefixes entries with "./" which the anchored
+            // regex doesn't expect; strip it before matching.
+            let s = raw.strip_prefix("./").unwrap_or(&raw);
+            re.is_match(s) && p.is_dir()
         })
         .collect();
     matches.sort();
@@ -405,8 +408,8 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
         sweep_id: String,
         sweep_path: String,
         finished_at: Option<String>,
-        /// instance_id → (resolved, runs, resolved_count)
-        instances: HashMap<String, (bool, u32, u32)>,
+        /// instance_id → (resolved, runs, resolved_count, errored)
+        instances: HashMap<String, (bool, u32, u32, bool)>,
     }
 
     let mut loaded: Vec<LoadedEntry> = Vec::new();
@@ -424,6 +427,16 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
         })
         .collect();
 
+    // Pre-compute basename collision set so sweep_id is unambiguous.
+    let mut basename_counts: HashMap<String, usize> = HashMap::new();
+    for p in &expanded {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        *basename_counts.entry(name).or_insert(0) += 1;
+    }
+
     for sweep_path in &expanded {
         let results_path = sweep_path.join("results.json");
         if !results_path.exists() {
@@ -436,17 +449,29 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                     .manifest
                     .as_ref()
                     .and_then(|m| m.runtime.finished_at_utc.clone());
-                let sweep_id = sweep_path.file_name().map_or_else(
-                    || sweep_path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                let instances: HashMap<String, (bool, u32, u32)> = ls
+                let basename = sweep_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                // Fall back to full canonical path when basenames collide.
+                let sweep_id = if basename_counts.get(&basename).copied().unwrap_or(0) > 1 {
+                    sweep_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| sweep_path.clone())
+                        .display()
+                        .to_string()
+                } else {
+                    basename
+                };
+                let instances: HashMap<String, (bool, u32, u32, bool)> = ls
                     .instances
                     .iter()
                     .map(|(id, r)| {
                         let res = instance_resolved_count(r);
                         let runs = effective_runs(r);
-                        (id.clone(), (res > 0, runs, res))
+                        let errored =
+                            r.outcome.as_deref() == Some(crate::trajectory::outcome::ERROR);
+                        (id.clone(), (res > 0, runs, res, errored))
                     })
                     .collect();
                 loaded.push(LoadedEntry {
@@ -548,14 +573,14 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                 .iter()
                 .map(|&idx| {
                     let e = &loaded[idx];
-                    let (resolved, runs, res_count) =
-                        e.instances.get(id).copied().unwrap_or((false, 1, 0));
+                    let (resolved, runs, res_count, errored) =
+                        e.instances.get(id).copied().unwrap_or((false, 1, 0, false));
                     SweepOutcome {
                         sweep_id: e.sweep_id.clone(),
                         sweep_path: e.sweep_path.clone(),
                         finished_at: e.finished_at.clone(),
                         resolved,
-                        errored: !resolved,
+                        errored,
                         sampling_summary: SamplingSummary {
                             runs,
                             resolved_count: res_count,
