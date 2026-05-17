@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
+use crate::run::swebench::{effective_runs, resolved_count as instance_resolved_count};
 
 // ── output format ─────────────────────────────────────────────────────────────
 
@@ -86,7 +87,7 @@ pub fn classify_stability(resolved: u32, total: u32, stable_threshold: f64) -> S
         // Default: everything between 0/N and N/N is a flipper
         return StabilityClass::Flipper;
     }
-    let rate = resolved as f64 / total as f64;
+    let rate = f64::from(resolved) / f64::from(total);
     if rate > stable_threshold {
         StabilityClass::StableWin
     } else if rate < 1.0 - stable_threshold {
@@ -304,13 +305,18 @@ fn expand_glob(pattern: &str) -> Vec<PathBuf> {
 }
 
 /// Convert a simple glob pattern (`*`, `?`) to an anchored regex string.
+///
+/// Handles both forward and back slashes as path separators so the same
+/// pattern works on Unix and Windows.
 fn glob_to_regex(glob: &str) -> String {
     let mut re = String::from("^");
     for ch in glob.chars() {
         match ch {
-            '*' => re.push_str("[^/]*"),
-            '?' => re.push_str("[^/]"),
-            '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
+            '*' => re.push_str(r"[^/\\]*"),
+            '?' => re.push_str(r"[^/\\]"),
+            // Normalise both separator forms to a character class.
+            '/' | '\\' => re.push_str(r"[/\\]"),
+            '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' => {
                 re.push('\\');
                 re.push(ch);
             }
@@ -323,13 +329,22 @@ fn glob_to_regex(glob: &str) -> String {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/// Stable content hash of a sorted set of instance IDs.
+///
+/// Uses SHA-256 (truncated to 16 hex chars) so the signature is identical
+/// across Rust versions and platforms — unlike `DefaultHasher`.
 fn dataset_signature(ids: &BTreeSet<&str>) -> String {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
     for id in ids {
-        id.hash(&mut h);
+        h.update(id.as_bytes());
+        h.update(b"\n");
     }
-    format!("{:016x}", h.finish())
+    let digest = h.finalize();
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(digest[..8].try_into().unwrap_or([0u8; 8]))
+    )
 }
 
 fn compute_flip_events(outcomes: &[SweepOutcome]) -> Vec<FlipEvent> {
@@ -369,8 +384,21 @@ fn parse_rfc3339_secs(s: &str) -> Option<i64> {
         .map(|dt| dt.timestamp())
 }
 
+// ── ranking ───────────────────────────────────────────────────────────────────
+
+fn class_rank(c: StabilityClass) -> u8 {
+    match c {
+        StabilityClass::Flipper => 0,
+        StabilityClass::UnstableMinorityWin => 1,
+        StabilityClass::UnstableMinorityLoss => 2,
+        StabilityClass::StableLoss => 3,
+        StabilityClass::StableWin => 4,
+    }
+}
+
 // ── compute ───────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Error> {
     // ── expand and load sweeps ────────────────────────────────────────────────
     struct LoadedEntry {
@@ -384,10 +412,16 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
     let mut loaded: Vec<LoadedEntry> = Vec::new();
     let mut skipped_sweeps: Vec<String> = Vec::new();
 
+    // Expand and deduplicate: the same canonical path must not count twice.
+    let mut seen_paths: BTreeSet<PathBuf> = BTreeSet::new();
     let expanded: Vec<PathBuf> = args
         .sweeps
         .iter()
         .flat_map(|p| expand_sweep_arg(p))
+        .filter(|p| {
+            let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+            seen_paths.insert(canon)
+        })
         .collect();
 
     for sweep_path in &expanded {
@@ -402,17 +436,17 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                     .manifest
                     .as_ref()
                     .and_then(|m| m.runtime.finished_at_utc.clone());
-                let sweep_id = sweep_path
-                    .file_name()
-                    .map_or_else(|| sweep_path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                let sweep_id = sweep_path.file_name().map_or_else(
+                    || sweep_path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
                 let instances: HashMap<String, (bool, u32, u32)> = ls
                     .instances
                     .iter()
                     .map(|(id, r)| {
-                        let resolved = r.resolved_count > 0;
-                        // `runs` defaults to 1 for single-shot sweeps (legacy artifacts).
-                        let runs = if r.runs == 0 { 1 } else { r.runs };
-                        (id.clone(), (resolved, runs, r.resolved_count))
+                        let res = instance_resolved_count(r);
+                        let runs = effective_runs(r);
+                        (id.clone(), (res > 0, runs, res))
                     })
                     .collect();
                 loaded.push(LoadedEntry {
@@ -479,6 +513,7 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
     // ── check --require-full-coverage ─────────────────────────────────────────
     if args.require_full_coverage {
         let total_unique = all_ids.len();
+        #[allow(clippy::cast_precision_loss)]
         let partial_share = if total_unique == 0 {
             0.0
         } else {
@@ -500,13 +535,16 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
     sweep_order.sort_by(|&a, &b| {
         let fa = loaded[a].finished_at.as_deref().unwrap_or("");
         let fb = loaded[b].finished_at.as_deref().unwrap_or("");
-        fa.cmp(fb).then_with(|| loaded[a].sweep_id.cmp(&loaded[b].sweep_id))
+        fa.cmp(fb)
+            .then_with(|| loaded[a].sweep_id.cmp(&loaded[b].sweep_id))
     });
 
     let mut rows: Vec<InstanceHistoryRow> = intersection_ids
         .iter()
         .map(|&id| {
-            let mut sweep_outcomes: Vec<SweepOutcome> = sweep_order
+            // sweep_order is already sorted by finished_at/sweep_id, so the
+            // outcomes list inherits that ordering without a second sort.
+            let sweep_outcomes: Vec<SweepOutcome> = sweep_order
                 .iter()
                 .map(|&idx| {
                     let e = &loaded[idx];
@@ -526,19 +564,14 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                 })
                 .collect();
 
-            // Ensure deterministic ordering within ties.
-            sweep_outcomes.sort_by(|a, b| {
-                let fa = a.finished_at.as_deref().unwrap_or("");
-                let fb = b.finished_at.as_deref().unwrap_or("");
-                fa.cmp(fb).then_with(|| a.sweep_id.cmp(&b.sweep_id))
-            });
-
+            #[allow(clippy::cast_possible_truncation)]
             let resolved_count = sweep_outcomes.iter().filter(|o| o.resolved).count() as u32;
+            #[allow(clippy::cast_possible_truncation)]
             let total_runs = sweep_outcomes.len() as u32;
             let resolved_rate = if total_runs == 0 {
                 0.0
             } else {
-                resolved_count as f64 / total_runs as f64
+                f64::from(resolved_count) / f64::from(total_runs)
             };
             let stability_class =
                 classify_stability(resolved_count, total_runs, args.stable_threshold);
@@ -559,16 +592,6 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
         .collect();
 
     // ── rank rows by operator value ───────────────────────────────────────────
-    fn class_rank(c: StabilityClass) -> u8 {
-        match c {
-            StabilityClass::Flipper => 0,
-            StabilityClass::UnstableMinorityWin => 1,
-            StabilityClass::UnstableMinorityLoss => 2,
-            StabilityClass::StableLoss => 3,
-            StabilityClass::StableWin => 4,
-        }
-    }
-
     rows.sort_by(|a, b| {
         let ra = class_rank(a.stability_class);
         let rb = class_rank(b.stability_class);
@@ -588,6 +611,7 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
     }
 
     let intersection_size = intersection_ids.len();
+    #[allow(clippy::cast_precision_loss)]
     let flipper_share = if intersection_size == 0 {
         0.0
     } else {
@@ -645,7 +669,11 @@ pub fn render_text(
     }
     let _ = writeln!(out);
 
-    let filter_class = if focus { Some(StabilityClass::Flipper) } else { class_filter };
+    let filter_class = if focus {
+        Some(StabilityClass::Flipper)
+    } else {
+        class_filter
+    };
 
     let rows: Vec<&InstanceHistoryRow> = report
         .instances
@@ -661,8 +689,8 @@ pub fn render_text(
 
     let _ = writeln!(
         out,
-        "{:<50}  {:<22}  {:>7}  {:>6}  {}",
-        "instance_id", "stability_class", "resolved", "rate", "last_flip"
+        "{:<50}  {:<22}  {:>7}  {:>6}  last_flip",
+        "instance_id", "stability_class", "resolved", "rate"
     );
     let _ = writeln!(out, "{}", "-".repeat(110));
 
@@ -747,7 +775,10 @@ mod tests {
                 finished_at: Some("2026-05-01T00:00:00Z".into()),
                 resolved: true,
                 errored: false,
-                sampling_summary: SamplingSummary { runs: 1, resolved_count: 1 },
+                sampling_summary: SamplingSummary {
+                    runs: 1,
+                    resolved_count: 1,
+                },
             },
             SweepOutcome {
                 sweep_id: "b".into(),
@@ -755,7 +786,10 @@ mod tests {
                 finished_at: Some("2026-05-02T00:00:00Z".into()),
                 resolved: false,
                 errored: true,
-                sampling_summary: SamplingSummary { runs: 1, resolved_count: 0 },
+                sampling_summary: SamplingSummary {
+                    runs: 1,
+                    resolved_count: 0,
+                },
             },
             SweepOutcome {
                 sweep_id: "c".into(),
@@ -763,7 +797,10 @@ mod tests {
                 finished_at: Some("2026-05-03T00:00:00Z".into()),
                 resolved: true,
                 errored: false,
-                sampling_summary: SamplingSummary { runs: 1, resolved_count: 1 },
+                sampling_summary: SamplingSummary {
+                    runs: 1,
+                    resolved_count: 1,
+                },
             },
         ];
         let flips = compute_flip_events(&outcomes);

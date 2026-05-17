@@ -10,8 +10,8 @@ use std::process::Command;
 
 use rust_swe_agent::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
-    ModelManifest, ProvenanceManifest, PromptTemplateManifest, RuntimeManifest, SWEEP_STATUS_COMPLETED,
-    SweepResults,
+    ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,
+    SWEEP_STATUS_COMPLETED, SweepResults,
 };
 use rust_swe_agent::trajectory::{FailureCategory, outcome};
 
@@ -253,8 +253,10 @@ fn test_flipper_classification_three_sweeps() {
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
 
     let instances = report["instances"].as_array().unwrap();
-    let by_id: std::collections::HashMap<&str, &serde_json::Value> =
-        instances.iter().map(|v| (v["instance_id"].as_str().unwrap(), v)).collect();
+    let by_id: std::collections::HashMap<&str, &serde_json::Value> = instances
+        .iter()
+        .map(|v| (v["instance_id"].as_str().unwrap(), v))
+        .collect();
 
     assert_eq!(by_id["alpha"]["stability_class"], "stable_win");
     assert_eq!(by_id["beta"]["stability_class"], "stable_loss");
@@ -269,7 +271,10 @@ fn test_flipper_classification_three_sweeps() {
     assert_eq!(report["stability_counts"]["flipper"], 1);
 
     let flipper_share = report["flipper_share"].as_f64().unwrap();
-    assert!((flipper_share - 0.2).abs() < 1e-9, "flipper_share should be 0.2");
+    assert!(
+        (flipper_share - 0.2).abs() < 1e-9,
+        "flipper_share should be 0.2"
+    );
 
     // gamma must have at least one flip_event
     let gamma = by_id["gamma"];
@@ -284,8 +289,16 @@ fn test_disjoint_instances_empty_intersection() {
     let s1 = dir.path().join("sweep1");
     let s2 = dir.path().join("sweep2");
 
-    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
-    write_sweep(&s2, vec![submitted("gamma"), errored("delta")], "2026-05-02T01:00:00Z");
+    write_sweep(
+        &s1,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-01T01:00:00Z",
+    );
+    write_sweep(
+        &s2,
+        vec![submitted("gamma"), errored("delta")],
+        "2026-05-02T01:00:00Z",
+    );
 
     let out = dir.path().join("instance-history.json");
     let status = Command::new(binary_path())
@@ -301,7 +314,10 @@ fn test_disjoint_instances_empty_intersection() {
         ])
         .status()
         .unwrap();
-    assert!(status.success(), "empty intersection is not an error by default");
+    assert!(
+        status.success(),
+        "empty intersection is not an error by default"
+    );
 
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -323,7 +339,11 @@ fn test_require_full_coverage_exits_nonzero() {
         vec![submitted("alpha"), errored("beta"), submitted("gamma")],
         "2026-05-01T01:00:00Z",
     );
-    write_sweep(&s2, vec![submitted("alpha"), errored("beta")], "2026-05-02T01:00:00Z");
+    write_sweep(
+        &s2,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-02T01:00:00Z",
+    );
 
     let out = dir.path().join("instance-history.json");
     let status = Command::new(binary_path())
@@ -342,7 +362,10 @@ fn test_require_full_coverage_exits_nonzero() {
         ])
         .status()
         .unwrap();
-    assert!(!status.success(), "should exit non-zero when partial share exceeds limit");
+    assert!(
+        !status.success(),
+        "should exit non-zero when partial share exceeds limit"
+    );
 }
 
 /// AC (d): `--stable-threshold 0.9` moves an instance that was a flipper at the
@@ -354,7 +377,9 @@ fn test_require_full_coverage_exits_nonzero() {
 #[test]
 fn test_stable_threshold_relaxation() {
     let dir = tempfile::tempdir().unwrap();
-    let sweeps: Vec<_> = (0..10).map(|i| dir.path().join(format!("sweep{i}"))).collect();
+    let sweeps: Vec<_> = (0..10)
+        .map(|i| dir.path().join(format!("sweep{i}")))
+        .collect();
 
     // swing resolves in sweeps 0–6 (7 of 10), stable in rest
     for (i, sweep_dir) in sweeps.iter().enumerate() {
@@ -363,7 +388,11 @@ fn test_stable_threshold_relaxation() {
         } else {
             vec![submitted("stable"), errored("swing"), errored("loss")]
         };
-        write_sweep(sweep_dir, instances, &format!("2026-05-{:02}T01:00:00Z", i + 1));
+        write_sweep(
+            sweep_dir,
+            instances,
+            &format!("2026-05-{:02}T01:00:00Z", i + 1),
+        );
     }
 
     let out_default = dir.path().join("history-default.json");
@@ -393,7 +422,10 @@ fn test_stable_threshold_relaxation() {
         .iter()
         .find(|v| v["instance_id"] == "swing")
         .unwrap();
-    assert_eq!(swing_default["stability_class"], "flipper", "at T=1.0, swing should be flipper");
+    assert_eq!(
+        swing_default["stability_class"], "flipper",
+        "at T=1.0, swing should be flipper"
+    );
 
     // Relaxed threshold (0.9): swing (rate=0.7 < 0.9, rate > 0.5) → unstable_minority_win
     let status = Command::new(binary_path())
@@ -456,14 +488,26 @@ fn test_flip_events_ordered_by_finished_at() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let instances = report["instances"].as_array().unwrap();
-    let gamma = instances.iter().find(|v| v["instance_id"] == "gamma").unwrap();
+    let gamma = instances
+        .iter()
+        .find(|v| v["instance_id"] == "gamma")
+        .unwrap();
 
     let outcomes = gamma["sweep_outcomes"].as_array().unwrap();
     // outcomes must be sorted by finished_at ascending
     assert_eq!(outcomes.len(), 3);
-    assert_eq!(outcomes[0]["finished_at"].as_str().unwrap(), "2026-05-01T01:00:00Z");
-    assert_eq!(outcomes[1]["finished_at"].as_str().unwrap(), "2026-05-02T01:00:00Z");
-    assert_eq!(outcomes[2]["finished_at"].as_str().unwrap(), "2026-05-03T01:00:00Z");
+    assert_eq!(
+        outcomes[0]["finished_at"].as_str().unwrap(),
+        "2026-05-01T01:00:00Z"
+    );
+    assert_eq!(
+        outcomes[1]["finished_at"].as_str().unwrap(),
+        "2026-05-02T01:00:00Z"
+    );
+    assert_eq!(
+        outcomes[2]["finished_at"].as_str().unwrap(),
+        "2026-05-03T01:00:00Z"
+    );
 
     // First flip: win→loss (early→mid), second flip: loss→win (mid→late)
     let flips = gamma["flip_events"].as_array().unwrap();
@@ -480,8 +524,16 @@ fn test_missing_results_json_skipped() {
     let s2 = dir.path().join("sweep2");
     let s_bad = dir.path().join("sweep_bad"); // no results.json
 
-    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
-    write_sweep(&s2, vec![submitted("alpha"), errored("beta")], "2026-05-02T01:00:00Z");
+    write_sweep(
+        &s1,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-01T01:00:00Z",
+    );
+    write_sweep(
+        &s2,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-02T01:00:00Z",
+    );
     std::fs::create_dir_all(&s_bad).unwrap(); // exists but no results.json
 
     let out = dir.path().join("instance-history.json");
@@ -558,7 +610,11 @@ fn test_determinism() {
         }
         v
     };
-    assert_eq!(strip(r1), strip(r2), "reports should be identical modulo generated_at");
+    assert_eq!(
+        strip(r1),
+        strip(r2),
+        "reports should be identical modulo generated_at"
+    );
 }
 
 /// Fewer than 2 valid sweeps → exit non-zero with clear error.
@@ -597,12 +653,20 @@ fn test_focus_flag_shows_flippers() {
 
     write_sweep(
         &s1,
-        vec![submitted("stable"), submitted("flipper_inst"), errored("loser")],
+        vec![
+            submitted("stable"),
+            submitted("flipper_inst"),
+            errored("loser"),
+        ],
         "2026-05-01T01:00:00Z",
     );
     write_sweep(
         &s2,
-        vec![submitted("stable"), errored("flipper_inst"), errored("loser")],
+        vec![
+            submitted("stable"),
+            errored("flipper_inst"),
+            errored("loser"),
+        ],
         "2026-05-02T01:00:00Z",
     );
 
@@ -624,7 +688,10 @@ fn test_focus_flag_shows_flippers() {
     assert!(output.status.success());
     // stdout should mention the flipper but not the stable or loser
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("flipper_inst"), "flipper should appear in focus output");
+    assert!(
+        stdout.contains("flipper_inst"),
+        "flipper should appear in focus output"
+    );
     assert!(
         !stdout.contains("stable") || stdout.contains("flipper"),
         "stable-win instances should not dominate the focus view"
@@ -658,8 +725,16 @@ fn test_sweep_discovery_parent_directory() {
     // Create two sweep subdirectories inside the parent
     let s1 = parent.join("sweep1");
     let s2 = parent.join("sweep2");
-    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
-    write_sweep(&s2, vec![submitted("alpha"), submitted("beta")], "2026-05-02T01:00:00Z");
+    write_sweep(
+        &s1,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-01T01:00:00Z",
+    );
+    write_sweep(
+        &s2,
+        vec![submitted("alpha"), submitted("beta")],
+        "2026-05-02T01:00:00Z",
+    );
 
     let out = dir.path().join("instance-history.json");
     let status = Command::new(binary_path())
@@ -677,7 +752,10 @@ fn test_sweep_discovery_parent_directory() {
 
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
-    assert_eq!(report["sweep_count"], 2, "should discover both subdirectory sweeps");
+    assert_eq!(
+        report["sweep_count"], 2,
+        "should discover both subdirectory sweeps"
+    );
     assert_eq!(report["intersection_size"], 2);
 }
 
@@ -690,9 +768,21 @@ fn test_sweep_discovery_glob() {
     let s1 = parent.join("sweep-2026-05-01");
     let s2 = parent.join("sweep-2026-05-02");
     let s3 = parent.join("other-dir"); // should NOT match the glob
-    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
-    write_sweep(&s2, vec![submitted("alpha"), submitted("beta")], "2026-05-02T01:00:00Z");
-    write_sweep(&s3, vec![submitted("alpha"), errored("beta")], "2026-05-03T01:00:00Z");
+    write_sweep(
+        &s1,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-01T01:00:00Z",
+    );
+    write_sweep(
+        &s2,
+        vec![submitted("alpha"), submitted("beta")],
+        "2026-05-02T01:00:00Z",
+    );
+    write_sweep(
+        &s3,
+        vec![submitted("alpha"), errored("beta")],
+        "2026-05-03T01:00:00Z",
+    );
 
     let glob_pat = format!("{}/sweep-*", parent.display());
     let out = dir.path().join("instance-history.json");
@@ -712,7 +802,10 @@ fn test_sweep_discovery_glob() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     // Only the 2 sweep-* dirs should match; other-dir excluded
-    assert_eq!(report["sweep_count"], 2, "glob should match only sweep-* dirs");
+    assert_eq!(
+        report["sweep_count"], 2,
+        "glob should match only sweep-* dirs"
+    );
 }
 
 /// sweep_outcomes entries carry a sampling_summary field with runs/resolved_count.
@@ -742,7 +835,10 @@ fn test_sweep_outcomes_sampling_summary() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let instances = report["instances"].as_array().unwrap();
-    let alpha = instances.iter().find(|v| v["instance_id"] == "alpha").unwrap();
+    let alpha = instances
+        .iter()
+        .find(|v| v["instance_id"] == "alpha")
+        .unwrap();
     let outcomes = alpha["sweep_outcomes"].as_array().unwrap();
 
     // Each sweep_outcome must have a sampling_summary
@@ -752,7 +848,10 @@ fn test_sweep_outcomes_sampling_summary() {
             "sweep_outcome must have sampling_summary: {outcome}"
         );
         let ss = &outcome["sampling_summary"];
-        assert!(ss["runs"].is_number(), "sampling_summary.runs must be a number");
+        assert!(
+            ss["runs"].is_number(),
+            "sampling_summary.runs must be a number"
+        );
         assert!(
             ss["resolved_count"].is_number(),
             "sampling_summary.resolved_count must be a number"
@@ -788,15 +887,20 @@ fn test_flip_event_finished_at_delta() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let instances = report["instances"].as_array().unwrap();
-    let gamma = instances.iter().find(|v| v["instance_id"] == "gamma").unwrap();
+    let gamma = instances
+        .iter()
+        .find(|v| v["instance_id"] == "gamma")
+        .unwrap();
     let flips = gamma["flip_events"].as_array().unwrap();
     assert_eq!(flips.len(), 1);
 
     // finished_at_delta should be present and non-null
     let delta = &flips[0]["finished_at_delta"];
-    assert!(!delta.is_null(), "finished_at_delta must be present on flip_event");
+    assert!(
+        !delta.is_null(),
+        "finished_at_delta must be present on flip_event"
+    );
     // Should represent roughly 86400 seconds (1 day)
     let secs = delta.as_i64().unwrap();
     assert_eq!(secs, 86400, "delta should be 86400 seconds (1 day)");
 }
-
