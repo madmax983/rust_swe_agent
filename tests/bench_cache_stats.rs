@@ -41,17 +41,40 @@ fn cache_hit_rate_mixed() {
 }
 
 #[test]
-fn estimated_savings_zero_reads_is_zero() {
-    assert_eq!(compute_estimated_savings_usd_vs_cold(0), 0.0);
+fn estimated_savings_zero_tokens_is_zero() {
+    assert_eq!(compute_estimated_savings_usd_vs_cold(0, 0), 0.0);
 }
 
 #[test]
-fn estimated_savings_one_million_reads() {
-    // 1 M reads × $3/M × (1 − 0.10) = $2.70
-    let savings = compute_estimated_savings_usd_vs_cold(1_000_000);
+fn estimated_savings_reads_only() {
+    // 1 M reads × $3/M × (1 − 0.10) = $2.70; no creation premium
+    let savings = compute_estimated_savings_usd_vs_cold(1_000_000, 0);
     assert!(
         (savings - 2.70).abs() < 1e-9,
         "expected 2.70, got {savings}"
+    );
+}
+
+#[test]
+fn estimated_savings_creation_only_is_negative() {
+    // Cache writes cost 1.25× vs 1.0× cold — net is a loss.
+    // 1 M creation × $3/M × 0.25 premium = −$0.75
+    let savings = compute_estimated_savings_usd_vs_cold(0, 1_000_000);
+    assert!(
+        (savings - (-0.75)).abs() < 1e-9,
+        "expected −0.75, got {savings}"
+    );
+}
+
+#[test]
+fn estimated_savings_mixed_reads_and_creation() {
+    // reads: 1M × 0.90 × $3/M = $2.70 saved
+    // creation: 1M × 0.25 × $3/M = $0.75 premium
+    // net = $2.70 − $0.75 = $1.95
+    let savings = compute_estimated_savings_usd_vs_cold(1_000_000, 1_000_000);
+    assert!(
+        (savings - 1.95).abs() < 1e-9,
+        "expected 1.95, got {savings}"
     );
 }
 
@@ -451,6 +474,14 @@ fn cli_baseline_json_includes_delta_fields() {
         baseline["delta_realized_spend_usd"].is_f64()
             || baseline["delta_realized_spend_usd"].is_u64(),
         "delta_realized_spend_usd required"
+    );
+    assert!(
+        baseline["current_instance_count"].is_u64(),
+        "current_instance_count required for comparability transparency"
+    );
+    assert!(
+        baseline["baseline_instance_count"].is_u64(),
+        "baseline_instance_count required for comparability transparency"
     );
 }
 

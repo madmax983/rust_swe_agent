@@ -30,12 +30,22 @@ pub fn compute_cache_hit_rate(input: u64, cache_read: u64, cache_creation: u64) 
     cache_read as f64 / total as f64
 }
 
-/// USD saved vs a hypothetical cold run where every cached read was fresh input.
+/// Net USD saved vs a hypothetical cold run (no cache at all).
+///
+/// A cold run bills every prompt token at 1.0×. With caching:
+/// - reads cost 0.10× (saving 0.90× per token)
+/// - creations cost 1.25× (costing an extra 0.25× per token)
+///
+/// Result can be negative when write overhead exceeds read savings.
 #[must_use]
-pub fn compute_estimated_savings_usd_vs_cold(cache_read: u64) -> f64 {
-    cache_read as f64 / 1_000_000.0
+pub fn compute_estimated_savings_usd_vs_cold(cache_read: u64, cache_creation: u64) -> f64 {
+    let read_savings = cache_read as f64 / 1_000_000.0
         * SONNET_INPUT_USD_PER_MTOK
-        * (1.0 - ANTHROPIC_CACHE_READ_MULTIPLIER)
+        * (1.0 - ANTHROPIC_CACHE_READ_MULTIPLIER);
+    let creation_premium = cache_creation as f64 / 1_000_000.0
+        * SONNET_INPUT_USD_PER_MTOK
+        * (ANTHROPIC_CACHE_CREATION_MULTIPLIER - 1.0);
+    read_savings - creation_premium
 }
 
 /// Actual cost of cache operations (reads + creations).
@@ -84,6 +94,10 @@ pub struct BaselineDelta {
     pub baseline_sweep: String,
     pub delta_hit_rate: f64,
     pub delta_realized_spend_usd: f64,
+    /// Instance counts for both sweeps. When unequal the spend delta is not
+    /// normalized; operators should interpret it with this difference in mind.
+    pub current_instance_count: usize,
+    pub baseline_instance_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,11 +141,7 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
         // against a cached baseline is the exact regression this flag surfaces.
         if let Some(delta) = &report.baseline {
             let _ = writeln!(out);
-            let _ = writeln!(
-                out,
-                "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_spend_usd={:+.6}",
-                delta.baseline_sweep, delta.delta_hit_rate, delta.delta_realized_spend_usd
-            );
+            render_baseline_line(&mut out, delta);
         }
         return out;
     }
@@ -162,11 +172,7 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
     let _ = writeln!(out, "{sweep_table}");
 
     if let Some(delta) = &report.baseline {
-        let _ = writeln!(
-            out,
-            "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_spend_usd={:+.6}",
-            delta.baseline_sweep, delta.delta_hit_rate, delta.delta_realized_spend_usd
-        );
+        render_baseline_line(&mut out, delta);
         let _ = writeln!(out);
     }
 
@@ -203,6 +209,22 @@ pub fn render_text(report: &CacheStatsReport, top: usize) -> String {
     out
 }
 
+fn render_baseline_line(out: &mut String, delta: &BaselineDelta) {
+    let count_note = if delta.current_instance_count == delta.baseline_instance_count {
+        String::new()
+    } else {
+        format!(
+            " [instance counts differ: current={} baseline={}; spend delta not normalized]",
+            delta.current_instance_count, delta.baseline_instance_count
+        )
+    };
+    let _ = writeln!(
+        out,
+        "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_spend_usd={:+.6}{}",
+        delta.baseline_sweep, delta.delta_hit_rate, delta.delta_realized_spend_usd, count_note
+    );
+}
+
 // ── internals ─────────────────────────────────────────────────────────────────
 
 fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
@@ -221,11 +243,22 @@ fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
                 total_cache_read_tokens: reads,
                 total_cache_creation_tokens: creation,
                 cache_hit_rate: compute_cache_hit_rate(input, reads, creation),
-                estimated_savings_usd_vs_cold: compute_estimated_savings_usd_vs_cold(reads),
+                estimated_savings_usd_vs_cold: compute_estimated_savings_usd_vs_cold(
+                    reads, creation,
+                ),
                 realized_cache_spend_usd: compute_realized_cache_spend_usd(reads, creation),
             }
         })
         .collect();
+
+    // Exclude instances that made no model calls (budget_halt, skipped, etc.).
+    // Their 0/0 hit rate is absence of data, not a cache miss, and would
+    // otherwise dominate the "worst offenders" table.
+    rows.retain(|r| {
+        r.total_input_tokens > 0
+            || r.total_cache_read_tokens > 0
+            || r.total_cache_creation_tokens > 0
+    });
 
     // sort worst (lowest hit rate) first
     rows.sort_by(|a, b| {
@@ -235,6 +268,7 @@ fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
             .then_with(|| a.instance_id.cmp(&b.instance_id))
     });
 
+    let current_instance_count = rows.len();
     let total_input: u64 = rows.iter().map(|r| r.total_input_tokens).sum();
     let total_reads: u64 = rows.iter().map(|r| r.total_cache_read_tokens).sum();
     let total_creation: u64 = rows.iter().map(|r| r.total_cache_creation_tokens).sum();
@@ -246,14 +280,19 @@ fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
         total_cache_read_tokens: total_reads,
         total_cache_creation_tokens: total_creation,
         cache_hit_rate: compute_cache_hit_rate(total_input, total_reads, total_creation),
-        estimated_savings_usd_vs_cold: compute_estimated_savings_usd_vs_cold(total_reads),
+        estimated_savings_usd_vs_cold: compute_estimated_savings_usd_vs_cold(
+            total_reads,
+            total_creation,
+        ),
         realized_cache_spend_usd: compute_realized_cache_spend_usd(total_reads, total_creation),
     };
 
     let baseline = args
         .baseline
         .as_deref()
-        .map(|baseline_dir| build_baseline_delta(baseline_dir, &sweep_totals))
+        .map(|baseline_dir| {
+            build_baseline_delta(baseline_dir, &sweep_totals, current_instance_count)
+        })
         .transpose()?;
 
     Ok(CacheStatsReport {
@@ -269,21 +308,31 @@ fn build_report(args: &CacheStatsArgs) -> Result<CacheStatsReport, Error> {
 fn build_baseline_delta(
     baseline_dir: &Path,
     current_totals: &SweepCacheTotals,
+    current_instance_count: usize,
 ) -> Result<BaselineDelta, Error> {
     let baseline_sweep = load_sweep(baseline_dir)?;
-    let b_input: u64 = baseline_sweep
+    // Mirror the zero-token exclusion applied to the current sweep so that
+    // skipped/budget-halted instances don't skew the baseline aggregates either.
+    let active_baseline: Vec<_> = baseline_sweep
         .instances
         .values()
+        .filter(|i| {
+            i.prompt_tokens.unwrap_or(0) > 0
+                || i.cache_read_tokens.unwrap_or(0) > 0
+                || i.cache_creation_tokens.unwrap_or(0) > 0
+        })
+        .collect();
+    let baseline_instance_count = active_baseline.len();
+    let b_input: u64 = active_baseline
+        .iter()
         .map(|i| i.prompt_tokens.unwrap_or(0))
         .sum();
-    let b_reads: u64 = baseline_sweep
-        .instances
-        .values()
+    let b_reads: u64 = active_baseline
+        .iter()
         .map(|i| i.cache_read_tokens.unwrap_or(0))
         .sum();
-    let b_creation: u64 = baseline_sweep
-        .instances
-        .values()
+    let b_creation: u64 = active_baseline
+        .iter()
         .map(|i| i.cache_creation_tokens.unwrap_or(0))
         .sum();
     let b_hit_rate = compute_cache_hit_rate(b_input, b_reads, b_creation);
@@ -292,6 +341,8 @@ fn build_baseline_delta(
         baseline_sweep: baseline_dir.display().to_string(),
         delta_hit_rate: current_totals.cache_hit_rate - b_hit_rate,
         delta_realized_spend_usd: current_totals.realized_cache_spend_usd - b_spend,
+        current_instance_count,
+        baseline_instance_count,
     })
 }
 
