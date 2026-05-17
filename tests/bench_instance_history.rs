@@ -645,3 +645,158 @@ fn test_help_accessible() {
         "help text should mention key concepts: {stdout}"
     );
 }
+
+// ── gap-closure tests (AC items previously missing) ───────────────────────────
+
+/// Sweep discovery (a): --sweeps pointing to a parent directory that contains
+/// sweep subdirectories should auto-discover those subdirs.
+#[test]
+fn test_sweep_discovery_parent_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("runs");
+
+    // Create two sweep subdirectories inside the parent
+    let s1 = parent.join("sweep1");
+    let s2 = parent.join("sweep2");
+    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
+    write_sweep(&s2, vec![submitted("alpha"), submitted("beta")], "2026-05-02T01:00:00Z");
+
+    let out = dir.path().join("instance-history.json");
+    let status = Command::new(binary_path())
+        .args([
+            "bench",
+            "instance-history",
+            "--sweeps",
+            parent.to_str().unwrap(), // pass the *parent* dir, not individual sweep dirs
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "parent-dir discovery should succeed");
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(report["sweep_count"], 2, "should discover both subdirectory sweeps");
+    assert_eq!(report["intersection_size"], 2);
+}
+
+/// Sweep discovery (b): --sweeps with a glob pattern expands to matching dirs.
+#[test]
+fn test_sweep_discovery_glob() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("runs");
+
+    let s1 = parent.join("sweep-2026-05-01");
+    let s2 = parent.join("sweep-2026-05-02");
+    let s3 = parent.join("other-dir"); // should NOT match the glob
+    write_sweep(&s1, vec![submitted("alpha"), errored("beta")], "2026-05-01T01:00:00Z");
+    write_sweep(&s2, vec![submitted("alpha"), submitted("beta")], "2026-05-02T01:00:00Z");
+    write_sweep(&s3, vec![submitted("alpha"), errored("beta")], "2026-05-03T01:00:00Z");
+
+    let glob_pat = format!("{}/sweep-*", parent.display());
+    let out = dir.path().join("instance-history.json");
+    let status = Command::new(binary_path())
+        .args([
+            "bench",
+            "instance-history",
+            "--sweeps",
+            &glob_pat,
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "glob discovery should succeed");
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    // Only the 2 sweep-* dirs should match; other-dir excluded
+    assert_eq!(report["sweep_count"], 2, "glob should match only sweep-* dirs");
+}
+
+/// sweep_outcomes entries carry a sampling_summary field with runs/resolved_count.
+#[test]
+fn test_sweep_outcomes_sampling_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let s1 = dir.path().join("sweep1");
+    let s2 = dir.path().join("sweep2");
+    write_sweep(&s1, vec![submitted("alpha")], "2026-05-01T01:00:00Z");
+    write_sweep(&s2, vec![errored("alpha")], "2026-05-02T01:00:00Z");
+
+    let out = dir.path().join("instance-history.json");
+    Command::new(binary_path())
+        .args([
+            "bench",
+            "instance-history",
+            "--sweeps",
+            s1.to_str().unwrap(),
+            "--sweeps",
+            s2.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let instances = report["instances"].as_array().unwrap();
+    let alpha = instances.iter().find(|v| v["instance_id"] == "alpha").unwrap();
+    let outcomes = alpha["sweep_outcomes"].as_array().unwrap();
+
+    // Each sweep_outcome must have a sampling_summary
+    for outcome in outcomes {
+        assert!(
+            outcome.get("sampling_summary").is_some(),
+            "sweep_outcome must have sampling_summary: {outcome}"
+        );
+        let ss = &outcome["sampling_summary"];
+        assert!(ss["runs"].is_number(), "sampling_summary.runs must be a number");
+        assert!(
+            ss["resolved_count"].is_number(),
+            "sampling_summary.resolved_count must be a number"
+        );
+    }
+}
+
+/// flip_events carry a finished_at_delta field expressing the time gap.
+#[test]
+fn test_flip_event_finished_at_delta() {
+    let dir = tempfile::tempdir().unwrap();
+    let s1 = dir.path().join("sweep1");
+    let s2 = dir.path().join("sweep2");
+    // gamma flips: resolved in s1, not in s2
+    write_sweep(&s1, vec![submitted("gamma")], "2026-05-01T00:00:00Z");
+    write_sweep(&s2, vec![errored("gamma")], "2026-05-02T00:00:00Z"); // exactly 1 day later
+
+    let out = dir.path().join("instance-history.json");
+    Command::new(binary_path())
+        .args([
+            "bench",
+            "instance-history",
+            "--sweeps",
+            s1.to_str().unwrap(),
+            "--sweeps",
+            s2.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let instances = report["instances"].as_array().unwrap();
+    let gamma = instances.iter().find(|v| v["instance_id"] == "gamma").unwrap();
+    let flips = gamma["flip_events"].as_array().unwrap();
+    assert_eq!(flips.len(), 1);
+
+    // finished_at_delta should be present and non-null
+    let delta = &flips[0]["finished_at_delta"];
+    assert!(!delta.is_null(), "finished_at_delta must be present on flip_event");
+    // Should represent roughly 86400 seconds (1 day)
+    let secs = delta.as_i64().unwrap();
+    assert_eq!(secs, 86400, "delta should be 86400 seconds (1 day)");
+}
+

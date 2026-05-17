@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
 
 // ── output format ─────────────────────────────────────────────────────────────
@@ -99,6 +100,16 @@ pub fn classify_stability(resolved: u32, total: u32, stable_threshold: f64) -> S
     }
 }
 
+// ── sampling summary ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingSummary {
+    /// Number of independent samples run for this instance within the sweep.
+    pub runs: u32,
+    /// Number of those samples that resolved.
+    pub resolved_count: u32,
+}
+
 // ── per-sweep outcome record ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +119,8 @@ pub struct SweepOutcome {
     pub finished_at: Option<String>,
     pub resolved: bool,
     pub errored: bool,
+    /// Sampling summary for this instance in this sweep (runs / resolved_count).
+    pub sampling_summary: SamplingSummary,
 }
 
 // ── flip event ────────────────────────────────────────────────────────────────
@@ -118,6 +131,9 @@ pub struct FlipEvent {
     pub to_sweep: String,
     /// `"win→loss"` or `"loss→win"`.
     pub direction: String,
+    /// Seconds between `from_sweep.finished_at` and `to_sweep.finished_at`.
+    /// `None` when either sweep lacks a `finished_at` timestamp.
+    pub finished_at_delta: Option<i64>,
 }
 
 // ── per-instance row ──────────────────────────────────────────────────────────
@@ -200,6 +216,111 @@ pub struct InstanceHistoryArgs {
     pub class_filter: Option<StabilityClass>,
 }
 
+// ── sweep discovery ───────────────────────────────────────────────────────────
+
+/// Expand a single `--sweeps` argument into one or more resolved sweep paths.
+///
+/// Handles three forms:
+/// (a) A parent directory whose immediate children are sweep dirs (no
+///     `results.json` in the parent itself, but children have one).
+/// (b) A glob pattern (contains `*` or `?`) — expanded against the filesystem.
+/// (c) A plain path to a single sweep directory (pass-through).
+fn expand_sweep_arg(raw: &Path) -> Vec<PathBuf> {
+    let raw_str = raw.to_string_lossy();
+
+    // (b) Glob: path contains wildcard characters
+    if raw_str.contains('*') || raw_str.contains('?') {
+        return expand_glob(&raw_str);
+    }
+
+    // (a) Parent directory without its own results.json
+    if raw.is_dir() && !raw.join("results.json").exists() {
+        let mut children: Vec<PathBuf> = raw
+            .read_dir()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.join("results.json").exists())
+            .collect();
+        if !children.is_empty() {
+            children.sort();
+            return children;
+        }
+    }
+
+    // (c) Plain path — pass through as-is (may or may not have results.json;
+    // the caller handles the missing-results.json case).
+    vec![raw.to_path_buf()]
+}
+
+/// Expand a glob pattern into matching paths using regex on the filesystem.
+///
+/// Supports `*` (matches any chars within a single path segment) and `?`
+/// (matches any single char). Does not support `**` or character classes.
+fn expand_glob(pattern: &str) -> Vec<PathBuf> {
+    // Split the pattern into a concrete base (no glob chars) and a glob suffix.
+    // We walk the base directory and filter with a converted regex.
+    let path = Path::new(pattern);
+    let components: Vec<_> = path.components().collect();
+
+    // Find the last component index that has no glob characters.
+    let base_end = components
+        .iter()
+        .position(|c| {
+            let s = c.as_os_str().to_string_lossy();
+            s.contains('*') || s.contains('?')
+        })
+        .unwrap_or(components.len());
+
+    let base: PathBuf = components[..base_end].iter().collect();
+    let base = if base.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        base
+    };
+
+    // Convert the glob pattern to a regex.
+    let regex_str = glob_to_regex(pattern);
+    let Ok(re) = regex::Regex::new(&regex_str) else {
+        return Vec::new();
+    };
+
+    // Walk the base directory (one level deep — we only need immediate children
+    // for the common case `parent/prefix-*`).
+    let mut matches: Vec<PathBuf> = base
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let s = p.to_string_lossy();
+            re.is_match(&s) && p.is_dir()
+        })
+        .collect();
+    matches.sort();
+    matches
+}
+
+/// Convert a simple glob pattern (`*`, `?`) to an anchored regex string.
+fn glob_to_regex(glob: &str) -> String {
+    let mut re = String::from("^");
+    for ch in glob.chars() {
+        match ch {
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
+                re.push('\\');
+                re.push(ch);
+            }
+            c => re.push(c),
+        }
+    }
+    re.push('$');
+    re
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn dataset_signature(ids: &BTreeSet<&str>) -> String {
@@ -222,31 +343,54 @@ fn compute_flip_events(outcomes: &[SweepOutcome]) -> Vec<FlipEvent> {
             } else {
                 "loss→win".to_owned()
             };
+            // Compute time delta in seconds between the two sweep finish times.
+            let finished_at_delta = match (
+                prev.finished_at.as_deref().and_then(parse_rfc3339_secs),
+                next.finished_at.as_deref().and_then(parse_rfc3339_secs),
+            ) {
+                (Some(t_from), Some(t_to)) => Some(t_to - t_from),
+                _ => None,
+            };
             events.push(FlipEvent {
                 from_sweep: prev.sweep_id.clone(),
                 to_sweep: next.sweep_id.clone(),
                 direction,
+                finished_at_delta,
             });
         }
     }
     events
 }
 
+/// Parse an RFC-3339 timestamp string to Unix seconds.
+fn parse_rfc3339_secs(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp())
+}
+
 // ── compute ───────────────────────────────────────────────────────────────────
 
 pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Error> {
-    // ── load sweeps, skipping those without results.json ─────────────────────
+    // ── expand and load sweeps ────────────────────────────────────────────────
     struct LoadedEntry {
         sweep_id: String,
         sweep_path: String,
         finished_at: Option<String>,
-        instances: HashMap<String, bool>, // instance_id → resolved
+        /// instance_id → (resolved, runs, resolved_count)
+        instances: HashMap<String, (bool, u32, u32)>,
     }
 
     let mut loaded: Vec<LoadedEntry> = Vec::new();
     let mut skipped_sweeps: Vec<String> = Vec::new();
 
-    for sweep_path in &args.sweeps {
+    let expanded: Vec<PathBuf> = args
+        .sweeps
+        .iter()
+        .flat_map(|p| expand_sweep_arg(p))
+        .collect();
+
+    for sweep_path in &expanded {
         let results_path = sweep_path.join("results.json");
         if !results_path.exists() {
             skipped_sweeps.push(sweep_path.display().to_string());
@@ -261,10 +405,15 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                 let sweep_id = sweep_path
                     .file_name()
                     .map_or_else(|| sweep_path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                let instances: HashMap<String, bool> = ls
+                let instances: HashMap<String, (bool, u32, u32)> = ls
                     .instances
                     .iter()
-                    .map(|(id, r)| (id.clone(), r.resolved_count > 0))
+                    .map(|(id, r)| {
+                        let resolved = r.resolved_count > 0;
+                        // `runs` defaults to 1 for single-shot sweeps (legacy artifacts).
+                        let runs = if r.runs == 0 { 1 } else { r.runs };
+                        (id.clone(), (resolved, runs, r.resolved_count))
+                    })
                     .collect();
                 loaded.push(LoadedEntry {
                     sweep_id,
@@ -361,13 +510,18 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
                 .iter()
                 .map(|&idx| {
                     let e = &loaded[idx];
-                    let resolved = e.instances.get(id).copied().unwrap_or(false);
+                    let (resolved, runs, res_count) =
+                        e.instances.get(id).copied().unwrap_or((false, 1, 0));
                     SweepOutcome {
                         sweep_id: e.sweep_id.clone(),
                         sweep_path: e.sweep_path.clone(),
                         finished_at: e.finished_at.clone(),
                         resolved,
                         errored: !resolved,
+                        sampling_summary: SamplingSummary {
+                            runs,
+                            resolved_count: res_count,
+                        },
                     }
                 })
                 .collect();
@@ -405,8 +559,6 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
         .collect();
 
     // ── rank rows by operator value ───────────────────────────────────────────
-    // Order: flippers (most-balanced first, then by last-flip recency), then
-    // unstable_minority_win, unstable_minority_loss, stable_loss, stable_win.
     fn class_rank(c: StabilityClass) -> u8 {
         match c {
             StabilityClass::Flipper => 0,
@@ -422,7 +574,6 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
         let rb = class_rank(b.stability_class);
         ra.cmp(&rb)
             .then_with(|| {
-                // Within flippers: most-balanced (|rate - 0.5| ascending) first
                 let ba = (a.resolved_rate - 0.5_f64).abs();
                 let bb = (b.resolved_rate - 0.5_f64).abs();
                 ba.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
@@ -430,7 +581,7 @@ pub fn compute(args: &InstanceHistoryArgs) -> Result<InstanceHistoryReport, Erro
             .then_with(|| a.instance_id.cmp(&b.instance_id))
     });
 
-    // ── compute stability counts ──────────────────────────────────────────────
+    // ── stability counts ──────────────────────────────────────────────────────
     let mut stability_counts = StabilityCounts::default();
     for row in &rows {
         stability_counts.increment(row.stability_class);
@@ -542,7 +693,10 @@ fn truncate(s: &str, max: usize) -> &str {
 // ── write output ──────────────────────────────────────────────────────────────
 
 pub fn write_output(report: &InstanceHistoryReport, path: &Path) -> Result<(), Error> {
-    let json = serde_json::to_string_pretty(report)?;
+    let mut value = serde_json::to_value(report)?;
+    // Apply default-enabled redaction to all string fields before persisting.
+    Redactor::default_enabled().redact_json_value(&mut value, surface::EXPORT);
+    let json = serde_json::to_string_pretty(&value)?;
     if path.to_str() == Some("-") {
         println!("{json}");
     } else {
@@ -568,21 +722,16 @@ mod tests {
 
     #[test]
     fn classify_relaxed_threshold() {
-        // rate=0.7 at T=0.9: 0.7 not >0.9, 0.7 not <0.1, 0.7 > 0.5 → minority_win
         assert_eq!(
             classify_stability(7, 10, 0.9),
             StabilityClass::UnstableMinorityWin
         );
-        // rate=0.9 (9/10) at T=0.9: 0.9 not > 0.9 → minority_win
         assert_eq!(
             classify_stability(9, 10, 0.9),
             StabilityClass::UnstableMinorityWin
         );
-        // rate=1.0 at T=0.9 → StableWin (N/N always wins)
         assert_eq!(classify_stability(10, 10, 0.9), StabilityClass::StableWin);
-        // rate=0.0 at T=0.9 → StableLoss (0/N always loses)
         assert_eq!(classify_stability(0, 10, 0.9), StabilityClass::StableLoss);
-        // rate=0.3 at T=0.9: 0.3 not > 0.9, 0.3 not < 0.1, 0.3 < 0.5 → minority_loss
         assert_eq!(
             classify_stability(3, 10, 0.9),
             StabilityClass::UnstableMinorityLoss
@@ -598,6 +747,7 @@ mod tests {
                 finished_at: Some("2026-05-01T00:00:00Z".into()),
                 resolved: true,
                 errored: false,
+                sampling_summary: SamplingSummary { runs: 1, resolved_count: 1 },
             },
             SweepOutcome {
                 sweep_id: "b".into(),
@@ -605,6 +755,7 @@ mod tests {
                 finished_at: Some("2026-05-02T00:00:00Z".into()),
                 resolved: false,
                 errored: true,
+                sampling_summary: SamplingSummary { runs: 1, resolved_count: 0 },
             },
             SweepOutcome {
                 sweep_id: "c".into(),
@@ -612,11 +763,31 @@ mod tests {
                 finished_at: Some("2026-05-03T00:00:00Z".into()),
                 resolved: true,
                 errored: false,
+                sampling_summary: SamplingSummary { runs: 1, resolved_count: 1 },
             },
         ];
         let flips = compute_flip_events(&outcomes);
         assert_eq!(flips.len(), 2);
         assert_eq!(flips[0].direction, "win→loss");
         assert_eq!(flips[1].direction, "loss→win");
+        // 1 day = 86400 seconds
+        assert_eq!(flips[0].finished_at_delta, Some(86400));
+        assert_eq!(flips[1].finished_at_delta, Some(86400));
+    }
+
+    #[test]
+    fn glob_to_regex_escapes_dots() {
+        let re = glob_to_regex("runs/sweep-*.json");
+        assert!(regex::Regex::new(&re).is_ok());
+        let r = regex::Regex::new(&re).unwrap();
+        assert!(r.is_match("runs/sweep-abc.json"));
+        assert!(!r.is_match("runs/sweep-abc-json")); // dot escaped
+    }
+
+    #[test]
+    fn expand_sweep_arg_plain_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = expand_sweep_arg(dir.path());
+        assert_eq!(paths, vec![dir.path().to_path_buf()]);
     }
 }
