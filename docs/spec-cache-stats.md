@@ -54,15 +54,18 @@ creation (cold run).
 
 ### `estimated_savings_usd_vs_cold`
 
-The USD saved compared to a hypothetical cold run where every cached-read token
-was instead billed as fresh input:
+The net USD saved compared to a hypothetical cold run where every token is
+billed at the standard input rate (1.0×). Cache reads save money (0.10×
+vs 1.0×), but cache creations cost extra (1.25× vs 1.0×), so the result
+can be negative for sweeps with high creation and low reuse:
 
 ```
 estimated_savings_usd_vs_cold =
-    cache_read_tokens × (input_price_per_Mtok / 1 000 000) × (1 − cache_read_multiplier)
+    cache_read_tokens     × (input_price_per_Mtok / 1 000 000) × (1 − cache_read_multiplier)
+  − cache_creation_tokens × (input_price_per_Mtok / 1 000 000) × (cache_creation_multiplier − 1)
 ```
 
-Uses `claude-3-5-sonnet` pricing (`$3/Mtok` input, `0.10×` for cache reads).
+Uses `claude-3-5-sonnet` pricing (`$3/Mtok` input, `0.10×` reads, `1.25×` creations).
 
 ### `realized_cache_spend_usd`
 
