@@ -736,6 +736,7 @@ pub fn write_output(report: &InstanceHistoryReport, path: &Path) -> Result<(), E
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -816,14 +817,14 @@ mod tests {
     fn glob_to_regex_escapes_dots() {
         let re = glob_to_regex("runs/sweep-*.json");
         assert!(regex::Regex::new(&re).is_ok());
-        let r = regex::Regex::new(&re).unwrap();
+        let r = regex::Regex::new(&re).expect("glob_to_regex must produce valid regex");
         assert!(r.is_match("runs/sweep-abc.json"));
         assert!(!r.is_match("runs/sweep-abc-json")); // dot escaped
     }
 
     #[test]
     fn expand_sweep_arg_plain_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir creation");
         let paths = expand_sweep_arg(dir.path());
         assert_eq!(paths, vec![dir.path().to_path_buf()]);
     }

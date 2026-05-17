@@ -639,7 +639,7 @@ fn test_fewer_than_two_sweeps_exits_nonzero() {
     assert!(!output.status.success(), "need ≥ 2 sweeps");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("2") || stderr.contains("sweep"),
+        stderr.contains('2') || stderr.contains("sweep"),
         "stderr should mention the requirement: {stderr}"
     );
 }
