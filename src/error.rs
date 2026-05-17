@@ -173,6 +173,42 @@ mod tests {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
     }
+
+    #[test]
+    fn is_transient_returns_true_for_rate_limited() {
+        let e = ModelError::RateLimited("msg".into());
+        assert!(e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_true_for_request_error() {
+        let e = ModelError::Request("msg".into());
+        assert!(e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_false_for_malformed() {
+        let e = ModelError::Malformed("msg".into());
+        assert!(!e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_false_for_refused() {
+        let e = ModelError::Refused("msg".into());
+        assert!(!e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_false_for_missing_credentials() {
+        let e = ModelError::MissingCredentials("msg".into());
+        assert!(!e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_false_for_all_candidates_failed() {
+        let e = ModelError::AllCandidatesFailed("msg".into(), vec![]);
+        assert!(!e.is_transient());
+    }
 }
 
 #[derive(Debug, Error)]
