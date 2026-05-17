@@ -232,20 +232,30 @@ where
     (handle, buffer)
 }
 
+const MAX_PIPE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut accumulated = 0usize;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
+        let space_left = MAX_PIPE_BUFFER_SIZE.saturating_sub(accumulated);
+        if space_left == 0 {
+            // Buffer full, just read and discard to drain the pipe and prevent memory exhaustion
+            continue;
+        }
+        let to_write = std::cmp::min(n, space_left);
         buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+            .extend_from_slice(&chunk[..to_write]);
+        accumulated += to_write;
     }
 }
 
@@ -498,6 +508,24 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn bounded_pipe_reader_prevents_memory_exhaustion() {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pipe = tokio::io::repeat(b'A');
+        let buf_clone = std::sync::Arc::clone(&buffer);
+        let task = tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                read_pipe_to_buffer(pipe, buf_clone),
+            )
+            .await;
+        });
+        let _ = task.await;
+        let len = buffer.lock().unwrap().len();
+        assert!(len <= super::MAX_PIPE_BUFFER_SIZE);
+        assert!(len > 0);
+    }
 
     #[tokio::test]
     async fn echo_roundtrips() {

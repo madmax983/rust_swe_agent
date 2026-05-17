@@ -327,20 +327,30 @@ where
     (handle, buffer)
 }
 
+const MAX_PIPE_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 async fn read_pipe_to_buffer<R>(mut pipe: R, buffer: Arc<Mutex<Vec<u8>>>) -> Result<(), EnvError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut chunk = [0u8; 8192];
+    let mut accumulated = 0usize;
     loop {
         let n = pipe.read(&mut chunk).await.map_err(EnvError::Io)?;
         if n == 0 {
             return Ok(());
         }
+        let space_left = MAX_PIPE_BUFFER_SIZE.saturating_sub(accumulated);
+        if space_left == 0 {
+            // Buffer full, just read and discard to drain the pipe and prevent memory exhaustion
+            continue;
+        }
+        let to_write = std::cmp::min(n, space_left);
         buffer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(&chunk[..n]);
+            .extend_from_slice(&chunk[..to_write]);
+        accumulated += to_write;
     }
 }
 
