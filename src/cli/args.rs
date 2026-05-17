@@ -348,6 +348,28 @@ pub enum BenchCmd {
     /// Join historical sweeps on instance_id and report resolution history,
     /// stability class, and flip provenance.
     InstanceHistory(InstanceHistoryCmd),
+    /// Surface prompt-cache hit rate, savings, and spend for a completed sweep.
+    CacheStats(CacheStatsCmd),
+}
+
+/// `bench cache-stats` — surface prompt-cache hit rate per sweep (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct CacheStatsCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Number of per-instance rows to display (worst cache efficiency first).
+    #[arg(long, default_value_t = 10, value_name = "N")]
+    pub top: usize,
+
+    /// Baseline sweep directory. When supplied, prints Δ hit_rate and Δ realized_spend_usd.
+    #[arg(long, value_name = "DIR")]
+    pub baseline: Option<std::path::PathBuf>,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.
