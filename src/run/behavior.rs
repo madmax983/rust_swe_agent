@@ -708,21 +708,66 @@ fn split_pipeline(command: &str) -> Vec<&str> {
 /// fragment on pipeline `|`. Returns all segments for classification.
 fn split_and_pipeline(action: &str) -> Vec<&str> {
     let mut out = Vec::new();
-    for line in action.lines() {
-        for and_part in line.split("&&") {
-            for semi_part in and_part.split(';') {
-                out.extend(split_pipeline(semi_part));
-            }
-        }
+    for cmd in split_commands(action) {
+        out.extend(split_pipeline(cmd));
     }
     out
 }
 
+/// Split `action` on `&&`, `;`, and newlines while respecting single- and
+/// double-quoted strings, so `echo 'a;b' > file` stays as one command.
+fn split_commands(action: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let bytes = action.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'\n' | b';' if !in_single && !in_double => {
+                let seg = action[start..i].trim();
+                if !seg.is_empty() {
+                    result.push(seg);
+                }
+                start = i + 1;
+            }
+            b'&' if !in_single && !in_double && i + 1 < bytes.len() && bytes[i + 1] == b'&' => {
+                let seg = action[start..i].trim();
+                if !seg.is_empty() {
+                    result.push(seg);
+                }
+                start = i + 2;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let seg = action[start..].trim();
+    if !seg.is_empty() {
+        result.push(seg);
+    }
+    result
+}
+
 /// Return true when an action string is a non-bash tool call (e.g. `diagnose:{…}`).
 fn is_tool_call(action: &str) -> bool {
-    // Mini-swe-agent encodes tool calls as `name:{json}`; shell commands never
-    // contain `:{` as a literal token boundary.
-    action.trim().contains(":{")
+    // Tool calls in mini-swe-agent look like `name:{json}` where the name is a
+    // bare identifier (word chars only). Require the prefix before `:{` to be
+    // all word chars so that bash actions containing JSON (e.g. `echo '{"k":"v"}'
+    // > file`) are not mistakenly excluded.
+    let action = action.trim();
+    let Some(colon_pos) = action.find(":{") else {
+        return false;
+    };
+    let prefix = &action[..colon_pos];
+    !prefix.is_empty()
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Return the first arg in `args` that is a member of `known`, skipping over flags.
@@ -841,8 +886,23 @@ fn prefix_start_index(tokens: &[&str]) -> usize {
             while i < tokens.len() && tokens[i].starts_with('-') {
                 let flag = tokens[i];
                 i += 1;
-                // These sudo flags each take one argument
-                if ["-u", "-g", "-p", "-C", "-R", "-T"].contains(&flag) && i < tokens.len() {
+                // Short and long sudo flags that each take one argument
+                let takes_arg = [
+                    "-u",
+                    "-g",
+                    "-p",
+                    "-C",
+                    "-R",
+                    "-T",
+                    "--user",
+                    "--group",
+                    "--prompt",
+                    "--chdir",
+                    "--other-user",
+                    "--host",
+                ]
+                .contains(&flag);
+                if takes_arg && i < tokens.len() && !tokens[i].starts_with('-') {
                     i += 1;
                 }
             }
@@ -865,7 +925,10 @@ fn prefix_start_index(tokens: &[&str]) -> usize {
                 if !t.starts_with('-') && t.contains('=') {
                     // VAR=val assignment
                     i += 1;
-                } else if t == "-u" || t == "--unset" || t == "-C" || t == "--chdir" {
+                } else if matches!(
+                    t,
+                    "-u" | "--unset" | "-C" | "--chdir" | "-S" | "--split-string"
+                ) {
                     // env flags that each take one argument
                     i += 1;
                     if i < tokens.len() {
