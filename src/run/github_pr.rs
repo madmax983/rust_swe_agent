@@ -156,10 +156,7 @@ pub fn build_pr_plan(
     let mut summary = summarize_patch(patch_text);
     redact_patch_summary_files(&mut summary, &redactor);
     let title = redactor
-        .redact_text(
-            &format!("rust-swe-agent: {task_id}"),
-            surface::GITHUB_COMMENT,
-        )
+        .redact_text(&format!("max: {task_id}"), surface::GITHUB_COMMENT)
         .text;
     let body = redactor
         .redact_text(
@@ -266,7 +263,7 @@ fn render_pr_body(
         files
     };
     format!(
-        "Automated patch proposed by `rust-swe-agent` for `{task_id}`.\n\n\
+        "Automated patch proposed by `max` for `{task_id}`.\n\n\
          Trajectory: `{trajectory_ref}`\n\n\
          Patch artifact: `{}`\n\n\
          Patch summary:\n\
@@ -378,14 +375,14 @@ async fn push_patch_branch_to_repo_url(
     run_git(work.path(), &["init", "-q"], token, deadline).await?;
     run_git(
         work.path(),
-        &["config", "user.email", "rust-swe-agent@example.invalid"],
+        &["config", "user.email", "max@example.invalid"],
         token,
         deadline,
     )
     .await?;
     run_git(
         work.path(),
-        &["config", "user.name", "rust-swe-agent"],
+        &["config", "user.name", "max"],
         token,
         deadline,
     )
@@ -415,7 +412,7 @@ async fn push_patch_branch_to_repo_url(
     .await?;
 
     let patch_work = tempfile::Builder::new()
-        .prefix("rust-swe-agent-github-pr-patch-")
+        .prefix("max-github-pr-patch-")
         .tempdir()?;
     let patch_path = patch_work.path().join("agent.patch");
     std::fs::write(&patch_path, patch_text)?;
@@ -608,7 +605,7 @@ fn percent_encode(raw: &str) -> String {
 
 fn create_temp_workdir() -> Result<tempfile::TempDir, Error> {
     tempfile::Builder::new()
-        .prefix("rust-swe-agent-github-pr-")
+        .prefix("max-github-pr-")
         .tempdir()
         .map_err(Error::from)
 }
@@ -633,7 +630,7 @@ impl GithubApiClient {
         backoff_base_ms: u64,
     ) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
-            .user_agent("rust-swe-agent")
+            .user_agent("max")
             .build()
             .map_err(|e| Error::Github(format!("failed to build GitHub HTTP client: {e}")))?;
         Ok(Self {
@@ -888,8 +885,8 @@ mod tests {
 
     #[test]
     fn repo_parser_requires_owner_and_name() {
-        assert!(parse_repo("madmax983/rust_swe_agent").is_ok());
-        assert!(parse_repo("rust_swe_agent").is_err());
+        assert!(parse_repo("madmax983/maxwells-daemon").is_ok());
+        assert!(parse_repo("maxwells-daemon").is_err());
         assert!(parse_repo("a/b/c").is_err());
     }
 
@@ -918,10 +915,10 @@ mod tests {
     #[test]
     fn missing_remote_ref_detection_accepts_git_wording() {
         assert!(is_missing_remote_ref(
-            "fatal: couldn't find remote ref refs/heads/rust-swe-agent/task"
+            "fatal: couldn't find remote ref refs/heads/max/task"
         ));
         assert!(is_missing_remote_ref(
-            "fatal: could not find remote ref refs/heads/rust-swe-agent/task"
+            "fatal: could not find remote ref refs/heads/max/task"
         ));
         assert!(!is_missing_remote_ref("fatal: authentication failed"));
     }
@@ -1092,7 +1089,7 @@ mod tests {
         let work = root.path().join("work");
         let token = "secret";
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let head_branch = "rust-swe-agent/existing-task";
+        let head_branch = "max/existing-task";
         let head_refspec = format!("HEAD:refs/heads/{head_branch}");
 
         let remote_arg = seed_remote_with_existing_head(
@@ -1138,7 +1135,7 @@ mod tests {
         let seed = root.path().join("seed");
         let token = "secret";
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let head_branch = "rust-swe-agent/local-publish";
+        let head_branch = "max/local-publish";
         let remote_arg = seed_remote_with_existing_head(
             root.path(),
             &seed,
@@ -1198,7 +1195,7 @@ mod tests {
         let work = root.path().join("work");
         let token = "secret";
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let head_branch = "rust-swe-agent/existing-task";
+        let head_branch = "max/existing-task";
 
         let remote_arg = seed_remote_with_existing_head(
             root.path(),
@@ -1253,7 +1250,7 @@ mod tests {
 
         assert_eq!(url, "https://example.test/pr/1");
         let requests = requests.await.unwrap();
-        assert!(requests[0].starts_with("GET /repos/madmax983/rust_swe_agent/pulls?"));
+        assert!(requests[0].starts_with("GET /repos/madmax983/maxwells-daemon/pulls?"));
     }
 
     #[tokio::test]
@@ -1273,7 +1270,7 @@ mod tests {
         assert_eq!(url, "https://example.test/pr/2");
         let requests = requests.await.unwrap();
         assert!(requests[0].starts_with("GET "));
-        assert!(requests[1].starts_with("POST /repos/madmax983/rust_swe_agent/pulls "));
+        assert!(requests[1].starts_with("POST /repos/madmax983/maxwells-daemon/pulls "));
     }
 
     #[tokio::test]
@@ -1444,12 +1441,12 @@ mod tests {
 
     fn github_pr_options() -> GithubPrOptions {
         GithubPrOptions {
-            target_repo: "madmax983/rust_swe_agent".into(),
+            target_repo: "madmax983/maxwells-daemon".into(),
             target_branch: "main".into(),
             task_id: "task-1".into(),
             trajectory_ref: "runs/task-1.traj.json".into(),
             patch_path: PathBuf::from("runs/task-1.patch"),
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
             token_env: "GITHUB_TOKEN".into(),
             mode: PublishMode::DryRun,
             timeout_secs: 30,
@@ -1461,10 +1458,10 @@ mod tests {
 
     fn test_plan(head_branch: &str) -> PullRequestPlan {
         PullRequestPlan {
-            target_repo: "madmax983/rust_swe_agent".into(),
+            target_repo: "madmax983/maxwells-daemon".into(),
             base_branch: "main".into(),
             head_branch: head_branch.into(),
-            title: "rust-swe-agent: task".into(),
+            title: "max: task".into(),
             body: "body".into(),
             trajectory_ref: "runs/task.traj.json".into(),
             patch_path: PathBuf::from("runs/task.patch"),

@@ -11,7 +11,7 @@ It never re-runs instances and never calls a model provider.
 ## CLI
 
 ```bash
-rust-swe-agent bench command-stats --sweep runs/sweep
+max bench command-stats --sweep runs/sweep
 ```
 
 Options:
@@ -159,7 +159,7 @@ runs/sweep/
 Running:
 
 ```bash
-rust-swe-agent bench command-stats \
+max bench command-stats \
   --sweep runs/sweep \
   --compare resolved-vs-unresolved \
   --top 5

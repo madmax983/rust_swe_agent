@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
-use rust_swe_agent::Agent;
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::error::EnvError;
-use rust_swe_agent::{
+use maxwells_daemon::Agent;
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::error::EnvError;
+use maxwells_daemon::{
     Config, Environment, FallbackModel, LocalEnvironment, Message, Model, ModelError,
     ModelResponse, ModelUsage, QueryOpts, RunRequest, RunResult,
 };

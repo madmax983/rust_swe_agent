@@ -7,7 +7,7 @@ As an operator A/B testing MCP toolsets across SWE-bench sweeps, I want a per-sw
 ## CLI
 
 ```bash
-rust-swe-agent bench tool-coverage --sweep <dir> [options]
+max bench tool-coverage --sweep <dir> [options]
 ```
 
 ### Required flags

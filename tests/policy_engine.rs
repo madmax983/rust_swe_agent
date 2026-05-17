@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rust_swe_agent::policy::{
+use maxwells_daemon::policy::{
     PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
     PolicyRule,
 };

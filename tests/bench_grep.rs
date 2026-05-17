@@ -10,7 +10,7 @@ use support::binary_path;
 
 // ── unit tests (live in the library) ─────────────────────────────────────────
 
-use rust_swe_agent::run::grep::{GrepArgs, run as grep_run};
+use maxwells_daemon::run::grep::{GrepArgs, run as grep_run};
 
 #[test]
 fn unit_basic_match_returns_hits() {

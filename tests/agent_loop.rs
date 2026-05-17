@@ -7,10 +7,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rust_swe_agent::agent::default::{DefaultAgentBuilder, retag_cache_hints};
-use rust_swe_agent::env::CancellationToken;
-use rust_swe_agent::error::EnvError;
-use rust_swe_agent::{
+use maxwells_daemon::agent::default::{DefaultAgentBuilder, retag_cache_hints};
+use maxwells_daemon::env::CancellationToken;
+use maxwells_daemon::error::EnvError;
+use maxwells_daemon::{
     Agent, CacheHint, Config, DeterministicModel, Environment, Error, ExitReason, LocalEnvironment,
     McpServerCfg, McpStdioServer, Message, Model, ModelResponse, ModelUsage, QueryOpts, Role,
     RunRequest, RunResult, ToolDefinition, ToolHookCfg, ToolInvocation, ToolOutput, ToolProvider,
@@ -38,12 +38,12 @@ impl Model for RawResponseModel {
         &self,
         _messages: &[Message],
         _opts: &QueryOpts,
-    ) -> Result<ModelResponse, rust_swe_agent::ModelError> {
+    ) -> Result<ModelResponse, maxwells_daemon::ModelError> {
         self.responses
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| rust_swe_agent::ModelError::Malformed("no scripted response".into()))
+            .ok_or_else(|| maxwells_daemon::ModelError::Malformed("no scripted response".into()))
     }
 }
 
@@ -622,6 +622,10 @@ timeout_secs = 3
         Some("diagnose")
     );
     assert_eq!(
+        calls[0].env.get("MAXWELL_TOOL_NAME").map(String::as_str),
+        Some("diagnose")
+    );
+    assert_eq!(
         calls[0]
             .env
             .get("RUST_SWE_AGENT_TOOL_INPUT")
@@ -629,10 +633,18 @@ timeout_secs = 3
         Some("check flaky test")
     );
     assert_eq!(
+        calls[0].env.get("MAXWELL_TOOL_INPUT").map(String::as_str),
+        Some("check flaky test")
+    );
+    assert_eq!(
         calls[0]
             .env
             .get("RUST_SWE_AGENT_COMMAND")
             .map(String::as_str),
+        Some("check flaky test")
+    );
+    assert_eq!(
+        calls[0].env.get("MAXWELL_COMMAND").map(String::as_str),
         Some("check flaky test")
     );
     assert_eq!(calls[0].stdin.as_deref(), Some("check flaky test"));

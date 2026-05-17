@@ -3,7 +3,7 @@
 //! `bollard` crates pull in.
 //!
 //! `start()` does a `docker version` preflight, then `docker run -d --rm`
-//! with a `rust-swe-agent=1` label.
+//! with a `maxwells-daemon=1` label.
 //! `run()` calls `docker exec`.
 //! `shutdown()` calls `docker rm -f`. Async path.
 //! `Drop` calls `docker rm -f` synchronously, best-effort. Cannot await.
@@ -25,7 +25,7 @@ use super::{Environment, RunRequest, RunResult};
 use crate::error::EnvError;
 use crate::ids::ContainerId;
 
-pub const LABEL: &str = "rust-swe-agent=1";
+pub const LABEL: &str = "maxwells-daemon=1";
 const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 
 type PipeCollector = JoinHandle<Result<(), EnvError>>;
@@ -398,7 +398,7 @@ impl Drop for DockerEnvironment {
     }
 }
 
-/// Reap any container with our label. Called by `rust-swe-agent cleanup`.
+/// Reap any container with our label. Called by `max cleanup`.
 /// Returns the list of reaped container ids.
 pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
     preflight().await?;

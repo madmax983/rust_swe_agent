@@ -35,8 +35,8 @@ impl ChaosEnvironment {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::env::{Environment, LocalEnvironment, RunRequest};
-    /// use rust_swe_agent::env::chaos::ChaosEnvironment;
+    /// use maxwells_daemon::env::{Environment, LocalEnvironment, RunRequest};
+    /// use maxwells_daemon::env::chaos::ChaosEnvironment;
     ///
     /// # #[tokio::main]
     /// # async fn main() {

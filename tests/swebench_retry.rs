@@ -4,10 +4,10 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::ModelUsage;
-use rust_swe_agent::run::swebench::{EXIT_REASON_BUDGET_HALT, SwebenchArgs, run};
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::Config;
+use maxwells_daemon::ModelUsage;
+use maxwells_daemon::run::swebench::{EXIT_REASON_BUDGET_HALT, SwebenchArgs, run};
+use maxwells_daemon::trajectory::{
     FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
 };
 
@@ -82,7 +82,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
     };
 
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -96,7 +96,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -142,7 +142,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
     write_dataset(&dataset, &["a"]);
 
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -156,7 +156,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -209,7 +209,7 @@ async fn max_retries_zero_disables_retry() {
     write_dataset(&dataset, &["a"]);
 
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -223,7 +223,7 @@ async fn max_retries_zero_disables_retry() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -277,7 +277,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
     // a: retryable parse fails twice with max_retries=1 => attempts=2 cap reached.
     // b: same parse failure but retry set excludes model_parse => never retried.
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -291,7 +291,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -329,7 +329,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
     let no_retry_output = work.path().join("runs_no_retry");
     std::fs::create_dir_all(&no_retry_output).unwrap();
     let no_retry = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(
             work.path().join("dataset.jsonl"),
         ),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
@@ -345,7 +345,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 2,
         retry_on: Some("step_limit".into()),
         retry_backoff_base_ms: 0,
@@ -398,7 +398,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     };
 
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset.clone()),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset.clone()),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -412,7 +412,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -469,7 +469,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     write_dataset(&dataset, &["resume-id"]);
 
     let sticky = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset.clone()),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset.clone()),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -483,7 +483,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,
@@ -516,7 +516,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
     assert_eq!(sticky.skipped, 1);
 
     let rerun = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -530,7 +530,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: Some("model_parse".into()),
         retry_backoff_base_ms: 0,

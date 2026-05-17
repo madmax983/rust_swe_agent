@@ -12,12 +12,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rust_swe_agent::error::ModelError;
-use rust_swe_agent::model::{
+use maxwells_daemon::error::ModelError;
+use maxwells_daemon::model::{
     FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,
 };
-use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{FallbackSummary, Trajectory, TrajectoryInfo, outcome};
+use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
+use maxwells_daemon::trajectory::{FallbackSummary, Trajectory, TrajectoryInfo, outcome};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -274,14 +274,14 @@ fn fallback_summary_all_failed_excludes_from_model_mix() {
 
 #[test]
 fn fallback_config_empty_by_default() {
-    use rust_swe_agent::config::schema::ModelCfg;
+    use maxwells_daemon::config::schema::ModelCfg;
     let cfg: ModelCfg = toml::from_str(r#"name = "gpt-4""#).unwrap();
     assert!(cfg.fallback_models.is_empty(), "no fallback by default");
 }
 
 #[test]
 fn fallback_config_opt_in_parses() {
-    use rust_swe_agent::config::schema::ModelCfg;
+    use maxwells_daemon::config::schema::ModelCfg;
     let cfg: ModelCfg = toml::from_str(
         r#"name = "gpt-4"
 fallback_models = ["claude-sonnet-4-6", "gpt-3.5-turbo"]
@@ -462,7 +462,7 @@ fn sweep_results_model_mix_omitted_when_empty() {
 
 #[test]
 fn compare_warns_when_candidate_has_fallbacks_and_baseline_does_not() {
-    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
+    use maxwells_daemon::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let baseline = ModelMixSnapshot {
         model_mix: std::collections::BTreeMap::new(),
         total_fallbacks: 0,
@@ -490,7 +490,7 @@ fn compare_warns_when_candidate_has_fallbacks_and_baseline_does_not() {
 
 #[test]
 fn compare_warns_when_model_mixes_differ() {
-    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
+    use maxwells_daemon::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let mut baseline_mix = std::collections::BTreeMap::new();
     baseline_mix.insert("gpt-4".to_string(), 10);
     let baseline = ModelMixSnapshot {
@@ -512,7 +512,7 @@ fn compare_warns_when_model_mixes_differ() {
 
 #[test]
 fn compare_no_warning_when_same_model_no_fallbacks() {
-    use rust_swe_agent::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
+    use maxwells_daemon::run::compare::{ModelMixSnapshot, build_model_mix_warnings};
     let snapshot = ModelMixSnapshot {
         model_mix: std::collections::BTreeMap::new(),
         total_fallbacks: 0,

@@ -1,6 +1,6 @@
 # Operator Configuration Reference
 
-This document is the single configuration reference for `rust_swe_agent`.
+This document is the single configuration reference for `maxwells-daemon`.
 It covers every supported top-level section and field, explains configuration
 precedence, shows copy-pasteable TOML examples, and describes safe secret
 handling.
@@ -144,7 +144,8 @@ without rebuilding the binary.
 
 Optional command adapter escape hatch. These tools map a fenced tool block
 directly to a command with the block body passed on stdin and through
-`RUST_SWE_AGENT_TOOL_INPUT`.
+`MAXWELL_TOOL_INPUT` (with the legacy `RUST_SWE_AGENT_TOOL_INPUT` alias still
+populated for existing hooks).
 
 | Field | Type | Required | Notes |
 |---|---|---|---|

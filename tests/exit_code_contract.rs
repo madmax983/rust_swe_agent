@@ -6,8 +6,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::error::{ConfigError, EnvError, Error, ModelError};
-use rust_swe_agent::exit_code::ExitCode;
+use maxwells_daemon::error::{ConfigError, EnvError, Error, ModelError};
+use maxwells_daemon::exit_code::ExitCode;
 
 // ── integer code values ───────────────────────────────────────────────────────
 
@@ -339,7 +339,7 @@ fn interrupted_and_killed_follow_posix_signal_convention() {
 /// cancellation produces a documented outcome class.
 #[test]
 fn sweep_cancel_codes_align_with_exit_code_contract() {
-    use rust_swe_agent::run::swebench::{CANCEL_EXIT_CODE_ESCALATED, CANCEL_EXIT_CODE_GRACEFUL};
+    use maxwells_daemon::run::swebench::{CANCEL_EXIT_CODE_ESCALATED, CANCEL_EXIT_CODE_GRACEFUL};
     assert_eq!(CANCEL_EXIT_CODE_GRACEFUL, ExitCode::Interrupted.as_i32());
     assert_eq!(CANCEL_EXIT_CODE_ESCALATED, ExitCode::Killed.as_i32());
 }

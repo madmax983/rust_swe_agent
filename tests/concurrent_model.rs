@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::model::deterministic::DeterministicModel;
-use rust_swe_agent::model::{Model, QueryOpts};
+use maxwells_daemon::model::deterministic::DeterministicModel;
+use maxwells_daemon::model::{Model, QueryOpts};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deterministic_model_concurrent_query() {

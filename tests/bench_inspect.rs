@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::trajectory::{
     FailureCategory, TestInvocation, TokenUsage, Trajectory, outcome,
 };
 
@@ -39,11 +39,11 @@ fn write_traj_with_tokens(
     t.info.total_cost_usd = Some(0.55);
     t.info.token_usage = Some(token_usage);
 
-    let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho hi\n```");
+    let mut asst = maxwells_daemon::model::Message::assistant("```bash\necho hi\n```");
     asst.extra.actions = Some(vec!["echo hi".into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("Exit code: 0\nOutput:\nhi");
+    let mut obs = maxwells_daemon::model::Message::user("Exit code: 0\nOutput:\nhi");
     let stderr = if huge_stderr {
         (0..90)
             .map(|i| format!("line-{i}"))
@@ -76,11 +76,11 @@ fn write_traj_with_stderr(dir: &Path, instance_id: &str, stderr: &str) {
     t.info.outcome = Some(outcome::ERROR.into());
     t.info.failure_category = Some(FailureCategory::StepLimit);
 
-    let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho hi\n```");
+    let mut asst = maxwells_daemon::model::Message::assistant("```bash\necho hi\n```");
     asst.extra.actions = Some(vec!["echo hi".into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("Exit code: 0\nOutput:\nhi");
+    let mut obs = maxwells_daemon::model::Message::user("Exit code: 0\nOutput:\nhi");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -144,11 +144,11 @@ fn write_diff_traj_with_tokens(
     t.info.steps = Some(u32::try_from(steps.len()).unwrap_or(u32::MAX));
 
     for (assistant, command, stdout, stderr, exit_code) in steps {
-        let mut asst = rust_swe_agent::model::Message::assistant(*assistant);
+        let mut asst = maxwells_daemon::model::Message::assistant(*assistant);
         asst.extra.actions = Some(vec![(*command).into()]);
         t.record_message(&asst);
 
-        let mut obs = rust_swe_agent::model::Message::user("tool result");
+        let mut obs = maxwells_daemon::model::Message::user("tool result");
         obs.extra.other.insert(
             "run_result".into(),
             serde_json::json!({
@@ -187,14 +187,14 @@ fn write_prompted_diff_traj(
     });
     t.info.steps = Some(1);
 
-    t.record_message(&rust_swe_agent::model::Message::system(system_prompt));
-    t.record_message(&rust_swe_agent::model::Message::user(user_prompt));
+    t.record_message(&maxwells_daemon::model::Message::system(system_prompt));
+    t.record_message(&maxwells_daemon::model::Message::user(user_prompt));
 
-    let mut asst = rust_swe_agent::model::Message::assistant(assistant);
+    let mut asst = maxwells_daemon::model::Message::assistant(assistant);
     asst.extra.actions = Some(vec![command.into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("tool result");
+    let mut obs = maxwells_daemon::model::Message::user("tool result");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -251,7 +251,7 @@ fn write_trailing_prompt_traj(path: &Path, instance_id: &str, include_trailing_p
     record_assistant_tool_step(&mut t, "```bash\necho one\n```", "echo one", "one\n");
     record_assistant_tool_step(&mut t, "```bash\necho two\n```", "echo two", "two\n");
     if include_trailing_prompt {
-        t.record_message(&rust_swe_agent::model::Message::user(
+        t.record_message(&maxwells_daemon::model::Message::user(
             "continue with next check",
         ));
     }
@@ -265,14 +265,14 @@ fn record_assistant_tool_step(
     command: &str,
     stdout: &str,
 ) {
-    let mut asst = rust_swe_agent::model::Message::assistant(assistant);
+    let mut asst = maxwells_daemon::model::Message::assistant(assistant);
     asst.extra.actions = Some(vec![command.into()]);
     trajectory.record_message(&asst);
     record_tool_result(trajectory, stdout);
 }
 
 fn record_tool_result(trajectory: &mut Trajectory, stdout: &str) {
-    let mut obs = rust_swe_agent::model::Message::user("tool result");
+    let mut obs = maxwells_daemon::model::Message::user("tool result");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -1680,7 +1680,7 @@ fn show_expected_renders_pass_to_pass_and_fail_to_pass() {
 #[test]
 fn failing_tests_json_shape_round_trips() {
     // Verify the JSON schema documented in the spec: { tests, source, reason }
-    let ft = rust_swe_agent::run::inspect::FailingTests {
+    let ft = maxwells_daemon::run::inspect::FailingTests {
         tests: vec!["tests/test_core.py::test_foo".into()],
         source: "evaluator".into(),
         reason: String::new(),
@@ -1690,7 +1690,7 @@ fn failing_tests_json_shape_round_trips() {
     assert_eq!(back["tests"][0], "tests/test_core.py::test_foo");
     assert_eq!(back["source"], "evaluator");
 
-    let ft_unavail = rust_swe_agent::run::inspect::FailingTests {
+    let ft_unavail = maxwells_daemon::run::inspect::FailingTests {
         tests: vec![],
         source: "unavailable".into(),
         reason: "eval_error".into(),

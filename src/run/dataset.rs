@@ -169,13 +169,13 @@ impl CacheStatus {
     }
 }
 
-/// Return the default dataset cache directory: `~/.cache/rust-swe-agent/datasets`.
+/// Return the default dataset cache directory: `~/.cache/max/datasets`.
 /// Falls back to `<cwd>/.dataset-cache` when the home directory cannot be determined.
 #[must_use]
 pub fn default_cache_dir() -> PathBuf {
     home_dir().map_or_else(
         || PathBuf::from(".dataset-cache"),
-        |h| h.join(".cache").join("rust-swe-agent").join("datasets"),
+        |h| h.join(".cache").join("max").join("datasets"),
     )
 }
 

@@ -3,9 +3,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{SwebenchArgs, run};
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::Config;
+use maxwells_daemon::run::swebench::{SwebenchArgs, run};
+use maxwells_daemon::trajectory::{
     FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
 };
 
@@ -101,7 +101,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
 
     let cfg = Config::defaults().unwrap();
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 2,
@@ -115,7 +115,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,

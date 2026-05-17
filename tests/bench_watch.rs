@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use rust_swe_agent::trajectory::{Trajectory, outcome};
+use maxwells_daemon::trajectory::{Trajectory, outcome};
 
 mod support;
 use support::binary_path;
@@ -16,11 +16,11 @@ fn write_traj(dir: &Path, instance_id: &str, outcome_val: Option<&str>) {
     t.info.model_name = Some("test-model".into());
     t.info.outcome = outcome_val.map(str::to_owned);
 
-    let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho hello\n```");
+    let mut asst = maxwells_daemon::model::Message::assistant("```bash\necho hello\n```");
     asst.extra.actions = Some(vec!["echo hello".into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("output");
+    let mut obs = maxwells_daemon::model::Message::user("output");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -74,7 +74,7 @@ fn streams_turns_from_in_flight_trajectory() {
     // Write an initial non-terminal trajectory with one turn (still in-flight)
     {
         let mut t = Trajectory::new();
-        let mut asst = rust_swe_agent::model::Message::assistant("turn-one-content");
+        let mut asst = maxwells_daemon::model::Message::assistant("turn-one-content");
         asst.extra.actions = Some(vec!["echo turn1".into()]);
         t.record_message(&asst);
         std::fs::write(&traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
@@ -102,10 +102,10 @@ fn streams_turns_from_in_flight_trajectory() {
     {
         let mut t = Trajectory::new();
         t.info.outcome = Some(outcome::SUBMITTED.into());
-        let mut asst1 = rust_swe_agent::model::Message::assistant("turn-one-content");
+        let mut asst1 = maxwells_daemon::model::Message::assistant("turn-one-content");
         asst1.extra.actions = Some(vec!["echo turn1".into()]);
         t.record_message(&asst1);
-        let mut asst2 = rust_swe_agent::model::Message::assistant("turn-two-content");
+        let mut asst2 = maxwells_daemon::model::Message::assistant("turn-two-content");
         asst2.extra.actions = Some(vec!["echo turn2".into()]);
         t.record_message(&asst2);
         std::fs::write(&traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
@@ -226,11 +226,11 @@ fn redaction_strips_secret_from_stdout() {
     t.info.model_name = Some("test-model".into());
     t.info.outcome = Some(outcome::SUBMITTED.into());
 
-    let mut asst = rust_swe_agent::model::Message::assistant("```bash\necho test\n```");
+    let mut asst = maxwells_daemon::model::Message::assistant("```bash\necho test\n```");
     asst.extra.actions = Some(vec!["echo test".into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("output");
+    let mut obs = maxwells_daemon::model::Message::user("output");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -333,17 +333,17 @@ fn run_index_2_reads_correct_slot() {
     std::fs::write(
         instance_dir.join("run-1.traj.json"),
         serde_json::to_string_pretty(&{
-            let mut t = rust_swe_agent::trajectory::Trajectory::new();
-            t.info.outcome = Some(rust_swe_agent::trajectory::outcome::SUBMITTED.into());
+            let mut t = maxwells_daemon::trajectory::Trajectory::new();
+            t.info.outcome = Some(maxwells_daemon::trajectory::outcome::SUBMITTED.into());
             t
         })
         .unwrap(),
     )
     .unwrap();
     // run-2: complete trajectory with a unique assistant message
-    let mut t2 = rust_swe_agent::trajectory::Trajectory::new();
-    t2.info.outcome = Some(rust_swe_agent::trajectory::outcome::SUBMITTED.into());
-    let mut asst = rust_swe_agent::model::Message::assistant("run-two-unique-content");
+    let mut t2 = maxwells_daemon::trajectory::Trajectory::new();
+    t2.info.outcome = Some(maxwells_daemon::trajectory::outcome::SUBMITTED.into());
+    let mut asst = maxwells_daemon::model::Message::assistant("run-two-unique-content");
     asst.extra.actions = Some(vec!["echo run2".into()]);
     t2.record_message(&asst);
     std::fs::write(
@@ -416,7 +416,7 @@ fn stall_warning_fires_and_watch_keeps_following() {
 
     // Write an in-flight (non-terminal) trajectory with one turn
     let mut t = Trajectory::new();
-    let mut asst = rust_swe_agent::model::Message::assistant("initial turn");
+    let mut asst = maxwells_daemon::model::Message::assistant("initial turn");
     asst.extra.actions = Some(vec!["echo hi".into()]);
     t.record_message(&asst);
     std::fs::write(

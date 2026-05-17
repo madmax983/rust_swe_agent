@@ -1,5 +1,5 @@
+use maxwells_daemon::ids::StepIdx;
 use proptest::prelude::*;
-use rust_swe_agent::ids::StepIdx;
 
 proptest! {
     #[test]

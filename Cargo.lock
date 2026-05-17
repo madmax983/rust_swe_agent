@@ -1194,6 +1194,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "maxwells-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "comfy-table",
+ "dialoguer",
+ "flate2",
+ "futures",
+ "indicatif",
+ "insta",
+ "litellm-rs",
+ "minijinja",
+ "pretty_assertions",
+ "proptest",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1684,39 +1717,6 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
-]
-
-[[package]]
-name = "rust_swe_agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "comfy-table",
- "dialoguer",
- "flate2",
- "futures",
- "indicatif",
- "insta",
- "litellm-rs",
- "minijinja",
- "pretty_assertions",
- "proptest",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "similar",
- "tar",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

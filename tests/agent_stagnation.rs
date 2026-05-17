@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::trajectory::FailureCategory;
-use rust_swe_agent::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::trajectory::FailureCategory;
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
 };
 
@@ -18,7 +18,7 @@ use rust_swe_agent::{
 fn build_agent(
     cfg: Config,
     responses: Vec<String>,
-) -> rust_swe_agent::agent::default::DefaultAgent {
+) -> maxwells_daemon::agent::default::DefaultAgent {
     let model = Arc::new(DeterministicModel::new(responses));
     let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
     DefaultAgentBuilder {
@@ -200,7 +200,7 @@ async fn stagnation_trajectory_is_coherent_after_earlier_work() {
 
 #[test]
 fn canonicalization_treats_variants_as_identical() {
-    use rust_swe_agent::stagnation::canonicalize_action;
+    use maxwells_daemon::stagnation::canonicalize_action;
 
     let base = canonicalize_action("ls");
     assert_eq!(
@@ -242,7 +242,7 @@ fn canonicalization_treats_variants_as_identical() {
 
 #[test]
 fn stagnation_config_rejects_window_smaller_than_threshold() {
-    use rust_swe_agent::agent::default::DefaultAgentBuilder;
+    use maxwells_daemon::agent::default::DefaultAgentBuilder;
 
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.stagnation_repeat_threshold = 8;
@@ -267,7 +267,7 @@ fn stagnation_config_rejects_window_smaller_than_threshold() {
 
 #[test]
 fn stagnation_config_rejects_zero_threshold() {
-    use rust_swe_agent::agent::default::DefaultAgentBuilder;
+    use maxwells_daemon::agent::default::DefaultAgentBuilder;
 
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.stagnation_repeat_threshold = 0; // invalid
@@ -289,7 +289,7 @@ fn stagnation_config_rejects_zero_threshold() {
 
 #[test]
 fn stagnation_config_rejects_zero_window() {
-    use rust_swe_agent::agent::default::DefaultAgentBuilder;
+    use maxwells_daemon::agent::default::DefaultAgentBuilder;
 
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.stagnation_window = 0; // invalid

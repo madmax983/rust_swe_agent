@@ -1,6 +1,6 @@
 # Test Command Telemetry
 
-`rust-swe-agent` records recognized test commands from assistant action text in
+`max` records recognized test commands from assistant action text in
 trajectory `info.test_invocations`. Detection uses the assistant's issued bash
 command, not the observation text, because observations can mention test
 commands in logs, scripts, or error output without proving that the agent chose

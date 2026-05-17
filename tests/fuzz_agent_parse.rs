@@ -1,5 +1,5 @@
+use maxwells_daemon::agent::parse::extract_action;
 use proptest::prelude::*;
-use rust_swe_agent::agent::parse::extract_action;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100_000))]

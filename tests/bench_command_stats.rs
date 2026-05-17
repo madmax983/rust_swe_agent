@@ -11,7 +11,7 @@ use support::binary_path;
 
 // ── unit tests for head extraction (live in the library) ──────────────────────
 
-use rust_swe_agent::run::command_stats::extract_command_heads;
+use maxwells_daemon::run::command_stats::extract_command_heads;
 
 #[test]
 fn head_extraction_simple_command() {

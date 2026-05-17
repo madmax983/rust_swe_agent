@@ -4,12 +4,12 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::skills::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::skills::{
     ActiveSkill, ActiveSkillSet, SkillActivationReason, SkillRegistry, SkillResolveRequest,
     resolve_for_task,
 };
-use rust_swe_agent::{
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
 };
 
@@ -432,7 +432,7 @@ paths = ["{skill_path}"]
     ))
     .unwrap();
 
-    rust_swe_agent::run::mini::run(rust_swe_agent::run::mini::MiniArgs {
+    maxwells_daemon::run::mini::run(maxwells_daemon::run::mini::MiniArgs {
         task: "Please perform a security review.".to_owned(),
         extra_context: None,
         config: cfg,
@@ -500,7 +500,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
     ))
     .unwrap();
 
-    rust_swe_agent::run::mini::run(rust_swe_agent::run::mini::MiniArgs {
+    maxwells_daemon::run::mini::run(maxwells_daemon::run::mini::MiniArgs {
         task: "Please perform a security review.".to_owned(),
         extra_context: None,
         config: cfg,

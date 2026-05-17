@@ -9,10 +9,10 @@ already exist in the sweep directory.
 ## Usage
 
 ```bash
-rust-swe-agent bench tail --sweep runs/sweep-001
-rust-swe-agent bench tail --sweep runs/sweep-001 --interval-ms 1000
-rust-swe-agent bench tail --sweep runs/sweep-001 --once
-rust-swe-agent bench tail --sweep runs/sweep-001 --once --format json
+max bench tail --sweep runs/sweep-001
+max bench tail --sweep runs/sweep-001 --interval-ms 1000
+max bench tail --sweep runs/sweep-001 --once
+max bench tail --sweep runs/sweep-001 --once --format json
 ```
 
 Default mode is a long-lived text view refreshed every two seconds. In a TTY,

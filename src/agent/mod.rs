@@ -32,7 +32,7 @@ pub use parse::{
 /// ## Examples
 ///
 /// ```
-/// use rust_swe_agent::agent::ExitReason;
+/// use maxwells_daemon::agent::ExitReason;
 ///
 /// let exit = ExitReason::Submitted { final_output: "Done!".into() };
 /// assert_eq!(exit.label(), "submitted");
@@ -71,7 +71,7 @@ impl ExitReason {
     /// ## Examples
     ///
     /// ```
-    /// use rust_swe_agent::agent::ExitReason;
+    /// use maxwells_daemon::agent::ExitReason;
     ///
     /// let reason = ExitReason::StepLimit { limit: 10 };
     /// assert_eq!(reason.label(), "step_limit");
@@ -98,7 +98,7 @@ impl ExitReason {
 /// ## Examples
 ///
 /// ```
-/// use rust_swe_agent::agent::{StepOutcome, ExitReason};
+/// use maxwells_daemon::agent::{StepOutcome, ExitReason};
 ///
 /// let outcome = StepOutcome::Terminate(ExitReason::UserInterrupt);
 /// ```
@@ -119,8 +119,8 @@ pub enum StepOutcome {
 /// ## Examples
 ///
 /// ```no_run
-/// use rust_swe_agent::agent::{Agent, StepOutcome, ExitReason};
-/// use rust_swe_agent::error::Error;
+/// use maxwells_daemon::agent::{Agent, StepOutcome, ExitReason};
+/// use maxwells_daemon::error::Error;
 /// use async_trait::async_trait;
 ///
 /// struct MyAgent {
@@ -160,8 +160,8 @@ pub trait Agent: Send {
     /// ## Examples
     ///
     /// ```no_run
-    /// # use rust_swe_agent::agent::{Agent, StepOutcome, ExitReason};
-    /// # use rust_swe_agent::error::Error;
+    /// # use maxwells_daemon::agent::{Agent, StepOutcome, ExitReason};
+    /// # use maxwells_daemon::error::Error;
     /// # use async_trait::async_trait;
     /// # struct MyAgent { steps: u32 }
     /// # #[async_trait]

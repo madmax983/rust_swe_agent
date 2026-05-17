@@ -1,4 +1,4 @@
-# Default config for rust-swe-agent. Mirrors mini-swe-agent's
+# Default config for Maxwell's Daemon. Mirrors mini-swe-agent's
 # `config/mini.yaml` in shape. Fields documented inline.
 
 [agent]
@@ -70,7 +70,7 @@ tool_hook_timeout_secs = 10
 #
 # [[agent.hooks.pre_tool_use]]
 # name = "guard"
-# command = "test \"$RUST_SWE_AGENT_COMMAND\" != \"rm -rf /\""
+# command = "test \"$MAXWELL_COMMAND\" != \"rm -rf /\""
 # timeout_secs = 5
 #
 # [[agent.hooks.post_tool_use]]

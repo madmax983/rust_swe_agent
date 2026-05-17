@@ -7,16 +7,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use rust_swe_agent::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
-use rust_swe_agent::run::forecast::{
+use maxwells_daemon::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
+use maxwells_daemon::run::forecast::{
     ForecastArgs, ForecastGate, ForecastOutcome, ForecastReport, ThresholdStatus,
     forecast_from_results, forecast_gate_allows_sweep, run, validate_fail_over_cap,
 };
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::swebench::{
     InstanceResult, SwebenchArgs, SweepResults, SweepSignal, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{FailureCategory, outcome};
-use rust_swe_agent::{Config, ModelUsage};
+use maxwells_daemon::trajectory::{FailureCategory, outcome};
+use maxwells_daemon::{Config, ModelUsage};
 use tokio::sync::mpsc;
 
 mod support;
@@ -154,7 +154,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
     ];
     SweepResults {
         total: instances.len(),
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -185,45 +185,45 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         retried_instances: 0,
         pass_at_k: 0.0,
         filter_spec: Default::default(),
-        manifest: model_name.map(|name| rust_swe_agent::run::swebench::ProvenanceManifest {
+        manifest: model_name.map(|name| maxwells_daemon::run::swebench::ProvenanceManifest {
             purpose: None,
-            harness: rust_swe_agent::run::swebench::HarnessManifest {
-                name: "rust_swe_agent".into(),
+            harness: maxwells_daemon::run::swebench::HarnessManifest {
+                name: "maxwells-daemon".into(),
                 version: "test".into(),
                 git_sha: None,
                 git_dirty: None,
                 git_resolution: "test".into(),
             },
-            dataset: rust_swe_agent::run::swebench::DatasetManifest {
+            dataset: maxwells_daemon::run::swebench::DatasetManifest {
                 path: "test.jsonl".into(),
                 sha256: "test".into(),
                 instance_count: instances.len(),
                 filter_spec: Some(Default::default()),
                 ..Default::default()
             },
-            prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+            prompt_template: maxwells_daemon::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),
                 path: None,
                 sha256: "test".into(),
             },
-            config: rust_swe_agent::run::swebench::ConfigManifest {
+            config: maxwells_daemon::run::swebench::ConfigManifest {
                 resolved: "test".into(),
                 overlay_paths: Vec::new(),
             },
-            model: rust_swe_agent::run::swebench::ModelManifest {
+            model: maxwells_daemon::run::swebench::ModelManifest {
                 name: name.into(),
                 backend: "litellm".into(),
                 backend_version: None,
                 base_url: None,
             },
-            runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+            runtime: maxwells_daemon::run::swebench::RuntimeManifest {
                 started_at_utc: "2026-05-01T00:00:00Z".into(),
                 finished_at_utc: Some("2026-05-01T00:01:00Z".into()),
                 host_os: "linux".into(),
                 resume_mode: false,
                 rust_version: None,
             },
-            cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+            cli: maxwells_daemon::run::swebench::CliManifest { argv: Vec::new() },
             circuit_breaker: None,
             reproduced_from: None,
         }),
@@ -284,11 +284,11 @@ fn forecast_json_is_byte_deterministic_for_same_calibration_slice() {
     let mut reversed = fixture_results();
     reversed.instances.reverse();
 
-    let expected = rust_swe_agent::run::forecast::to_json(
+    let expected = maxwells_daemon::run::forecast::to_json(
         &forecast_from_results(&fixture_results(), 42, 6, 2, 80.0, None).unwrap(),
     )
     .unwrap();
-    let actual = rust_swe_agent::run::forecast::to_json(
+    let actual = maxwells_daemon::run::forecast::to_json(
         &forecast_from_results(&reversed, 42, 6, 2, 80.0, None).unwrap(),
     )
     .unwrap();
@@ -717,7 +717,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
     };
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output.clone(),
             parallel: 1,
@@ -731,7 +731,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             sample: None,
             seed: None,
             stratify_by: None,
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -799,7 +799,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
         );
     }
 
-    let eval_err = rust_swe_agent::run::evaluate::run(&EvaluateArgs {
+    let eval_err = maxwells_daemon::run::evaluate::run(&EvaluateArgs {
         sweep_dir: output.join("forecast"),
         dataset_path: None,
         backend: EvaluateBackend::None,
@@ -848,7 +848,7 @@ async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_rep
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
@@ -862,7 +862,7 @@ async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_rep
             sample: None,
             seed: None,
             stratify_by: None,
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -902,11 +902,11 @@ async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_rep
         ForecastOutcome::Cancelled(results) => {
             assert_eq!(
                 results.sweep_status,
-                rust_swe_agent::run::swebench::SWEEP_STATUS_CANCELLED
+                maxwells_daemon::run::swebench::SWEEP_STATUS_CANCELLED
             );
             assert_eq!(
                 results.cancel_exit_code,
-                Some(rust_swe_agent::run::swebench::CANCEL_EXIT_CODE_GRACEFUL)
+                Some(maxwells_daemon::run::swebench::CANCEL_EXIT_CODE_GRACEFUL)
             );
             assert_eq!(results.instances.len(), 1);
             assert_eq!(results.instances[0].exit_reason, "cancelled");
@@ -931,7 +931,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
@@ -945,7 +945,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             sample: Some(2),
             seed: Some(99),
             stratify_by: None,
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -1000,7 +1000,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
@@ -1014,7 +1014,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
             sample: None,
             seed: None,
             stratify_by: None,
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -1071,7 +1071,7 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
 
     let err = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output.clone(),
             parallel: 1,
@@ -1085,7 +1085,7 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             sample: Some(2),
             seed: None,
             stratify_by: None,
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,
@@ -1146,7 +1146,7 @@ async fn forecast_with_stratified_planning_runs_calibration_subset() {
 
     let outcome = run(ForecastArgs {
         sweep: SwebenchArgs {
-            dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
             output_dir: output,
             parallel: 1,
@@ -1159,8 +1159,8 @@ async fn forecast_with_stratified_planning_runs_calibration_subset() {
             limit: None,
             sample: Some(3),
             seed: Some(99),
-            stratify_by: Some(rust_swe_agent::run::swebench::StratifyBy::Repo),
-            stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Balanced,
+            stratify_by: Some(maxwells_daemon::run::swebench::StratifyBy::Repo),
+            stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Balanced,
             max_retries: 0,
             retry_on: None,
             retry_backoff_base_ms: 0,

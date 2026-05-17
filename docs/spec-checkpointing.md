@@ -22,4 +22,4 @@ Success = Mid-run resumption re-uses >90% of previously successful steps after a
 
 ## 🕳️ Gap Analysis
 - **SWE-agent**: Supports resuming from trajectory checkpoints.
-- **rust_swe_agent today**: Has a `--resume` flag, but it only looks for completed tasks (`resume-skip`). Incomplete runs are treated as absent, discarding all partial work and completely re-running the instance.
+- **maxwells-daemon today**: Has a `--resume` flag, but it only looks for completed tasks (`resume-skip`). Incomplete runs are treated as absent, discarding all partial work and completely re-running the instance.

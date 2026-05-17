@@ -21,7 +21,8 @@ use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
 
-const PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
+const PATCH_BASE_ENV: &str = "MAXWELL_PATCH_BASE";
+const LEGACY_PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 const VERIFICATION_PREVIEW_MAX_BYTES: usize = 2 * 1024;
 
 #[cfg(test)]
@@ -539,6 +540,9 @@ pub(crate) async fn check_patch_validity(
     add_req
         .env
         .insert(PATCH_BASE_ENV.into(), base_commit.to_owned());
+    add_req
+        .env
+        .insert(LEGACY_PATCH_BASE_ENV.into(), base_commit.to_owned());
 
     let add_result = env.run(add_req).await;
     let result = match add_result {
@@ -600,6 +604,8 @@ async fn capture_patch(
     );
     req.cwd = Some(spec.workdir.clone());
     req.env.insert(PATCH_BASE_ENV.into(), base.to_owned());
+    req.env
+        .insert(LEGACY_PATCH_BASE_ENV.into(), base.to_owned());
     let result = env
         .run(req)
         .await

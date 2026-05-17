@@ -1,17 +1,17 @@
 [package]
-name = "rust_swe_agent"
+name = "maxwells-daemon"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Measure-first SWE agent harness with runtime MCP toolsets and inspectable trajectories"
+description = "Maxwell's Daemon: a measure-first SWE agent harness with runtime MCP toolsets and inspectable trajectories"
 license = "MIT"
 
 [lib]
-name = "rust_swe_agent"
+name = "maxwells_daemon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rust-swe-agent"
+name = "max"
 path = "src/main.rs"
 
 [dependencies]

@@ -10,7 +10,7 @@ use support::binary_path;
 
 // ── unit tests for action class classification ────────────────────────────────
 
-use rust_swe_agent::run::behavior::{ActionClass, classify_action, classify_turn};
+use maxwells_daemon::run::behavior::{ActionClass, classify_action, classify_turn};
 
 #[test]
 fn classify_read_commands() {

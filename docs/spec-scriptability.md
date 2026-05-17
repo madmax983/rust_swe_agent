@@ -19,13 +19,13 @@ timeout_secs = 30
 ```
 
 ```bash
-rust-swe-agent mini --task "Fix it" --mcp-server diagnostic-mcp
+max mini --task "Fix it" --mcp-server diagnostic-mcp
 ```
 
 For each MCP server, the runner sends the standard lifecycle handshake:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"rust-swe-agent","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"maxwells-daemon","version":"0.1.0"}}}
 ```
 
 If the server responds with an older supported revision, the runner records that
@@ -78,7 +78,7 @@ compared against the actual tools shown to the model.
 
 `[[agent.tools]]` still exists as a low-level command adapter escape hatch. It
 maps a fenced tool block directly to one configured command and passes the block
-body through `RUST_SWE_AGENT_TOOL_INPUT`. Prefer `agent.mcp_servers` for toolset
+body through `MAXWELL_TOOL_INPUT`. Prefer `agent.mcp_servers` for toolset
 experiments; command aliases are not the MCP path. Tiny footgun, now labeled.
 
 ## Tool Hooks
@@ -94,7 +94,7 @@ tool_hook_timeout_secs = 10
 
 [[agent.hooks.pre_tool_use]]
 name = "guard"
-command = 'test "$RUST_SWE_AGENT_COMMAND" != "rm -rf /"'
+command = 'test "$MAXWELL_COMMAND" != "rm -rf /"'
 timeout_secs = 5
 
 [[agent.hooks.post_tool_use]]
@@ -128,25 +128,28 @@ Hook commands can use MiniJinja variables (note: prefer environment variables fo
 
 The same data is exposed as environment variables:
 
-- `RUST_SWE_AGENT_HOOK_NAME`
-- `RUST_SWE_AGENT_HOOK_PHASE`
-- `RUST_SWE_AGENT_TOOL_NAME`
-- `RUST_SWE_AGENT_TASK`
-- `RUST_SWE_AGENT_MODEL`
-- `RUST_SWE_AGENT_STEP`
-- `RUST_SWE_AGENT_COMMAND`
-- `RUST_SWE_AGENT_TOOL_INPUT`
-- `RUST_SWE_AGENT_EXIT_CODE`
-- `RUST_SWE_AGENT_STDOUT`
-- `RUST_SWE_AGENT_STDERR`
-- `RUST_SWE_AGENT_OUTPUT`
-- `RUST_SWE_AGENT_TIMED_OUT`
-- `RUST_SWE_AGENT_TOTAL_COST_USD`
-- `RUST_SWE_AGENT_CONTEXT_JSON`
+- `MAXWELL_HOOK_NAME`
+- `MAXWELL_HOOK_PHASE`
+- `MAXWELL_TOOL_NAME`
+- `MAXWELL_TASK`
+- `MAXWELL_MODEL`
+- `MAXWELL_STEP`
+- `MAXWELL_COMMAND`
+- `MAXWELL_TOOL_INPUT`
+- `MAXWELL_EXIT_CODE`
+- `MAXWELL_STDOUT`
+- `MAXWELL_STDERR`
+- `MAXWELL_OUTPUT`
+- `MAXWELL_TIMED_OUT`
+- `MAXWELL_TOTAL_COST_USD`
+- `MAXWELL_CONTEXT_JSON`
+
+For compatibility, the old `RUST_SWE_AGENT_*` names are still populated with
+the same values. New hooks should use `MAXWELL_*`.
 
 Environment variable values are capped before spawning hook processes to avoid
 OS argv+env size limits. Large strings include a truncation marker such as
-`[truncated: original_bytes=200000]`. `RUST_SWE_AGENT_CONTEXT_JSON` remains
+`[truncated: original_bytes=200000]`. `MAXWELL_CONTEXT_JSON` remains
 valid JSON, but its string fields are capped the same way. Hooks that need
 lossless large output should read artifacts from the workspace rather than the
 environment.

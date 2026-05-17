@@ -1589,10 +1589,9 @@ fn apply_cost_attribution_delta(
 }
 
 pub fn write_diff_script(report: &CompareReport, out_path: &Path) -> Result<(), Error> {
-    let exe = std::env::current_exe().ok().map_or_else(
-        || "rust-swe-agent".into(),
-        |path| path.display().to_string(),
-    );
+    let exe = std::env::current_exe()
+        .ok()
+        .map_or_else(|| "max".into(), |path| path.display().to_string());
     let mut script = String::new();
     script.push_str("#!/usr/bin/env sh\n");
     script.push_str("set -eu\n\n");
@@ -4373,7 +4372,7 @@ mod tests {
                     rust_version: None,
                 },
                 cli: crate::run::swebench::CliManifest {
-                    argv: vec!["rust-swe-agent".into()],
+                    argv: vec!["max".into()],
                 },
                 reproduced_from: None,
                 circuit_breaker: None,

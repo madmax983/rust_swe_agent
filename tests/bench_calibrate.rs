@@ -14,19 +14,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rust_swe_agent::artifact::ArtifactKind;
-use rust_swe_agent::run::calibrate::{
+use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::run::calibrate::{
     CalibrationArgs, CalibrationMetricStatus, CalibrationVerdict, compute, render_text, to_json,
 };
-use rust_swe_agent::run::forecast::{
+use maxwells_daemon::run::forecast::{
     CalibrationSummary, ForecastReport, ForecastTotals, IntervalEstimate, PerInstanceSummary,
     QuantileSummary, ResolutionRateSignal, ThresholdCheck, ThresholdStatus,
 };
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
     ModelManifest, ProvenanceManifest, RuntimeManifest, SweepResults,
 };
-use rust_swe_agent::trajectory::{FailureCategory, outcome};
+use maxwells_daemon::trajectory::{FailureCategory, outcome};
 
 mod support;
 use support::binary_path;
@@ -198,7 +198,7 @@ fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
     let forecast_report = forecast_report(&ForecastCase::default(), &calibration_dir);
     std::fs::write(
         cwd.join(&forecast_path),
-        rust_swe_agent::run::forecast::to_json(&forecast_report).unwrap(),
+        maxwells_daemon::run::forecast::to_json(&forecast_report).unwrap(),
     )
     .unwrap();
 
@@ -213,7 +213,7 @@ fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
     );
     std::fs::write(
         cwd.join(&calibration_dir).join("results.json"),
-        rust_swe_agent::artifact::to_string_pretty(
+        maxwells_daemon::artifact::to_string_pretty(
             ArtifactKind::SweepResults,
             &calibration_results,
         )
@@ -236,7 +236,7 @@ fn relative_calibration_output_dir_is_resolved_from_current_cwd_first() {
     );
     std::fs::write(
         cwd.join(&results_path),
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
     )
     .unwrap();
 
@@ -689,22 +689,22 @@ enum ParallelArgStyle {
 impl ParallelArgStyle {
     fn argv(self, parallel: usize) -> Vec<String> {
         match self {
-            Self::Absent => vec!["rust-swe-agent".into(), "bench".into(), "swebench".into()],
+            Self::Absent => vec!["max".into(), "bench".into(), "swebench".into()],
             Self::LongSeparated => vec![
-                "rust-swe-agent".into(),
+                "max".into(),
                 "bench".into(),
                 "swebench".into(),
                 "--parallel".into(),
                 parallel.to_string(),
             ],
             Self::LongEquals => vec![
-                "rust-swe-agent".into(),
+                "max".into(),
                 "bench".into(),
                 "swebench".into(),
                 format!("--parallel={parallel}"),
             ],
             Self::ShortSeparated => vec![
-                "rust-swe-agent".into(),
+                "max".into(),
                 "bench".into(),
                 "swebench".into(),
                 "-p".into(),
@@ -729,7 +729,7 @@ fn write_pair(
     let forecast_report = forecast_report(&forecast, &calibration_dir);
     std::fs::write(
         &forecast_path,
-        rust_swe_agent::run::forecast::to_json(&forecast_report).unwrap(),
+        maxwells_daemon::run::forecast::to_json(&forecast_report).unwrap(),
     )
     .unwrap();
 
@@ -744,7 +744,7 @@ fn write_pair(
     );
     std::fs::write(
         calibration_dir.join("results.json"),
-        rust_swe_agent::artifact::to_string_pretty(
+        maxwells_daemon::artifact::to_string_pretty(
             ArtifactKind::SweepResults,
             &calibration_results,
         )
@@ -767,7 +767,7 @@ fn write_pair(
     let actual = sweep_results(results, results_manifest, &actual_ids);
     std::fs::write(
         &results_path,
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &actual).unwrap(),
     )
     .unwrap();
 
@@ -842,7 +842,7 @@ fn sweep_results(
         .collect();
     SweepResults {
         total: case.total,
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -932,7 +932,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
     ProvenanceManifest {
         purpose: None,
         harness: HarnessManifest {
-            name: "rust_swe_agent".into(),
+            name: "maxwells-daemon".into(),
             version: "test".into(),
             git_sha: None,
             git_dirty: None,
@@ -953,7 +953,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
             post_filter_row_count: total,
             ..DatasetManifest::default()
         },
-        prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+        prompt_template: maxwells_daemon::run::swebench::PromptTemplateManifest {
             source: "inline".into(),
             path: None,
             sha256: "prompt".into(),

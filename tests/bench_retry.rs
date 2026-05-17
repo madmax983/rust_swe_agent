@@ -11,18 +11,18 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::artifact::ArtifactKind;
-use rust_swe_agent::run::retry::{
+use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::run::retry::{
     OverrideDelta, RetryHistoryEntry, RetrySelection, archive_trajectories,
     detect_harness_mismatch_with_sha, merge_retry_results, resolve_selection,
     restore_missing_trajectories, save_pre_retry_backup,
 };
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult, ModelManifest,
     PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SWEEP_STATUS_COMPLETED,
     SweepResults,
 };
-use rust_swe_agent::trajectory::FailureCategory;
+use maxwells_daemon::trajectory::FailureCategory;
 
 mod support;
 use support::binary_path;
@@ -115,7 +115,7 @@ fn base_sweep(instances: Vec<InstanceResult>) -> SweepResults {
 
 fn write_results(dir: &Path, results: &SweepResults) {
     let json =
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, results).unwrap();
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, results).unwrap();
     std::fs::write(dir.join("results.json"), json).unwrap();
 }
 
@@ -445,8 +445,8 @@ fn merge_preserves_prior_retry_history_entries() {
 #[test]
 fn schema_version_is_1_8() {
     assert_eq!(
-        rust_swe_agent::artifact::ArtifactSchemaVersion::CURRENT,
-        rust_swe_agent::artifact::ArtifactSchemaVersion::new(1, 8),
+        maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 8),
         "schema bumped to 1.8 for per-call sampling parameters (issue #177)"
     );
 }
@@ -457,7 +457,7 @@ fn sweep_results_serializes_retry_history_when_present() {
     results.retry_history.push(make_retry_entry("test-id", 0));
 
     let json =
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(
         value.get("retry_history").is_some(),
@@ -470,7 +470,7 @@ fn sweep_results_serializes_retry_history_when_present() {
 fn sweep_results_omits_retry_history_when_empty() {
     let results = base_sweep(vec![]);
     let json =
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &results).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(
         value.get("retry_history").is_none(),

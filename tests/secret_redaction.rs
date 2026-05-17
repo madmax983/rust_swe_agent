@@ -9,15 +9,15 @@ use std::process::Command;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::env::RunRequest;
-use rust_swe_agent::error::EnvError;
-use rust_swe_agent::run::inspect::{InspectArgs, InspectOutput};
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::env::RunRequest;
+use maxwells_daemon::error::EnvError;
+use maxwells_daemon::run::inspect::{InspectArgs, InspectOutput};
+use maxwells_daemon::run::swebench::{
     SwebenchArgs, patch_path_for_run, run as run_sweep, trajectory_path_for_run,
 };
-use rust_swe_agent::stream::{BroadcastSink, StreamSink};
-use rust_swe_agent::{
+use maxwells_daemon::stream::{BroadcastSink, StreamSink};
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, Model, RunResult,
 };
 
@@ -271,9 +271,9 @@ secret_literals = ["{configured_secret}"]
 #[cfg(feature = "markdown-export")]
 #[test]
 fn markdown_export_redacts_raw_trajectory_content() {
-    use rust_swe_agent::model::Message;
-    use rust_swe_agent::trajectory::Trajectory;
-    use rust_swe_agent::trajectory::export::{MarkdownExporter, TrajectoryExporter};
+    use maxwells_daemon::model::Message;
+    use maxwells_daemon::trajectory::Trajectory;
+    use maxwells_daemon::trajectory::export::{MarkdownExporter, TrajectoryExporter};
 
     let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
     let mut trajectory = Trajectory::new();
@@ -315,7 +315,7 @@ secret_literals = ["{configured_secret}"]
     .unwrap();
 
     let results = run_sweep(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -329,7 +329,7 @@ secret_literals = ["{configured_secret}"]
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -420,7 +420,7 @@ name = "scripted-test-model"
     .unwrap();
 
     let results = run_sweep(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -434,7 +434,7 @@ name = "scripted-test-model"
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -524,7 +524,7 @@ fn bench_inspect_redacts_legacy_raw_trajectory_and_warns() {
     )
     .unwrap();
 
-    let output = rust_swe_agent::run::inspect::run(&InspectArgs {
+    let output = maxwells_daemon::run::inspect::run(&InspectArgs {
         sweep,
         instance: Some("legacy-raw".into()),
         filter: None,
@@ -532,7 +532,7 @@ fn bench_inspect_redacts_legacy_raw_trajectory_and_warns() {
         show_expected: false,
     })
     .unwrap();
-    let text = rust_swe_agent::run::inspect::render_text(&output);
+    let text = maxwells_daemon::run::inspect::render_text(&output);
     assert!(!text.contains(secret), "{text}");
     assert!(text.contains("[REDACTED:"), "{text}");
     assert!(text.to_ascii_lowercase().contains("redacted"), "{text}");

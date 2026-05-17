@@ -1,10 +1,11 @@
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madmax983/rust_swe_agent)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/madmax983/maxwells-daemon)
 
-# rust_swe_agent
+# Maxwell's Daemon
 
-A minimal harness for operators who want to own the SWE agent loop: start with
-a small bash-first agent, swap MCP toolsets at invocation time, produce
-inspectable trajectories, and measure each change before adding more machinery.
+Maxwell's Daemon is a minimal harness for operators who want to own the SWE
+agent loop: start with a small bash-first agent, swap MCP toolsets at invocation
+time, produce inspectable trajectories, and measure each change before adding
+more machinery.
 
 ## Getting Started
 
@@ -145,7 +146,7 @@ PowerShell:
 
 ```powershell
 $env:ANTHROPIC_API_KEY = "<your Anthropic key>"
-cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from rust_swe_agent." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
+cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
 
@@ -153,7 +154,7 @@ macOS/Linux:
 
 ```bash
 export ANTHROPIC_API_KEY="<your Anthropic key>"
-cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from rust_swe_agent." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
+cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
 

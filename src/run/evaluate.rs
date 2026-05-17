@@ -1151,7 +1151,7 @@ fn generated_run_id() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    format!("rust_swe_agent_{secs}")
+    format!("maxwells_daemon_{secs}")
 }
 
 fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {

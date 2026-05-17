@@ -1,8 +1,8 @@
 #[cfg(feature = "mermaid-export")]
-use rust_swe_agent::trajectory::export::MermaidExporter;
-use rust_swe_agent::trajectory::Trajectory;
-use rust_swe_agent::model::Message;
-use rust_swe_agent::trajectory::export::TrajectoryExporter;
+use maxwells_daemon::trajectory::export::MermaidExporter;
+use maxwells_daemon::trajectory::Trajectory;
+use maxwells_daemon::model::Message;
+use maxwells_daemon::trajectory::export::TrajectoryExporter;
 
 fn main() {
     let mut t = Trajectory::new();

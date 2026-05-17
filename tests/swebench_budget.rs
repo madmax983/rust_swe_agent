@@ -15,13 +15,13 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::ModelUsage;
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::Config;
+use maxwells_daemon::ModelUsage;
+use maxwells_daemon::run::swebench::{
     EXIT_REASON_BUDGET_HALT, InstanceResult, SwebenchArgs, SweepResults, estimate_cost_usd,
     patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::trajectory::{
     FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
 };
 
@@ -124,7 +124,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel,
@@ -138,7 +138,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -302,7 +302,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, "openai/gpt-4o-mini");
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -316,7 +316,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -388,7 +388,7 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, model_name);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -402,7 +402,7 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -442,7 +442,7 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
     );
     assert_eq!(
         results.actual_cost_source,
-        Some(rust_swe_agent::cost::CostSource::Unknown)
+        Some(maxwells_daemon::cost::CostSource::Unknown)
     );
     assert!(
         results.instances[0]
@@ -477,7 +477,7 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
 
     let cfg = config_with_workdir_and_model(&repo, model_name);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -491,7 +491,7 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -527,7 +527,7 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
     assert_eq!(results.actual_cost_usd, Some(0.0));
     assert_eq!(
         results.actual_cost_source,
-        Some(rust_swe_agent::cost::CostSource::FreeTierInferred)
+        Some(maxwells_daemon::cost::CostSource::FreeTierInferred)
     );
 }
 
@@ -556,7 +556,7 @@ async fn sweep_without_limit_runs_all_tasks() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 2,
@@ -570,7 +570,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -630,7 +630,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -644,7 +644,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -733,7 +733,7 @@ async fn resume_skipped_costs_count_against_budget() {
             outcome: Some(outcome::SUBMITTED.into()),
             exit_reason: Some("submitted".into()),
             steps: Some(1),
-            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+            token_usage: Some(maxwells_daemon::trajectory::TokenUsage {
                 prompt_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
@@ -766,7 +766,7 @@ async fn resume_skipped_costs_count_against_budget() {
     // must halt — otherwise the resume case is broken.
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -780,7 +780,7 @@ async fn resume_skipped_costs_count_against_budget() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -839,7 +839,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             outcome: Some(outcome::SUBMITTED.into()),
             exit_reason: Some("submitted".into()),
             steps: Some(1),
-            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+            token_usage: Some(maxwells_daemon::trajectory::TokenUsage {
                 prompt_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
@@ -860,7 +860,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
     // Prior results.json preserves cumulative retry usage/costs.
     let prior = SweepResults {
         total: 1,
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -890,7 +890,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         retries: 1,
         retried_instances: 1,
         pass_at_k: 0.0,
-        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        filter_spec: maxwells_daemon::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
@@ -947,7 +947,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -961,7 +961,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -1019,7 +1019,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             outcome: Some(outcome::ERROR.into()),
             exit_reason: Some("error".into()),
             failure_category: Some(FailureCategory::ModelApi),
-            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+            token_usage: Some(maxwells_daemon::trajectory::TokenUsage {
                 prompt_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
@@ -1037,7 +1037,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
 
     let prior = SweepResults {
         total: 1,
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -1067,7 +1067,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         retries: 2,
         retried_instances: 1,
         pass_at_k: 0.0,
-        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        filter_spec: maxwells_daemon::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
@@ -1116,7 +1116,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -1130,7 +1130,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 1,
         retry_on: Some("model_api".into()),
         retry_backoff_base_ms: 0,
@@ -1185,7 +1185,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
     // Write stale summary first (older mtime) with inflated usage.
     let stale_summary = SweepResults {
         total: 1,
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -1215,7 +1215,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         retries: 2,
         retried_instances: 1,
         pass_at_k: 0.0,
-        filter_spec: rust_swe_agent::run::swebench::FilterSpec::default(),
+        filter_spec: maxwells_daemon::run::swebench::FilterSpec::default(),
         manifest: None,
         cost_limit_usd: Some(0.10),
         instances: vec![InstanceResult {
@@ -1270,7 +1270,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             outcome: Some(outcome::SUBMITTED.into()),
             exit_reason: Some("submitted".into()),
             steps: Some(1),
-            token_usage: Some(rust_swe_agent::trajectory::TokenUsage {
+            token_usage: Some(maxwells_daemon::trajectory::TokenUsage {
                 prompt_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
@@ -1290,7 +1290,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -1304,7 +1304,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -1381,7 +1381,7 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
 
     let cfg = config_with_workdir_and_per_task_budget(&repo, per_task_budget);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -1395,7 +1395,7 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -1487,7 +1487,7 @@ async fn per_task_budget_absent_means_no_enforcement() {
 
     let cfg = config_with_workdir(&repo); // no per_task_budget_usd
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -1501,7 +1501,7 @@ async fn per_task_budget_absent_means_no_enforcement() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,

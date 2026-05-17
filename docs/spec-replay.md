@@ -135,7 +135,7 @@ When drift is detected the harness writes a structured JSON report to
 ### Recording a trajectory (normal `mini` run)
 
 ```bash
-rust-swe-agent mini --task "Fix the off-by-one in sort.py" \
+max mini --task "Fix the off-by-one in sort.py" \
   --output runs/baseline/
 # → runs/baseline/fix-the-off-by-one-in-sort-py.traj.json
 #   (each assistant message now carries extra.model_call.input_fingerprint)
@@ -145,7 +145,7 @@ rust-swe-agent mini --task "Fix the off-by-one in sort.py" \
 
 ```bash
 # After changing a prompt template:
-rust-swe-agent replay \
+max replay \
   --trajectory-path runs/baseline/fix-the-off-by-one-in-sort-py.traj.json \
   --output runs/replay/
 echo "exit: $?"
@@ -156,7 +156,7 @@ echo "exit: $?"
 ### Diagnosing drift with `--report-only`
 
 ```bash
-rust-swe-agent replay \
+max replay \
   --trajectory-path runs/baseline/fix-the-off-by-one-in-sort-py.traj.json \
   --output runs/replay-diag/ \
   --report-only
@@ -166,7 +166,7 @@ rust-swe-agent replay \
 ### Accepting a legacy trajectory
 
 ```bash
-rust-swe-agent replay \
+max replay \
   --trajectory-path runs/old/pre-1.4-trajectory.traj.json \
   --output runs/replay/ \
   --allow-unfingerprinted

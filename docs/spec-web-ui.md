@@ -14,7 +14,7 @@ Success = An operator can find the specific step where the agent failed (or exec
 - Must visualize the timeline of steps (System Prompt, Assistant Message, Bash Command, Bash Output, etc.).
 - Must support collapsible/expandable sections for large text blocks (e.g., long standard output, multi-file diffs).
 - Must display run metadata prominently (Outcome, Total Cost USD, Token Usage, Failure Category).
-- Must be zero-config to run (e.g. `rust-swe-agent ui --port 8080`).
+- Must be zero-config to run (e.g. `max ui --port 8080`).
 
 ## 🚫 Out of Scope
 - Real-time streaming UI integration (Phase 3).
@@ -24,4 +24,4 @@ Success = An operator can find the specific step where the agent failed (or exec
 ## 🕳️ Gap Analysis
 - **mini-swe-agent**: Has a basic Python/Flask viewer.
 - **SWE-agent**: Has an interactive web UI.
-- **rust_swe_agent today**: Only has the terminal-based `bench inspect` subcommand. While functional, it is not scalable for reading full multi-turn coding sessions. Adding a built-in UI brings it to parity with SWE-agent for developer experience.
+- **maxwells-daemon today**: Only has the terminal-based `bench inspect` subcommand. While functional, it is not scalable for reading full multi-turn coding sessions. Adding a built-in UI brings it to parity with SWE-agent for developer experience.

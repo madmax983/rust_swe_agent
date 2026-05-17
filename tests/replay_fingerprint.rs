@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use rust_swe_agent::{
+use maxwells_daemon::{
     config::Config,
     exit_code::ExitCode,
     fingerprint::{InputFingerprint, canonical_json, compute_input_fingerprint},
@@ -175,7 +175,7 @@ async fn replay_omits_model_latency_ms_on_assistant_turns() {
 
     let traj_path = dir.path().join("latency-check.traj.json");
     let text = std::fs::read_to_string(&traj_path).unwrap();
-    let traj: rust_swe_agent::trajectory::Trajectory = serde_json::from_str(&text).unwrap();
+    let traj: maxwells_daemon::trajectory::Trajectory = serde_json::from_str(&text).unwrap();
     for m in &traj.messages {
         if m.role == "assistant" {
             assert!(

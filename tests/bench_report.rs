@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{FailureCategory, outcome};
+use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
+use maxwells_daemon::trajectory::{FailureCategory, outcome};
 
 mod support;
 use support::binary_path;
@@ -112,7 +112,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
     };
     let sweep = SweepResults {
         total: instances.len(),
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -155,45 +155,45 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         retried_instances: 0,
         pass_at_k,
         filter_spec: Default::default(),
-        manifest: Some(rust_swe_agent::run::swebench::ProvenanceManifest {
+        manifest: Some(maxwells_daemon::run::swebench::ProvenanceManifest {
             purpose: None,
-            harness: rust_swe_agent::run::swebench::HarnessManifest {
-                name: "rust_swe_agent".into(),
+            harness: maxwells_daemon::run::swebench::HarnessManifest {
+                name: "maxwells-daemon".into(),
                 version: "0.1.0-test".into(),
                 git_sha: Some("deadbeef1234".into()),
                 git_dirty: Some(false),
                 git_resolution: "exact".into(),
             },
-            dataset: rust_swe_agent::run::swebench::DatasetManifest {
+            dataset: maxwells_daemon::run::swebench::DatasetManifest {
                 path: "tests/fixtures/test.jsonl".into(),
                 sha256: "abc123".into(),
                 instance_count: instances.len(),
                 filter_spec: None,
                 ..Default::default()
             },
-            prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+            prompt_template: maxwells_daemon::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),
                 path: None,
                 sha256: "tpl123".into(),
             },
-            config: rust_swe_agent::run::swebench::ConfigManifest {
+            config: maxwells_daemon::run::swebench::ConfigManifest {
                 resolved: "default".into(),
                 overlay_paths: Vec::new(),
             },
-            model: rust_swe_agent::run::swebench::ModelManifest {
+            model: maxwells_daemon::run::swebench::ModelManifest {
                 name: "claude-opus-4-7".into(),
                 backend: "litellm".into(),
                 backend_version: None,
                 base_url: None,
             },
-            runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+            runtime: maxwells_daemon::run::swebench::RuntimeManifest {
                 started_at_utc: "2026-05-01T00:00:00Z".into(),
                 finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
                 host_os: "linux".into(),
                 resume_mode: false,
                 rust_version: Some("rustc 1.85.0".into()),
             },
-            cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+            cli: maxwells_daemon::run::swebench::CliManifest { argv: Vec::new() },
             circuit_breaker: None,
             reproduced_from: None,
         }),
@@ -716,7 +716,7 @@ fn bench_report_preserves_zero_cost_for_free_tier_model() {
         "retries": 0, "retried_instances": 0, "pass_at_k": 0.0,
         "filter_spec": {}, "cost_limit_usd": null,
         "manifest": {
-            "harness": {"name": "rust_swe_agent", "version": "test", "git_resolution": "test"},
+            "harness": {"name": "maxwells-daemon", "version": "test", "git_resolution": "test"},
             "dataset": {"path": "tests/fixtures/test.jsonl", "sha256": "test", "instance_count": 1},
             "prompt_template": {"source": "inline", "sha256": "tpl"},
             "config": {"resolved": "default", "overlay_paths": []},
@@ -992,7 +992,7 @@ fn bench_report_redacts_secrets_in_manifest_fields() {
         "retries": 0, "retried_instances": 0, "pass_at_k": 1.0,
         "filter_spec": {}, "cost_limit_usd": null,
         "manifest": {
-            "harness": {"name": "rust_swe_agent", "version": "test", "git_resolution": "test"},
+            "harness": {"name": "maxwells-daemon", "version": "test", "git_resolution": "test"},
             "dataset": {"path": dataset_path, "sha256": "test", "instance_count": 1},
             "prompt_template": {"source": "inline", "sha256": "tpl"},
             "config": {"resolved": "default", "overlay_paths": []},

@@ -10,7 +10,7 @@ use support::binary_path;
 
 // ── unit tests for pure calculation functions ─────────────────────────────────
 
-use rust_swe_agent::run::cache_stats::{
+use maxwells_daemon::run::cache_stats::{
     compute_cache_hit_rate, compute_estimated_savings_usd_vs_cold, compute_realized_cache_spend_usd,
 };
 

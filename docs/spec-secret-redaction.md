@@ -1,6 +1,6 @@
 # Secret Redaction Contract
 
-`rust-swe-agent` redacts secrets by default before content reaches model-visible observations, saved trajectories, live streams, `bench inspect`, Markdown/CSV/Mermaid exports, GitHub PR text built from artifacts, and SWE-bench prediction files.
+`max` redacts secrets by default before content reaches model-visible observations, saved trajectories, live streams, `bench inspect`, Markdown/CSV/Mermaid exports, GitHub PR text built from artifacts, and SWE-bench prediction files.
 
 ## Threat Model
 

@@ -13,17 +13,17 @@ pub mod args;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "rust-swe-agent",
+    name = "max",
     version,
-    about = "Measure-first SWE agent harness"
+    about = "Maxwell's Daemon: measure-first SWE agent harness"
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
     /// Global log level.
-    #[arg(long, default_value = "info", env = "RUST_SWE_AGENT_LOG")]
-    pub log: String,
+    #[arg(long, env = "MAXWELL_LOG")]
+    pub log: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -40,7 +40,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
-    /// Reap any leftover `rust-swe-agent=1` labeled containers.
+    /// Reap any leftover `maxwells-daemon=1` labeled containers.
     Cleanup,
 }
 
@@ -55,7 +55,8 @@ pub async fn run() -> Result<(), Error> {
         }
         std::process::exit(e.exit_code());
     });
-    init_logging(&cli.log);
+    let log = effective_log_level(cli.log.as_deref());
+    init_logging(&log);
 
     match cli.command {
         Command::Mini(m) => mini_cmd(m).await,
@@ -137,6 +138,14 @@ pub async fn run() -> Result<(), Error> {
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
     }
+}
+
+fn effective_log_level(cli_log: Option<&str>) -> String {
+    cli_log
+        .map(str::to_owned)
+        .or_else(|| std::env::var("MAXWELL_LOG").ok())
+        .or_else(|| std::env::var("RUST_SWE_AGENT_LOG").ok())
+        .unwrap_or_else(|| "info".into())
 }
 
 fn init_logging(level: &str) {
@@ -2675,7 +2684,7 @@ mod tests {
     fn swebench_github_pr_validation_rejects_empty_slug_branch_prefix() {
         let err = validate_swebench_github_pr_args(&args::SwebenchGithubPrArgs {
             open_prs: true,
-            target_repo: Some("madmax983/rust_swe_agent".into()),
+            target_repo: Some("madmax983/maxwells-daemon".into()),
             target_branch: Some("trunk".into()),
             github_token_env: "GITHUB_TOKEN".into(),
             github_pr_dry_run: false,
@@ -2703,7 +2712,7 @@ mod tests {
         let options = mini_github_pr_options(&mini_cmd(false, true), &cfg, "task")
             .unwrap()
             .unwrap();
-        assert_eq!(options.target_repo, "madmax983/rust_swe_agent");
+        assert_eq!(options.target_repo, "madmax983/maxwells-daemon");
         assert_eq!(options.target_branch, "trunk");
         assert_eq!(options.task_id, "task");
         assert_eq!(options.patch_path, PathBuf::from("runs").join("task.patch"));
@@ -2741,7 +2750,7 @@ mod tests {
     #[test]
     fn mini_cli_parses_invocation_time_mcp_server() {
         let cli = Cli::parse_from([
-            "rust-swe-agent",
+            "max",
             "mini",
             "--task",
             "Fix it",
@@ -2764,12 +2773,12 @@ mod tests {
         std::fs::write(&patch, sample_patch()).unwrap();
 
         maybe_publish_mini_github_pr(Some(crate::run::github_pr::GithubPrOptions {
-            target_repo: "madmax983/rust_swe_agent".into(),
+            target_repo: "madmax983/maxwells-daemon".into(),
             target_branch: "trunk".into(),
             task_id: "submitted".into(),
             trajectory_ref: submitted.display().to_string(),
             patch_path: patch,
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
             token_env: "GITHUB_TOKEN".into(),
             mode: PublishMode::DryRun,
             timeout_secs: 30,
@@ -2823,7 +2832,7 @@ mod tests {
     #[test]
     fn swebench_cli_defers_os_signal_handler_installation_to_run_loop() {
         let cli = Cli::parse_from([
-            "rust-swe-agent",
+            "max",
             "bench",
             "swebench",
             "--dataset-path",
@@ -2875,14 +2884,14 @@ mod tests {
             verify_timeout_secs: 60,
             github_pr: args::MiniGithubPrArgs {
                 open_pr,
-                target_repo: Some("madmax983/rust_swe_agent".into()),
+                target_repo: Some("madmax983/maxwells-daemon".into()),
                 target_branch: Some("trunk".into()),
                 github_token_env: "GITHUB_TOKEN".into(),
                 github_pr_dry_run: dry_run,
                 github_pr_timeout_secs: 30,
                 github_pr_max_retries: 2,
                 github_pr_backoff_base_ms: 250,
-                github_pr_branch_prefix: "rust-swe-agent".into(),
+                github_pr_branch_prefix: "max".into(),
             },
             render_only: false,
             format: "text".into(),
@@ -2939,25 +2948,25 @@ mod tests {
     fn swebench_github(open_prs: bool, dry_run: bool) -> args::SwebenchGithubPrArgs {
         args::SwebenchGithubPrArgs {
             open_prs,
-            target_repo: Some("madmax983/rust_swe_agent".into()),
+            target_repo: Some("madmax983/maxwells-daemon".into()),
             target_branch: Some("trunk".into()),
             github_token_env: "GITHUB_TOKEN".into(),
             github_pr_dry_run: dry_run,
             github_pr_timeout_secs: 30,
             github_pr_max_retries: 2,
             github_pr_backoff_base_ms: 250,
-            github_pr_branch_prefix: "rust-swe-agent".into(),
+            github_pr_branch_prefix: "max".into(),
         }
     }
 
     fn github_options_for_cli_test() -> crate::run::github_pr::GithubPrOptions {
         crate::run::github_pr::GithubPrOptions {
-            target_repo: "madmax983/rust_swe_agent".into(),
+            target_repo: "madmax983/maxwells-daemon".into(),
             target_branch: "trunk".into(),
             task_id: "task".into(),
             trajectory_ref: "traj.json".into(),
             patch_path: PathBuf::from("patch.diff"),
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
             token_env: "GITHUB_TOKEN".into(),
             mode: PublishMode::DryRun,
             timeout_secs: 30,

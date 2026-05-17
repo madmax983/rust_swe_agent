@@ -1,5 +1,5 @@
+use maxwells_daemon::run::evaluate::parse_repo_from_instance_id;
 use proptest::prelude::*;
-use rust_swe_agent::run::evaluate::parse_repo_from_instance_id;
 
 proptest! {
     #[test]

@@ -7,11 +7,11 @@
 
 use std::path::Path;
 
-use rust_swe_agent::run::reproduce::{
+use maxwells_daemon::run::reproduce::{
     DriftSeverity, build_reproducibility_report, compare_manifests, load_manifest_from_sweep,
     render_summary,
 };
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::swebench::{
     HarnessManifest, InstanceResult, ProvenanceManifest, SweepResults,
 };
 
@@ -26,13 +26,13 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
     ProvenanceManifest {
         purpose: None,
         harness: HarnessManifest {
-            name: "rust-swe-agent".into(),
+            name: "max".into(),
             version: "0.1.0".into(),
             git_sha: git_sha.map(str::to_owned),
             git_dirty: Some(false),
             git_resolution: "exact".into(),
         },
-        dataset: rust_swe_agent::run::swebench::DatasetManifest {
+        dataset: maxwells_daemon::run::swebench::DatasetManifest {
             path: "dataset.jsonl".into(),
             sha256: "abc123".into(),
             instance_count: 10,
@@ -45,30 +45,30 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
             selected_row_count: 10,
             post_filter_row_count: 10,
         },
-        prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+        prompt_template: maxwells_daemon::run::swebench::PromptTemplateManifest {
             source: "builtin".into(),
             path: None,
             sha256: "deadbeef".into(),
         },
-        config: rust_swe_agent::run::swebench::ConfigManifest {
+        config: maxwells_daemon::run::swebench::ConfigManifest {
             resolved: "[model]\nname = \"claude-opus-4-7\"\n".into(),
             overlay_paths: vec![],
         },
-        model: rust_swe_agent::run::swebench::ModelManifest {
+        model: maxwells_daemon::run::swebench::ModelManifest {
             name: model_name.into(),
             backend: "litellm".into(),
             backend_version: None,
             base_url: None,
         },
-        runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+        runtime: maxwells_daemon::run::swebench::RuntimeManifest {
             started_at_utc: "2026-01-01T00:00:00Z".into(),
             finished_at_utc: Some("2026-01-01T01:00:00Z".into()),
             host_os: "linux".into(),
             resume_mode: false,
             rust_version: Some("1.85.0".into()),
         },
-        cli: rust_swe_agent::run::swebench::CliManifest {
-            argv: vec!["rust-swe-agent".into(), "bench".into(), "swebench".into()],
+        cli: maxwells_daemon::run::swebench::CliManifest {
+            argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
         reproduced_from: None,
@@ -94,7 +94,7 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         failure_category: if resolved {
             None
         } else {
-            Some(rust_swe_agent::trajectory::FailureCategory::StepLimit)
+            Some(maxwells_daemon::trajectory::FailureCategory::StepLimit)
         },
         steps: Some(5),
         cost_usd: Some(0.01),
@@ -281,7 +281,7 @@ fn compare_manifests_flags_model_name_mismatch_as_hard_drift() {
 
 #[test]
 fn drift_field_is_whitelisted_when_field_in_allow_list() {
-    use rust_swe_agent::run::reproduce::DriftField;
+    use maxwells_daemon::run::reproduce::DriftField;
 
     let field = DriftField {
         field: "harness.git_sha".into(),
@@ -476,11 +476,11 @@ fn render_summary_includes_patch_identical_percentage() {
 #[test]
 fn cli_parses_bench_reproduce_required_args() {
     use clap::Parser as _;
-    use rust_swe_agent::cli::Cli;
-    use rust_swe_agent::cli::args::BenchCmd;
+    use maxwells_daemon::cli::Cli;
+    use maxwells_daemon::cli::args::BenchCmd;
 
     let cli = Cli::parse_from([
-        "rust-swe-agent",
+        "max",
         "bench",
         "reproduce",
         "--from",
@@ -489,7 +489,7 @@ fn cli_parses_bench_reproduce_required_args() {
         "/tmp/replay-sweep",
     ]);
 
-    let rust_swe_agent::cli::Command::Bench {
+    let maxwells_daemon::cli::Command::Bench {
         cmd: BenchCmd::Reproduce(cmd),
     } = cli.command
     else {
@@ -505,11 +505,11 @@ fn cli_parses_bench_reproduce_required_args() {
 #[test]
 fn cli_parses_bench_reproduce_optional_overrides() {
     use clap::Parser as _;
-    use rust_swe_agent::cli::Cli;
-    use rust_swe_agent::cli::args::BenchCmd;
+    use maxwells_daemon::cli::Cli;
+    use maxwells_daemon::cli::args::BenchCmd;
 
     let cli = Cli::parse_from([
-        "rust-swe-agent",
+        "max",
         "bench",
         "reproduce",
         "--from",
@@ -523,7 +523,7 @@ fn cli_parses_bench_reproduce_optional_overrides() {
         "--skip-model-probe",
     ]);
 
-    let rust_swe_agent::cli::Command::Bench {
+    let maxwells_daemon::cli::Command::Bench {
         cmd: BenchCmd::Reproduce(cmd),
     } = cli.command
     else {
@@ -539,7 +539,7 @@ fn cli_parses_bench_reproduce_optional_overrides() {
 
 #[test]
 fn unwhitelisted_hard_drifts_are_reported() {
-    use rust_swe_agent::run::reproduce::filter_hard_drifts;
+    use maxwells_daemon::run::reproduce::filter_hard_drifts;
     let original = minimal_manifest("claude-opus-4-7", Some("sha-a"));
     let current = minimal_manifest("claude-opus-4-7", Some("sha-b"));
     let drifts = compare_manifests(&original, &current);
@@ -551,7 +551,7 @@ fn unwhitelisted_hard_drifts_are_reported() {
 
 #[test]
 fn whitelisted_hard_drifts_are_excluded() {
-    use rust_swe_agent::run::reproduce::filter_hard_drifts;
+    use maxwells_daemon::run::reproduce::filter_hard_drifts;
     let original = minimal_manifest("claude-opus-4-7", Some("sha-a"));
     let current = minimal_manifest("claude-opus-4-7", Some("sha-b"));
     let drifts = compare_manifests(&original, &current);
@@ -632,7 +632,7 @@ fn compare_manifests_flags_host_os_change_as_soft_drift() {
 
 #[test]
 fn soft_drifts_are_excluded_from_filter_hard_drifts() {
-    use rust_swe_agent::run::reproduce::filter_hard_drifts;
+    use maxwells_daemon::run::reproduce::filter_hard_drifts;
     let original = minimal_manifest("claude-opus-4-7", Some("sha"));
     let mut current = original.clone();
     current.runtime.rust_version = Some("1.99.0".into());
@@ -649,8 +649,8 @@ fn soft_drifts_are_excluded_from_filter_hard_drifts() {
 
 #[test]
 fn render_summary_lists_top_diverging_failure_categories() {
-    use rust_swe_agent::run::reproduce::InstanceComparisonEntry;
-    use rust_swe_agent::run::reproduce::top_diverging_failure_categories;
+    use maxwells_daemon::run::reproduce::InstanceComparisonEntry;
+    use maxwells_daemon::run::reproduce::top_diverging_failure_categories;
 
     let instances = vec![
         // flipped to unresolved → replay_failure_category = step_limit
@@ -738,7 +738,7 @@ fn render_summary_omits_top_categories_when_no_divergences() {
 
 #[test]
 fn manifest_reproduced_from_field_serializes_and_deserializes() {
-    use rust_swe_agent::run::swebench::ManifestReproducedFrom;
+    use maxwells_daemon::run::swebench::ManifestReproducedFrom;
 
     let reproduced = ManifestReproducedFrom {
         manifest_hash: "manifest-hash:deadbeef".into(),
@@ -780,7 +780,7 @@ fn manifest_reproduced_from_is_absent_for_normal_sweeps() {
 
 #[test]
 fn sweep_results_with_reproduced_from_roundtrips_through_json() {
-    use rust_swe_agent::run::swebench::ManifestReproducedFrom;
+    use maxwells_daemon::run::swebench::ManifestReproducedFrom;
 
     let mut manifest = minimal_manifest("claude-opus-4-7", Some("sha"));
     manifest.reproduced_from = Some(ManifestReproducedFrom {

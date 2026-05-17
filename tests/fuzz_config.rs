@@ -1,5 +1,5 @@
+use maxwells_daemon::config::Config;
 use proptest::prelude::*;
-use rust_swe_agent::config::Config;
 
 proptest! {
     #[test]
