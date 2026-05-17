@@ -12,6 +12,24 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// Core templating engine for `rust_swe_agent`.
+///
+/// `Renderer` wraps a `minijinja::Environment` configured specifically for
+/// generating shell commands and evaluating agent prompts. It intentionally
+/// disables HTML auto-escaping, as the output is executed in bash rather than
+/// rendered in a browser.
+///
+/// ## Examples
+///
+/// ```rust
+/// use rust_swe_agent::template::Renderer;
+/// use std::collections::BTreeMap;
+///
+/// let renderer = Renderer::new();
+/// let ctx = BTreeMap::from([("name", "Ferris")]);
+/// let out = renderer.render_str("Hello, {{ name }}!", &ctx).unwrap();
+/// assert_eq!(out, "Hello, Ferris!");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +41,22 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` with default settings.
+    ///
+    /// The environment is initialized with auto-escaping disabled and a global
+    /// `env` dictionary that provides access to the host system's environment variables.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// // System PATH is available via the `env` global.
+    /// let out = renderer.render_with("{{ env.PATH is defined }}", context!()).unwrap();
+    /// assert!(out == "true" || out == "false");
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +77,22 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Render a template string against a dynamic `minijinja::Value` context.
+    ///
+    /// This is useful when the context is constructed dynamically using `minijinja::context!`
+    /// or when it originates from an unstructured source like `serde_json::Value`.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use rust_swe_agent::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// let tmpl = "{% if exit_code == 0 %}SUCCESS{% else %}FAILED{% endif %}";
+    /// let out = renderer.render_with(tmpl, context!(exit_code => 1_i64)).unwrap();
+    /// assert_eq!(out, "FAILED");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
