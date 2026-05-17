@@ -120,6 +120,7 @@ pub fn run(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
 
 // ── text rendering ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub fn render_text(
     report: &ToolCoverageReport,
     bucket_filter: Option<&str>,
