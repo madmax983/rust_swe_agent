@@ -69,10 +69,9 @@ impl ActionClass {
 
 // ── public classification API (used by unit tests) ────────────────────────────
 
-/// Classify a single bash action string (may be a pipeline) into an action class.
+/// Classify a single bash action string (may span multiple commands / pipelines).
 pub fn classify_action(action: &str) -> ActionClass {
-    let segments = split_pipeline(action);
-    segments
+    split_and_pipeline(action)
         .iter()
         .map(|seg| classify_segment(seg).0)
         .reduce(|a, b| if a.priority() >= b.priority() { a } else { b })
@@ -82,12 +81,12 @@ pub fn classify_action(action: &str) -> ActionClass {
 /// Classify a turn's list of action strings into the primary action class.
 ///
 /// - Empty slice → `Noop`
-/// - All `__SUBMIT__` → `Noop`
+/// - All `__SUBMIT__` or tool calls → `Noop`
 /// - Otherwise → highest-priority class across all actions
 pub fn classify_turn(actions: &[&str]) -> ActionClass {
     actions
         .iter()
-        .filter(|&&a| a != "__SUBMIT__")
+        .filter(|&&a| a != "__SUBMIT__" && !is_tool_call(a))
         .map(|&a| classify_action(a))
         .fold(ActionClass::Noop, |best, class| {
             if class.priority() > best.priority() {
@@ -658,10 +657,10 @@ fn classify_turn_tracking(
     let mut best = ActionClass::Noop;
 
     for action in actions {
-        if action == "__SUBMIT__" {
+        if action == "__SUBMIT__" || is_tool_call(action) {
             continue;
         }
-        for seg in split_pipeline(action) {
+        for seg in split_and_pipeline(action) {
             let (class, maybe_head) = classify_segment(seg);
             if let Some(head) = maybe_head {
                 *unclassified_heads.entry(head).or_default() += 1;
@@ -678,23 +677,52 @@ fn classify_turn_tracking(
 // ── classification internals ──────────────────────────────────────────────────
 
 /// Split on `|` but not `||` (logical-OR stops pipeline classification).
+/// Respects single- and double-quoted strings so `echo 'a|b' > file` is not split.
 fn split_pipeline(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let bytes = command.as_bytes();
     let mut start = 0;
     let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
     while i < bytes.len() {
-        if bytes[i] == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
-            break;
-        }
-        if bytes[i] == b'|' {
-            segments.push(&command[start..i]);
-            start = i + 1;
+        match bytes[i] {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'|' if !in_single && !in_double => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+                    break;
+                }
+                segments.push(&command[start..i]);
+                start = i + 1;
+            }
+            _ => {}
         }
         i += 1;
     }
     segments.push(&command[start..]);
     segments
+}
+
+/// Split a multi-command action string (newlines, `&&`, `;`) then split each
+/// fragment on pipeline `|`. Returns all segments for classification.
+fn split_and_pipeline(action: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for line in action.lines() {
+        for and_part in line.split("&&") {
+            for semi_part in and_part.split(';') {
+                out.extend(split_pipeline(semi_part));
+            }
+        }
+    }
+    out
+}
+
+/// Return true when an action string is a non-bash tool call (e.g. `diagnose:{…}`).
+fn is_tool_call(action: &str) -> bool {
+    // Mini-swe-agent encodes tool calls as `name:{json}`; shell commands never
+    // contain `:{` as a literal token boundary.
+    action.trim().contains(":{")
 }
 
 /// Return the first arg in `args` that is a member of `known`, skipping over flags.
@@ -736,10 +764,12 @@ fn classify_segment(segment: &str) -> (ActionClass, Option<String>) {
         "cargo" => {
             match find_subcommand(
                 rest,
-                &["test", "nextest", "build", "check", "clippy", "fmt"],
+                &[
+                    "test", "t", "nextest", "build", "b", "check", "c", "clippy", "fmt",
+                ],
             ) {
-                "test" | "nextest" => ActionClass::Test,
-                "build" | "check" | "clippy" | "fmt" => ActionClass::Build,
+                "test" | "t" | "nextest" => ActionClass::Test,
+                "build" | "b" | "check" | "c" | "clippy" | "fmt" => ActionClass::Build,
                 _ => ActionClass::Other,
             }
         }
