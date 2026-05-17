@@ -65,11 +65,16 @@ estimated_savings_usd_vs_cold =
   − cache_creation_tokens × (input_price_per_Mtok / 1 000 000) × (cache_creation_multiplier − 1)
 ```
 
-Uses `claude-3-5-sonnet` pricing (`$3/Mtok` input, `0.10×` reads, `1.25×` creations).
+All USD values use `claude-3-5-sonnet` pricing (`$3/Mtok` input, `0.10×` reads,
+`1.25×` creations) as a **normalized reference**, regardless of the model actually
+used in the sweep. This keeps cost comparisons consistent across sweeps and avoids
+the need to embed per-model pricing tables in the artifact.
 
 ### `realized_cache_spend_usd`
 
-The actual cost of all cache operations (reads + creations):
+The actual cost of cache operations only (reads + creations); **does not include
+fresh input-token cost**. A cache regression that shifts tokens from cache reads to
+fresh input will lower `realized_cache_spend_usd` while raising total prompt spend:
 
 ```
 realized_cache_spend_usd =
@@ -95,8 +100,8 @@ diffing in CI.
     "total_cache_read_tokens": 120000,
     "total_cache_creation_tokens": 80000,
     "cache_hit_rate": 0.4286,
-    "estimated_savings_usd_vs_cold": 0.000324,
-    "realized_cache_spend_usd": 0.000336
+    "estimated_savings_usd_vs_cold": 0.264000,
+    "realized_cache_spend_usd": 0.336000
   },
   "instances": [
     {
@@ -105,14 +110,16 @@ diffing in CI.
       "total_cache_read_tokens": 0,
       "total_cache_creation_tokens": 50000,
       "cache_hit_rate": 0.0,
-      "estimated_savings_usd_vs_cold": 0.0,
-      "realized_cache_spend_usd": 0.0001875
+      "estimated_savings_usd_vs_cold": -0.037500,
+      "realized_cache_spend_usd": 0.187500
     }
   ],
   "baseline": {
     "baseline_sweep": "/path/to/baseline",
     "delta_hit_rate": 0.0714,
-    "delta_realized_spend_usd": -0.000042
+    "delta_realized_cache_spend_usd": -0.042000,
+    "current_instance_count": 3,
+    "baseline_instance_count": 3
   }
 }
 ```

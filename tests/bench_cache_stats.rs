@@ -471,9 +471,9 @@ fn cli_baseline_json_includes_delta_fields() {
         "delta_hit_rate required"
     );
     assert!(
-        baseline["delta_realized_spend_usd"].is_f64()
-            || baseline["delta_realized_spend_usd"].is_u64(),
-        "delta_realized_spend_usd required"
+        baseline["delta_realized_cache_spend_usd"].is_f64()
+            || baseline["delta_realized_cache_spend_usd"].is_u64(),
+        "delta_realized_cache_spend_usd required"
     );
     assert!(
         baseline["current_instance_count"].is_u64(),

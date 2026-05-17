@@ -93,7 +93,10 @@ pub struct SweepCacheTotals {
 pub struct BaselineDelta {
     pub baseline_sweep: String,
     pub delta_hit_rate: f64,
-    pub delta_realized_spend_usd: f64,
+    /// Delta of cache-operations-only spend (reads + creations); does NOT include
+    /// fresh input tokens. A cache regression may show a negative delta here while
+    /// total prompt spend rises.
+    pub delta_realized_cache_spend_usd: f64,
     /// Instance counts for both sweeps. When unequal the spend delta is not
     /// normalized; operators should interpret it with this difference in mind.
     pub current_instance_count: usize,
@@ -220,8 +223,11 @@ fn render_baseline_line(out: &mut String, delta: &BaselineDelta) {
     };
     let _ = writeln!(
         out,
-        "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_spend_usd={:+.6}{}",
-        delta.baseline_sweep, delta.delta_hit_rate, delta.delta_realized_spend_usd, count_note
+        "Baseline: {}  Δ hit_rate={:+.4}  Δ realized_cache_spend_usd={:+.6}{}",
+        delta.baseline_sweep,
+        delta.delta_hit_rate,
+        delta.delta_realized_cache_spend_usd,
+        count_note
     );
 }
 
@@ -340,7 +346,7 @@ fn build_baseline_delta(
     Ok(BaselineDelta {
         baseline_sweep: baseline_dir.display().to_string(),
         delta_hit_rate: current_totals.cache_hit_rate - b_hit_rate,
-        delta_realized_spend_usd: current_totals.realized_cache_spend_usd - b_spend,
+        delta_realized_cache_spend_usd: current_totals.realized_cache_spend_usd - b_spend,
         current_instance_count,
         baseline_instance_count,
     })
