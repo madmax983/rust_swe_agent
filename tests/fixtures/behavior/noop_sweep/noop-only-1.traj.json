@@ -1,0 +1,40 @@
+{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "artifact_kind": "trajectory",
+  "schema_version": {"major": 1, "minor": 4},
+  "info": {
+    "task": "noop-only-1",
+    "model_name": "fixture-model",
+    "outcome": "step_limit_reached",
+    "total_cost_usd": 0.02,
+    "steps": 2,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "I need to think about this problem carefully.",
+      "extra": {
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "Please provide a bash command.",
+      "extra": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Let me reconsider the approach.",
+      "extra": {
+        "cost": 0.01
+      }
+    },
+    {
+      "role": "user",
+      "content": "Please provide a bash command.",
+      "extra": {}
+    }
+  ]
+}

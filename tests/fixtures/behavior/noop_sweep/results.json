@@ -1,0 +1,22 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {"major": 1, "minor": 4},
+  "total": 1,
+  "submitted": 0,
+  "skipped": 0,
+  "errored": 0,
+  "total_cost_usd": 0.02,
+  "instances": [
+    {
+      "instance_id": "noop-only-1",
+      "exit_reason": "step_limit_reached",
+      "outcome": "step_limit_reached",
+      "cost_usd": 0.02,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}
