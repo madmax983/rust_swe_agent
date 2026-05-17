@@ -355,22 +355,30 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
 
 /// Return true when an action string is a non-bash tool call (e.g. `diagnose:{…}`).
 /// Tool names may contain alphanumerics, underscores, or hyphens (e.g. `search-web`).
+/// Optional ASCII whitespace between the colon and `{` is accepted because
+/// `action_label()` does not trim leading whitespace from the fenced-block body.
 fn is_tool_call(action: &str) -> bool {
     let action = action.trim();
-    let Some(colon_pos) = action.find(":{") else {
+    let Some(colon_pos) = action.find(':') else {
         return false;
     };
     let prefix = &action[..colon_pos];
-    !prefix.is_empty()
-        && prefix
+    if prefix.is_empty()
+        || !prefix
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return false;
+    }
+    action[colon_pos + 1..]
+        .trim_start_matches([' ', '\t', '\n'])
+        .starts_with('{')
 }
 
 /// Extract the tool name from a tool call action string like `tool_name:{"key":"val"}`.
 fn tool_call_name(action: &str) -> Option<&str> {
     let action = action.trim();
-    let colon_pos = action.find(":{")?;
+    let colon_pos = action.find(':')?;
     let prefix = &action[..colon_pos];
     if prefix.is_empty()
         || !prefix
@@ -379,7 +387,14 @@ fn tool_call_name(action: &str) -> Option<&str> {
     {
         return None;
     }
-    Some(prefix)
+    if action[colon_pos + 1..]
+        .trim_start_matches([' ', '\t', '\n'])
+        .starts_with('{')
+    {
+        Some(prefix)
+    } else {
+        None
+    }
 }
 
 /// Map raw `source` field from toolset manifest to report source label.
@@ -547,7 +562,11 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         let mut combined_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut toolset: Option<RawToolsetManifest> = None;
 
-        for traj_path in resolve_trajectory_paths(&args.sweep_dir, id) {
+        let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
+        if traj_paths.is_empty() {
+            eprintln!("tool-coverage: warning: no trajectory files found for instance `{id}`");
+        }
+        for traj_path in traj_paths {
             match load_trajectory(&traj_path) {
                 Ok(traj) => {
                     // Merge toolsets from all run files so tools introduced in
