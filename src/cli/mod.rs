@@ -40,7 +40,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
-    /// Reap any leftover `maxwells-daemon=1` labeled containers.
+    /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
 
