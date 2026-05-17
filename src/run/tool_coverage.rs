@@ -53,9 +53,11 @@ pub struct ToolUniverseEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutcomeToolMetrics {
+    pub total_invocations: usize,
     pub instances_used: usize,
     pub instances_total: usize,
     pub usage_rate: f64,
+    pub share_of_bucket_tool_calls: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_rate_when_used: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,6 +131,7 @@ pub fn render_text(
 
     // Which by_outcome slice to show in the main table.
     let display_bucket = bucket_filter.unwrap_or("all");
+    let bucket_scoped = display_bucket != "all";
 
     let mut out = String::new();
     out.push_str("\n=== bench tool-coverage ===\n");
@@ -156,7 +159,7 @@ pub fn render_text(
         out.push('\n');
     }
 
-    // Build table with tools sorted by total_invocations desc.
+    // Build table with tools sorted by total_invocations desc (global).
     // Apply --min-invocations filter against all-bucket total (never against JSON).
     let mut rows: Vec<(&str, &ToolMetrics)> = report
         .by_tool
@@ -187,7 +190,42 @@ pub fn render_text(
             ]);
 
         for (name, m) in &rows {
-            let (rr_used, rr_not_used) = m.by_outcome.get(display_bucket).map_or_else(
+            let bucket_metrics = m.by_outcome.get(display_bucket);
+
+            // When a bucket filter is active, show bucket-scoped counts.
+            #[allow(clippy::cast_precision_loss)]
+            let (inv, inst_used, share, mean) = if bucket_scoped {
+                bucket_metrics.map_or(
+                    (
+                        m.total_invocations,
+                        m.instances_used,
+                        m.share_of_all_tool_calls,
+                        m.mean_invocations_per_using_instance,
+                    ),
+                    |o| {
+                        let mean = if o.instances_used > 0 {
+                            o.total_invocations as f64 / o.instances_used as f64
+                        } else {
+                            0.0
+                        };
+                        (
+                            o.total_invocations,
+                            o.instances_used,
+                            o.share_of_bucket_tool_calls,
+                            mean,
+                        )
+                    },
+                )
+            } else {
+                (
+                    m.total_invocations,
+                    m.instances_used,
+                    m.share_of_all_tool_calls,
+                    m.mean_invocations_per_using_instance,
+                )
+            };
+
+            let (rr_used, rr_not_used) = bucket_metrics.map_or_else(
                 || ("—".to_owned(), "—".to_owned()),
                 |o| {
                     (
@@ -202,10 +240,10 @@ pub fn render_text(
             table.add_row(vec![
                 (*name).to_owned(),
                 m.source.clone(),
-                m.total_invocations.to_string(),
-                m.instances_used.to_string(),
-                format!("{:.2}", m.mean_invocations_per_using_instance),
-                format!("{:.4}", m.share_of_all_tool_calls),
+                inv.to_string(),
+                inst_used.to_string(),
+                format!("{mean:.2}"),
+                format!("{share:.4}"),
                 rr_used,
                 rr_not_used,
             ]);
@@ -315,6 +353,7 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
 }
 
 /// Return true when an action string is a non-bash tool call (e.g. `diagnose:{…}`).
+/// Tool names may contain alphanumerics, underscores, or hyphens (e.g. `search-web`).
 fn is_tool_call(action: &str) -> bool {
     let action = action.trim();
     let Some(colon_pos) = action.find(":{") else {
@@ -324,7 +363,7 @@ fn is_tool_call(action: &str) -> bool {
     !prefix.is_empty()
         && prefix
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Extract the tool name from a tool call action string like `tool_name:{"key":"val"}`.
@@ -335,7 +374,7 @@ fn tool_call_name(action: &str) -> Option<&str> {
     if prefix.is_empty()
         || !prefix
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return None;
     }
@@ -352,9 +391,12 @@ fn map_source(raw: &str) -> &'static str {
     }
 }
 
-/// Build a stable fingerprint for a toolset (sorted tool names joined by comma).
-fn toolset_fingerprint(tools: &[String]) -> String {
-    let mut sorted = tools.to_vec();
+/// Build a stable fingerprint for a toolset.
+///
+/// Includes name, source, and mcp_server so that same-named tools from different
+/// providers are detected as distinct toolsets.
+fn toolset_fingerprint(entries: &[String]) -> String {
+    let mut sorted = entries.to_vec();
     sorted.sort();
     sorted.join(",")
 }
@@ -452,13 +494,14 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         }
     }
 
-    // Redactor for tool names and mcp_server values (built-in pattern set; no config needed).
     let redactor = Redactor::default_enabled();
 
     let sweep = load_sweep(&args.sweep_dir)?;
     let evaluation = load_evaluation_results_checked(&args.sweep_dir)?;
 
-    let resolved_set: HashSet<String> = evaluation
+    // Build resolved_set from evaluation.json when present; fall back to
+    // results.json resolved_count when evaluation.json is absent.
+    let mut resolved_set: HashSet<String> = evaluation
         .as_ref()
         .map(|ev| {
             ev.results
@@ -469,6 +512,13 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
                 .collect()
         })
         .unwrap_or_default();
+    if evaluation.is_none() {
+        for (id, inst) in &sweep.instances {
+            if inst.resolved_count > 0 {
+                resolved_set.insert(id.clone());
+            }
+        }
+    }
 
     let mut sorted_ids: Vec<String> = sweep.instances.keys().cloned().collect();
     sorted_ids.sort();
@@ -492,14 +542,21 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         let mut toolset: Option<RawToolsetManifest> = None;
 
         for traj_path in resolve_trajectory_paths(&args.sweep_dir, id) {
-            let Ok(traj) = load_trajectory(&traj_path) else {
-                continue;
-            };
-            if toolset.is_none() {
-                toolset = parse_toolset(&traj);
-            }
-            for (tool, count) in count_tool_invocations(&traj) {
-                *combined_counts.entry(tool).or_default() += count;
+            match load_trajectory(&traj_path) {
+                Ok(traj) => {
+                    if toolset.is_none() {
+                        toolset = parse_toolset(&traj);
+                    }
+                    for (tool, count) in count_tool_invocations(&traj) {
+                        *combined_counts.entry(tool).or_default() += count;
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "tool-coverage: warning: skipping {}: {e}",
+                        traj_path.display()
+                    );
+                }
             }
         }
 
@@ -511,31 +568,76 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         });
     }
 
-    // Build tool universe: union of all toolsets, keyed by tool name.
-    // Preserve first-seen source/mcp_server for each tool.
-    let mut universe_map: BTreeMap<String, ToolUniverseEntry> = BTreeMap::new();
-
+    // Collect all raw tool names from manifests + actual calls + implicit "bash".
+    let mut all_raw_names: HashSet<String> = HashSet::new();
+    all_raw_names.insert("bash".to_owned());
     for data in &instance_data {
+        for name in data.tool_counts.keys() {
+            all_raw_names.insert(name.clone());
+        }
         if let Some(ts) = &data.toolset {
             for entry in &ts.tools {
-                universe_map.entry(entry.name.clone()).or_insert_with(|| {
-                    // Redact tool name and mcp_server before storing.
-                    let name = redactor.redact_text(&entry.name, surface::TRAJECTORY).text;
-                    let mcp_server = entry
-                        .mcp_server
-                        .as_deref()
-                        .map(|s| redactor.redact_text(s, surface::TRAJECTORY).text);
-                    ToolUniverseEntry {
-                        name,
-                        source: map_source(&entry.source).to_owned(),
-                        mcp_server,
-                    }
-                });
+                all_raw_names.insert(entry.name.clone());
             }
         }
     }
 
-    // Also ensure bash is in the universe (it's always available as a builtin).
+    // Build raw→redacted map; apply once so all downstream keying uses redacted names.
+    let raw_to_redacted: HashMap<String, String> = all_raw_names
+        .iter()
+        .map(|raw| {
+            let redacted = redactor.redact_text(raw, surface::TRAJECTORY).text;
+            (raw.clone(), redacted)
+        })
+        .collect();
+
+    // Remap each instance's tool_counts to use redacted names.
+    for data in &mut instance_data {
+        let remapped: BTreeMap<String, usize> = data
+            .tool_counts
+            .iter()
+            .map(|(raw, &count)| {
+                let key = raw_to_redacted
+                    .get(raw)
+                    .cloned()
+                    .unwrap_or_else(|| raw.clone());
+                (key, count)
+            })
+            .collect();
+        data.tool_counts = remapped;
+    }
+
+    // Build tool universe keyed by redacted name.
+    // Preserve first-seen source/mcp_server for each tool from manifests.
+    let mut universe_map: BTreeMap<String, ToolUniverseEntry> = BTreeMap::new();
+    let mut manifest_tool_names: BTreeSet<String> = BTreeSet::new();
+
+    for data in &instance_data {
+        if let Some(ts) = &data.toolset {
+            for entry in &ts.tools {
+                let redacted_name = raw_to_redacted
+                    .get(&entry.name)
+                    .cloned()
+                    .unwrap_or_else(|| entry.name.clone());
+                manifest_tool_names.insert(redacted_name.clone());
+                universe_map
+                    .entry(redacted_name.clone())
+                    .or_insert_with(|| {
+                        let mcp_server = entry
+                            .mcp_server
+                            .as_deref()
+                            .map(|s| redactor.redact_text(s, surface::TRAJECTORY).text);
+                        ToolUniverseEntry {
+                            name: redacted_name,
+                            source: map_source(&entry.source).to_owned(),
+                            mcp_server,
+                        }
+                    });
+            }
+        }
+    }
+
+    // Ensure bash is in the universe (it is always available as a builtin).
     universe_map
         .entry("bash".to_owned())
         .or_insert_with(|| ToolUniverseEntry {
@@ -543,6 +645,22 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
             source: "builtin".to_owned(),
             mcp_server: None,
         });
+    manifest_tool_names.insert("bash".to_owned());
+
+    // Add "rogue" tools: called in trajectories but absent from any manifest.
+    for data in &instance_data {
+        for redacted_name in data.tool_counts.keys() {
+            if !manifest_tool_names.contains(redacted_name) {
+                universe_map
+                    .entry(redacted_name.clone())
+                    .or_insert_with(|| ToolUniverseEntry {
+                        name: redacted_name.clone(),
+                        source: "unknown".to_owned(),
+                        mcp_server: None,
+                    });
+            }
+        }
+    }
 
     let tool_universe: Vec<ToolUniverseEntry> = {
         let mut v: Vec<_> = universe_map.values().cloned().collect();
@@ -552,25 +670,44 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
     let universe_names: BTreeSet<String> = universe_map.keys().cloned().collect();
 
     // Detect toolset drift.
-    // Group instances by toolset fingerprint.
+    // Fingerprint includes name, source, and mcp_server so same-named tools from
+    // different providers are treated as distinct toolsets.
     let mut fingerprint_groups: HashMap<String, (Vec<String>, BTreeSet<String>)> = HashMap::new();
     for data in &instance_data {
-        let tool_names: Vec<String> = data
+        let entries: Vec<String> = data
             .toolset
             .as_ref()
             .map(|ts| {
-                let mut names: Vec<String> = ts.tools.iter().map(|t| t.name.clone()).collect();
-                names.sort();
-                names
+                let mut v: Vec<String> = ts
+                    .tools
+                    .iter()
+                    .map(|t| {
+                        let redacted = raw_to_redacted
+                            .get(&t.name)
+                            .cloned()
+                            .unwrap_or_else(|| t.name.clone());
+                        let src = map_source(&t.source);
+                        let mcp = t.mcp_server.as_deref().unwrap_or("");
+                        format!("{redacted}::{src}::{mcp}")
+                    })
+                    .collect();
+                v.sort();
+                v
             })
             .unwrap_or_default();
-        let fp = toolset_fingerprint(&tool_names);
-        let entry = fingerprint_groups
-            .entry(fp.clone())
+        let fp = toolset_fingerprint(&entries);
+        let group = fingerprint_groups
+            .entry(fp)
             .or_insert_with(|| (Vec::new(), BTreeSet::new()));
-        entry.0.push(data.id.clone());
-        for n in &tool_names {
-            entry.1.insert(n.clone());
+        group.0.push(data.id.clone());
+        if let Some(ts) = &data.toolset {
+            for t in &ts.tools {
+                let redacted = raw_to_redacted
+                    .get(&t.name)
+                    .cloned()
+                    .unwrap_or_else(|| t.name.clone());
+                group.1.insert(redacted);
+            }
         }
     }
 
@@ -595,10 +732,7 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         None
     };
 
-    // Aggregate per-tool metrics.
-    let total_instances = instance_data.len();
-
-    // Total calls across all tools and instances (for share computation).
+    // Grand total calls across all instances (for share computation).
     let grand_total_calls: usize = instance_data
         .iter()
         .flat_map(|d| d.tool_counts.values())
@@ -606,20 +740,33 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
 
     let bucket_names = ["resolved", "unresolved", "errored", "all"];
 
+    // Grand total calls per bucket (for per-bucket share computation).
+    let mut grand_total_calls_per_bucket: HashMap<&str, usize> = HashMap::new();
+    for data in &instance_data {
+        let instance_total: usize = data.tool_counts.values().sum();
+        for &bname in &bucket_names {
+            if bname == "all" || data.bucket.as_str() == bname {
+                *grand_total_calls_per_bucket.entry(bname).or_default() += instance_total;
+            }
+        }
+    }
+
+    // Aggregate per-tool metrics.
     let mut by_tool: BTreeMap<String, ToolMetrics> = BTreeMap::new();
 
     for tool_name in &universe_names {
         let universe_entry = &universe_map[tool_name];
 
-        // Collect per-instance: did this instance call this tool? How many times?
         let mut total_invocations = 0usize;
         let mut instances_used_globally = 0usize;
+        let mut per_bucket_invocations: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_used: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_total: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_resolved_used: HashMap<&str, usize> = HashMap::new();
         let mut per_bucket_resolved_total: HashMap<&str, usize> = HashMap::new();
 
         for &bname in &bucket_names {
+            per_bucket_invocations.insert(bname, 0);
             per_bucket_used.insert(bname, 0);
             per_bucket_total.insert(bname, 0);
             per_bucket_resolved_used.insert(bname, 0);
@@ -642,10 +789,10 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
                     continue;
                 }
                 *per_bucket_total.entry(bname).or_default() += 1;
+                *per_bucket_invocations.entry(bname).or_default() += calls;
                 if used {
                     *per_bucket_used.entry(bname).or_default() += 1;
                 }
-                // For resolved_rate_when_used / not_used: count resolved instances.
                 *per_bucket_resolved_total.entry(bname).or_default() += usize::from(is_resolved);
                 if used && is_resolved {
                     *per_bucket_resolved_used.entry(bname).or_default() += 1;
@@ -670,14 +817,26 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
         let mut by_outcome: BTreeMap<String, OutcomeToolMetrics> = BTreeMap::new();
 
         for &bname in &bucket_names {
+            let b_inv = per_bucket_invocations[bname];
             let b_used = per_bucket_used[bname];
             let b_total = per_bucket_total[bname];
             let b_res_used = per_bucket_resolved_used[bname];
             let b_res_total = per_bucket_resolved_total[bname];
+            let b_grand = grand_total_calls_per_bucket
+                .get(bname)
+                .copied()
+                .unwrap_or(0);
 
             #[allow(clippy::cast_precision_loss)]
             let usage_rate = if b_total > 0 {
                 b_used as f64 / b_total as f64
+            } else {
+                0.0
+            };
+
+            #[allow(clippy::cast_precision_loss)]
+            let share_of_bucket_tool_calls = if b_grand > 0 {
+                b_inv as f64 / b_grand as f64
             } else {
                 0.0
             };
@@ -705,9 +864,11 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
             by_outcome.insert(
                 bname.to_owned(),
                 OutcomeToolMetrics {
+                    total_invocations: b_inv,
                     instances_used: b_used,
                     instances_total: b_total,
                     usage_rate,
+                    share_of_bucket_tool_calls,
                     resolved_rate_when_used,
                     resolved_rate_when_not_used,
                 },
@@ -758,9 +919,6 @@ fn build_report(args: &ToolCoverageArgs) -> Result<ToolCoverageReport, Error> {
     } else {
         None
     };
-
-    // Sort tool_universe by name (already done above, but ensure stability).
-    let _ = total_instances; // used implicitly via per_bucket_total
 
     Ok(ToolCoverageReport {
         sweep: args.sweep_dir.display().to_string(),
