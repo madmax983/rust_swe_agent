@@ -425,8 +425,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     let redactor = Redactor::default_enabled();
     for inst in &mut eval.instances {
         if let Some(log) = inst.patch_error_log.take() {
-            inst.patch_error_log =
-                Some(redactor.redact_text(&log, surface::EXPORT).text);
+            inst.patch_error_log = Some(redactor.redact_text(&log, surface::EXPORT).text);
         }
     }
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
@@ -3071,10 +3070,15 @@ mod tests {
             "patch_error_log": "error: patch failed: myapp/models.py:42\nerror: myapp/models.py: patch does not apply"
         });
         let eval = parse_generic_eval_row(&row).unwrap();
-        assert!(matches!(eval.eval_exit_reason, EvalExitReason::PatchApplyFailed));
+        assert!(matches!(
+            eval.eval_exit_reason,
+            EvalExitReason::PatchApplyFailed
+        ));
         assert_eq!(
             eval.patch_error_log.as_deref(),
-            Some("error: patch failed: myapp/models.py:42\nerror: myapp/models.py: patch does not apply")
+            Some(
+                "error: patch failed: myapp/models.py:42\nerror: myapp/models.py: patch does not apply"
+            )
         );
     }
 
@@ -3130,26 +3134,40 @@ mod tests {
         let parsed = parse_sb_cli_results(&fixture_path)
             .unwrap_or_else(|e| panic!("failed to parse fixture: {e}"));
 
-        let patch_fail = parsed.get("django__django-001")
-            .expect("fixture row django__django-001 should be present");
-        assert!(matches!(patch_fail.eval_exit_reason, EvalExitReason::PatchApplyFailed));
+        let patch_fail = parsed
+            .get("django__django-001")
+            .unwrap_or_else(|| panic!("fixture row django__django-001 should be present"));
+        assert!(matches!(
+            patch_fail.eval_exit_reason,
+            EvalExitReason::PatchApplyFailed
+        ));
         assert_eq!(
             patch_fail.patch_error_log.as_deref(),
-            Some("error: patch failed: django/db/models/query.py:42\nerror: django/db/models/query.py: patch does not apply"),
+            Some(
+                "error: patch failed: django/db/models/query.py:42\nerror: django/db/models/query.py: patch does not apply"
+            ),
             "patch_error_log should round-trip from sb-cli fixture"
         );
 
-        let resolved = parsed.get("django__django-002")
-            .expect("fixture row django__django-002 should be present");
-        assert!(matches!(resolved.eval_exit_reason, EvalExitReason::Resolved));
+        let resolved = parsed
+            .get("django__django-002")
+            .unwrap_or_else(|| panic!("fixture row django__django-002 should be present"));
+        assert!(matches!(
+            resolved.eval_exit_reason,
+            EvalExitReason::Resolved
+        ));
         assert!(
             resolved.patch_error_log.is_none(),
             "patch_error_log must be None for resolved rows"
         );
 
-        let unresolved = parsed.get("django__django-003")
-            .expect("fixture row django__django-003 should be present");
-        assert!(matches!(unresolved.eval_exit_reason, EvalExitReason::Unresolved));
+        let unresolved = parsed
+            .get("django__django-003")
+            .unwrap_or_else(|| panic!("fixture row django__django-003 should be present"));
+        assert!(matches!(
+            unresolved.eval_exit_reason,
+            EvalExitReason::Unresolved
+        ));
         assert!(
             unresolved.patch_error_log.is_none(),
             "patch_error_log must be None for unresolved rows (not patch_apply_failed)"
