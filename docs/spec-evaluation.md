@@ -58,7 +58,8 @@ max bench evaluate \
       "tests_passed": ["..."],
       "tests_failed": ["..."],
       "eval_exit_reason": "resolved|unresolved|patch_apply_failed|eval_error|skipped_no_patch",
-      "eval_log_path": "optional/path/or/url"
+      "eval_log_path": "optional/path/or/url",
+      "patch_error_log": "captured git apply stderr (only when eval_exit_reason == patch_apply_failed; null/absent otherwise)"
     }
   ],
   "cost_attribution": [
