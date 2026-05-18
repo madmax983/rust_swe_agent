@@ -1123,10 +1123,7 @@ impl Agent for DefaultAgent {
         // PreToolUse hook layer already blocked the tool — the operator
         // never sees a prompt for a command that won't run anyway.
         if !tool_use_blocked {
-            if let Some(decision) = self
-                .confirm_operator_action(&tool_name, &tool_input)
-                .await
-            {
+            if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
                 match decision {
                     super::ConfirmDecision::Approve => {}
                     super::ConfirmDecision::Reject => {
@@ -1694,9 +1691,10 @@ impl DefaultAgent {
             "interactive_tool_name".into(),
             serde_json::Value::String(tool_name.to_owned()),
         );
-        obs_extra
-            .other
-            .insert("interactive_timestamp".into(), serde_json::Value::String(ts));
+        obs_extra.other.insert(
+            "interactive_timestamp".into(),
+            serde_json::Value::String(ts),
+        );
         record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
         self.stream.emit(StreamEvent::Observation {
             step: self.steps,

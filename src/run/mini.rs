@@ -163,27 +163,29 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
     // emits below.
-    let (sse_sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) =
-        match args.stream_addr {
-            Some(addr) => {
-                let bcast = Arc::new(BroadcastSink::default());
-                let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
-                    Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
-                })?;
-                tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
-                (Some(bcast as Arc<dyn StreamSink>), Some(server))
-            }
-            None => (None, None),
-        };
+    let (sse_sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) = match args
+        .stream_addr
+    {
+        Some(addr) => {
+            let bcast = Arc::new(BroadcastSink::default());
+            let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
+                Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
+            })?;
+            tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
+            (Some(bcast as Arc<dyn StreamSink>), Some(server))
+        }
+        None => (None, None),
+    };
 
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
     let sink = compose_stream_sinks(
         sse_sink,
         dashboard.as_ref().map(RatatuiDashboardHandle::stream_sink),
         if args.interactive_mode == InteractiveMode::YoloStatusOnly {
-            Some(Arc::new(StatusLineStderrSink::new(
-                args.config.root.agent.step_limit,
-            )) as Arc<dyn StreamSink>)
+            Some(
+                Arc::new(StatusLineStderrSink::new(args.config.root.agent.step_limit))
+                    as Arc<dyn StreamSink>,
+            )
         } else {
             None
         },
@@ -977,6 +979,55 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use std::sync::Mutex;
+
+    use crate::stream::{NullSink, StreamEvent, StreamSink};
+
+    #[test]
+    fn compose_stream_sinks_returns_none_when_all_absent() {
+        assert!(compose_stream_sinks(None, None, None).is_none());
+    }
+
+    #[test]
+    fn compose_stream_sinks_unwraps_single_sink_without_multi_wrap() {
+        let sse: Arc<dyn StreamSink> = Arc::new(NullSink);
+        let composed = compose_stream_sinks(Some(sse.clone()), None, None).unwrap();
+        // Single-sink path returns the same Arc, not a MultiSink wrapper.
+        assert!(Arc::ptr_eq(&composed, &sse));
+    }
+
+    #[test]
+    fn compose_stream_sinks_multi_wraps_when_multiple() {
+        let a: Arc<dyn StreamSink> = Arc::new(NullSink);
+        let b: Arc<dyn StreamSink> = Arc::new(NullSink);
+        let composed = compose_stream_sinks(Some(a), Some(b), None).unwrap();
+        // Just emit through it to verify it works; if it were a NullSink
+        // directly the call would still succeed, but MultiSink::emit
+        // exercises the fan-out path.
+        composed.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+    }
+
+    #[test]
+    fn build_interactive_pieces_off_yields_no_callback() {
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::Off).unwrap();
+        assert!(cb.is_none());
+        assert!(dash.is_none());
+    }
+
+    #[test]
+    fn build_interactive_pieces_yolo_status_only_yields_no_callback() {
+        let (cb, dash) = build_interactive_pieces(InteractiveMode::YoloStatusOnly).unwrap();
+        assert!(cb.is_none());
+        assert!(dash.is_none());
+    }
+
+    #[test]
+    fn interactive_mode_default_is_off() {
+        assert_eq!(InteractiveMode::default(), InteractiveMode::Off);
+    }
     use tokio::sync::watch;
 
     #[test]

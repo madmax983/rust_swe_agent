@@ -98,6 +98,13 @@ fn unknown_ui_value_is_rejected() {
 
 #[test]
 fn interactive_and_render_only_are_mutually_exclusive() {
-    let res = Cli::try_parse_from(["max", "mini", "--task", "t", "--interactive", "--render-only"]);
+    let res = Cli::try_parse_from([
+        "max",
+        "mini",
+        "--task",
+        "t",
+        "--interactive",
+        "--render-only",
+    ]);
     assert!(res.is_err());
 }

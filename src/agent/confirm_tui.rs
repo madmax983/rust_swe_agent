@@ -110,13 +110,24 @@ impl RatatuiDashboard {
     ///
     /// # Errors
     /// Returns `Err` if the terminal cannot be put into raw mode or
-    /// alt-screen mode.
+    /// alt-screen mode. On failure the terminal is restored to cooked
+    /// mode and the alt-screen is left, so the caller never observes a
+    /// half-initialised terminal.
     pub fn start() -> std::io::Result<RatatuiDashboardHandle> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(e);
+        }
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
+        let terminal = match Terminal::new(backend) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = restore_terminal();
+                return Err(e);
+            }
+        };
         let dash = Arc::new(Self {
             state: Mutex::new(DashboardState::default()),
             notify: Notify::new(),
@@ -227,7 +238,10 @@ impl StreamSink for RatatuiDashboard {
             }
             StreamEvent::FormatError { step, content, .. } => {
                 let preview = first_lines(&content, 4);
-                self.append(LineKind::Warn, format!("step {step} format error: {preview}"));
+                self.append(
+                    LineKind::Warn,
+                    format!("step {step} format error: {preview}"),
+                );
             }
             StreamEvent::RunEnded {
                 exit_reason,
@@ -416,7 +430,10 @@ fn header_paragraph(snap: &DashboardSnapshot) -> Paragraph<'_> {
             format!("cost ${:.4}  ", snap.cost_usd),
             Style::default().fg(Color::Yellow),
         ),
-        Span::styled(format!("model: {model}  "), Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("model: {model}  "),
+            Style::default().fg(Color::Green),
+        ),
         Span::styled(
             format!("task: {title}"),
             Style::default().add_modifier(Modifier::DIM),
@@ -488,7 +505,9 @@ fn draw_modal(frame: &mut ratatui::Frame, ctx: &ConfirmContext, area: Rect) {
     for cmd_line in ctx.command.lines().take(12) {
         lines.push(Line::from(format!("  {cmd_line}")));
     }
-    if ctx.command.lines().count() > 12 {
+    // Short-circuit at the first line past the cap instead of counting
+    // every line in a long command string.
+    if ctx.command.lines().nth(12).is_some() {
         lines.push(Line::from(Span::styled(
             "  …",
             Style::default().add_modifier(Modifier::DIM),
@@ -502,7 +521,9 @@ fn draw_modal(frame: &mut ratatui::Frame, ctx: &ConfirmContext, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" confirm action ");
-    let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let p = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(p, modal);
 }
 
@@ -528,11 +549,20 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 fn first_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().take(n).collect();
     let mut out = lines.join(" | ");
-    if s.lines().count() > n {
+    // Short-circuit at the first line past the cap rather than counting
+    // every line in the source string.
+    if s.lines().nth(n).is_some() {
         out.push_str(" …");
     }
     if out.len() > 240 {
-        out.truncate(240);
+        // `String::truncate` panics if the index falls inside a
+        // multi-byte UTF-8 codepoint. Walk back to the nearest char
+        // boundary so arbitrary tool output never crashes the renderer.
+        let mut cut = 240;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
         out.push_str(" …");
     }
     out
@@ -561,5 +591,27 @@ mod tests {
     fn summarize_stream_returns_byte_count() {
         assert_eq!(summarize_stream("abc", ""), " (3B output)");
         assert_eq!(summarize_stream("", ""), "");
+    }
+
+    #[test]
+    fn first_lines_truncates_at_char_boundary_for_multibyte_input() {
+        // 240 bytes of a 3-byte UTF-8 character ("é" is 2 bytes; "🦀" is 4).
+        // Repeat 🦀 (4 bytes) enough times to overflow 240 — a naive
+        // truncate(240) would land mid-codepoint and panic.
+        let s = "🦀".repeat(200);
+        let out = first_lines(&s, 1);
+        // Must not panic; result is bounded and ends with our ellipsis marker.
+        assert!(out.len() <= 244);
+        assert!(out.ends_with("…"));
+    }
+
+    #[test]
+    fn first_lines_no_ellipsis_when_under_cap() {
+        assert_eq!(first_lines("hello", 4), "hello");
+    }
+
+    #[test]
+    fn summarize_stream_counts_both_streams() {
+        assert_eq!(summarize_stream("ab", "cd"), " (4B output)");
     }
 }

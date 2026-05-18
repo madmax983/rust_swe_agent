@@ -2878,7 +2878,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
         Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        parse_verify_checks, required_github_arg, swebench_args_from_cmd,
+        parse_verify_checks, required_github_arg, resolve_interactive_mode, swebench_args_from_cmd,
         swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
         validate_swebench_github_pr_args,
     };
@@ -3216,6 +3216,44 @@ mod tests {
          @@ -1 +1 @@\n\
          -base\n\
          +patched\n"
+    }
+
+    #[test]
+    fn resolve_interactive_mode_off_when_neither_flag_set() {
+        let m = resolve_interactive_mode(false, false, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::Off);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_alone_is_status_only() {
+        let m = resolve_interactive_mode(false, true, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::YoloStatusOnly);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_interactive_picks_ui() {
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::StderrPrompt
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::Ratatui
+        );
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_overrides_interactive() {
+        // `--interactive --yolo` short-circuits to status-line mode for
+        // operators who want live progress but no prompts.
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
     }
 
     #[test]
