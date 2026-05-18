@@ -220,6 +220,19 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // Only the missing-file case proceeds as if behavior enrichment were absent.
     let behavior_map = load_behavior_map(&args.sweep_dir)?;
 
+    // Reject stale behavior.json from before a retry.  bench retry rewrites results.json
+    // and selected trajectories but does not refresh behavior.json, so pre-retry action
+    // classes can misclassify retried instances and flip raise/tighten recommendations.
+    if !behavior_map.is_empty() && has_retry_history(&args.sweep_dir) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: behavior.json may be stale — the sweep has retry history; \
+             per-instance action classes may reflect pre-retry trajectories. \
+             Re-run bench behavior to refresh, or remove behavior.json to skip \
+             behavior-enriched recommendations."
+                .into(),
+        )));
+    }
+
     // Load evaluation.json when present. The evaluator is the authoritative source
     // for whether a submitted patch actually resolved the issue; use it to override
     // resolved_count from results.json for bucketing and --filter resolved=.
@@ -329,6 +342,26 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         if let Some(v) = extract_argv_value(&cli_argv, "--per-task-budget-usd")
             .and_then(|v| v.parse::<f64>().ok())
         {
+            // CLI sets --per-task-budget-usd.  If the resolved config also has
+            // agent.cost_limit_usd, DefaultAgent::step checks cost_limit_usd first
+            // and can fire CostLimit before BudgetExhausted — same mixed-cap ambiguity as
+            // having both in the config.  Reject before any analysis.
+            let config_also_has_cost_limit = loaded.manifest.as_ref().and_then(|m| {
+                let tv: toml::Value = m.config.resolved.parse().ok()?;
+                tv.get("agent")?
+                    .get("cost_limit_usd")
+                    .and_then(|cv| cv.as_float().or_else(|| cv.as_integer().map(|n| n as f64)))
+            });
+            if config_also_has_cost_limit.is_some() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "budget-fit: CLI --per-task-budget-usd is set alongside \
+                     agent.cost_limit_usd in the resolved config; the agent can fire \
+                     either cap on any instance (cost_limit before budget_exhausted), \
+                     so the cost_usd axis cannot be analyzed against a single cap — \
+                     remove one of the two cost cap sources before running budget-fit"
+                        .into(),
+                )));
+            }
             (
                 Some(v),
                 Some("manifest.cli.argv[--per-task-budget-usd]".to_owned()),
@@ -1343,7 +1376,16 @@ fn build_headline(
             let axis_report = axes.iter().find(|a| &a.axis_name == ax);
             let rec = axis_report.and_then(|a| a.recommended_cap);
             match rec {
-                None => format!("Dominant axis '{ax}': insufficient data for recommendation."),
+                None => {
+                    // Distinguish "no data" from "cap already well-sized": use the per-axis
+                    // rationale so operators see "cap is well-sized / P{n} >= cap" rather
+                    // than the misleading "insufficient data" message.
+                    let rationale = axis_report
+                        .map_or("insufficient data for recommendation", |a| {
+                            a.recommended_cap_rationale.as_str()
+                        });
+                    format!("Dominant axis '{ax}': {rationale}")
+                }
                 Some(v) => format!(
                     "Dominant axis '{ax}': set cap to {v:.4} ({}); {}",
                     axis_report.map_or("units", |a| a.unit.as_str()),

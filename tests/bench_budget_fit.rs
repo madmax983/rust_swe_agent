@@ -1665,3 +1665,204 @@ fn stale_evaluation_after_retry_is_rejected() {
         "error should mention stale evaluation or retry history: {msg}"
     );
 }
+
+// ── CLI per-task-budget-usd + config cost_limit_usd is rejected ───────────────
+//
+// When --per-task-budget-usd is passed via CLI and agent.cost_limit_usd is set in
+// the resolved config, DefaultAgent::step checks cost_limit_usd first and can fire
+// CostLimit before BudgetExhausted on any given instance.  Budget-fit cannot use a
+// single cap for the cost_usd axis in that scenario and must reject it.
+
+#[test]
+fn cli_per_task_budget_with_config_cost_limit_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+
+    // Manifest: --per-task-budget-usd in argv, cost_limit_usd in resolved config.
+    let manifest = ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "maxwells-daemon".into(),
+            version: "0.1.0-test".into(),
+            git_sha: Some("deadbeef".into()),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest {
+            path: "tests/fixtures/test.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 3,
+            filter_spec: None,
+            ..Default::default()
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "inline".into(),
+            path: None,
+            sha256: "tpl123".into(),
+        },
+        config: ConfigManifest {
+            // config has cost_limit_usd; CLI has --per-task-budget-usd (set below in argv)
+            resolved: "[agent]\nstep_limit = 30\ncost_limit_usd = 0.08\n".into(),
+            overlay_paths: Vec::new(),
+        },
+        model: ModelManifest {
+            name: "claude-opus-4-7".into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-05-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("rustc 1.85.0".into()),
+        },
+        cli: CliManifest {
+            argv: vec![
+                "max".into(),
+                "bench".into(),
+                "swebench".into(),
+                "--per-task-budget-usd".into(),
+                "0.10".into(),
+            ],
+        },
+        circuit_breaker: None,
+        reproduced_from: None,
+    };
+    write_results(dir.path(), instances, manifest);
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "CLI --per-task-budget-usd with config agent.cost_limit_usd should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("per-task-budget-usd") || msg.contains("cost_limit_usd"),
+        "error should mention the conflicting cost caps: {msg}"
+    );
+}
+
+// ── stale behavior.json after retry is rejected ───────────────────────────────
+//
+// bench retry rewrites results.json but does not refresh behavior.json; the old
+// per-instance action classes can misclassify retried instances.  Budget-fit must
+// reject behavior.json when retry_history is non-empty.
+
+#[test]
+fn stale_behavior_after_retry_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Patch in a non-cap-changing retry.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // Write behavior.json (non-empty → triggers stale check).
+    write_behavior_json(dir.path(), &[("inst-0", "write")]);
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "behavior.json with retry history should be rejected as potentially stale"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("stale") || msg.contains("retry") || msg.contains("behavior"),
+        "error should mention stale behavior or retry history: {msg}"
+    );
+}
+
+// ── well-sized cap rationale appears in headline (not "insufficient data") ────
+//
+// When the dominant axis has cap-bound failures but recommended_cap is None because
+// P{target} >= cap (cap already well-sized), the headline should propagate the
+// per-axis rationale rather than saying "insufficient data for recommendation".
+
+#[test]
+fn well_sized_cap_rationale_appears_in_headline() {
+    let dir = tempfile::tempdir().unwrap();
+    // Wall-clock cap = 60s. Resolved instances finish ABOVE the cap (70, 75).
+    // 8 stuck-class wallclock-timeout cap-bound instances at 60s.
+    // P95([70, 75]) = 75 >= 60 → recommended_cap = None with "well-sized" rationale.
+    let mut instances = vec![
+        resolved_instance("res-0", 10, 0.05, 70.0),
+        resolved_instance("res-1", 12, 0.06, 75.0),
+    ];
+    for i in 0..8 {
+        instances.push(cap_bound_instance(
+            &format!("wc-{i}"),
+            FailureCategory::WallclockTimeout,
+            25,
+            0.10,
+            60.0,
+        ));
+    }
+    write_results(dir.path(), instances, make_manifest(None, Some(60)));
+    let class_map: Vec<(&str, &str)> = (0..8)
+        .map(|i| {
+            (
+                Box::leak(format!("wc-{i}").into_boxed_str()) as &str,
+                "noop",
+            )
+        })
+        .collect();
+    write_behavior_json(dir.path(), &class_map);
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    })
+    .unwrap();
+
+    let headline = report.summary.headline_recommendation.to_lowercase();
+    assert!(
+        !headline.contains("insufficient data"),
+        "headline should not say 'insufficient data' when the cap is already well-sized: {headline}"
+    );
+    assert!(
+        headline.contains("well-sized")
+            || headline.contains("unlikely")
+            || headline.contains("raising"),
+        "headline should include the well-sized rationale: {headline}"
+    );
+}
