@@ -309,7 +309,9 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // Two per-task cost cap config keys exist:
     //   agent.per_task_budget_usd → runner CLI --per-task-budget-usd, records BudgetExhausted
     //   agent.cost_limit_usd      → agent-level per-task cap, records CostLimit
-    // Try CLI flag first, then both config keys in priority order.
+    // Try CLI flag first, then resolved config. When the config has BOTH keys set, the
+    // agent can fire either cap on any given instance, so the two failure categories are
+    // mixed against a single configured_cap — reject that ambiguous configuration.
     let (per_task_budget_usd, per_task_budget_usd_source): (Option<f64>, Option<String>) = {
         if let Some(v) = extract_argv_value(&cli_argv, "--per-task-budget-usd")
             .and_then(|v| v.parse::<f64>().ok())
@@ -318,26 +320,45 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
                 Some(v),
                 Some("manifest.cli.argv[--per-task-budget-usd]".to_owned()),
             )
-        } else {
-            let from_config = loaded.manifest.as_ref().and_then(|m| {
-                let tv: toml::Value = m.config.resolved.parse().ok()?;
-                let agent = tv.get("agent")?;
-                // per_task_budget_usd takes priority; fall back to cost_limit_usd.
-                agent
-                    .get("per_task_budget_usd")
-                    .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
-                    .map(|v| (v, "manifest.config.resolved[agent.per_task_budget_usd]"))
-                    .or_else(|| {
-                        agent
-                            .get("cost_limit_usd")
-                            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
-                            .map(|v| (v, "manifest.config.resolved[agent.cost_limit_usd]"))
-                    })
-            });
-            match from_config {
-                Some((v, source)) => (Some(v), Some(source.to_owned())),
-                None => (None, None),
+        } else if let Some(m) = loaded.manifest.as_ref() {
+            if let Ok(tv) = m.config.resolved.parse::<toml::Value>() {
+                if let Some(agent) = tv.get("agent") {
+                    let ptb = agent
+                        .get("per_task_budget_usd")
+                        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)));
+                    let cl = agent
+                        .get("cost_limit_usd")
+                        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)));
+                    match (ptb, cl) {
+                        (Some(_), Some(_)) => {
+                            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                                "budget-fit: resolved config sets both \
+                                 agent.per_task_budget_usd and agent.cost_limit_usd; \
+                                 the two caps use different failure categories \
+                                 (budget_exhausted vs cost_limit) so the cost_usd axis \
+                                 cannot be analyzed against a single cap — remove one \
+                                 of the two config keys before running budget-fit"
+                                    .into(),
+                            )));
+                        }
+                        (Some(v), None) => (
+                            Some(v),
+                            Some("manifest.config.resolved[agent.per_task_budget_usd]".to_owned()),
+                        ),
+                        (None, Some(v)) => (
+                            Some(v),
+                            Some("manifest.config.resolved[agent.cost_limit_usd]".to_owned()),
+                        ),
+                        (None, None) => (None, None),
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
             }
+        } else {
+            (None, None)
         }
     };
 

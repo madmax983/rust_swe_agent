@@ -845,6 +845,84 @@ fn waste_estimate_usd_includes_step_limit_costs() {
     );
 }
 
+// ── mixed per-task cost caps are rejected ─────────────────────────────────────
+
+#[test]
+fn mixed_cost_caps_in_resolved_config_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+
+    // Manifest with BOTH agent.per_task_budget_usd AND agent.cost_limit_usd set.
+    let manifest = ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "maxwells-daemon".into(),
+            version: "0.1.0-test".into(),
+            git_sha: Some("deadbeef".into()),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest {
+            path: "tests/fixtures/test.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 3,
+            filter_spec: None,
+            ..Default::default()
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "inline".into(),
+            path: None,
+            sha256: "tpl123".into(),
+        },
+        config: ConfigManifest {
+            // Both cost caps set — ambiguous failure categories
+            resolved:
+                "[agent]\nstep_limit = 30\nper_task_budget_usd = 0.10\ncost_limit_usd = 0.08\n"
+                    .into(),
+            overlay_paths: Vec::new(),
+        },
+        model: ModelManifest {
+            name: "claude-opus-4-7".into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-05-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("rustc 1.85.0".into()),
+        },
+        cli: CliManifest {
+            argv: vec!["max".into(), "bench".into(), "swebench".into()],
+        },
+        circuit_breaker: None,
+        reproduced_from: None,
+    };
+    write_results(dir.path(), instances, manifest);
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "sweep with both agent.per_task_budget_usd and agent.cost_limit_usd should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("per_task_budget_usd") && msg.contains("cost_limit_usd"),
+        "error should name both conflicting config keys: {msg}"
+    );
+}
+
 // ── per_task_budget_usd from resolved config TOML ────────────────────────────
 
 #[test]
