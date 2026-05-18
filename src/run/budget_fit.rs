@@ -269,10 +269,22 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
 
     // Behavior enrichment: present but malformed is an error (not a silent fallback).
     // Only the missing-file case proceeds as if behavior enrichment were absent.
-    // A behavior.json produced by a fresh `bench behavior --per-instance` run after a
-    // retry is the intended way to enrich post-retry analysis, so we accept it even when
-    // retry_history is non-empty (we cannot distinguish stale from fresh without mtimes).
+    // When retry history is present, require behavior.json.generated_at to be after
+    // the last retry's timestamp_utc; a stale behavior.json carries pre-retry action
+    // class counts and can misclassify retried cap-bound rows as stuck vs progressing.
     let behavior_map = load_behavior_map(&args.sweep_dir)?;
+    if !behavior_map.is_empty()
+        && has_retry_history(&args.sweep_dir)
+        && !behavior_is_fresh_after_retry(&args.sweep_dir)
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: behavior.json predates the last retry or timestamps cannot \
+             be compared — pre-retry action class counts may misclassify retried \
+             cap-bound rows; re-run bench behavior --per-instance to refresh, or \
+             remove behavior.json to disable enrichment"
+                .into(),
+        )));
+    }
 
     // Load evaluation.json when present. The evaluator is the authoritative source
     // for whether a submitted patch actually resolved the issue; use it to override
@@ -283,6 +295,25 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     let eval_resolved: HashMap<String, bool> = match load_evaluation_results(&args.sweep_dir)? {
         None => HashMap::new(), // evaluation.json absent — fall back to results.json
         Some(eval) => {
+            // Reject evaluations produced with --backend none.  That backend performs
+            // only a presence check (patch exists) and intentionally writes
+            // resolved=false / resolved_count=0 for every submitted row.  Using it
+            // would silently replace the resolved distribution with all-false and
+            // produce no cap recommendation even when results.json had resolved rows.
+            if eval
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.backend == "none")
+            {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "budget-fit: evaluation.json was produced with --backend none; \
+                     that backend only checks patch presence and writes resolved=false \
+                     for every submitted instance — it cannot be used as a scoring \
+                     source; re-run bench evaluate with --backend sb-cli, or remove \
+                     evaluation.json to fall back to results.json submission state"
+                        .into(),
+                )));
+            }
             eval_file_present = true;
             eval.instances
                 .iter()
@@ -383,6 +414,10 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // Try CLI flag first, then resolved config. When the config has BOTH keys set, the
     // agent can fire either cap on any given instance, so the two failure categories are
     // mixed against a single configured_cap — reject that ambiguous configuration.
+    // Skip the ambiguity check when the operator restricted output to a non-cost axis
+    // (--axis steps or --axis wall_clock_s): the cost_usd axis won't appear in output
+    // so the ambiguity is irrelevant.
+    let cost_axis_requested = args.axis.is_none() || args.axis.as_deref() == Some(AXIS_COST_USD);
     let (per_task_budget_usd, per_task_budget_usd_source): (Option<f64>, Option<String>) = {
         if let Some(v) = extract_argv_value(&cli_argv, "--per-task-budget-usd")
             .and_then(|v| v.parse::<f64>().ok())
@@ -390,22 +425,25 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             // CLI sets --per-task-budget-usd.  If the resolved config also has
             // agent.cost_limit_usd, DefaultAgent::step checks cost_limit_usd first
             // and can fire CostLimit before BudgetExhausted — same mixed-cap ambiguity as
-            // having both in the config.  Reject before any analysis.
-            let config_also_has_cost_limit = loaded.manifest.as_ref().and_then(|m| {
-                let tv: toml::Value = m.config.resolved.parse().ok()?;
-                tv.get("agent")?
-                    .get("cost_limit_usd")
-                    .and_then(|cv| cv.as_float().or_else(|| cv.as_integer().map(|n| n as f64)))
-            });
-            if config_also_has_cost_limit.is_some() {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "budget-fit: CLI --per-task-budget-usd is set alongside \
-                     agent.cost_limit_usd in the resolved config; the agent can fire \
-                     either cap on any instance (cost_limit before budget_exhausted), \
-                     so the cost_usd axis cannot be analyzed against a single cap — \
-                     remove one of the two cost cap sources before running budget-fit"
-                        .into(),
-                )));
+            // having both in the config.  Only reject when cost axis is being reported.
+            if cost_axis_requested {
+                let config_also_has_cost_limit = loaded.manifest.as_ref().and_then(|m| {
+                    let tv: toml::Value = m.config.resolved.parse().ok()?;
+                    tv.get("agent")?
+                        .get("cost_limit_usd")
+                        .and_then(|cv| cv.as_float().or_else(|| cv.as_integer().map(|n| n as f64)))
+                });
+                if config_also_has_cost_limit.is_some() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(
+                        "budget-fit: CLI --per-task-budget-usd is set alongside \
+                         agent.cost_limit_usd in the resolved config; the agent can fire \
+                         either cap on any instance (cost_limit before budget_exhausted), \
+                         so the cost_usd axis cannot be analyzed against a single cap — \
+                         remove one of the two cost cap sources, or use --axis to restrict \
+                         output to a non-cost axis"
+                            .into(),
+                    )));
+                }
             }
             (
                 Some(v),
@@ -421,24 +459,25 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
                         .get("cost_limit_usd")
                         .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)));
                     match (ptb, cl) {
-                        (Some(_), Some(_)) => {
+                        (Some(_), Some(_)) if cost_axis_requested => {
                             return Err(Error::Config(crate::error::ConfigError::Invalid(
                                 "budget-fit: resolved config sets both \
                                  agent.per_task_budget_usd and agent.cost_limit_usd; \
                                  the two caps use different failure categories \
                                  (budget_exhausted vs cost_limit) so the cost_usd axis \
                                  cannot be analyzed against a single cap — remove one \
-                                 of the two config keys before running budget-fit"
+                                 of the two config keys, or use --axis to restrict output \
+                                 to a non-cost axis"
                                     .into(),
                             )));
                         }
+                        (Some(_) | None, Some(v)) => (
+                            Some(v),
+                            Some("manifest.config.resolved[agent.cost_limit_usd]".to_owned()),
+                        ),
                         (Some(v), None) => (
                             Some(v),
                             Some("manifest.config.resolved[agent.per_task_budget_usd]".to_owned()),
-                        ),
-                        (None, Some(v)) => (
-                            Some(v),
-                            Some("manifest.config.resolved[agent.cost_limit_usd]".to_owned()),
                         ),
                         (None, None) => (None, None),
                     }
@@ -630,15 +669,46 @@ fn eval_is_fresh_after_retry(sweep_dir: &Path) -> bool {
         let results_text = std::fs::read_to_string(sweep_dir.join("results.json")).ok()?;
         let results_val: serde_json::Value = serde_json::from_str(&results_text).ok()?;
         let history = results_val.get("retry_history")?.as_array()?;
-        let last_retry = history
+        // Require ALL retry timestamps to parse; silently dropping an unparseable
+        // entry could hide a newer retry that predates the eval.
+        let timestamps: Option<Vec<_>> = history
             .iter()
-            .filter_map(|entry| {
+            .map(|entry| {
                 let ts = entry.get("timestamp_utc")?.as_str()?;
                 chrono::DateTime::parse_from_rfc3339(ts).ok()
             })
-            .max()?;
+            .collect();
+        let last_retry = timestamps?.into_iter().max()?;
 
         Some(eval_time > last_retry)
+    })()
+    .unwrap_or(false)
+}
+
+/// Return `true` when `behavior.json.generated_at` is strictly later than the
+/// latest `timestamp_utc` in `results.json`'s `retry_history`.
+///
+/// Returns `false` conservatively when any timestamp cannot be parsed.
+fn behavior_is_fresh_after_retry(sweep_dir: &Path) -> bool {
+    (|| -> Option<bool> {
+        let behavior_text = std::fs::read_to_string(sweep_dir.join("behavior.json")).ok()?;
+        let behavior_val: serde_json::Value = serde_json::from_str(&behavior_text).ok()?;
+        let behavior_ts = behavior_val.get("generated_at")?.as_str()?;
+        let behavior_time = chrono::DateTime::parse_from_rfc3339(behavior_ts).ok()?;
+
+        let results_text = std::fs::read_to_string(sweep_dir.join("results.json")).ok()?;
+        let results_val: serde_json::Value = serde_json::from_str(&results_text).ok()?;
+        let history = results_val.get("retry_history")?.as_array()?;
+        let timestamps: Option<Vec<_>> = history
+            .iter()
+            .map(|entry| {
+                let ts = entry.get("timestamp_utc")?.as_str()?;
+                chrono::DateTime::parse_from_rfc3339(ts).ok()
+            })
+            .collect();
+        let last_retry = timestamps?.into_iter().max()?;
+
+        Some(behavior_time > last_retry)
     })()
     .unwrap_or(false)
 }

@@ -2617,3 +2617,362 @@ fn resumed_sweep_is_rejected() {
         "error should mention resume or resume_mode: {msg}"
     );
 }
+
+// ── mixed cost caps accepted when --axis steps is used ────────────────────────
+//
+// When both agent.per_task_budget_usd and agent.cost_limit_usd are set,
+// budget-fit normally rejects the sweep because the cost_usd axis cannot be
+// analyzed against a single cap.  With --axis steps the cost axis is never
+// produced, so the ambiguity is irrelevant and the run should succeed.
+
+#[test]
+fn mixed_cost_caps_accepted_with_non_cost_axis() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..5)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 20, 0.05, 30.0))
+        .collect();
+
+    // Manifest with both cost cap keys in the resolved config.
+    let manifest = ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "maxwells-daemon".into(),
+            version: "0.1.0-test".into(),
+            git_sha: Some("deadbeef".into()),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest {
+            path: "tests/fixtures/test.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 10,
+            filter_spec: None,
+            ..Default::default()
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "inline".into(),
+            path: None,
+            sha256: "tpl123".into(),
+        },
+        config: ConfigManifest {
+            resolved: "[agent]\nper_task_budget_usd = 1.0\ncost_limit_usd = 0.5".into(),
+            overlay_paths: Vec::new(),
+        },
+        model: ModelManifest {
+            name: "claude-opus-4-7".into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-05-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("rustc 1.85.0".into()),
+        },
+        cli: CliManifest {
+            argv: vec!["max".into(), "bench".into(), "swebench".into()],
+        },
+        circuit_breaker: None,
+        reproduced_from: None,
+    };
+    write_results(dir.path(), instances, manifest);
+
+    // Without --axis: rejected due to mixed cost caps.
+    let result_no_axis = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+    assert!(
+        result_no_axis.is_err(),
+        "mixed cost caps without --axis should be rejected"
+    );
+
+    // With --axis steps: accepted because cost_usd axis is not produced.
+    let result_steps = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: Some("steps".into()),
+        filter: vec![],
+    });
+    assert!(
+        result_steps.is_ok(),
+        "mixed cost caps with --axis steps should be accepted: {:?}",
+        result_steps.unwrap_err()
+    );
+}
+
+// ── none-backend evaluation.json is rejected ─────────────────────────────────
+//
+// evaluation.json produced with `bench evaluate --backend none` writes
+// resolved=false for every submitted patch (presence check only).  Budget-fit
+// must reject it to avoid silently treating all instances as unresolved.
+
+#[test]
+fn none_backend_evaluation_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Write evaluation.json with backend = "none".
+    let eval_json = serde_json::json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:05:00Z",
+        "provenance": {
+            "backend": "none"
+        },
+        "instances": [
+            { "instance_id": "inst-0", "resolved_count": 0, "resolved": false, "tests_failed": [], "eval_exit_reason": "none" },
+            { "instance_id": "inst-1", "resolved_count": 0, "resolved": false, "tests_failed": [], "eval_exit_reason": "none" },
+            { "instance_id": "inst-2", "resolved_count": 0, "resolved": false, "tests_failed": [], "eval_exit_reason": "none" }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "evaluation.json with backend=none should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("none") || msg.contains("backend"),
+        "error should mention backend or none: {msg}"
+    );
+}
+
+// ── stale behavior.json after retry is rejected ───────────────────────────────
+//
+// When behavior.json.generated_at predates the last retry's timestamp_utc,
+// the action class counts reflect pre-retry instance states and can
+// misclassify retried cap-bound rows.  Budget-fit should reject it.
+
+#[test]
+fn stale_behavior_after_retry_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Retry happened at 00:10; behavior.json was generated at 00:05 (stale).
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:10:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // behavior.json predates the retry.
+    let behavior_json = serde_json::json!({
+        "generated_at": "2026-05-01T00:05:00Z",
+        "per_instance": [
+            { "instance_id": "inst-0", "class_counts": { "write": 5, "read": 2 } },
+            { "instance_id": "inst-1", "class_counts": { "write": 3, "noop": 1 } },
+            { "instance_id": "inst-2", "class_counts": { "read": 4 } }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("behavior.json"),
+        serde_json::to_string_pretty(&behavior_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "stale behavior.json (predates retry) should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("behavior") || msg.contains("stale") || msg.contains("retry"),
+        "error should mention behavior, stale, or retry: {msg}"
+    );
+}
+
+// ── fresh behavior.json after retry is accepted ───────────────────────────────
+//
+// When behavior.json.generated_at is after the last retry's timestamp_utc,
+// the action class counts are post-retry and the enrichment is valid.
+
+#[test]
+fn fresh_behavior_after_retry_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Retry happened at 00:05; behavior.json was generated at 00:10 (fresh).
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // behavior.json generated AFTER the retry.
+    let behavior_json = serde_json::json!({
+        "generated_at": "2026-05-01T00:10:00Z",
+        "per_instance": [
+            { "instance_id": "inst-0", "class_counts": { "write": 5, "read": 2 } },
+            { "instance_id": "inst-1", "class_counts": { "write": 3, "noop": 1 } },
+            { "instance_id": "inst-2", "class_counts": { "read": 4 } }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("behavior.json"),
+        serde_json::to_string_pretty(&behavior_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "fresh behavior.json (generated after retry) should be accepted: {:?}",
+        result.unwrap_err()
+    );
+}
+
+// ── unparseable retry timestamp treated as stale eval ─────────────────────────
+//
+// If any retry history entry has a missing or unparseable timestamp_utc,
+// the eval freshness check cannot be trusted and must treat the eval as stale.
+
+#[test]
+fn unparseable_retry_timestamp_treats_eval_as_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // One parseable retry at 00:05, one with a broken timestamp.
+    // eval generated_at is 00:10 (after the parseable retry), but the broken
+    // entry could represent a retry that happened even later — treat as stale.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([
+        {
+            "retry_id": "retry-1",
+            "timestamp_utc": "2026-05-01T00:05:00Z",
+            "selection": {},
+            "override_delta": { "sweep_cost_limit_usd": 30.0 },
+            "count": 1,
+            "harness_mismatch": false,
+            "pre_submitted": 3,
+            "pre_errored": 0,
+            "pre_resolved_count": 3,
+            "post_submitted": 3,
+            "post_errored": 0,
+            "post_resolved_count": 3
+        },
+        {
+            "retry_id": "retry-2",
+            "timestamp_utc": "not-a-timestamp",
+            "selection": {},
+            "override_delta": {},
+            "count": 0,
+            "harness_mismatch": false,
+            "pre_submitted": 3,
+            "pre_errored": 0,
+            "pre_resolved_count": 3,
+            "post_submitted": 3,
+            "post_errored": 0,
+            "post_resolved_count": 3
+        }
+    ]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // evaluation.json generated_at is after the parseable retry — but the
+    // unparseable entry should still make eval_is_fresh_after_retry return false.
+    let eval_json = serde_json::json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:10:00Z",
+        "instances": [
+            { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-2", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "unparseable retry timestamp should cause eval to be treated as stale"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("stale") || msg.contains("retry"),
+        "error should mention stale evaluation or retry history: {msg}"
+    );
+}
