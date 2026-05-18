@@ -124,6 +124,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         systemic_halt_category: None,
         cost_limit_usd: None,
         retry_history: vec![],
+        partial: 0,
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();
     maxwells_daemon::artifact::to_writer_pretty(

@@ -3263,6 +3263,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         std::fs::write(
             dir.join("results.json"),
@@ -3410,6 +3411,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let candidate_sweep = SweepResults {
             instances: vec![errored("a", FailureCategory::StepLimit), submitted("b")],
@@ -3785,6 +3787,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let candidate_sweep = baseline_sweep.clone();
         std::fs::write(
@@ -4084,6 +4087,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4154,6 +4158,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let mut value = serde_json::to_value(&sweep).unwrap();
         value.as_object_mut().unwrap().remove("filter_spec");
@@ -4270,6 +4275,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4386,6 +4392,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         std::fs::write(
             dir.path().join("results.json"),
@@ -4524,6 +4531,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         std::fs::write(
             dir.path().join("results.json"),

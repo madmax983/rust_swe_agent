@@ -236,6 +236,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     }
 }
 

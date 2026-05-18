@@ -230,6 +230,7 @@ fn write_results_with_filter_spec_and_model(
         model_mix: std::collections::BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     };
     std::fs::write(
         dir.join("results.json"),

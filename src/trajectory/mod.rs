@@ -531,6 +531,16 @@ pub struct TrajectoryInfo {
     /// Per-check evidence for runs where verification checks were configured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verification_results: Vec<VerificationResult>,
+    /// Whether this trajectory file represents a mid-run checkpoint rather than
+    /// a completed run. `true` while the agent is running; `false` (or absent)
+    /// on the final write. Old files without this field parse as `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
+    /// Human-readable reason the trajectory is partial.
+    /// `"in_progress"` during a live run; `"interrupted"` if the process was
+    /// killed without a clean shutdown. `None` on completed trajectories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_reason: Option<String>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -667,6 +677,33 @@ impl Trajectory {
     pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
         let s = serde_json::to_string_pretty(self)?;
         std::fs::write(path, s)?;
+        Ok(())
+    }
+
+    /// Atomically writes a mid-run checkpoint of this trajectory with `partial: true`.
+    ///
+    /// Uses a write-to-tmp-then-rename strategy so a crash during the write
+    /// never corrupts the previously-persisted checkpoint. The caller must
+    /// ensure the parent directory of `path` already exists.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust,no_run
+    /// use maxwells_daemon::trajectory::Trajectory;
+    /// use std::path::Path;
+    /// let traj = Trajectory::new();
+    /// traj.save_partial_atomic(Path::new("run.traj.json")).unwrap();
+    /// ```
+    pub fn save_partial_atomic(&self, path: &Path) -> Result<(), crate::error::Error> {
+        // Build a clone with partial=true for the checkpoint write.
+        let mut checkpoint = self.clone();
+        checkpoint.info.partial = true;
+        checkpoint.info.partial_reason = Some("in_progress".into());
+
+        let tmp_path = path.with_extension("json.tmp");
+        let s = serde_json::to_string_pretty(&checkpoint)?;
+        std::fs::write(&tmp_path, &s)?;
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 

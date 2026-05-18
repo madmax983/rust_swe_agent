@@ -171,6 +171,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let traj_path = args
         .output_dir
         .join(format!("{}.traj.json", args.trajectory_name));
+    // Enable per-turn checkpointing to the trajectory path so interruptions
+    // don't discard all in-flight progress.
+    agent.checkpoint_path = Some(traj_path.clone());
 
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained

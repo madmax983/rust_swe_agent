@@ -395,6 +395,9 @@ pub struct DefaultAgent {
     all_step_responders: Vec<String>,
     /// In-loop stagnation detector; `None` when detection is disabled.
     stagnation_detector: Option<StagnationDetector>,
+    /// Optional path for per-turn atomic checkpoint writes. When `Some`,
+    /// `save_partial_atomic` is called after every completed agent turn.
+    pub checkpoint_path: Option<std::path::PathBuf>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -546,6 +549,7 @@ impl DefaultAgentBuilder {
             last_responding_model: None,
             all_step_responders: Vec::new(),
             stagnation_detector,
+            checkpoint_path: None,
         })
     }
 }
@@ -1351,6 +1355,17 @@ impl Agent for DefaultAgent {
                 }
             }
         }
+
+        // Per-turn checkpoint: atomically persist the trajectory so an
+        // interrupted sweep can resume from this step rather than step 0.
+        if let Some(path) = &self.checkpoint_path {
+            self.trajectory.info.steps = Some(self.steps);
+            self.trajectory.info.actual_cost_usd = Some(self.total_cost_usd);
+            if let Err(e) = self.trajectory.save_partial_atomic(path) {
+                tracing::warn!(error=%e, "checkpoint write failed; continuing without checkpoint");
+            }
+        }
+
         Ok(StepOutcome::Continue)
     }
 }

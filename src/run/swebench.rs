@@ -253,6 +253,11 @@ fn default_sweep_status() -> String {
     SWEEP_STATUS_COMPLETED.to_owned()
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstanceResult {
@@ -522,6 +527,11 @@ pub struct SweepResults {
     /// Omitted from serialization when empty to remain additive-minor compatible.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retry_history: Vec<RetryHistoryEntry>,
+    /// Number of on-disk trajectories with `partial: true` at the time of this
+    /// summary write. Normally 0 after a clean sweep; non-zero when the sweep
+    /// was interrupted and some instances were checkpointed mid-run.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub partial: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -831,11 +841,19 @@ impl Default for SweepResults {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: Vec::new(),
+            partial: 0,
         }
     }
 }
 
 impl SweepResults {
+    /// Number of trajectories persisted with `partial: true` in this sweep.
+    /// Normally 0; non-zero when the sweep was interrupted mid-run.
+    #[must_use]
+    pub fn partial_count(&self) -> usize {
+        self.partial
+    }
+
     #[must_use]
     pub fn token_breakdown(&self) -> TokenBreakdown {
         TokenBreakdown {
@@ -1548,6 +1566,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1636,6 +1655,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1697,6 +1717,21 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     let patch_path =
                         existing_patch_path_for_run(&args.output_dir, &inst.instance_id, run_index);
                     let needs_patch = info.outcome.as_deref() == Some(outcome::SUBMITTED);
+                    // Partial trajectories (mid-run checkpoints) are always
+                    // re-run; they are not considered complete for resume purposes.
+                    if info.partial {
+                        tracing::info!(
+                            instance = %inst.instance_id,
+                            run_index,
+                            steps = ?info.steps,
+                            "resume: partial (checkpointed) trajectory found — re-running"
+                        );
+                        pending.push_back(SweepRun {
+                            inst: inst.clone(),
+                            run_index,
+                        });
+                        continue;
+                    }
                     let cancelled_resume =
                         info.exit_reason.as_deref() == Some(exit_reason::CANCELLED);
                     if cancelled_resume {
@@ -2244,6 +2279,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         model_mix,
         systemic_halt_category,
         retry_history: vec![],
+        partial: 0,
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -5118,6 +5154,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -5200,6 +5237,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
 
         let t = s.summary_table();
@@ -5259,6 +5297,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
 
         let t = s.summary_table();
@@ -5339,6 +5378,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let t = s.summary_table();
         assert!(
@@ -5406,6 +5446,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
 
         let t = s.summary_table();
@@ -5480,6 +5521,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
 
         let t = s.summary_table();
@@ -5542,6 +5584,7 @@ mod tests {
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -6579,6 +6622,7 @@ instance = "inst"
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6914,6 +6958,7 @@ instance = "inst"
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let t = s.summary_table();
         assert!(
@@ -6987,6 +7032,7 @@ instance = "inst"
             model_mix: BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         };
         let t = s.summary_table();
         assert!(
