@@ -8,6 +8,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::compare::{load_run_slots, load_sweep};
 use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
@@ -421,6 +422,13 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
     eval.latency_summary = build_latency_summary_from_slots(&args.sweep_dir, &run_slots);
     eval.provenance = Some(provenance);
+    let redactor = Redactor::default_enabled();
+    for inst in &mut eval.instances {
+        if let Some(log) = inst.patch_error_log.take() {
+            inst.patch_error_log =
+                Some(redactor.redact_text(&log, surface::EXPORT).text);
+        }
+    }
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -3112,6 +3120,39 @@ mod tests {
         assert!(
             v.get("patch_error_log").is_none(),
             "patch_error_log should be absent (not null) when None: {json}"
+        );
+    }
+
+    #[test]
+    fn parse_sb_cli_results_round_trips_patch_error_log_from_fixture() {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/evaluate/sb_cli_patch_apply_failed.json");
+        let parsed = parse_sb_cli_results(&fixture_path)
+            .unwrap_or_else(|e| panic!("failed to parse fixture: {e}"));
+
+        let patch_fail = parsed.get("django__django-001")
+            .expect("fixture row django__django-001 should be present");
+        assert!(matches!(patch_fail.eval_exit_reason, EvalExitReason::PatchApplyFailed));
+        assert_eq!(
+            patch_fail.patch_error_log.as_deref(),
+            Some("error: patch failed: django/db/models/query.py:42\nerror: django/db/models/query.py: patch does not apply"),
+            "patch_error_log should round-trip from sb-cli fixture"
+        );
+
+        let resolved = parsed.get("django__django-002")
+            .expect("fixture row django__django-002 should be present");
+        assert!(matches!(resolved.eval_exit_reason, EvalExitReason::Resolved));
+        assert!(
+            resolved.patch_error_log.is_none(),
+            "patch_error_log must be None for resolved rows"
+        );
+
+        let unresolved = parsed.get("django__django-003")
+            .expect("fixture row django__django-003 should be present");
+        assert!(matches!(unresolved.eval_exit_reason, EvalExitReason::Unresolved));
+        assert!(
+            unresolved.patch_error_log.is_none(),
+            "patch_error_log must be None for unresolved rows (not patch_apply_failed)"
         );
     }
 }

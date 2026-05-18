@@ -1,0 +1,24 @@
+[
+  {
+    "instance_id": "django__django-001",
+    "resolved": false,
+    "tests_passed": [],
+    "tests_failed": [],
+    "eval_exit_reason": "patch_apply_failed",
+    "patch_error_log": "error: patch failed: django/db/models/query.py:42\nerror: django/db/models/query.py: patch does not apply"
+  },
+  {
+    "instance_id": "django__django-002",
+    "resolved": true,
+    "tests_passed": ["tests/test_models.py::TestQuery::test_basic"],
+    "tests_failed": [],
+    "eval_exit_reason": "resolved"
+  },
+  {
+    "instance_id": "django__django-003",
+    "resolved": false,
+    "tests_passed": [],
+    "tests_failed": ["tests/test_views.py::TestViews::test_index"],
+    "eval_exit_reason": "unresolved"
+  }
+]

@@ -2009,3 +2009,52 @@ fn patch_error_log_is_null_for_non_patch_apply_failed_in_schema() {
         "patch_error_log should be absent (not null) for non-patch_apply_failed:\n{json}"
     );
 }
+
+#[test]
+fn json_format_includes_patch_error_log_for_patch_apply_failed() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    let log_text = "error: patch failed: src/foo.py:10\nerror: src/foo.py: patch does not apply";
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed",
+                "patch_error_log": log_text
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON parse failed: {e}\n{stdout}"));
+    assert_eq!(
+        value["patch_error_log"],
+        serde_json::json!(log_text),
+        "patch_error_log should appear in JSON output for patch_apply_failed instances"
+    );
+}
