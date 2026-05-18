@@ -218,20 +218,10 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
 
     // Behavior enrichment: present but malformed is an error (not a silent fallback).
     // Only the missing-file case proceeds as if behavior enrichment were absent.
+    // A behavior.json produced by a fresh `bench behavior --per-instance` run after a
+    // retry is the intended way to enrich post-retry analysis, so we accept it even when
+    // retry_history is non-empty (we cannot distinguish stale from fresh without mtimes).
     let behavior_map = load_behavior_map(&args.sweep_dir)?;
-
-    // Reject stale behavior.json from before a retry.  bench retry rewrites results.json
-    // and selected trajectories but does not refresh behavior.json, so pre-retry action
-    // classes can misclassify retried instances and flip raise/tighten recommendations.
-    if !behavior_map.is_empty() && has_retry_history(&args.sweep_dir) {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(
-            "budget-fit: behavior.json may be stale — the sweep has retry history; \
-             per-instance action classes may reflect pre-retry trajectories. \
-             Re-run bench behavior to refresh, or remove behavior.json to skip \
-             behavior-enriched recommendations."
-                .into(),
-        )));
-    }
 
     // Load evaluation.json when present. The evaluator is the authoritative source
     // for whether a submitted patch actually resolved the issue; use it to override
@@ -592,11 +582,14 @@ fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
     val.get("sweep_status")?.as_str().map(str::to_owned)
 }
 
-/// Return an error if any retry in `retry_history` changed cap parameters.
+/// Return an error if any retry in `retry_history` changed cap parameters or would
+/// silently reset originally-configured caps to CLI defaults.
 ///
-/// When a retry is run with a different step_limit/timeout/budget, the merged
-/// results.json has multiple caps active across different rows, making at-cap
-/// counts and percentile recommendations unreliable.
+/// `retry_swebench_args` rebuilds the retry command from CLI defaults and only
+/// applies fields that are explicitly present in `override_delta`.  When the original
+/// sweep configured a cap (step_limit / task_timeout_secs / per_task_budget_usd) via
+/// argv but the retry omits that field from `override_delta`, the retried rows run at
+/// the CLI default rather than the original cap — a silent mixed-cap situation.
 fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
     let path = sweep_dir.join("results.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -608,6 +601,26 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
     let Some(history) = val.get("retry_history").and_then(|v| v.as_array()) else {
         return Ok(());
     };
+
+    // Determine which per-instance caps the original manifest explicitly configured
+    // via CLI argv.  Absent fields used CLI defaults; a retry that omits the same
+    // field also uses CLI defaults — which differ from the original cap value.
+    let orig_argv: Vec<&str> = val
+        .get("manifest")
+        .and_then(|m| m.get("cli"))
+        .and_then(|c| c.get("argv"))
+        .and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let argv_has = |flag: &str| -> bool {
+        let prefix = format!("{flag}=");
+        orig_argv.windows(2).any(|w| w[0] == flag)
+            || orig_argv.iter().any(|a| a.starts_with(prefix.as_str()))
+    };
+    let orig_has_step = argv_has("--step-limit");
+    let orig_has_timeout = argv_has("--task-timeout-secs");
+    let orig_has_budget = argv_has("--per-task-budget-usd");
+
     for entry in history {
         let Some(delta) = entry.get("override_delta") else {
             continue;
@@ -633,17 +646,31 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
             .and_then(|v| v.as_array())
             .is_some_and(|arr| !arr.is_empty());
 
-        if has_cap_field || has_model_change || has_config_overlay {
+        // Silent cap reset: the original had a non-default cap in argv but the retry
+        // omits it from override_delta → retry_swebench_args rebuilds at CLI default.
+        let silent_step = orig_has_step && delta.get("step_limit").is_none();
+        let silent_timeout = orig_has_timeout && delta.get("task_timeout_secs").is_none();
+        let silent_budget = orig_has_budget && delta.get("per_task_budget_usd").is_none();
+
+        if has_cap_field
+            || has_model_change
+            || has_config_overlay
+            || silent_step
+            || silent_timeout
+            || silent_budget
+        {
             let retry_id = entry
                 .get("retry_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "budget-fit: retry '{retry_id}' changed incompatible parameters \
-                 (step_limit / task_timeout_secs / per_task_budget_usd / \
+                "budget-fit: retry '{retry_id}' changed or implicitly reset per-instance \
+                 caps (step_limit / task_timeout_secs / per_task_budget_usd / \
                  model / config_overlay_paths); \
                  instances ran with different caps or models so at-cap counts and \
-                 cost percentile recommendations would be unreliable"
+                 cost percentile recommendations would be unreliable. \
+                 Re-run bench retry with the same cap flags as the original sweep \
+                 to preserve them in override_delta."
             ))));
         }
     }

@@ -1269,8 +1269,10 @@ fn retry_with_only_sweep_budget_change_is_accepted() {
     let instances: Vec<InstanceResult> = (0..3)
         .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
         .collect();
-    // Write initial results.json using the helper (avoids hand-crafting InstanceResult JSON).
-    write_results(dir.path(), instances, make_manifest(Some(30), None));
+    // Original manifest has NO explicitly configured per-instance caps in argv.
+    // When the retry also omits them from override_delta, retry_swebench_args runs at
+    // the same CLI defaults as the original — no silent cap reset.
+    write_results(dir.path(), instances, make_manifest(None, None));
 
     // Patch in a retry_history entry that only changes sweep_cost_limit_usd.
     // Include all required RetryHistoryEntry fields so load_sweep can deserialize.
@@ -1602,6 +1604,8 @@ fn tightening_savings_use_actual_value_not_cap_reduction() {
 // When a sweep has retry_history and evaluation.json is present, the evaluation
 // may have been done before the retry; budget-fit should reject it as potentially
 // stale so operators are not silently given pre-retry resolved bucketing.
+// NOTE: original uses no configured caps in argv so the silent-cap-reset check
+// does not fire; only the stale-eval detection should trigger here.
 
 #[test]
 fn stale_evaluation_after_retry_is_rejected() {
@@ -1609,7 +1613,8 @@ fn stale_evaluation_after_retry_is_rejected() {
     let instances: Vec<InstanceResult> = (0..3)
         .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
         .collect();
-    write_results(dir.path(), instances, make_manifest(Some(30), None));
+    // No caps in argv so the silent-cap-reset check does not interfere.
+    write_results(dir.path(), instances, make_manifest(None, None));
 
     // Patch in a non-cap-changing retry (sweep_cost_limit_usd only).
     let results_path = dir.path().join("results.json");
@@ -1753,21 +1758,24 @@ fn cli_per_task_budget_with_config_cost_limit_is_rejected() {
     );
 }
 
-// ── stale behavior.json after retry is rejected ───────────────────────────────
+// ── behavior.json after a no-cap-change retry is accepted ────────────────────
 //
-// bench retry rewrites results.json but does not refresh behavior.json; the old
-// per-instance action classes can misclassify retried instances.  Budget-fit must
-// reject behavior.json when retry_history is non-empty.
+// A freshly regenerated behavior.json after `bench behavior --per-instance` is
+// a valid artifact.  Budget-fit cannot distinguish stale from fresh by timestamp
+// alone so it accepts behavior.json regardless of retry_history, as long as the
+// retry did not silently reset any originally-configured per-instance caps.
+// Original manifest has NO caps in argv → no silent-cap-reset check fires.
 
 #[test]
-fn stale_behavior_after_retry_is_rejected() {
+fn behavior_after_retry_without_cap_change_is_accepted() {
     let dir = tempfile::tempdir().unwrap();
     let instances: Vec<InstanceResult> = (0..3)
         .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
         .collect();
-    write_results(dir.path(), instances, make_manifest(Some(30), None));
+    // No configured caps in argv → retry that omits them is not a silent reset.
+    write_results(dir.path(), instances, make_manifest(None, None));
 
-    // Patch in a non-cap-changing retry.
+    // Patch in a retry that only changes sweep_cost_limit_usd (no cap fields).
     let results_path = dir.path().join("results.json");
     let text = std::fs::read_to_string(&results_path).unwrap();
     let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1787,7 +1795,7 @@ fn stale_behavior_after_retry_is_rejected() {
     }]);
     std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
 
-    // Write behavior.json (non-empty → triggers stale check).
+    // Write a valid behavior.json — should be accepted, not rejected.
     write_behavior_json(dir.path(), &[("inst-0", "write")]);
 
     let result = compute_budget_fit(&BudgetFitArgs {
@@ -1799,13 +1807,65 @@ fn stale_behavior_after_retry_is_rejected() {
     });
 
     assert!(
+        result.is_ok(),
+        "behavior.json after a no-cap-change retry should be accepted; got: {:?}",
+        result.unwrap_err()
+    );
+}
+
+// ── retry that silently resets a configured cap is rejected ──────────────────
+//
+// retry_swebench_args rebuilds from CLI defaults, not from the original manifest.
+// If the original run had --step-limit 30 in argv but the retry's override_delta
+// omits step_limit, the retry will run at the CLI default (e.g. 100), silently
+// changing the per-instance cap.  Budget-fit must reject this scenario.
+
+#[test]
+fn silent_cap_reset_retry_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    // Original manifest has --step-limit 30 in argv.
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Patch in a retry whose override_delta only changes sweep_cost_limit_usd.
+    // step_limit is absent from the delta → retry runs at CLI default, not 30.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-silent-reset",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
         result.is_err(),
-        "behavior.json with retry history should be rejected as potentially stale"
+        "retry that silently resets an originally-configured step cap should be rejected"
     );
     let msg = format!("{}", result.unwrap_err());
     assert!(
-        msg.contains("stale") || msg.contains("retry") || msg.contains("behavior"),
-        "error should mention stale behavior or retry history: {msg}"
+        msg.contains("reset") || msg.contains("implicit") || msg.contains("retry"),
+        "error should mention the implicit cap reset: {msg}"
     );
 }
 
