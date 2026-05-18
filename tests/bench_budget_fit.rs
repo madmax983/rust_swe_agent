@@ -1342,3 +1342,321 @@ fn distribution_p95_matches_expected() {
         "p95 should be ~39.55, got {p95}"
     );
 }
+
+// ── tied behavior class leaves instance unclassified ─────────────────────────
+//
+// When two action classes have equal counts in behavior.json, budget-fit should
+// not count the instance as either progress or stuck. An arbitrary tiebreaker
+// would incorrectly trigger a raise or stuck recommendation.
+
+#[test]
+fn tied_behavior_class_is_not_classified() {
+    use serde_json::{Map, Value, json};
+
+    let dir = tempfile::tempdir().unwrap();
+    // 2 resolved + 6 cap-bound at step_limit
+    let mut instances = vec![
+        resolved_instance("res-0", 10, 0.02, 20.0),
+        resolved_instance("res-1", 12, 0.02, 24.0),
+    ];
+    for i in 0..6 {
+        instances.push(cap_bound_instance(
+            &format!("cap-{i}"),
+            FailureCategory::StepLimit,
+            30,
+            0.10,
+            60.0,
+        ));
+    }
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // behavior.json with tied classes (write: 5, noop: 5) for all cap-bound instances.
+    let tied_class_counts = {
+        let mut cc = Map::new();
+        cc.insert("write".into(), Value::from(5_u32));
+        cc.insert("noop".into(), Value::from(5_u32));
+        cc
+    };
+    let per_instance: Vec<Value> = (0..6)
+        .map(|i| json!({ "instance_id": format!("cap-{i}"), "class_counts": &tied_class_counts }))
+        .collect();
+    let report = json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:10:00Z",
+        "taxonomy_version": 1,
+        "totals": Map::new(),
+        "by_outcome": Map::new(),
+        "comparisons": { "shape_deltas": [], "dominant_delta_class": null },
+        "per_instance": per_instance,
+        "unclassified_heads": Map::new()
+    });
+    std::fs::write(
+        dir.path().join("behavior.json"),
+        serde_json::to_string_pretty(&report).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: Some("steps".into()),
+        filter: vec![],
+    })
+    .unwrap();
+
+    let steps_axis = result.axes.iter().find(|a| a.axis_name == "steps").unwrap();
+    // Tied instances are unclassified → no progress or stuck majority → no raise recommendation.
+    let rec = steps_axis.recommended_cap.unwrap_or(0.0);
+    assert!(
+        rec <= steps_axis.configured_cap.unwrap_or(f64::MAX),
+        "tied behavior class should not trigger a raise recommendation: recommended={rec}"
+    );
+    let rationale = steps_axis.recommended_cap_rationale.to_lowercase();
+    assert!(
+        !rationale.contains("raising") || !rationale.contains("progress"),
+        "tied class should not produce a progress-based raise rationale: {rationale}"
+    );
+}
+
+// ── progress-class cap hits are excluded from waste_estimate_usd ──────────────
+//
+// When behavior.json is present, progress-class cap-bound instances represent
+// under-provisioned work (not wasted spend), so they should not contribute to
+// waste_estimate_usd.  Only stuck/unclassified instances are conservative waste.
+
+#[test]
+fn progress_class_cap_hits_excluded_from_waste() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut instances = vec![resolved_instance("res-0", 10, 0.02, 20.0)];
+    // 2 progress-class (write) cap-bound instances, cost $0.10 each
+    for i in 0..2 {
+        instances.push(cap_bound_instance(
+            &format!("prog-{i}"),
+            FailureCategory::StepLimit,
+            30,
+            0.10,
+            60.0,
+        ));
+    }
+    // 2 stuck-class (noop) cap-bound instances, cost $0.10 each
+    for i in 0..2 {
+        instances.push(cap_bound_instance(
+            &format!("stuck-{i}"),
+            FailureCategory::StepLimit,
+            30,
+            0.10,
+            60.0,
+        ));
+    }
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+    // behavior.json: prog-* → write, stuck-* → noop
+    let class_map: &[(&str, &str)] = &[
+        ("prog-0", "write"),
+        ("prog-1", "write"),
+        ("stuck-0", "noop"),
+        ("stuck-1", "noop"),
+    ];
+    write_behavior_json(dir.path(), class_map);
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    })
+    .unwrap();
+
+    // Only the 2 stuck instances ($0.10 each = $0.20) contribute to waste.
+    // The 2 progress instances ($0.20 total) should be excluded.
+    let waste = report.summary.waste_estimate_usd;
+    assert!(
+        (waste - 0.20).abs() < 1e-9,
+        "waste should be $0.20 (only stuck instances); got {waste}"
+    );
+}
+
+// ── stuck-class P-target at or above cap emits no recommendation ──────────────
+//
+// When stuck-class instances are the majority of cap-bound failures but P{target}
+// of resolved is ≥ cap, no useful action exists: raising is bad (stuck), and
+// tightening would cut resolved instances.  The recommendation should be None.
+
+#[test]
+fn stuck_class_ptarget_at_or_above_cap_emits_no_recommendation() {
+    let dir = tempfile::tempdir().unwrap();
+    // Resolved instances with wall-clock duration ABOVE the cap (can happen when the
+    // run finishes and submits before the timeout fires).
+    // Wall-clock cap = 60s, resolved durations = [70, 75], P95 = 75 ≥ 60.
+    let mut instances = vec![
+        resolved_instance("res-0", 10, 0.05, 70.0),
+        resolved_instance("res-1", 12, 0.06, 75.0),
+    ];
+    // 8 wallclock-timeout, noop-class cap-bound instances at exactly 60s
+    for i in 0..8 {
+        instances.push(cap_bound_instance(
+            &format!("wc-{i}"),
+            FailureCategory::WallclockTimeout,
+            25,
+            0.10,
+            60.0,
+        ));
+    }
+    // task_timeout_secs = 60 → wall_clock configured_cap = 60
+    write_results(dir.path(), instances, make_manifest(None, Some(60)));
+    // All cap-bound instances have noop behavior (stuck)
+    let class_map: Vec<(&str, &str)> = (0..8)
+        .map(|i| (Box::leak(format!("wc-{i}").into_boxed_str()) as &str, "noop"))
+        .collect();
+    write_behavior_json(dir.path(), &class_map);
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: Some("wall_clock_s".into()),
+        filter: vec![],
+    })
+    .unwrap();
+
+    let wc_axis = report
+        .axes
+        .iter()
+        .find(|a| a.axis_name == "wall_clock_s")
+        .unwrap();
+    // P95 of [70, 75] = 75 ≥ cap (60) AND stuck-class → no recommendation
+    assert!(
+        wc_axis.recommended_cap.is_none(),
+        "stuck-class with P-target ≥ cap should emit no recommendation; got {:?}",
+        wc_axis.recommended_cap
+    );
+    let rationale = wc_axis.recommended_cap_rationale.to_lowercase();
+    assert!(
+        rationale.contains("well-sized") || rationale.contains("unlikely"),
+        "rationale should note cap is well-sized and raising unlikely to help: {rationale}"
+    );
+}
+
+// ── tightening savings use per-instance actual value, not cap reduction ────────
+//
+// For instances between new_cap and old_cap, savings = (actual - new_cap) units,
+// not the full (old_cap - new_cap).  The old formula overestimated savings for
+// instances that stopped before the cap.
+
+#[test]
+fn tightening_savings_use_actual_value_not_cap_reduction() {
+    let dir = tempfile::tempdir().unwrap();
+    // Resolved: steps [10, 15] with cost $0.010 and $0.015 (exactly $0.001/step)
+    // Cap-bound: steps [20, 25, 30] with cost $0.020, $0.025, $0.030 ($0.001/step)
+    // cap = 30, P95([10, 15]) = 15 → new_cap = 15
+    let instances = vec![
+        resolved_instance("res-0", 10, 0.010, 20.0),
+        resolved_instance("res-1", 15, 0.015, 30.0),
+        cap_bound_instance("cap-0", FailureCategory::StepLimit, 20, 0.020, 40.0),
+        cap_bound_instance("cap-1", FailureCategory::StepLimit, 25, 0.025, 50.0),
+        cap_bound_instance("cap-2", FailureCategory::StepLimit, 30, 0.030, 60.0),
+    ];
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: Some("steps".into()),
+        filter: vec![],
+    })
+    .unwrap();
+
+    let steps_axis = report.axes.iter().find(|a| a.axis_name == "steps").unwrap();
+    // P95 of [10, 15] = 15 → tightening recommended from 30 to 15
+    assert_eq!(steps_axis.recommended_cap, Some(15.0));
+
+    let impact = steps_axis
+        .projected_impact_if_recommended
+        .as_ref()
+        .expect("tightening impact must be present");
+
+    // mean_cost_per_unit = (0.010+0.015+0.020+0.025+0.030) / (10+15+20+25+30)
+    //                     = 0.100 / 100 = 0.001 USD/step exactly.
+    // Eligible instances (steps > 15): cap-0(20), cap-1(25), cap-2(30)
+    // New formula saved_units = (min(20,30)-15) + (min(25,30)-15) + (min(30,30)-15)
+    //                         = 5 + 10 + 15 = 30 steps
+    // savings = 0.001 * 30 = $0.030
+    // Old formula would give: (30-15) * 3 * 0.001 = $0.045
+    let expected_savings = 0.030_f64;
+    let actual_savings = -impact.estimated_cost_delta_usd; // delta is negative (savings)
+    assert!(
+        (actual_savings - expected_savings).abs() < 1e-6,
+        "savings should be ${expected_savings:.6} (per-instance actual value); got ${actual_savings:.6}"
+    );
+}
+
+// ── stale evaluation.json after retry is rejected ─────────────────────────────
+//
+// When a sweep has retry_history and evaluation.json is present, the evaluation
+// may have been done before the retry; budget-fit should reject it as potentially
+// stale so operators are not silently given pre-retry resolved bucketing.
+
+#[test]
+fn stale_evaluation_after_retry_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Patch in a non-cap-changing retry (sweep_cost_limit_usd only).
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // Write evaluation.json covering all instances (full InstanceEvaluation schema).
+    let eval_json = serde_json::json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:10:00Z",
+        "instances": [
+            { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-2", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "evaluation.json with retry history should be rejected as potentially stale"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("stale") || msg.contains("retry"),
+        "error should mention stale evaluation or retry history: {msg}"
+    );
+}

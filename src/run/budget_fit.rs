@@ -265,6 +265,19 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         }
     }
 
+    // Reject stale evaluation.json from before a retry.  The retry path preserves
+    // evaluation.json while rewriting results.json, so retried instances can be bucketed
+    // with their pre-retry resolved state.  Require a fresh bench evaluate.
+    if eval_file_present && has_retry_history(&args.sweep_dir) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: evaluation.json may be stale — the sweep has retry history; \
+             retried instances may have a different resolution state than recorded in \
+             evaluation.json. Re-run bench evaluate to refresh, or remove evaluation.json \
+             to fall back to results.json submission state."
+                .into(),
+        )));
+    }
+
     // Extract configured caps from manifest
     let cli_argv = loaded
         .manifest
@@ -524,6 +537,20 @@ fn extract_argv_value(argv: &[String], flag: &str) -> Option<String> {
     None
 }
 
+/// Return `true` when `results.json` contains a non-empty `retry_history` array.
+fn has_retry_history(sweep_dir: &Path) -> bool {
+    let path = sweep_dir.join("results.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+        return false;
+    };
+    val.get("retry_history")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+}
+
 /// Read `sweep_status` from `results.json`.
 fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
     let path = sweep_dir.join("results.json");
@@ -613,13 +640,19 @@ fn load_behavior_map(sweep_dir: &Path) -> Result<BTreeMap<String, String>, Error
         let Some(class_counts) = inst.get("class_counts").and_then(|v| v.as_object()) else {
             continue;
         };
-        // Dominant class = the one with the highest count
-        let dominant = class_counts
+        // Dominant class = the one with the uniquely highest count.
+        // When two classes are tied, leave this instance unclassified (no entry).
+        let max_count = class_counts
+            .values()
+            .map(|v| v.as_u64().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        let top: Vec<_> = class_counts
             .iter()
-            .max_by_key(|(_, v)| v.as_u64().unwrap_or(0))
-            .map(|(k, _)| k.clone());
-        if let Some(cls) = dominant {
-            map.insert(id, cls);
+            .filter(|(_, v)| v.as_u64().unwrap_or(0) == max_count)
+            .collect();
+        if top.len() == 1 {
+            map.insert(id, top[0].0.clone());
         }
     }
     Ok(map)
@@ -814,6 +847,7 @@ fn build_axis_report(
     let mut cap_bound_progress_count: i64 = 0;
     let mut cap_bound_stuck_count: i64 = 0;
     let mut cap_bound_total_cost: f64 = 0.0;
+    let mut cap_bound_progress_cost: f64 = 0.0;
     // Cap-bound instances whose axis value is missing (legacy rows); counted for
     // recommendations and dominance but excluded from the numeric distribution.
     let mut cap_bound_no_value_count: usize = 0;
@@ -833,6 +867,7 @@ fn build_axis_report(
                     if let Some(cls) = behavior_map.get(&inst.instance_id) {
                         if PROGRESS_CLASSES.contains(&cls.as_str()) {
                             cap_bound_progress_count += 1;
+                            cap_bound_progress_cost += inst.cost_usd.unwrap_or(0.0);
                         } else if STUCK_CLASSES.contains(&cls.as_str()) {
                             cap_bound_stuck_count += 1;
                         }
@@ -850,6 +885,7 @@ fn build_axis_report(
             if let Some(cls) = behavior_map.get(&inst.instance_id) {
                 if PROGRESS_CLASSES.contains(&cls.as_str()) {
                     cap_bound_progress_count += 1;
+                    cap_bound_progress_cost += inst.cost_usd.unwrap_or(0.0);
                 } else if STUCK_CLASSES.contains(&cls.as_str()) {
                     cap_bound_stuck_count += 1;
                 }
@@ -942,7 +978,15 @@ fn build_axis_report(
         recommended_cap_rationale,
         projected_impact_if_recommended,
         projected_impact_if_tightened_to_p95,
-        cap_bound_cost_usd: cap_bound_total_cost,
+        // Exclude progress-class cost from waste when behavior data is present.
+        // Progress-class cap-bound instances may resolve if the cap is raised, so
+        // their spend is investment rather than waste; only stuck/unclassified spend
+        // is conservative waste.  When behavior.json is absent we include all costs.
+        cap_bound_cost_usd: if behavior_map.is_empty() {
+            cap_bound_total_cost
+        } else {
+            cap_bound_total_cost - cap_bound_progress_cost
+        },
     }
 }
 
@@ -1029,14 +1073,16 @@ fn make_recommendation(
                 None,
             );
         };
-        // If P{target} is already at or above cap, no tightening is useful.
+        // If P{target} is already at or above cap, no useful action — same as the default path.
+        // Returning Some(recommended) here would look like a raise, which contradicts the
+        // stuck-class conclusion that raising is unlikely to help.
         if recommended >= cap {
             let rationale = format!(
                 "P{target_percentile} of resolved ({recommended:.4}) ≥ configured cap ({cap:.4}); \
                  cap is already well-sized. {cap_bound_stuck_count} stuck-class cap-bound instance(s) detected; \
                  raising is unlikely to help."
             );
-            return (Some(recommended), rationale, None);
+            return (None, rationale, None);
         }
         let rationale = format!(
             "{cap_bound_stuck_count} cap-bound instance(s) had stuck-class actions \
@@ -1127,27 +1173,29 @@ fn make_tighten_impact(
     })
 }
 
-/// Estimate cost savings from tightening: mean cost-per-unit × cap reduction × eligible instances.
+/// Estimate cost savings from tightening the cap from `old_cap` to `new_cap`.
 ///
-/// Result is rounded to 6 decimal places for deterministic serialization.
-#[inline(never)]
+/// Savings per eligible instance = `(min(actual_value, old_cap) - new_cap)` units × mean
+/// cost-per-unit.  Capping at `old_cap` prevents overestimating savings for instances that
+/// ran slightly past the cap before the check fired.  Result rounded to 6 decimal places.
 fn estimated_cost_savings(
     instances: &[&InstanceResult],
     axis: &str,
     old_cap: f64,
     new_cap: f64,
 ) -> f64 {
-    let cap_reduction = old_cap - new_cap;
-    if cap_reduction <= 0.0 {
+    if new_cap >= old_cap {
         return 0.0;
     }
     let cpu = mean_cost_per_unit(instances, axis);
-    // Eligible: instances whose value exceeds new_cap (they'd terminate earlier)
-    let eligible = instances
+    let saved_units: f64 = instances
         .iter()
-        .filter(|inst| axis_value(inst, axis).is_some_and(|v| v > new_cap))
-        .count() as f64;
-    round_to_ndp(cpu * cap_reduction * eligible, 6)
+        .filter_map(|inst| {
+            let v = axis_value(inst, axis)?;
+            if v > new_cap { Some(v.min(old_cap) - new_cap) } else { None }
+        })
+        .sum();
+    round_to_ndp(cpu * saved_units, 6)
 }
 
 /// Mean cost (USD) per axis unit across all instances with both cost and axis data.
