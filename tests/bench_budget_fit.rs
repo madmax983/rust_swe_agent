@@ -781,6 +781,50 @@ fn bench_budget_fit_axis_flag_restricts_output() {
     assert_eq!(axes[0]["axis_name"], "steps");
 }
 
+// ── waste_estimate_usd includes step-limit costs ─────────────────────────────
+//
+// Regression guard: prior implementation only counted cost_limit cap-bound
+// instances; step_limit and wallclock_timeout failures were silently excluded.
+
+#[test]
+fn waste_estimate_usd_includes_step_limit_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    // 2 resolved + 4 step_limit cap-bound (cost_usd = 0.10 each) + 2 unresolved_other (env_setup)
+    let mut instances = vec![
+        resolved_instance("res-0", 15, 0.05, 30.0),
+        resolved_instance("res-1", 20, 0.06, 40.0),
+    ];
+    for i in 0..4 {
+        instances.push(cap_bound_instance(
+            &format!("sl-{i}"),
+            FailureCategory::StepLimit,
+            30,
+            0.10,
+            60.0,
+        ));
+    }
+    for i in 0..2 {
+        instances.push(unresolved_other_instance(&format!("env-{i}"), 5, 0.01));
+    }
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    })
+    .unwrap();
+
+    // 4 step_limit instances each cost $0.10 → waste = $0.40
+    assert!(
+        (report.summary.waste_estimate_usd - 0.40).abs() < 1e-9,
+        "waste_estimate_usd should equal total cost of step-limit cap-bound instances (4 × $0.10 = $0.40), got {}",
+        report.summary.waste_estimate_usd
+    );
+}
+
 // ── unit: distribution stats ─────────────────────────────────────────────────
 
 #[test]

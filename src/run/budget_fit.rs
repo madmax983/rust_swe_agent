@@ -110,6 +110,10 @@ pub struct AxisReport {
     /// Projected impact of tightening to P95 of the resolved distribution
     /// (differs from `projected_impact_if_recommended` when target_percentile ≠ 95).
     pub projected_impact_if_tightened_to_p95: Option<ProjectedImpact>,
+    /// Total cost_usd of cap-bound instances for this axis (excluded from JSON schema;
+    /// used internally to compute cross-axis waste_estimate_usd without double-counting).
+    #[serde(skip)]
+    pub cap_bound_cost_usd: f64,
 }
 
 /// Cross-axis summary.
@@ -592,6 +596,7 @@ fn build_axis_report(
         recommended_cap_rationale,
         projected_impact_if_recommended,
         projected_impact_if_tightened_to_p95,
+        cap_bound_cost_usd: cap_bound_total_cost,
     }
 }
 
@@ -851,24 +856,6 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
         None => (None, "no cap-bound failures detected".to_owned()),
     };
 
-    // Waste estimate: total cost of cap-bound instances (conservative — no partial-progress credit)
-    let waste_estimate_usd: f64 = axes
-        .iter()
-        .map(|a| {
-            a.distribution_by_outcome
-                .get(BUCKET_UNRESOLVED_CAP_BOUND)
-                .and_then(|s| {
-                    if s.count == 0 {
-                        return None;
-                    }
-                    s.mean.map(|_| 0.0) // placeholder; actual cost tallied below
-                })
-                .unwrap_or(0.0)
-        })
-        .sum();
-    // Use step-axis cap-bound cost as proxy (steps is primary axis)
-    // A proper cross-axis dedup is out of scope for this slice.
-    let _ = waste_estimate_usd;
     let waste_usd = compute_waste_usd(axes);
 
     let headline = build_headline(axes, &dominant_axis);
@@ -882,28 +869,9 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
 }
 
 fn compute_waste_usd(axes: &[AxisReport]) -> f64 {
-    // Use steps axis cap-bound to approximate waste (no double-counting across axes)
-    if let Some(steps) = axes.iter().find(|a| a.axis_name == AXIS_STEPS) {
-        let cb = steps
-            .distribution_by_outcome
-            .get(BUCKET_UNRESOLVED_CAP_BOUND);
-        if let Some(stats) = cb {
-            if let Some(mean) = stats.mean {
-                // Rough: mean_cost_per_step × mean_steps × count; we store cost elsewhere.
-                // Simplification: use cost_usd axis if available.
-                let _ = mean;
-            }
-        }
-    }
-    // Fall back: sum mean cost of cap-bound across cost_usd axis
-    if let Some(cost_ax) = axes.iter().find(|a| a.axis_name == AXIS_COST_USD) {
-        if let Some(cb) = cost_ax.distribution_by_outcome.get(BUCKET_UNRESOLVED_CAP_BOUND) {
-            if cb.count > 0 {
-                return cb.mean.unwrap_or(0.0) * cb.count as f64;
-            }
-        }
-    }
-    0.0
+    // Sum cap_bound_cost_usd across all axes. Each instance is bucketed into exactly one
+    // axis's cap_bound bucket (by its failure_category), so this sum has no double-counting.
+    axes.iter().map(|a| a.cap_bound_cost_usd).sum()
 }
 
 fn build_headline(axes: &[AxisReport], dominant_axis: &Option<String>) -> String {
