@@ -344,14 +344,15 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 match record {
                     // Already resolved → skip (AC#9).
                     Some(r) if r.resolving_tier.is_some() => false,
-                    // This tier already attempted *and completed* (not merely skipped_budget).
-                    // skipped_budget attempts are NOT treated as completed: on resume with a
-                    // higher budget ceiling the instance must still get a real attempt on
-                    // this tier before progressing to later tiers.
+                    // This tier already attempted *and completed* (not merely skipped_budget
+                    // or eval_pending). Both of those halted_reasons are retriable:
+                    // skipped_budget → retry when budget is raised;
+                    // eval_pending   → retry the evaluator when the tier re-runs.
                     Some(r)
                         if r.attempts.iter().any(|a| {
                             a.tier_name == tier_def.name
                                 && a.halted_reason.as_deref() != Some("skipped_budget")
+                                && a.halted_reason.as_deref() != Some("eval_pending")
                         }) =>
                     {
                         false
@@ -360,7 +361,10 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                     Some(r)
                         if r.attempts
                             .iter()
-                            .filter(|a| a.halted_reason.as_deref() != Some("skipped_budget"))
+                            .filter(|a| {
+                                a.halted_reason.as_deref() != Some("skipped_budget")
+                                    && a.halted_reason.as_deref() != Some("eval_pending")
+                            })
                             .count()
                             >= manifest.tiers.len() =>
                     {
@@ -517,9 +521,28 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         // Persist spend before eval so eval failures don't lose cost records.
         write_cascade_state(&state_path, &state)?;
 
+        // If the sweep was cancelled or halted systemically, stop cascading.
+        // Un-started instances must not escalate to more expensive tiers.
+        if sweep_results.sweep_status == crate::run::swebench::SWEEP_STATUS_CANCELLED
+            || sweep_results.sweep_status == crate::run::swebench::SWEEP_STATUS_SYSTEMIC_HALT
+        {
+            tracing::warn!(
+                tier = %tier_def.name,
+                sweep_status = %sweep_results.sweep_status,
+                "cascade: tier sweep halted; stopping cascade so unstarted instances \
+                 do not escalate to more expensive tiers"
+            );
+            break;
+        }
+
         // ── Phase B: Evaluate ─────────────────────────────────────────────────
-        let resolved_ids: HashSet<String> = if let Some(ref mocks) = args.mock_eval_resolved_ids {
-            mocks.get(tier_idx).cloned().unwrap_or_default()
+        // On evaluator failure, mark the Phase A attempts as `eval_pending` so
+        // a later `--resume` can retry the evaluator without re-spending model
+        // budget (the inner tier sweep uses `resume: true`).
+        let eval_result: Result<HashSet<String>, Error> = if let Some(ref mocks) =
+            args.mock_eval_resolved_ids
+        {
+            Ok(mocks.get(tier_idx).cloned().unwrap_or_default())
         } else {
             // Wrap the synchronous sb-cli subprocess in spawn_blocking so it
             // doesn't stall the Tokio executor thread for the minutes it may run.
@@ -537,14 +560,38 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
             };
             tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
                 .await
-                .map_err(|e| Error::Io(std::io::Error::other(format!("eval task panicked: {e}"))))??
-                .instances
-                .iter()
-                .filter(|e| e.resolved)
-                .map(|e| e.instance_id.clone())
-                .collect()
-            // If the evaluator fails above, the Phase A costs are already persisted,
-            // so a later --resume will not re-spend this tier's model budget.
+                .map_err(|e| Error::Io(std::io::Error::other(format!("eval task panicked: {e}"))))
+                .and_then(|r| r)
+                .map(|eval_results| {
+                    eval_results
+                        .instances
+                        .iter()
+                        .filter(|e| e.resolved)
+                        .map(|e| e.instance_id.clone())
+                        .collect()
+                })
+        };
+
+        let resolved_ids = match eval_result {
+            Ok(ids) => ids,
+            Err(e) => {
+                // Mark Phase A attempts (halted_reason=None, eval_exit_reason=None) as
+                // eval_pending so the pending filter re-queues them on --resume.
+                for id in &pending_ids {
+                    let Some(record) = state.instances.get_mut(id.as_str()) else {
+                        continue;
+                    };
+                    if let Some(attempt) = record.attempts.iter_mut().find(|a| {
+                        a.tier_name == tier_def.name
+                            && a.halted_reason.is_none()
+                            && a.eval_exit_reason.is_none()
+                    }) {
+                        attempt.halted_reason = Some("eval_pending".into());
+                    }
+                }
+                write_cascade_state(&state_path, &state)?;
+                return Err(e);
+            }
         };
 
         // ── Phase C: Update eval outcomes and resolving_tier ──────────────────
@@ -568,14 +615,19 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 continue;
             };
             // Fill in the eval_exit_reason on the attempt written in Phase A.
-            // The predicate `halted_reason.is_none()` skips budget-halt entries
-            // whose eval_exit_reason should remain None.
-            if let Some(attempt) = record
-                .attempts
-                .iter_mut()
-                .find(|a| a.tier_name == tier_def.name && a.halted_reason.is_none())
-            {
+            // Also matches `eval_pending` attempts from a prior resume where the
+            // evaluator had failed; clears the marker now that eval succeeded.
+            // `halted_reason.is_none()` skips budget-halt entries whose
+            // eval_exit_reason should remain None.
+            if let Some(attempt) = record.attempts.iter_mut().find(|a| {
+                a.tier_name == tier_def.name
+                    && (a.halted_reason.is_none()
+                        || a.halted_reason.as_deref() == Some("eval_pending"))
+            }) {
                 attempt.eval_exit_reason = eval_exit_reason;
+                if attempt.halted_reason.as_deref() == Some("eval_pending") {
+                    attempt.halted_reason = None;
+                }
             }
 
             if resolved && record.resolving_tier.is_none() {
@@ -668,7 +720,10 @@ async fn run_tier(
         parallel: ctx.parallel,
         config: cfg,
         reruns: 1,
-        resume: false,
+        // Always resume so that re-runs after an evaluator failure (where the
+        // model tier already ran and was recorded as eval_pending) skip
+        // re-spending model budget for already-completed instances.
+        resume: true,
         cost_limit_usd: remaining_budget,
         task_timeout_secs: None,
         instance_ids: Some(instance_ids_csv),
