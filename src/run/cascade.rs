@@ -131,6 +131,9 @@ pub struct InstanceCascadeRecord {
 pub struct CascadeState {
     pub artifact_kind: String,
     pub config_path: String,
+    /// Tier names in definition order; used on resume to detect manifest changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tier_names: Vec<String>,
     pub instance_ids: Vec<String>,
     pub filter_spec: FilterSpec,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,6 +253,8 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
     let state_path = args.output_dir.join("cascade.json");
 
+    let current_tier_names: Vec<String> = manifest.tiers.iter().map(|t| t.name.clone()).collect();
+
     // Load or create cascade state.
     let mut state = if args.resume && state_path.exists() {
         let text = std::fs::read_to_string(&state_path)?;
@@ -257,9 +262,18 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         if loaded.instance_ids != instance_ids {
             tracing::warn!(
                 persisted = loaded.instance_ids.len(),
-                resolved = instance_ids.len(),
-                "resume: resolved instance set differs from persisted cascade.json; \
-                 using persisted list"
+                current = instance_ids.len(),
+                "resume: instance set differs from persisted cascade.json; using persisted list"
+            );
+        }
+        // Warn if the tier plan changed (P2-257): mixing attempts from different
+        // tier definitions silently produces invalid routing and summary comparisons.
+        if !loaded.tier_names.is_empty() && loaded.tier_names != current_tier_names {
+            tracing::warn!(
+                persisted = ?loaded.tier_names,
+                current = ?current_tier_names,
+                "resume: cascade tier plan differs from persisted run; \
+                 routing and summary comparisons may be invalid"
             );
         }
         loaded
@@ -267,6 +281,7 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         CascadeState {
             artifact_kind: "cascade".into(),
             config_path: args.config_path.display().to_string(),
+            tier_names: current_tier_names,
             instance_ids: instance_ids.clone(),
             filter_spec,
             cost_limit_usd: args.sweep_cost_limit_usd,
@@ -368,6 +383,9 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         // Budget guard: mark remaining as skipped_budget if cap reached (AC#7).
         if let Some(limit) = args.sweep_cost_limit_usd {
             if cumulative_cost >= limit {
+                // Count only newly-added markers to avoid double-counting on repeat
+                // resume runs where the budget is still exhausted (P2-387).
+                let mut newly_skipped = 0_usize;
                 for id in &pending_ids {
                     let record = state.instances.entry(id.clone()).or_insert_with(|| {
                         InstanceCascadeRecord {
@@ -376,6 +394,13 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                             attempts: vec![],
                         }
                     });
+                    // Don't push a duplicate placeholder that already exists.
+                    if record.attempts.iter().any(|a| {
+                        a.tier_name == tier_def.name
+                            && a.halted_reason.as_deref() == Some("skipped_budget")
+                    }) {
+                        continue;
+                    }
                     record.attempts.push(TierAttempt {
                         tier_name: tier_def.name.clone(),
                         model: tier_def.model.clone(),
@@ -385,8 +410,9 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                         steps: None,
                         halted_reason: Some("skipped_budget".into()),
                     });
+                    newly_skipped += 1;
                 }
-                tier_stats[tier_idx].instances_attempted += pending_ids.len();
+                tier_stats[tier_idx].instances_attempted += newly_skipped;
                 write_cascade_state(&state_path, &state)?;
                 break;
             }
@@ -406,11 +432,95 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         )
         .await?;
 
-        // Determine resolved instances for this tier.
+        // Build a map of instance_id → sweep result for this tier.
+        let results_map: std::collections::HashMap<String, _> = sweep_results
+            .instances
+            .iter()
+            .map(|r| (r.instance_id.clone(), r))
+            .collect();
+
+        // ── Phase A: Record sweep costs immediately after the tier sweep ──────
+        // Writing costs before calling the evaluator ensures that an evaluator
+        // failure (timeout, service outage) cannot cause a later `--resume` to
+        // re-spend this tier's model budget (P1-433).
+        let mut tier_cost = 0.0_f64;
+        for id in &pending_ids {
+            // Only record instances the sweep actually started (P1-455).
+            // Instances missing from results_map were never queued (e.g. early
+            // cancellation) and must remain un-attempted so resume retries them.
+            let Some(sweep_result) = results_map.get(id.as_str()) else {
+                continue;
+            };
+
+            // Use the same cost-accounting helper as the sweep runner so that
+            // zero-recorded-cost rows are re-priced from token usage when available.
+            let cost =
+                crate::run::swebench::budget_accounting_cost_usd(sweep_result, &tier_def.model);
+            let steps = sweep_result.steps;
+            let outcome = sweep_result.outcome.clone();
+            // Map swebench's "budget_halt" exit_reason to cascade's "skipped_budget"
+            // label so all budget-related non-starts appear uniformly (AC#7).
+            let halted_reason = (sweep_result.exit_reason
+                == crate::run::swebench::EXIT_REASON_BUDGET_HALT)
+                .then(|| "skipped_budget".to_string());
+
+            let record =
+                state
+                    .instances
+                    .entry(id.clone())
+                    .or_insert_with(|| InstanceCascadeRecord {
+                        resolving_tier: None,
+                        total_cost_usd: 0.0,
+                        attempts: vec![],
+                    });
+
+            // A prior skipped_budget placeholder for this tier (written when a
+            // previous run hit the budget cap) must be replaced by the real
+            // attempt now that the tier actually ran (P1-490).
+            let replacing_skip = record.attempts.iter().any(|a| {
+                a.tier_name == tier_def.name && a.halted_reason.as_deref() == Some("skipped_budget")
+            });
+            let has_real_attempt = record.attempts.iter().any(|a| {
+                a.tier_name == tier_def.name && a.halted_reason.as_deref() != Some("skipped_budget")
+            });
+
+            if record.resolving_tier.is_none() && !has_real_attempt {
+                // Remove the skipped_budget placeholder before inserting the real
+                // attempt so there is at most one attempt per tier per instance.
+                record.attempts.retain(|a| {
+                    !(a.tier_name == tier_def.name
+                        && a.halted_reason.as_deref() == Some("skipped_budget"))
+                });
+                // eval_exit_reason is left None here; it is filled in Phase C
+                // once the evaluator result is known.
+                record.attempts.push(TierAttempt {
+                    tier_name: tier_def.name.clone(),
+                    model: tier_def.model.clone(),
+                    outcome,
+                    eval_exit_reason: None,
+                    cost_usd: cost,
+                    steps,
+                    halted_reason,
+                });
+                record.total_cost_usd += cost;
+                tier_cost += cost;
+
+                // Don't double-count instances whose skipped_budget placeholder
+                // was already loaded into tier_stats by the resume-stats loop.
+                if !replacing_skip {
+                    tier_stats[tier_idx].instances_attempted += 1;
+                }
+                tier_stats[tier_idx].total_cost_usd += cost;
+            }
+        }
+        cumulative_cost += tier_cost;
+        // Persist spend before eval so eval failures don't lose cost records.
+        write_cascade_state(&state_path, &state)?;
+
+        // ── Phase B: Evaluate ─────────────────────────────────────────────────
         let resolved_ids: HashSet<String> = if let Some(ref mocks) = args.mock_eval_resolved_ids {
             mocks.get(tier_idx).cloned().unwrap_or_default()
         } else {
-            // Run actual evaluator on tier's sweep dir.
             // Wrap the synchronous sb-cli subprocess in spawn_blocking so it
             // doesn't stall the Tokio executor thread for the minutes it may run.
             let eval_args = EvaluateArgs {
@@ -425,48 +535,27 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 breakdown: BreakdownSelection::none(),
                 cost_attribution: false,
             };
-            let eval_results =
-                tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
-                    .await
-                    .map_err(|e| {
-                        Error::Io(std::io::Error::other(format!("eval task panicked: {e}")))
-                    })??;
-            eval_results
+            tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
+                .await
+                .map_err(|e| Error::Io(std::io::Error::other(format!("eval task panicked: {e}"))))??
                 .instances
                 .iter()
                 .filter(|e| e.resolved)
                 .map(|e| e.instance_id.clone())
                 .collect()
+            // If the evaluator fails above, the Phase A costs are already persisted,
+            // so a later --resume will not re-spend this tier's model budget.
         };
 
-        // Build a map of instance_id → sweep result for this tier.
-        let results_map: std::collections::HashMap<String, _> = sweep_results
-            .instances
-            .iter()
-            .map(|r| (r.instance_id.clone(), r))
-            .collect();
-
-        // Record tier attempts and update cumulative cost.
-        let mut tier_cost = 0.0_f64;
+        // ── Phase C: Update eval outcomes and resolving_tier ──────────────────
         for id in &pending_ids {
-            let sweep_result = results_map.get(id.as_str());
-            // Use the same cost-accounting helper as the sweep runner so that
-            // zero-recorded-cost rows are re-priced from token usage when available.
-            let cost = sweep_result.map_or(0.0, |r| {
-                crate::run::swebench::budget_accounting_cost_usd(r, &tier_def.model)
-            });
-            let steps = sweep_result.and_then(|r| r.steps);
-            let outcome = sweep_result.and_then(|r| r.outcome.clone());
-            // Map swebench's "budget_halt" exit_reason to cascade's "skipped_budget" label
-            // so all budget-related non-starts appear uniformly in cascade.json (AC#7).
-            let halted_reason = sweep_result
-                .map(|r| r.exit_reason.as_str())
-                .filter(|s| *s == crate::run::swebench::EXIT_REASON_BUDGET_HALT)
-                .map(|_| "skipped_budget".to_string());
-
+            // Only update instances the sweep actually started.
+            let Some(sweep_result) = results_map.get(id.as_str()) else {
+                continue;
+            };
             let resolved = resolved_ids.contains(id.as_str());
-            let is_budget_halt = sweep_result
-                .is_some_and(|r| r.exit_reason == crate::run::swebench::EXIT_REASON_BUDGET_HALT);
+            let is_budget_halt =
+                sweep_result.exit_reason == crate::run::swebench::EXIT_REASON_BUDGET_HALT;
             let eval_exit_reason = if is_budget_halt {
                 None
             } else if resolved {
@@ -475,46 +564,25 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 Some("unresolved".into())
             };
 
-            let record =
-                state
-                    .instances
-                    .entry(id.clone())
-                    .or_insert_with(|| InstanceCascadeRecord {
-                        resolving_tier: None,
-                        total_cost_usd: 0.0,
-                        attempts: vec![],
-                    });
-
-            // Only record if not already resolved (idempotent on resume).
-            if record.resolving_tier.is_none()
-                && !record.attempts.iter().any(|a| a.tier_name == tier_def.name)
+            let Some(record) = state.instances.get_mut(id.as_str()) else {
+                continue;
+            };
+            // Fill in the eval_exit_reason on the attempt written in Phase A.
+            // The predicate `halted_reason.is_none()` skips budget-halt entries
+            // whose eval_exit_reason should remain None.
+            if let Some(attempt) = record
+                .attempts
+                .iter_mut()
+                .find(|a| a.tier_name == tier_def.name && a.halted_reason.is_none())
             {
-                record.attempts.push(TierAttempt {
-                    tier_name: tier_def.name.clone(),
-                    model: tier_def.model.clone(),
-                    outcome,
-                    eval_exit_reason,
-                    cost_usd: cost,
-                    steps,
-                    halted_reason,
-                });
-                record.total_cost_usd += cost;
-                tier_cost += cost;
-
-                if resolved {
-                    record.resolving_tier = Some(tier_def.name.clone());
-                }
+                attempt.eval_exit_reason = eval_exit_reason;
             }
 
-            // Update tier stats.
-            tier_stats[tier_idx].instances_attempted += 1;
-            tier_stats[tier_idx].total_cost_usd += cost;
-            if resolved {
+            if resolved && record.resolving_tier.is_none() {
+                record.resolving_tier = Some(tier_def.name.clone());
                 tier_stats[tier_idx].resolved += 1;
             }
         }
-
-        cumulative_cost += tier_cost;
         write_cascade_state(&state_path, &state)?;
 
         tracing::info!(
@@ -695,7 +763,10 @@ fn build_summary(tier_stats: &[TierStats], state: &CascadeState) -> CascadeSumma
     };
 
     // Counterfactual: run all instances on the top (last) tier.
-    // savings = counterfactual_cost - actual_cost
+    // Note: the top-tier mean is derived from the subset of instances that
+    // actually reached it (harder instances that cheaper tiers didn't resolve),
+    // so it is systematically higher than the true all-instances top-tier mean.
+    // This means savings_vs_top_tier_only_usd may be somewhat overstated.
     let savings_vs_top_tier_only_usd = if let Some(top_tier) = tier_stats.last() {
         let top_mean = if top_tier.instances_attempted > 0 {
             top_tier.total_cost_usd / top_tier.instances_attempted as f64
