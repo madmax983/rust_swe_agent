@@ -383,9 +383,15 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     // Use the prior instance list to keep all arms consistent — if the caller
     // changed --limit/--sample/--instance-ids the new resolution is discarded
     // with a warning, mirroring the behaviour of `bench matrix --resume`.
+    //
+    // `effective_resume` tracks whether arm-level resume is safe to propagate.
+    // When the top-level gate rejects the prior report (stale config/dataset),
+    // we must also disable per-arm resume so swebench::run does not independently
+    // reuse trajectory files produced under the old inputs.
     let current_config_path = args.config_path.display().to_string();
     let mut arm_results: Vec<Option<ArmAblationResult>> = vec![None; arm_plan.len()];
     let mut cumulative_cost = 0.0f64;
+    let mut effective_resume = args.resume;
     if args.resume && report_path.exists() {
         if let Ok(text) = std::fs::read_to_string(&report_path) {
             if let Ok(prior) = serde_json::from_str::<ToolAblationReport>(&text) {
@@ -400,13 +406,15 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                 if !config_ok {
                     tracing::warn!(
                         "resume: config changed since prior tool-ablation.json \
-                         (path or content); ignoring prior results"
+                         (path or content); ignoring prior results and disabling arm resume"
                     );
+                    effective_resume = false;
                 } else if !dataset_ok {
                     tracing::warn!(
                         "resume: dataset content changed since prior tool-ablation.json \
-                         (SHA-256 mismatch); ignoring prior results"
+                         (SHA-256 mismatch); ignoring prior results and disabling arm resume"
                     );
+                    effective_resume = false;
                 } else {
                     if prior.instance_ids != instance_ids {
                         tracing::warn!(
@@ -439,7 +447,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         dataset_source: args.dataset_source.clone(),
         dataset_cache_dir: args.dataset_cache_dir.clone(),
         parallel: args.parallel,
-        resume: args.resume,
+        resume: effective_resume,
         skip_preflight: args.skip_preflight,
         skip_model_probe: args.skip_model_probe,
         cancel_deadline_secs: args.cancel_deadline_secs,
