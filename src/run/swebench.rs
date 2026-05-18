@@ -4431,6 +4431,19 @@ pub fn apply_subset(
         }
         let include: HashSet<&str> = ids.iter().map(String::as_str).collect();
         instances.retain(|i| include.contains(i.instance_id.as_str()));
+        // Reorder to honour the requested ID sequence rather than the original
+        // dataset order.  This matters for tool-ablation: the outer run
+        // shuffles the dataset (--sample) and writes the shuffled IDs to a
+        // per-arm file; if the child sweep then re-sorts by dataset order,
+        // partial runs under a budget cap or cancellation see a biased prefix
+        // (the first K in dataset order) instead of the first K of the random
+        // sample.
+        let pos: std::collections::HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+        instances.sort_by_key(|inst| pos[inst.instance_id.as_str()]);
     }
 
     if let Some(n) = params.sample {
