@@ -1926,6 +1926,7 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
     let cache_dir = t
         .dataset_cache_dir
@@ -2033,6 +2034,9 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         "{}",
         crate::run::tool_ablation::render_text_summary(&report)
     );
+    if report.cancelled {
+        exit_with_outcome(ExitCode::Interrupted, "ablation was cancelled");
+    }
     Ok(())
 }
 

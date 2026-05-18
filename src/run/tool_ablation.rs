@@ -120,6 +120,9 @@ pub struct ToolAblationReport {
     /// Deterministic instance list used by all arms.
     pub instance_ids: Vec<String>,
     pub arms: Vec<ArmAblationResult>,
+    /// True when the run was cancelled (SIGINT/SIGTERM); the CLI exits 130.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -171,8 +174,10 @@ pub fn generate_arm_plan(
             for j in (i + 1)..to_ablate.len() {
                 let t1 = (*to_ablate[i]).clone();
                 let t2 = (*to_ablate[j]).clone();
+                // Use `pair_` prefix (not `no_`) to avoid collision with
+                // single-tool arms when a tool name contains `_and_`.
                 arms.push(PlannedArm {
-                    name: format!("no_{t1}_and_{t2}"),
+                    name: format!("pair_{t1}_and_{t2}"),
                     ablated_tool: None,
                     ablated_pair: Some((t1, t2)),
                 });
@@ -316,22 +321,35 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
             stratify_mode: StratifyMode::Proportional,
         },
     )?;
-    let instance_ids: Vec<String> = selected_instances
+    let mut instance_ids: Vec<String> = selected_instances
         .iter()
         .map(|i| i.instance_id.clone())
         .collect();
-    let instance_ids_csv = instance_ids.join(",");
+    let mut instance_ids_csv = instance_ids.join(",");
 
     std::fs::create_dir_all(&args.output_dir)?;
     let report_path = args.output_dir.join("tool-ablation.json");
 
     // Resume: populate already-complete arms from the prior report so they are
     // skipped during execution and their costs count toward the budget ceiling.
+    // Use the prior instance list to keep all arms consistent — if the caller
+    // changed --limit/--sample/--instance-ids the new resolution is discarded
+    // with a warning, mirroring the behaviour of `bench matrix --resume`.
     let mut arm_results: Vec<Option<ArmAblationResult>> = vec![None; arm_plan.len()];
     let mut cumulative_cost = 0.0f64;
     if args.resume && report_path.exists() {
         if let Ok(text) = std::fs::read_to_string(&report_path) {
             if let Ok(prior) = serde_json::from_str::<ToolAblationReport>(&text) {
+                if prior.instance_ids != instance_ids {
+                    tracing::warn!(
+                        persisted = prior.instance_ids.len(),
+                        resolved = instance_ids.len(),
+                        "resume: instance set differs from prior tool-ablation.json; \
+                         using prior list to maintain arm consistency"
+                    );
+                    instance_ids.clone_from(&prior.instance_ids);
+                    instance_ids_csv = instance_ids.join(",");
+                }
                 for (idx, planned) in arm_plan.iter().enumerate() {
                     if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name) {
                         if prior_arm.status == "complete" || prior_arm.status == "skipped_budget" {
@@ -543,6 +561,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         generated_at: chrono::Utc::now().to_rfc3339(),
         instance_ids,
         arms: all_results,
+        cancelled,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
@@ -622,7 +641,7 @@ async fn run_arm_ablation(
         cancellation_signals: None,
         github_pr: None,
         reproduced_from: None,
-        abort_on_systemic_failure: false,
+        abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
     };
