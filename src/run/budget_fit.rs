@@ -212,29 +212,41 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // propagates as an error so bad evaluation data is not silently ignored.
     let eval_resolved: HashMap<String, bool> = match load_evaluation_results(&args.sweep_dir)? {
         None => HashMap::new(), // evaluation.json absent — fall back to results.json
-        Some(eval) => {
-            // Reject evaluation produced before bench retry: the retry updates
-            // results.json but leaves evaluation.json in place, so evaluation rows
-            // for retried instances describe the pre-retry resolved state.
-            if has_any_retry_history(&args.sweep_dir) {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "budget-fit: evaluation.json predates bench retry; re-run \
-                     bench evaluate after retry or remove evaluation.json to use \
-                     results.json submission state"
-                        .into(),
-                )));
-            }
-            eval.instances
-                .iter()
-                .map(|row| {
-                    (
-                        row.instance_id.clone(),
-                        row.resolved_count > 0 || row.resolved,
-                    )
-                })
-                .collect()
-        }
+        Some(eval) => eval
+            .instances
+            .iter()
+            .map(|row| {
+                (
+                    row.instance_id.clone(),
+                    row.resolved_count > 0 || row.resolved,
+                )
+            })
+            .collect(),
     };
+
+    // Require evaluation.json to cover every instance when present.
+    // A partial artifact (subset copy or stale pre-retry file) would silently mix
+    // resolution sources: covered rows from eval, uncovered rows from results.json
+    // submission state. Missing rows are treated as an incompatible artifact; the
+    // operator must re-run `bench evaluate` or remove evaluation.json.
+    if !eval_resolved.is_empty() {
+        let missing_count = instances
+            .iter()
+            .filter(|inst| !eval_resolved.contains_key(&inst.instance_id))
+            .count();
+        if missing_count > 0 {
+            let example = instances
+                .iter()
+                .find(|inst| !eval_resolved.contains_key(&inst.instance_id))
+                .map_or("(unknown)", |inst| inst.instance_id.as_str());
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: evaluation.json is missing {missing_count} instance(s) \
+                 (e.g. '{example}'); the artifact may be stale or partial — \
+                 re-run bench evaluate or remove evaluation.json to use \
+                 results.json submission state"
+            ))));
+        }
+    }
 
     // Extract configured caps from manifest
     let cli_argv = loaded
@@ -242,15 +254,17 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         .as_ref()
         .map(|m| m.cli.argv.clone())
         .unwrap_or_default();
-    // cost_limit_usd lives in SweepResults but LoadedSweep does not re-expose it,
-    // so read it directly from the JSON artifact.
-    let cost_limit_usd = read_cost_limit(&args.sweep_dir);
     let step_limit = extract_argv_value(&cli_argv, "--step-limit")
         .and_then(|v| v.parse::<u32>().ok())
         .map(f64::from);
     let task_timeout_secs = extract_argv_value(&cli_argv, "--task-timeout-secs")
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v as f64);
+    // Only the per-task budget flag is a per-instance cost cap. The sweep-level
+    // cost_limit_usd (a total sweep budget) must not be used here: its scale is
+    // completely different from individual task costs, and sweep-budget halts are
+    // recorded as not-started rows rather than CostLimit/BudgetExhausted instances,
+    // so using it as a per-instance cap would produce nonsense percentile recommendations.
     let per_task_budget_usd =
         extract_argv_value(&cli_argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
 
@@ -278,13 +292,8 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         build_axis_report(
             AXIS_COST_USD,
             "USD",
-            cost_limit_usd.or(per_task_budget_usd),
-            cost_limit_usd
-                .map(|_| "results.json[cost_limit_usd]".to_owned())
-                .or_else(|| {
-                    per_task_budget_usd
-                        .map(|_| "manifest.cli.argv[--per-task-budget-usd]".to_owned())
-                }),
+            per_task_budget_usd,
+            per_task_budget_usd.map(|_| "manifest.cli.argv[--per-task-budget-usd]".to_owned()),
             &instances,
             &behavior_map,
             &eval_resolved,
@@ -421,14 +430,6 @@ fn extract_argv_value(argv: &[String], flag: &str) -> Option<String> {
     None
 }
 
-/// Read `cost_limit_usd` from `results.json` (top-level field).
-fn read_cost_limit(sweep_dir: &Path) -> Option<f64> {
-    let path = sweep_dir.join("results.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
-    val.get("cost_limit_usd")?.as_f64()
-}
-
 /// Read `sweep_status` from `results.json`.
 fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
     let path = sweep_dir.join("results.json");
@@ -522,24 +523,6 @@ fn load_behavior_map(sweep_dir: &Path) -> Result<BTreeMap<String, String>, Error
         }
     }
     Ok(map)
-}
-
-/// Return `true` when `results.json` contains a non-empty `retry_history` array.
-///
-/// This is a lightweight presence check — it does not inspect cap overrides,
-/// which is handled separately by `check_retry_cap_overrides`. Used to detect
-/// whether `evaluation.json` may be stale (pre-retry).
-fn has_any_retry_history(sweep_dir: &Path) -> bool {
-    let path = sweep_dir.join("results.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
-        return false;
-    };
-    val.get("retry_history")
-        .and_then(|v| v.as_array())
-        .is_some_and(|arr| !arr.is_empty())
 }
 
 /// Keys that budget-fit actively matches; others pass through without filtering.
@@ -639,13 +622,18 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
     }
 }
 
-/// Which `FailureCategory` marks "at-cap" for a given axis.
-fn cap_failure_category(axis: &str) -> Option<FailureCategory> {
+/// Which `FailureCategory` values mark "at-cap" for a given axis.
+///
+/// `AXIS_COST_USD` matches both `CostLimit` (sweep-level budget halt propagated to
+/// instance) and `BudgetExhausted` (per-task budget exhausted via `--per-task-budget-usd`).
+/// Both represent the agent being stopped by a cost cap; treating only `CostLimit`
+/// as cap-bound would silently exclude per-task budget exits from the cost axis.
+fn cap_failure_categories(axis: &str) -> Vec<FailureCategory> {
     match axis {
-        AXIS_STEPS => Some(FailureCategory::StepLimit),
-        AXIS_COST_USD => Some(FailureCategory::CostLimit),
-        AXIS_WALL_CLOCK_S => Some(FailureCategory::WallclockTimeout),
-        _ => None,
+        AXIS_STEPS => vec![FailureCategory::StepLimit],
+        AXIS_COST_USD => vec![FailureCategory::CostLimit, FailureCategory::BudgetExhausted],
+        AXIS_WALL_CLOCK_S => vec![FailureCategory::WallclockTimeout],
+        _ => vec![],
     }
 }
 
@@ -655,14 +643,14 @@ fn cap_failure_category(axis: &str) -> Option<FailureCategory> {
 /// falling back to `instance_resolved_count(inst) > 0` from results.json.
 fn outcome_bucket(
     inst: &InstanceResult,
-    cap_cat: Option<FailureCategory>,
+    cap_cats: &[FailureCategory],
     is_resolved: bool,
 ) -> &'static str {
     if is_resolved {
         return BUCKET_RESOLVED;
     }
-    if let (Some(c), Some(expected)) = (inst.failure_category, cap_cat) {
-        if c == expected {
+    if let Some(c) = inst.failure_category {
+        if cap_cats.contains(&c) {
             return BUCKET_UNRESOLVED_CAP_BOUND;
         }
     }
@@ -708,7 +696,7 @@ fn build_axis_report(
     round_unit: f64,
     n_total: usize,
 ) -> AxisReport {
-    let cap_cat = cap_failure_category(axis);
+    let cap_cats = cap_failure_categories(axis);
 
     // Bucket instances and collect values
     let mut resolved_values: Vec<f64> = Vec::new();
@@ -729,7 +717,7 @@ fn build_axis_report(
             .get(&inst.instance_id)
             .copied()
             .unwrap_or_else(|| instance_resolved_count(inst) > 0);
-        let bucket = outcome_bucket(inst, cap_cat, is_resolved);
+        let bucket = outcome_bucket(inst, &cap_cats, is_resolved);
         if let Some(v) = axis_value(inst, axis) {
             match bucket {
                 BUCKET_RESOLVED => resolved_values.push(v),
