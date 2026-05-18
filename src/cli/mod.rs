@@ -133,6 +133,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::CacheStats(c),
         } => bench_cache_stats(c),
+        Command::Bench {
+            cmd: args::BenchCmd::ToolAblation(t),
+        } => Box::pin(bench_tool_ablation(t)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1920,6 +1923,110 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
     }
+    Ok(())
+}
+
+async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
+    let cache_dir = t
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&t.dataset_path, &t.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = t.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
+
+    // Validate format before doing any work.
+    let is_json_format = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "tool-ablation: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+
+    if t.render_only {
+        let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
+        let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
+        let arm_plan =
+            crate::run::tool_ablation::generate_arm_plan(&all_tools, &t.ablate, t.include_pair_ablation);
+
+        if t.include_pair_ablation {
+            let pair_count = arm_plan.iter().filter(|a| a.ablated_pair.is_some()).count();
+            eprintln!(
+                "bench tool-ablation: --include-pair-ablation adds {pair_count} pair arm(s) \
+                 (total {} arms)",
+                arm_plan.len()
+            );
+        }
+
+        let manifest = crate::run::tool_ablation::ArmManifest {
+            schema_version: "tool-ablation-1.0".into(),
+            config_path: t.config.display().to_string(),
+            arms: arm_plan,
+        };
+
+        if is_json_format {
+            println!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_json(&manifest)?
+            );
+        } else {
+            print!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_text(&manifest)
+            );
+        }
+        return Ok(());
+    }
+
+    let ablation_args = crate::run::tool_ablation::ToolAblationArgs {
+        config_path: t.config,
+        dataset_source,
+        dataset_cache_dir: cache_dir,
+        output_dir: t.output,
+        ablate: t.ablate,
+        sweep_cost_limit_usd: t.sweep_cost_limit_usd,
+        matrix_parallelism: t.matrix_parallelism,
+        resume: t.resume,
+        instance_ids: t.instance_ids,
+        limit: t.limit,
+        sample: t.sample,
+        seed: t.seed,
+        parallel: t.parallel,
+        include_pair_ablation: t.include_pair_ablation,
+        skip_preflight: t.skip_preflight,
+        skip_model_probe: t.skip_model_probe,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        cancel_deadline_secs: t.cancel_deadline_secs,
+        install_os_signal_handlers: true,
+    };
+
+    let report = crate::run::tool_ablation::run(ablation_args).await?;
+    print!("{}", crate::run::tool_ablation::render_text_summary(&report));
     Ok(())
 }
 
