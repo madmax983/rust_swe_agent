@@ -69,6 +69,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
             },
             eval_log_path: None,
             patch_stats: None,
+            patch_error_log: None,
         }],
         behavioral: Default::default(),
         breakdown: vec![],

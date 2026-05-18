@@ -154,6 +154,10 @@ pub struct InspectReport {
     /// `None` for resolved instances (silent on the happy path).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failing_tests: Option<FailingTests>,
+    /// Captured `git apply` stderr; present only when `eval_exit_reason ==
+    /// patch_apply_failed`. Already redacted by the secret-redactor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_error_log: Option<String>,
     /// PASS_TO_PASS / FAIL_TO_PASS groupings from the SWE-bench instance record.
     /// Populated only when `--show-expected` is set and the dataset is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,6 +318,13 @@ fn build_instance_report(
                 &minimal_redactor,
                 &mut warnings,
             );
+            let eval_exit_reason = eval_override.and_then(|o| o.eval_exit_reason.as_ref());
+            let patch_error_log = redact_patch_error_log(
+                eval_override.and_then(|o| o.patch_error_log.clone()),
+                eval_exit_reason,
+                &minimal_redactor,
+                &mut warnings,
+            );
             return Ok(InspectReport {
                 sweep_dir: sweep.to_path_buf(),
                 instance_id: Some(instance_id.to_owned()),
@@ -345,6 +356,7 @@ fn build_instance_report(
                 latency_share_pct: None,
                 warnings,
                 failing_tests,
+                patch_error_log,
                 expected_tests: dataset_instance
                     .map(|inst| extract_expected_tests(inst, &minimal_redactor)),
                 steps: vec![],
@@ -381,6 +393,13 @@ fn build_instance_report(
     let resolved = eval_override.map(|value| value.resolved);
     let failing_tests = redact_failing_tests(
         build_failing_tests(resolved, eval_override, traj.info.failure_category),
+        &inspect_redactor,
+        &mut warnings,
+    );
+    let eval_exit_reason = eval_override.and_then(|o| o.eval_exit_reason.as_ref());
+    let patch_error_log = redact_patch_error_log(
+        eval_override.and_then(|o| o.patch_error_log.clone()),
+        eval_exit_reason,
         &inspect_redactor,
         &mut warnings,
     );
@@ -421,6 +440,7 @@ fn build_instance_report(
         latency_share_pct,
         warnings,
         failing_tests,
+        patch_error_log,
         expected_tests,
         steps,
     })
@@ -720,6 +740,13 @@ fn render_instance_text(report: &InspectReport) -> String {
             let _ = writeln!(s, "Failing tests: <{}>", ft.reason);
         }
     }
+    if let Some(log) = &report.patch_error_log {
+        if log.is_empty() {
+            s.push_str("patch error log: <not captured>\n");
+        } else {
+            let _ = writeln!(s, "patch error log:\n{log}");
+        }
+    }
     if let Some(et) = &report.expected_tests {
         let _ = writeln!(s, "PASS_TO_PASS ({}):", et.pass_to_pass.len());
         for name in &et.pass_to_pass {
@@ -1013,6 +1040,7 @@ struct EvaluationOverride {
     patch_stats: Option<PatchStats>,
     tests_failed: Vec<String>,
     eval_exit_reason: Option<EvalExitReason>,
+    patch_error_log: Option<String>,
 }
 
 fn load_evaluation_overrides(
@@ -1042,6 +1070,7 @@ fn load_evaluation_overrides(
                         patch_stats: x.patch_stats,
                         tests_failed: x.tests_failed,
                         eval_exit_reason: Some(x.eval_exit_reason),
+                        patch_error_log: x.patch_error_log,
                     },
                 )
             })
@@ -1074,6 +1103,23 @@ fn build_failing_tests(
         source: "unavailable".into(),
         reason,
     })
+}
+
+fn redact_patch_error_log(
+    log: Option<String>,
+    eval_exit_reason: Option<&EvalExitReason>,
+    redactor: &Redactor,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    if !matches!(eval_exit_reason, Some(EvalExitReason::PatchApplyFailed)) {
+        return None;
+    }
+    let text = log.unwrap_or_default();
+    let outcome = redactor.redact_text(&text, surface::INSPECT);
+    if outcome.redacted {
+        warnings.push("bench inspect redacted secret-shaped content at view time".into());
+    }
+    Some(outcome.text)
 }
 
 fn redact_failing_tests(
@@ -1529,6 +1575,7 @@ mod tests {
             patch_stats: None,
             tests_failed: vec![],
             eval_exit_reason: None,
+            patch_error_log: None,
         };
         let ft = build_failing_tests(
             Some(false),
@@ -1547,6 +1594,7 @@ mod tests {
             patch_stats: None,
             tests_failed: vec!["tests/test.py::test_foo".into()],
             eval_exit_reason: Some(crate::run::evaluate::EvalExitReason::Resolved),
+            patch_error_log: None,
         };
         let ft = build_failing_tests(Some(true), Some(&eval_override), None);
         assert!(ft.is_none(), "resolved instances must return None");

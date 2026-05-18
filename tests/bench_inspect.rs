@@ -1784,3 +1784,228 @@ fn failing_test_names_are_redacted_at_view_time() {
         "Failing tests section should still appear:\n{stdout}"
     );
 }
+
+// ── issue-273: patch_error_log in bench inspect ───────────────────────────────
+
+#[test]
+fn patch_apply_failed_with_error_log_renders_log_after_failure_reason() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed",
+                "patch_error_log": "error: patch failed: src/core.py:42\nerror: src/core.py: patch does not apply"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("patch error log:"),
+        "expected 'patch error log:' label:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("error: patch failed: src/core.py:42"),
+        "expected patch error log content:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("error: src/core.py: patch does not apply"),
+        "expected second error line:\n{stdout}"
+    );
+    let failure_pos = stdout
+        .find("patch_apply_failed")
+        .unwrap_or_else(|| panic!("patch_apply_failed not in output:\n{stdout}"));
+    let log_pos = stdout
+        .find("patch error log:")
+        .unwrap_or_else(|| panic!("'patch error log:' not in output:\n{stdout}"));
+    assert!(
+        log_pos > failure_pos,
+        "patch error log should appear after failure-reason line"
+    );
+}
+
+#[test]
+fn patch_apply_failed_without_error_log_shows_not_captured() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("patch error log: <not captured>"),
+        "expected '<not captured>' fallback:\n{stdout}"
+    );
+}
+
+#[test]
+fn patch_error_log_is_absent_for_non_patch_apply_failed_reasons() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "unresolved",
+                "patch_error_log": "this should not appear"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("patch error log:"),
+        "patch error log should not appear for non-patch_apply_failed:\n{stdout}"
+    );
+}
+
+#[test]
+fn patch_error_log_is_redacted_at_view_time() {
+    let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "my-instance", false);
+    std::fs::write(
+        sweep.path().join("evaluation.json"),
+        serde_json::json!({
+            "instances": [{
+                "instance_id": "my-instance",
+                "resolved": false,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "patch_apply_failed",
+                "patch_error_log": format!("error: token={secret} rejected")
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "my-instance",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(secret),
+        "secret should be redacted from patch_error_log:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("patch error log:"),
+        "patch error log section should still appear:\n{stdout}"
+    );
+}
+
+#[test]
+fn patch_error_log_round_trips_through_evaluation_json() {
+    let log_text = "error: patch failed: lib/foo.py:10\nerror: lib/foo.py: patch does not apply";
+    let inst = maxwells_daemon::run::evaluate::InstanceEvaluation {
+        instance_id: "inst-a".into(),
+        resolved: false,
+        runs: 1,
+        resolved_count: 0,
+        pass_at_1: false,
+        tests_passed: vec![],
+        tests_failed: vec![],
+        eval_exit_reason: maxwells_daemon::run::evaluate::EvalExitReason::PatchApplyFailed,
+        eval_log_path: None,
+        patch_stats: None,
+        patch_error_log: Some(log_text.to_owned()),
+    };
+    let json = serde_json::to_string(&inst).unwrap();
+    let back: maxwells_daemon::run::evaluate::InstanceEvaluation =
+        serde_json::from_str(&json).unwrap();
+    assert_eq!(back.patch_error_log.as_deref(), Some(log_text));
+}
+
+#[test]
+fn patch_error_log_is_null_for_non_patch_apply_failed_in_schema() {
+    let inst = maxwells_daemon::run::evaluate::InstanceEvaluation {
+        instance_id: "inst-b".into(),
+        resolved: true,
+        runs: 1,
+        resolved_count: 1,
+        pass_at_1: true,
+        tests_passed: vec![],
+        tests_failed: vec![],
+        eval_exit_reason: maxwells_daemon::run::evaluate::EvalExitReason::Resolved,
+        eval_log_path: None,
+        patch_stats: None,
+        patch_error_log: None,
+    };
+    let json = serde_json::to_string(&inst).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        v.get("patch_error_log").is_none(),
+        "patch_error_log should be absent (not null) for non-patch_apply_failed:\n{json}"
+    );
+}
