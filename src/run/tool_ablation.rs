@@ -361,7 +361,11 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         )));
     }
 
-    let mut instance_ids_csv = instance_ids.join(",");
+    // The swebench instance-id parser splits on both ',' and '\n', so joining
+    // with newlines is safe even for IDs that contain a literal comma
+    // (possible in local JSONL datasets).  Comma-joining would split such IDs
+    // into multiple unknown fragments, silently producing wrong selections.
+    let mut instance_ids_csv = instance_ids.join("\n");
 
     std::fs::create_dir_all(&args.output_dir)?;
     let report_path = args.output_dir.join("tool-ablation.json");
@@ -408,15 +412,28 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                 effective_resume = false;
             }
             Some(prior) => {
-                // Reject prior results when the config path or its content changed.
-                let config_ok = prior.config_path == current_config_path
-                    && (prior.config_sha256.is_empty() || prior.config_sha256 == config_sha256);
-                // Reject prior results when the dataset content changed, even if
-                // the instance IDs look identical.
-                let dataset_ok =
-                    prior.dataset_sha256.is_empty() || prior.dataset_sha256 == dataset_sha256;
+                // A report without stored fingerprints (written by an older
+                // version before SHA-256 was added) cannot be verified against
+                // the current config/dataset.  Treat missing digests as
+                // unverifiable and disable resume rather than silently skipping
+                // the integrity check.
+                let has_config_fp = !prior.config_sha256.is_empty();
+                let has_dataset_fp = !prior.dataset_sha256.is_empty();
 
-                if !config_ok {
+                let config_ok = has_config_fp
+                    && prior.config_path == current_config_path
+                    && prior.config_sha256 == config_sha256;
+                let dataset_ok = has_dataset_fp && prior.dataset_sha256 == dataset_sha256;
+
+                if !has_config_fp || !has_dataset_fp {
+                    tracing::warn!(
+                        "resume: prior tool-ablation.json has no SHA-256 fingerprints \
+                         (written by an older version); ignoring prior results and \
+                         disabling arm resume to avoid mixing unverifiable completed \
+                         arms with the current run"
+                    );
+                    effective_resume = false;
+                } else if !config_ok {
                     tracing::warn!(
                         "resume: config changed since prior tool-ablation.json \
                          (path or content); ignoring prior results and disabling arm resume"
@@ -437,7 +454,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                              using prior list to maintain arm consistency"
                         );
                         instance_ids.clone_from(&prior.instance_ids);
-                        instance_ids_csv = instance_ids.join(",");
+                        instance_ids_csv = instance_ids.join("\n");
                     }
                     for (idx, planned) in arm_plan.iter().enumerate() {
                         if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name)
