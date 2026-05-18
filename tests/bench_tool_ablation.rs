@@ -114,10 +114,7 @@ fn cli_tool_ablation_help_shows_required_flags() {
         "--sample",
         "--seed",
     ] {
-        assert!(
-            stdout.contains(flag),
-            "expected {flag} in help:\n{stdout}"
-        );
+        assert!(stdout.contains(flag), "expected {flag} in help:\n{stdout}");
     }
 }
 
@@ -324,10 +321,9 @@ async fn full_ablation_json_per_arm_has_required_fields() {
     let args = default_ablation_args(config, dataset, output.clone());
     ablation_run(args).await.unwrap();
 
-    let v: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("tool-ablation.json")).unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("tool-ablation.json")).unwrap())
+            .unwrap();
     let arms = v["arms"].as_array().unwrap();
     assert!(!arms.is_empty(), "arms must be non-empty");
     for arm in arms {
@@ -341,10 +337,7 @@ async fn full_ablation_json_per_arm_has_required_fields() {
             arm["step_mean"].is_number(),
             "arm.step_mean required: {arm}"
         );
-        assert!(
-            arm["step_p95"].is_number(),
-            "arm.step_p95 required: {arm}"
-        );
+        assert!(arm["step_p95"].is_number(), "arm.step_p95 required: {arm}");
         assert!(
             arm["delta_resolved_vs_baseline"].is_number(),
             "delta_resolved required: {arm}"
@@ -366,10 +359,9 @@ async fn full_ablation_baseline_has_null_ablated_tool() {
     let args = default_ablation_args(config, dataset, output.clone());
     ablation_run(args).await.unwrap();
 
-    let v: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("tool-ablation.json")).unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("tool-ablation.json")).unwrap())
+            .unwrap();
     let baseline = v["arms"]
         .as_array()
         .unwrap()
@@ -416,10 +408,9 @@ async fn arms_run_against_same_instance_set_as_baseline() {
     args.limit = Some(2);
     ablation_run(args).await.unwrap();
 
-    let ablation_json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("tool-ablation.json")).unwrap(),
-    )
-    .unwrap();
+    let ablation_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("tool-ablation.json")).unwrap())
+            .unwrap();
     let instance_ids = ablation_json["instance_ids"].as_array().unwrap();
     assert_eq!(instance_ids.len(), 2, "limit=2 should select 2 instances");
 
@@ -449,10 +440,7 @@ async fn arms_run_against_same_instance_set_as_baseline() {
 async fn budget_exhaustion_is_not_failure_exit() {
     let tmp = tempfile::tempdir().unwrap();
     let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
-    let config = write_config_with_tools(
-        tmp.path(),
-        &[("tool_a", "echo a"), ("tool_b", "echo b")],
-    );
+    let config = write_config_with_tools(tmp.path(), &[("tool_a", "echo a"), ("tool_b", "echo b")]);
     let output = tmp.path().join("out");
 
     let mut args = default_ablation_args(config, dataset, output.clone());
@@ -473,26 +461,19 @@ async fn budget_exhaustion_is_not_failure_exit() {
         result.err()
     );
 
-    let v: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("tool-ablation.json")).unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("tool-ablation.json")).unwrap())
+            .unwrap();
     let arms = v["arms"].as_array().unwrap();
     let has_skipped = arms.iter().any(|a| a["status"] == "skipped_budget");
-    assert!(
-        has_skipped,
-        "some arms should be skipped_budget: {arms:?}"
-    );
+    assert!(has_skipped, "some arms should be skipped_budget: {arms:?}");
 }
 
 #[tokio::test]
 async fn ablate_flag_restricts_tool_set() {
     let tmp = tempfile::tempdir().unwrap();
     let dataset = minimal_dataset(tmp.path(), &["inst-1"]);
-    let config = write_config_with_tools(
-        tmp.path(),
-        &[("tool_a", "echo a"), ("tool_b", "echo b")],
-    );
+    let config = write_config_with_tools(tmp.path(), &[("tool_a", "echo a"), ("tool_b", "echo b")]);
     let output = tmp.path().join("out");
 
     let mut args = default_ablation_args(config, dataset, output.clone());
@@ -532,10 +513,9 @@ async fn tool_ablation_json_instance_ids_match_arm_results() {
     let args = default_ablation_args(config, dataset, output.clone());
     ablation_run(args).await.unwrap();
 
-    let v: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("tool-ablation.json")).unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("tool-ablation.json")).unwrap())
+            .unwrap();
     let ids: Vec<String> = v["instance_ids"]
         .as_array()
         .unwrap()
@@ -619,7 +599,10 @@ fn cli_render_only_json_outputs_schema_versioned_object() {
         .output()
         .unwrap();
 
-    assert!(result.status.success(), "render-only --format json should succeed");
+    assert!(
+        result.status.success(),
+        "render-only --format json should succeed"
+    );
     let stdout = String::from_utf8(result.stdout).unwrap();
     let v: serde_json::Value =
         serde_json::from_str(&stdout).expect("render-only json output must be valid JSON");

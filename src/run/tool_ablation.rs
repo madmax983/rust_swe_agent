@@ -126,7 +126,12 @@ pub struct ToolAblationReport {
 
 /// Return the list of user-defined tool names from the config (`agent.tools`).
 pub fn enumerate_tools(cfg: &Config) -> Vec<String> {
-    cfg.root.agent.tools.iter().map(|t| t.name.clone()).collect()
+    cfg.root
+        .agent
+        .tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect()
 }
 
 /// Generate the ordered arm plan.

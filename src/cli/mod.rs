@@ -1970,8 +1970,11 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
     if t.render_only {
         let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
         let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
-        let arm_plan =
-            crate::run::tool_ablation::generate_arm_plan(&all_tools, &t.ablate, t.include_pair_ablation);
+        let arm_plan = crate::run::tool_ablation::generate_arm_plan(
+            &all_tools,
+            &t.ablate,
+            t.include_pair_ablation,
+        );
 
         if t.include_pair_ablation {
             let pair_count = arm_plan.iter().filter(|a| a.ablated_pair.is_some()).count();
@@ -2026,7 +2029,10 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
     };
 
     let report = crate::run::tool_ablation::run(ablation_args).await?;
-    print!("{}", crate::run::tool_ablation::render_text_summary(&report));
+    print!(
+        "{}",
+        crate::run::tool_ablation::render_text_summary(&report)
+    );
     Ok(())
 }
 
