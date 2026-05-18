@@ -448,6 +448,7 @@ paths = ["{skill_path}"]
         patch_capture: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
+        interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
     })
     .await
     .unwrap();
@@ -516,6 +517,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         patch_capture: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
+        interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
     })
     .await
     .unwrap();

@@ -9,9 +9,16 @@ use async_trait::async_trait;
 
 use crate::error::Error;
 
+pub mod confirm;
+pub mod confirm_cli;
+pub mod confirm_tui;
 pub mod default;
 pub mod interactive;
 pub mod parse;
+
+pub use confirm::{ConfirmCallback, ConfirmContext, ConfirmDecision, ScriptedConfirmer};
+pub use confirm_cli::StderrCliConfirmer;
+pub use confirm_tui::{RatatuiDashboard, RatatuiDashboardHandle};
 
 pub use default::DefaultAgent;
 pub use interactive::InteractiveAgent;

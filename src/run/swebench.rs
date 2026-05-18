@@ -4015,6 +4015,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            interactive_mode: crate::run::mini::InteractiveMode::Off,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

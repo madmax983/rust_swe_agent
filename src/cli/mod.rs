@@ -250,6 +250,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     };
 
     let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -264,6 +265,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         patch_capture,
         verification_checks,
         verification_timeout_secs: m.verify_timeout_secs,
+        interactive_mode,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -967,6 +969,25 @@ fn swebench_args_from_cmd(
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
     })
+}
+
+/// Map `(interactive, yolo, ui)` CLI flags onto a `run::mini::InteractiveMode`.
+fn resolve_interactive_mode(
+    interactive: bool,
+    yolo: bool,
+    ui: args::UiKind,
+) -> crate::run::mini::InteractiveMode {
+    use crate::run::mini::InteractiveMode;
+    match (interactive, yolo) {
+        (false, false) => InteractiveMode::Off,
+        // `--interactive --yolo` short-circuits to status-line mode — the
+        // operator wants live progress on stderr without prompts.
+        (_, true) => InteractiveMode::YoloStatusOnly,
+        (true, false) => match ui {
+            args::UiKind::Stderr => InteractiveMode::StderrPrompt,
+            args::UiKind::Ratatui => InteractiveMode::Ratatui,
+        },
+    }
 }
 
 fn parse_verify_checks(
@@ -2857,7 +2878,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
         Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        parse_verify_checks, required_github_arg, swebench_args_from_cmd,
+        parse_verify_checks, required_github_arg, resolve_interactive_mode, swebench_args_from_cmd,
         swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
         validate_swebench_github_pr_args,
     };
@@ -3098,6 +3119,9 @@ mod tests {
             },
             render_only: false,
             format: "text".into(),
+            interactive: false,
+            yolo: false,
+            ui: args::UiKind::Stderr,
         }
     }
 
@@ -3192,6 +3216,44 @@ mod tests {
          @@ -1 +1 @@\n\
          -base\n\
          +patched\n"
+    }
+
+    #[test]
+    fn resolve_interactive_mode_off_when_neither_flag_set() {
+        let m = resolve_interactive_mode(false, false, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::Off);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_alone_is_status_only() {
+        let m = resolve_interactive_mode(false, true, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::YoloStatusOnly);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_interactive_picks_ui() {
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::StderrPrompt
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::Ratatui
+        );
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_overrides_interactive() {
+        // `--interactive --yolo` short-circuits to status-line mode for
+        // operators who want live progress but no prompts.
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
     }
 
     #[test]

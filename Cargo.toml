@@ -39,6 +39,10 @@ minijinja = { version = "2", features = ["loader"] }
 clap = { version = "4", features = ["derive", "env"] }
 dialoguer = "0.11"
 indicatif = "0.18.4"
+# `mini --interactive` confirmation prompt: single-key reads on a TTY plus
+# a ratatui dashboard when `--ui ratatui` is selected (issue #312).
+crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.29"
 
 # HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
 # escape hatch if any backend needs raw HTTP).

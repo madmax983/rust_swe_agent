@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::mini::{MiniArgs, run};
+use super::mini::{InteractiveMode, MiniArgs, run};
 use crate::config::Config;
 use crate::error::Error;
 
@@ -31,6 +31,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         patch_capture: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
+        interactive_mode: InteractiveMode::Off,
     };
     run(args).await?;
     println!("hello-world smoke complete");

@@ -395,6 +395,10 @@ pub struct DefaultAgent {
     all_step_responders: Vec<String>,
     /// In-loop stagnation detector; `None` when detection is disabled.
     stagnation_detector: Option<StagnationDetector>,
+    /// Issue #312 — operator confirmation hook. When `Some`, every
+    /// tool/bash action is gated on the operator's y/n/a decision
+    /// between PreToolUse hooks and `env.run`.
+    pub confirm_callback: Option<std::sync::Arc<dyn super::confirm::ConfirmCallback>>,
 }
 
 pub struct DefaultAgentBuilder {
@@ -546,6 +550,7 @@ impl DefaultAgentBuilder {
             last_responding_model: None,
             all_step_responders: Vec::new(),
             stagnation_detector,
+            confirm_callback: None,
         })
     }
 }
@@ -1114,6 +1119,28 @@ impl Agent for DefaultAgent {
             return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
         }
 
+        // 5d. Operator confirmation gate (issue #312). Skipped when the
+        // PreToolUse hook layer already blocked the tool — the operator
+        // never sees a prompt for a command that won't run anyway.
+        if !tool_use_blocked {
+            if let Some(decision) = self.confirm_operator_action(&tool_name, &tool_input).await {
+                match decision {
+                    super::ConfirmDecision::Approve => {}
+                    super::ConfirmDecision::Reject => {
+                        self.record_interactive_rejection(&tool_name, &tool_input);
+                        self.last_measurement_end = Instant::now();
+                        self.steps += 1;
+                        return Ok(StepOutcome::Continue);
+                    }
+                    super::ConfirmDecision::Abort => {
+                        self.record_interactive_abort(&tool_name, &tool_input);
+                        self.finalize_cancelled();
+                        return Ok(StepOutcome::Terminate(ExitReason::UserInterrupt));
+                    }
+                }
+            }
+        }
+
         // Don't compute harness yet — we want post-tool hooks and
         // observation rendering inside *this* turn's harness, not leaked to
         // the next turn (and lost entirely if the run terminates here).
@@ -1603,6 +1630,97 @@ impl DefaultAgent {
         self.trajectory.info.ended_at = Some(chrono::Utc::now().to_rfc3339());
         self.finalize_run_metadata(outcome::ERROR);
         self.emit_run_ended(exit_reason::CANCELLED, None, None);
+    }
+
+    /// Ask the optional `confirm_callback` whether to proceed with the
+    /// proposed tool action. Returns `None` when no callback is
+    /// configured (the unattended path).
+    async fn confirm_operator_action(
+        &self,
+        tool_name: &str,
+        tool_input: &str,
+    ) -> Option<super::ConfirmDecision> {
+        let cb = self.confirm_callback.as_ref()?;
+        let ctx = super::ConfirmContext {
+            tool_name: tool_name.to_owned(),
+            command: self
+                .redactor
+                .redact_text(tool_input, surface::TRAJECTORY)
+                .text,
+            step: self.steps,
+            step_limit: self.config.root.agent.step_limit,
+            cost_usd: self.total_cost_usd,
+            cache_marker: if self.model.supports_explicit_cache() {
+                "cache:explicit"
+            } else {
+                "cache:auto-or-none"
+            },
+        };
+        Some(cb.confirm(&ctx).await)
+    }
+
+    /// Record an operator rejection: surface a synthetic observation to
+    /// the model so it can revise, and tag the trajectory record with
+    /// the structured `interactive_decision: "reject"` event.
+    fn record_interactive_rejection(&mut self, tool_name: &str, tool_input: &str) {
+        let ts = chrono::Utc::now().to_rfc3339();
+        let rejection = "Exit code: 1\nOutput:\nCommand rejected by operator (interactive mode). \
+                         The command was not executed. Please attempt a safer alternative."
+            .to_owned();
+        let obs_msg = Message::user(rejection.clone());
+        self.history.push(obs_msg.clone());
+
+        let redacted_command = self
+            .redactor
+            .redact_text(tool_input, surface::TRAJECTORY)
+            .text;
+        let mut obs_extra = MessageExtra {
+            harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
+            ..MessageExtra::default()
+        };
+        obs_extra.timestamp = Some(ts.clone());
+        obs_extra.other.insert(
+            "interactive_decision".into(),
+            serde_json::Value::String(super::ConfirmDecision::Reject.label().to_owned()),
+        );
+        obs_extra.other.insert(
+            "interactive_proposed_command".into(),
+            serde_json::Value::String(redacted_command),
+        );
+        obs_extra.other.insert(
+            "interactive_tool_name".into(),
+            serde_json::Value::String(tool_name.to_owned()),
+        );
+        obs_extra.other.insert(
+            "interactive_timestamp".into(),
+            serde_json::Value::String(ts),
+        );
+        record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+        self.stream.emit(StreamEvent::Observation {
+            step: self.steps,
+            content: rejection,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    /// Tag the trajectory with the operator's abort decision before the
+    /// shared `finalize_cancelled` path stamps `UserInterrupt`.
+    fn record_interactive_abort(&mut self, tool_name: &str, tool_input: &str) {
+        let ts = chrono::Utc::now().to_rfc3339();
+        let redacted_command = self
+            .redactor
+            .redact_text(tool_input, surface::TRAJECTORY)
+            .text;
+        self.trajectory.info.other.insert(
+            "interactive_abort".into(),
+            serde_json::json!({
+                "decision": super::ConfirmDecision::Abort.label(),
+                "proposed_command": redacted_command,
+                "tool_name": tool_name,
+                "timestamp": ts,
+                "step": self.steps,
+            }),
+        );
     }
 
     #[allow(clippy::cast_precision_loss)]

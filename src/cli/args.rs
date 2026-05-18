@@ -21,6 +21,16 @@ pub enum OnOffArg {
     Off,
 }
 
+/// Confirmation-prompt UI selector for `mini --interactive` (issue #312).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UiKind {
+    /// Single-line stderr prompt — the default. Works over any TTY.
+    Stderr,
+    /// Full-screen ratatui dashboard with a modal prompt and live
+    /// trajectory feed.
+    Ratatui,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct MiniGithubPrArgs {
     /// Open a GitHub pull request from the final patch after a submitted run.
@@ -100,6 +110,7 @@ pub struct SwebenchGithubPrArgs {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MiniCmd {
     /// The task prompt.
     #[arg(long)]
@@ -232,6 +243,23 @@ pub struct MiniCmd {
     /// `json` (stable, schema-versioned, suitable for CI diffing).
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Issue #312 — pause before every bash/tool action and ask the
+    /// operator to approve, reject, or abort. Mutually exclusive with
+    /// `--render-only`. Requires a TTY unless `--yolo` is also set.
+    #[arg(long, default_value_t = false, conflicts_with = "render_only")]
+    pub interactive: bool,
+
+    /// Run unattended but still print the interactive status line on
+    /// each step boundary. Implied by `--interactive --yolo`; usable on
+    /// its own when no prompts are wanted but the status line helps.
+    #[arg(long, default_value_t = false)]
+    pub yolo: bool,
+
+    /// UI for the confirmation prompt: `stderr` (default, single-line)
+    /// or `ratatui` (full-screen dashboard).
+    #[arg(long, value_enum, default_value_t = UiKind::Stderr)]
+    pub ui: UiKind,
 }
 
 #[derive(Debug, Args)]
