@@ -44,7 +44,7 @@ Download the SWE-bench Verified test split JSONL from
 <https://www.swebench.com/SWE-bench/guides/datasets/> and place it at:
 
 ```
-~/.cache/rust-swe-agent/datasets/verified/test.jsonl
+~/.cache/max/datasets/verified/test.jsonl
 ```
 
 **Step 2 – launch a calibration sweep** (no network access required):
@@ -75,13 +75,17 @@ or corrupt — no tasks will be launched.
 
 ## Cache directory
 
-The default cache root is `~/.cache/rust-swe-agent/datasets/`.  Override it
+The default cache root is `~/.cache/max/datasets/`.  Override it
 with `--dataset-cache-dir /custom/path`.
+
+When the default cache root is used, the resolver also checks the legacy
+pre-rename root `~/.cache/rust-swe-agent/datasets/` if the new path misses.
+Explicit `--dataset-cache-dir` values are used as-is.
 
 Layout:
 
 ```
-~/.cache/rust-swe-agent/datasets/
+~/.cache/max/datasets/
   verified/
     test.jsonl      # SWE-bench Verified test split
     dev.jsonl
@@ -107,14 +111,14 @@ bench doctor \
 Output example (cache hit):
 
 ```
-[OK]  dataset.cache   cache hit: ~/.cache/rust-swe-agent/datasets/verified/test.jsonl (500 instances)
+[OK]  dataset.cache   cache hit: ~/.cache/max/datasets/verified/test.jsonl (500 instances)
 [OK]  dataset.parse   valid jsonl, selected 500 instances
 ```
 
 Output example (cache miss):
 
 ```
-[WARN] dataset.cache   cache miss: expected file at ~/.cache/rust-swe-agent/datasets/verified/test.jsonl
+[WARN] dataset.cache   cache miss: expected file at ~/.cache/max/datasets/verified/test.jsonl
 ```
 
 ---
@@ -127,14 +131,14 @@ Every `results.json` records the dataset provenance under `manifest.dataset`:
 {
   "manifest": {
     "dataset": {
-      "path": "/home/user/.cache/rust-swe-agent/datasets/verified/test.jsonl",
+      "path": "/home/user/.cache/max/datasets/verified/test.jsonl",
       "sha256": "abc123...",
       "instance_count": 500,
       "source_kind": "named",
       "alias": "verified",
       "split": "test",
       "source_revision": "sha256:abc123...",
-      "cache_path": "/home/user/.cache/rust-swe-agent/datasets/verified/test.jsonl",
+      "cache_path": "/home/user/.cache/max/datasets/verified/test.jsonl",
       "selected_row_count": 500,
       "post_filter_row_count": 10
     }

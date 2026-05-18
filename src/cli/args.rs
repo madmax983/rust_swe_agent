@@ -56,7 +56,7 @@ pub struct MiniGithubPrArgs {
     pub github_pr_backoff_base_ms: u64,
 
     /// Deterministic head branch prefix for agent PRs.
-    #[arg(long, default_value = "rust-swe-agent")]
+    #[arg(long, default_value = "max")]
     pub github_pr_branch_prefix: String,
 }
 
@@ -95,7 +95,7 @@ pub struct SwebenchGithubPrArgs {
     pub github_pr_backoff_base_ms: u64,
 
     /// Deterministic head branch prefix for agent PRs.
-    #[arg(long, default_value = "rust-swe-agent")]
+    #[arg(long, default_value = "max")]
     pub github_pr_branch_prefix: String,
 }
 
@@ -803,7 +803,7 @@ pub struct SwebenchCmd {
     pub split: Option<String>,
 
     /// Directory for the named-dataset on-disk cache.
-    /// Defaults to `~/.cache/rust-swe-agent/datasets`.
+    /// Defaults to `~/.cache/max/datasets`.
     #[arg(long, value_name = "DIR")]
     pub dataset_cache_dir: Option<PathBuf>,
 

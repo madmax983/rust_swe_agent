@@ -1955,50 +1955,94 @@ fn message_is_submit_action(message: &crate::trajectory::MessageRecord) -> bool 
 fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
     let mut env = BTreeMap::new();
     let env_context = capped_env_context(context);
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_HOOK_NAME",
         "RUST_SWE_AGENT_HOOK_NAME",
         &env_context["hook"]["name"],
     );
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_HOOK_PHASE",
         "RUST_SWE_AGENT_HOOK_PHASE",
         &env_context["hook"]["phase"],
     );
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TOOL_NAME",
         "RUST_SWE_AGENT_TOOL_NAME",
         &env_context["tool"]["name"],
     );
-    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
-    insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
-    insert_json_str_untruncated(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TASK",
+        "RUST_SWE_AGENT_TASK",
+        &env_context["task"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_MODEL",
+        "RUST_SWE_AGENT_MODEL",
+        &env_context["model"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_STEP",
+        "RUST_SWE_AGENT_STEP",
+        &env_context["step"],
+    );
+    insert_branded_json_str_untruncated(
+        &mut env,
+        "MAXWELL_COMMAND",
+        "RUST_SWE_AGENT_COMMAND",
+        &context["command"],
+    );
+    insert_branded_json_str_untruncated(
+        &mut env,
+        "MAXWELL_TOOL_INPUT",
         "RUST_SWE_AGENT_TOOL_INPUT",
         &context["tool_input"],
     );
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_EXIT_CODE",
         "RUST_SWE_AGENT_EXIT_CODE",
         &env_context["returncode"],
     );
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STDOUT", &env_context["stdout"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STDERR", &env_context["stderr"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_OUTPUT", &env_context["output"]);
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_STDOUT",
+        "RUST_SWE_AGENT_STDOUT",
+        &env_context["stdout"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_STDERR",
+        "RUST_SWE_AGENT_STDERR",
+        &env_context["stderr"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_OUTPUT",
+        "RUST_SWE_AGENT_OUTPUT",
+        &env_context["output"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_TIMED_OUT",
         "RUST_SWE_AGENT_TIMED_OUT",
         &env_context["timed_out"],
     );
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TOTAL_COST_USD",
         "RUST_SWE_AGENT_TOTAL_COST_USD",
         &env_context["total_cost_usd"],
     );
-    env.insert(
-        "RUST_SWE_AGENT_CONTEXT_JSON".into(),
+    insert_branded_value(
+        &mut env,
+        "MAXWELL_CONTEXT_JSON",
+        "RUST_SWE_AGENT_CONTEXT_JSON",
         serde_json::to_string(&env_context)?,
     );
     Ok(env)
@@ -2007,42 +2051,84 @@ fn tool_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>
 fn tool_process_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
     let mut env = BTreeMap::new();
     let env_context = capped_env_context(context);
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TOOL_NAME",
         "RUST_SWE_AGENT_TOOL_NAME",
         &env_context["tool"]["name"],
     );
-    insert_json_str(&mut env, "RUST_SWE_AGENT_TASK", &env_context["task"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_MODEL", &env_context["model"]);
-    insert_json_str(&mut env, "RUST_SWE_AGENT_STEP", &env_context["step"]);
-    insert_json_str_untruncated(&mut env, "RUST_SWE_AGENT_COMMAND", &context["command"]);
-    insert_json_str_untruncated(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TASK",
+        "RUST_SWE_AGENT_TASK",
+        &env_context["task"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_MODEL",
+        "RUST_SWE_AGENT_MODEL",
+        &env_context["model"],
+    );
+    insert_branded_json_str(
+        &mut env,
+        "MAXWELL_STEP",
+        "RUST_SWE_AGENT_STEP",
+        &env_context["step"],
+    );
+    insert_branded_json_str_untruncated(
+        &mut env,
+        "MAXWELL_COMMAND",
+        "RUST_SWE_AGENT_COMMAND",
+        &context["command"],
+    );
+    insert_branded_json_str_untruncated(
+        &mut env,
+        "MAXWELL_TOOL_INPUT",
         "RUST_SWE_AGENT_TOOL_INPUT",
         &context["tool_input"],
     );
-    insert_json_str(
+    insert_branded_json_str(
         &mut env,
+        "MAXWELL_TOTAL_COST_USD",
         "RUST_SWE_AGENT_TOTAL_COST_USD",
         &env_context["total_cost_usd"],
     );
-    env.insert(
-        "RUST_SWE_AGENT_CONTEXT_JSON".into(),
+    insert_branded_value(
+        &mut env,
+        "MAXWELL_CONTEXT_JSON",
+        "RUST_SWE_AGENT_CONTEXT_JSON",
         serde_json::to_string(&env_context)?,
     );
     Ok(env)
 }
 
-fn insert_json_str(env: &mut BTreeMap<String, String>, key: &str, value: &serde_json::Value) {
-    env.insert(key.into(), truncate_for_hook_env(&json_str(value)));
-}
-
-fn insert_json_str_untruncated(
+fn insert_branded_json_str(
     env: &mut BTreeMap<String, String>,
-    key: &str,
+    maxwell_key: &str,
+    legacy_key: &str,
     value: &serde_json::Value,
 ) {
-    env.insert(key.into(), json_str(value));
+    let value = truncate_for_hook_env(&json_str(value));
+    insert_branded_value(env, maxwell_key, legacy_key, value);
+}
+
+fn insert_branded_json_str_untruncated(
+    env: &mut BTreeMap<String, String>,
+    maxwell_key: &str,
+    legacy_key: &str,
+    value: &serde_json::Value,
+) {
+    insert_branded_value(env, maxwell_key, legacy_key, json_str(value));
+}
+
+fn insert_branded_value(
+    env: &mut BTreeMap<String, String>,
+    maxwell_key: &str,
+    legacy_key: &str,
+    value: String,
+) {
+    env.insert(maxwell_key.into(), value.clone());
+    env.insert(legacy_key.into(), value);
 }
 
 fn json_str(value: &serde_json::Value) -> String {

@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use rust_swe_agent::run::reproduce::{DriftSeverity, compare_manifests, load_manifest_from_sweep};
+use maxwells_daemon::run::reproduce::{DriftSeverity, compare_manifests, load_manifest_from_sweep};
 
 const CURRENT_FIXTURE: &str = "tests/fixtures/reproduce/current_sweep";
 const LEGACY_FIXTURE: &str = "tests/fixtures/reproduce/legacy_sweep";

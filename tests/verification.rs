@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::{
+use maxwells_daemon::{
     config::Config,
     run::mini::{MiniArgs, run},
     trajectory::{VerificationCheck, verification_status},
@@ -285,7 +285,7 @@ async fn timed_out_check_treated_as_failure() {
 /// AC: Ctrl-C during verification produces `unverified`, not `verification_failed`.
 #[tokio::test]
 async fn cancellation_during_verification_sets_unverified() {
-    use rust_swe_agent::env::CancellationToken;
+    use maxwells_daemon::env::CancellationToken;
 
     let work = tempfile::tempdir().unwrap();
     // Pre-fire the cancellation token so the first verification check is
@@ -345,7 +345,7 @@ async fn large_verification_output_is_truncated() {
 /// inspect renders timed_out=true with a "(timed_out)" note.
 #[test]
 fn inspect_shows_timed_out_note_in_verification_detail() {
-    use rust_swe_agent::trajectory::{Trajectory, VerificationResult, outcome};
+    use maxwells_daemon::trajectory::{Trajectory, VerificationResult, outcome};
 
     let sweep = tempfile::tempdir().unwrap();
     let mut t = Trajectory::new();
@@ -389,7 +389,7 @@ fn inspect_shows_timed_out_note_in_verification_detail() {
 /// AC: `bench inspect` shows verification summary in the run header.
 #[test]
 fn inspect_shows_verification_summary_in_header() {
-    use rust_swe_agent::trajectory::{Trajectory, VerificationResult, outcome};
+    use maxwells_daemon::trajectory::{Trajectory, VerificationResult, outcome};
 
     let sweep = tempfile::tempdir().unwrap();
     let mut t = Trajectory::new();
@@ -445,7 +445,7 @@ fn inspect_shows_verification_summary_in_header() {
 /// AC: inspect output for unverified status (no checks supplied).
 #[test]
 fn inspect_shows_unverified_status_in_header() {
-    use rust_swe_agent::trajectory::{Trajectory, outcome};
+    use maxwells_daemon::trajectory::{Trajectory, outcome};
 
     let sweep = tempfile::tempdir().unwrap();
     let mut t = Trajectory::new();
@@ -488,7 +488,7 @@ fn inspect_shows_unverified_status_in_header() {
 /// AC: verification evidence is included in machine-readable run artifacts.
 #[test]
 fn inspect_json_includes_verification_evidence() {
-    use rust_swe_agent::trajectory::{Trajectory, VerificationResult, outcome};
+    use maxwells_daemon::trajectory::{Trajectory, VerificationResult, outcome};
 
     let sweep = tempfile::tempdir().unwrap();
     let mut t = Trajectory::new();

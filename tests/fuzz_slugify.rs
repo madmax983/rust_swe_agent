@@ -1,5 +1,5 @@
+use maxwells_daemon::run::mini::slugify;
 use proptest::prelude::*;
-use rust_swe_agent::run::mini::slugify;
 
 proptest! {
     #[test]

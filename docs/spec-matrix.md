@@ -7,7 +7,7 @@ distinct (model, config) pair defined in a TOML manifest file.
 ## CLI
 
 ```bash
-rust-swe-agent bench matrix \
+max bench matrix \
   --config matrix.toml \
   --dataset-path data/swe-bench-verified.jsonl \
   --output runs/matrix-2025-01 \

@@ -3,7 +3,7 @@
 //! `bollard` crates pull in.
 //!
 //! `start()` does a `docker version` preflight, then `docker run -d --rm`
-//! with a `rust-swe-agent=1` label.
+//! with a `maxwells-daemon=1` label.
 //! `run()` calls `docker exec`.
 //! `shutdown()` calls `docker rm -f`. Async path.
 //! `Drop` calls `docker rm -f` synchronously, best-effort. Cannot await.
@@ -11,6 +11,7 @@
 //! has too.
 
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::process::Stdio as StdStdio;
@@ -25,7 +26,8 @@ use super::{Environment, RunRequest, RunResult};
 use crate::error::EnvError;
 use crate::ids::ContainerId;
 
-pub const LABEL: &str = "rust-swe-agent=1";
+pub const LABEL: &str = "maxwells-daemon=1";
+const LEGACY_LABEL: &str = "rust-swe-agent=1";
 const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
 
 type PipeCollector = JoinHandle<Result<(), EnvError>>;
@@ -398,26 +400,33 @@ impl Drop for DockerEnvironment {
     }
 }
 
-/// Reap any container with our label. Called by `rust-swe-agent cleanup`.
+/// Reap any container with our current or legacy label. Called by `max cleanup`.
 /// Returns the list of reaped container ids.
 pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
     preflight().await?;
-    let list = Command::new("docker")
-        .args(["ps", "-q", "--filter", &format!("label={LABEL}")])
-        .stdin(StdStdio::null())
-        .output()
-        .await
-        .map_err(EnvError::Io)?;
-    if !list.status.success() {
-        return Err(EnvError::CommandFailed(
-            String::from_utf8_lossy(&list.stderr).trim().to_string(),
-        ));
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    for label in cleanup_labels() {
+        let list = Command::new("docker")
+            .args(["ps", "-q", "--filter", &format!("label={label}")])
+            .stdin(StdStdio::null())
+            .output()
+            .await
+            .map_err(EnvError::Io)?;
+        if !list.status.success() {
+            return Err(EnvError::CommandFailed(
+                String::from_utf8_lossy(&list.stderr).trim().to_string(),
+            ));
+        }
+        for id in String::from_utf8_lossy(&list.stdout)
+            .lines()
+            .filter(|s| !s.is_empty())
+        {
+            if seen.insert(id.to_owned()) {
+                ids.push(id.to_owned());
+            }
+        }
     }
-    let ids: Vec<String> = String::from_utf8_lossy(&list.stdout)
-        .lines()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect();
     if ids.is_empty() {
         return Ok(ids);
     }
@@ -436,6 +445,10 @@ pub async fn cleanup_orphans() -> Result<Vec<String>, EnvError> {
         ));
     }
     Ok(ids)
+}
+
+fn cleanup_labels() -> [&'static str; 2] {
+    [LABEL, LEGACY_LABEL]
 }
 
 #[allow(dead_code)]
@@ -472,5 +485,10 @@ mod tests {
         assert!(env.mark_shutdown_after_remove(Ok(())).is_ok());
 
         assert!(env.shutdown_sent.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cleanup_labels_cover_current_and_legacy_rename_labels() {
+        assert_eq!(cleanup_labels(), [LABEL, "rust-swe-agent=1"]);
     }
 }

@@ -13,11 +13,11 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::Config;
+use maxwells_daemon::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{FailureCategory, Trajectory, outcome};
+use maxwells_daemon::trajectory::{FailureCategory, Trajectory, outcome};
 
 /// Initialize a git repo at `dir` with one tracked file at the base
 /// commit. The file's existence is what makes the working tree's
@@ -101,7 +101,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -115,7 +115,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -206,7 +206,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -220,7 +220,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -308,7 +308,7 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -322,7 +322,7 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -403,7 +403,7 @@ async fn missing_workdir_marks_outcome_as_error() {
     );
     let cfg = Config::from_toml_str(&toml).unwrap();
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -417,7 +417,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,

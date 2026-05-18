@@ -35,7 +35,7 @@
   },
   "manifest": {
     "harness": {
-      "name": "rust_swe_agent",
+      "name": "maxwells-daemon",
       "version": "fixture",
       "git_sha": "fixture",
       "git_dirty": false,

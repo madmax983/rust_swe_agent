@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::artifact::ArtifactSchemaVersion;
-use rust_swe_agent::run::evaluate::EvaluationResults;
-use rust_swe_agent::run::inspect::{InspectReport, render_text};
-use rust_swe_agent::trajectory::Trajectory;
-use rust_swe_agent::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::artifact::ArtifactSchemaVersion;
+use maxwells_daemon::run::evaluate::EvaluationResults;
+use maxwells_daemon::run::inspect::{InspectReport, render_text};
+use maxwells_daemon::trajectory::Trajectory;
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment, Message,
     MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, ToolHookCfg,
 };
@@ -101,14 +101,12 @@ impl Model for SlowModel {
         &self,
         _messages: &[Message],
         _opts: &QueryOpts,
-    ) -> Result<ModelResponse, rust_swe_agent::ModelError> {
+    ) -> Result<ModelResponse, maxwells_daemon::ModelError> {
         tokio::time::sleep(self.model_delay).await;
-        let content = self
-            .responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| rust_swe_agent::ModelError::Malformed("scripted: no more".into()))?;
+        let content =
+            self.responses.lock().unwrap().pop_front().ok_or_else(|| {
+                maxwells_daemon::ModelError::Malformed("scripted: no more".into())
+            })?;
         Ok(ModelResponse {
             content,
             usage: ModelUsage {
@@ -119,6 +117,14 @@ impl Model for SlowModel {
             responding_model: None,
             fallback_attempts: vec![],
         })
+    }
+}
+
+fn latency_sleep_command(ms: u64) -> String {
+    if cfg!(windows) {
+        format!("powershell -NoProfile -Command \"Start-Sleep -Milliseconds {ms}\"")
+    } else {
+        format!("sleep {}.{:03}", ms / 1000, ms % 1000)
     }
 }
 
@@ -175,7 +181,7 @@ async fn observation_turn_records_tool_latency_when_bash_runs() {
 
     let model = Arc::new(SlowModel::new(
         vec![
-            "```bash\nsleep 0.1\n```".into(),
+            format!("```bash\n{}\n```", latency_sleep_command(150)),
             "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
         ],
         Duration::from_millis(5),
@@ -298,7 +304,7 @@ async fn slow_post_tool_hook_time_is_attributed_to_current_obs_turn() {
     cfg.root.agent.step_limit = 5;
     cfg.root.agent.hooks.post_tool_use = vec![ToolHookCfg {
         name: "slow-post".into(),
-        command: "sleep 0.1".into(),
+        command: latency_sleep_command(150),
         timeout_secs: Some(5),
     }];
 
@@ -352,7 +358,7 @@ async fn slow_pre_tool_hook_makes_harness_overhead_dominate_observation_turn() {
     cfg.root.agent.step_limit = 5;
     cfg.root.agent.hooks.pre_tool_use = vec![ToolHookCfg {
         name: "slow-stub".into(),
-        command: "sleep 0.1".into(),
+        command: latency_sleep_command(150),
         timeout_secs: Some(5),
     }];
 
@@ -423,17 +429,17 @@ fn inspect_report_aggregates_stage_totals() {
     // can also load a specific .traj.json directly. We bypass load_sweep here
     // by using build_instance_report through public `run`.
 
-    let args = rust_swe_agent::run::inspect::InspectArgs {
+    let args = maxwells_daemon::run::inspect::InspectArgs {
         sweep: sweep.to_path_buf(),
         instance: Some("aa".into()),
         filter: None,
         full: true,
         show_expected: false,
     };
-    let out = rust_swe_agent::run::inspect::run(&args).unwrap();
+    let out = maxwells_daemon::run::inspect::run(&args).unwrap();
     let report: &InspectReport = match &out {
-        rust_swe_agent::run::inspect::InspectOutput::Instance(r) => r,
-        rust_swe_agent::run::inspect::InspectOutput::Summary(_) => {
+        maxwells_daemon::run::inspect::InspectOutput::Instance(r) => r,
+        maxwells_daemon::run::inspect::InspectOutput::Summary(_) => {
             panic!("expected instance report")
         }
     };
@@ -464,14 +470,14 @@ fn legacy_trajectory_inspect_renders_latency_unknown() {
     let sweep = tmp.path();
     std::fs::write(sweep.join("legacy.traj.json"), traj_json).unwrap();
 
-    let args = rust_swe_agent::run::inspect::InspectArgs {
+    let args = maxwells_daemon::run::inspect::InspectArgs {
         sweep: sweep.to_path_buf(),
         instance: Some("legacy".into()),
         filter: None,
         full: true,
         show_expected: false,
     };
-    let out = rust_swe_agent::run::inspect::run(&args).unwrap();
+    let out = maxwells_daemon::run::inspect::run(&args).unwrap();
     let text = render_text(&out);
     assert!(
         text.contains("latency:") && text.contains("unknown"),

@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
     ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,
     SWEEP_STATUS_COMPLETED, SweepResults,
 };
-use rust_swe_agent::trajectory::{FailureCategory, outcome};
+use maxwells_daemon::trajectory::{FailureCategory, outcome};
 
 mod support;
 use support::binary_path;
@@ -128,7 +128,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
         manifest: Some(ProvenanceManifest {
             purpose: None,
             harness: HarnessManifest {
-                name: "rust_swe_agent".into(),
+                name: "maxwells-daemon".into(),
                 version: "test".into(),
                 git_sha: None,
                 git_dirty: None,

@@ -9,7 +9,7 @@ Slack thread, or paper appendix without any copy-paste-massage from JSON.
 ## Usage
 
 ```
-rust-swe-agent bench report \
+max bench report \
   --sweep ./my-sweep \
   --output ./my-sweep/report.md
 ```
@@ -17,7 +17,7 @@ rust-swe-agent bench report \
 With an optional baseline for delta comparison:
 
 ```
-rust-swe-agent bench report \
+max bench report \
   --sweep ./my-sweep \
   --output ./my-sweep/report.md \
   --baseline ./baseline-sweep
@@ -113,7 +113,7 @@ The report header includes the artifact schema version of the source sweep
 Generate a markdown report:
 
 ```sh
-rust-swe-agent bench report \
+max bench report \
   --sweep ./runs/sweep-2026-05-01 \
   --output ./runs/sweep-2026-05-01/report.md
 ```
@@ -121,7 +121,7 @@ rust-swe-agent bench report \
 Generate an HTML report with 20 top failures:
 
 ```sh
-rust-swe-agent bench report \
+max bench report \
   --sweep ./runs/sweep-2026-05-01 \
   --output ./runs/sweep-2026-05-01/report.html \
   --format html \
@@ -131,7 +131,7 @@ rust-swe-agent bench report \
 Compare against a baseline:
 
 ```sh
-rust-swe-agent bench report \
+max bench report \
   --sweep ./runs/candidate \
   --baseline ./runs/baseline \
   --output ./runs/candidate/report.md

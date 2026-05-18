@@ -9,7 +9,7 @@
 
 use std::process::Command;
 
-use rust_swe_agent::config::Config;
+use maxwells_daemon::config::Config;
 
 mod support;
 

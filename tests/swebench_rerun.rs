@@ -7,12 +7,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::Config;
+use maxwells_daemon::run::swebench::{
     SwebenchArgs, SweepResults, patch_path_for_run, predictions_path_for_run, run,
     trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
+use maxwells_daemon::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
 
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
     let mut s = String::new();
@@ -59,7 +59,7 @@ fn config_with_workdir(dir: &Path) -> Config {
 
 fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Config) -> SwebenchArgs {
     SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 2,
@@ -73,7 +73,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,

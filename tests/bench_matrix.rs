@@ -10,10 +10,10 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::model::ModelUsage;
-use rust_swe_agent::run::dataset::DatasetSource;
-use rust_swe_agent::run::matrix::{ArmDef, MatrixArgs, MatrixManifest, run as matrix_run};
-use rust_swe_agent::run::swebench::StratifyMode;
+use maxwells_daemon::model::ModelUsage;
+use maxwells_daemon::run::dataset::DatasetSource;
+use maxwells_daemon::run::matrix::{ArmDef, MatrixArgs, MatrixManifest, run as matrix_run};
+use maxwells_daemon::run::swebench::StratifyMode;
 
 mod support;
 use support::binary_path;
@@ -240,7 +240,7 @@ fn manifest_parses_multiple_arms() {
 
 #[test]
 fn validate_arms_accepts_unique_names() {
-    use rust_swe_agent::run::matrix::validate_arms;
+    use maxwells_daemon::run::matrix::validate_arms;
     let arms = vec![
         ArmDef {
             name: "alpha".into(),
@@ -258,7 +258,7 @@ fn validate_arms_accepts_unique_names() {
 
 #[test]
 fn validate_arms_rejects_duplicate_names() {
-    use rust_swe_agent::run::matrix::validate_arms;
+    use maxwells_daemon::run::matrix::validate_arms;
     let arms = vec![
         ArmDef {
             name: "same".into(),
@@ -285,7 +285,7 @@ fn validate_arms_rejects_duplicate_names() {
 
 #[test]
 fn validate_arms_rejects_empty_name() {
-    use rust_swe_agent::run::matrix::validate_arms;
+    use maxwells_daemon::run::matrix::validate_arms;
     let arms = vec![ArmDef {
         name: String::new(),
         model: "m1".into(),
@@ -298,7 +298,7 @@ fn validate_arms_rejects_empty_name() {
 
 #[test]
 fn validate_arms_rejects_name_with_path_separator() {
-    use rust_swe_agent::run::matrix::validate_arms;
+    use maxwells_daemon::run::matrix::validate_arms;
     for bad_name in ["/evil", "arm/../attack", "arm\\win"] {
         let arms = vec![ArmDef {
             name: bad_name.into(),
@@ -315,7 +315,7 @@ fn validate_arms_rejects_name_with_path_separator() {
 
 #[test]
 fn validate_arms_rejects_empty_arm_list() {
-    use rust_swe_agent::run::matrix::validate_arms;
+    use maxwells_daemon::run::matrix::validate_arms;
     let err = validate_arms(&[]).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("arm") || msg.contains("empty"), "{err}");

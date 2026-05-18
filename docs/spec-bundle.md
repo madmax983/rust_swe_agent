@@ -7,9 +7,9 @@
 ## Synopsis
 
 ```bash
-rust-swe-agent bench bundle --sweep runs/sweep --output sweep.tar.gz
-rust-swe-agent bench bundle --sweep runs/sweep --instance repo__id-123 --output one.tar.gz
-rust-swe-agent bench bundle --verify sweep.tar.gz
+max bench bundle --sweep runs/sweep --output sweep.tar.gz
+max bench bundle --sweep runs/sweep --instance repo__id-123 --output one.tar.gz
+max bench bundle --verify sweep.tar.gz
 ```
 
 `--instance <ID>` narrows the archive to that instance's trajectory, patch if

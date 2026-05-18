@@ -8,14 +8,14 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rust_swe_agent::run::compare::{CompareArgs, CompareFormat, EvaluatorProvenanceStatus};
-use rust_swe_agent::run::evaluate::{
+use maxwells_daemon::run::compare::{CompareArgs, CompareFormat, EvaluatorProvenanceStatus};
+use maxwells_daemon::run::evaluate::{
     EvalExitReason, EvaluationResults, EvaluatorProvenance, InstanceEvaluation, SbCliProvenance,
     SourceReportEntry,
 };
-use rust_swe_agent::run::inspect::SummaryReport;
-use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::outcome;
+use maxwells_daemon::run::inspect::SummaryReport;
+use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
+use maxwells_daemon::trajectory::outcome;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,7 +82,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
 fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
     let sweep = SweepResults {
         total: instances.len(),
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -126,9 +126,9 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         retry_history: vec![],
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();
-    rust_swe_agent::artifact::to_writer_pretty(
+    maxwells_daemon::artifact::to_writer_pretty(
         file,
-        rust_swe_agent::artifact::ArtifactKind::SweepResults,
+        maxwells_daemon::artifact::ArtifactKind::SweepResults,
         &sweep,
     )
     .unwrap();
@@ -136,9 +136,9 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
 
 fn write_evaluation(dir: &Path, eval: &EvaluationResults) {
     let file = std::fs::File::create(dir.join("evaluation.json")).unwrap();
-    rust_swe_agent::artifact::to_writer_pretty(
+    maxwells_daemon::artifact::to_writer_pretty(
         file,
-        rust_swe_agent::artifact::ArtifactKind::EvaluationResults,
+        maxwells_daemon::artifact::ArtifactKind::EvaluationResults,
         eval,
     )
     .unwrap();
@@ -151,7 +151,7 @@ fn compare_args(baseline: &Path, candidate: &Path) -> CompareArgs {
         format: CompareFormat::Text,
         max_regressions: None,
         max_patch_size_regression_pct: None,
-        breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         min_delta_pp: 0.0,
         cost_attribution: false,
         cost_attribution_min_delta_usd: 0.0,
@@ -317,7 +317,7 @@ fn compare_report_has_provenance_status_field() {
 
     // No evaluation.json in either dir → provenance unavailable
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -367,7 +367,7 @@ fn compare_matching_provenance_gives_matching_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -428,7 +428,7 @@ fn compare_backend_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -491,7 +491,7 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -543,7 +543,7 @@ fn compare_dataset_split_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -593,7 +593,7 @@ fn compare_one_side_missing_provenance_gives_unavailable() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -618,7 +618,7 @@ fn compare_report_json_includes_provenance_status() {
     write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     let json = report.to_json_pretty().unwrap();
     assert!(
@@ -695,7 +695,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
     let dir = tempfile::tempdir().unwrap();
 
     // Write a traj so inspect can find instances
-    let mut traj = rust_swe_agent::trajectory::Trajectory::new();
+    let mut traj = maxwells_daemon::trajectory::Trajectory::new();
     traj.info.outcome = Some(outcome::SUBMITTED.into());
     std::fs::write(
         dir.path().join("task-a.traj.json"),
@@ -724,7 +724,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
     });
     write_evaluation(dir.path(), &eval);
 
-    let args = rust_swe_agent::run::inspect::InspectArgs {
+    let args = maxwells_daemon::run::inspect::InspectArgs {
         sweep: dir.path().to_path_buf(),
         instance: None,
         filter: Some("resolved=true".into()),
@@ -732,9 +732,9 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
         show_expected: false,
     };
 
-    let output = rust_swe_agent::run::inspect::run(&args).unwrap();
+    let output = maxwells_daemon::run::inspect::run(&args).unwrap();
     match output {
-        rust_swe_agent::run::inspect::InspectOutput::Summary(summary) => {
+        maxwells_daemon::run::inspect::InspectOutput::Summary(summary) => {
             assert!(
                 summary.evaluator_provenance.is_some(),
                 "SummaryReport should carry provenance from evaluation.json"
@@ -743,7 +743,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
             assert_eq!(prov.backend, "none");
             assert_eq!(prov.dataset_subset.as_deref(), Some("swe-bench-m"));
         }
-        rust_swe_agent::run::inspect::InspectOutput::Instance(_) => {
+        maxwells_daemon::run::inspect::InspectOutput::Instance(_) => {
             panic!("expected Summary output, got Instance")
         }
     }
@@ -778,8 +778,8 @@ fn inspect_text_renders_provenance_summary() {
         rows: vec![],
     };
 
-    let output = rust_swe_agent::run::inspect::InspectOutput::Summary(Box::new(report));
-    let text = rust_swe_agent::run::inspect::render_text(&output);
+    let output = maxwells_daemon::run::inspect::InspectOutput::Summary(Box::new(report));
+    let text = maxwells_daemon::run::inspect::render_text(&output);
 
     assert!(
         text.contains("evaluator_provenance"),
@@ -798,7 +798,7 @@ fn sb_cli_provenance_secrets_are_redacted() {
     // Verify that redaction utilities can be applied to command strings.
     // We simulate the kind of redaction that should happen when recording
     // sb-cli command shapes that might contain API keys.
-    let redactor = rust_swe_agent::redaction::Redactor::default_enabled();
+    let redactor = maxwells_daemon::redaction::Redactor::default_enabled();
 
     let cmd_with_secret = "sb-cli submit swe-bench-m dev --predictions_path /tmp/p.jsonl --api_key sk-ant-secret123456789ABCDEF";
     let outcome = redactor.redact_text(cmd_with_secret, "evaluator_provenance");
@@ -886,7 +886,7 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -916,7 +916,7 @@ fn compare_both_missing_evaluation_gives_unavailable() {
     // No evaluation.json in either dir
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -966,7 +966,7 @@ fn compare_run_id_diff_does_not_warn() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -1027,7 +1027,7 @@ fn compare_timeout_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -1091,7 +1091,7 @@ fn compare_parallel_mismatch_gives_mismatched_status() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
 
     assert_eq!(
         report.evaluator_provenance_status,
@@ -1122,7 +1122,7 @@ fn compare_human_table_shows_provenance_status() {
     // No evaluation.json → Unavailable
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
     let text = report.human_table();
 
     assert!(
@@ -1182,7 +1182,7 @@ fn compare_human_table_shows_provenance_warnings() {
     write_evaluation(dir_c.path(), &eval_c);
 
     let report =
-        rust_swe_agent::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
     let text = report.human_table();
 
     assert!(

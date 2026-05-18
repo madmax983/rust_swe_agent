@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::error::EnvError;
-use rust_swe_agent::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::error::EnvError;
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, FailureCategory, RunRequest,
     RunResult,
 };
@@ -105,7 +105,7 @@ async fn keep_last_observations_elides_older_from_model_prompt() {
         .filter(|m| {
             matches!(
                 m.role,
-                rust_swe_agent::model::Role::User | rust_swe_agent::model::Role::Tool
+                maxwells_daemon::model::Role::User | maxwells_daemon::model::Role::Tool
             )
         })
         .collect();

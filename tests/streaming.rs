@@ -11,16 +11,16 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::stream::{BroadcastSink, SseServer, StreamEvent, StreamSink};
-use rust_swe_agent::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::stream::{BroadcastSink, SseServer, StreamEvent, StreamSink};
+use maxwells_daemon::{
     Agent, Config, DeterministicModel, Environment, ExitReason, LocalEnvironment,
 };
 
 fn make_agent_with_sink(
     responses: Vec<String>,
     sink: Arc<dyn StreamSink>,
-) -> rust_swe_agent::DefaultAgent {
+) -> maxwells_daemon::DefaultAgent {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
     let model = Arc::new(DeterministicModel::new(responses));

@@ -1,10 +1,10 @@
 # 🔭 Vantage: Spec for GitHub App Integration
 
 ## 👤 User Story
-"As a repository maintainer, I want to install rust_swe_agent as a GitHub App on my repository, so that I can automatically trigger agent runs by assigning issues or tagging the bot in PRs."
+"As a repository maintainer, I want to install maxwells-daemon as a GitHub App on my repository, so that I can automatically trigger agent runs by assigning issues or tagging the bot in PRs."
 
 ## ❓ The "So What?" (Business Problem)
-Currently, users must run `rust_swe_agent` locally or in a self-hosted CI pipeline to analyze issues or review code. This creates friction, requiring infrastructure setup and terminal access. A GitHub App integration allows teams to interact with the agent natively within their existing workflow. By lowering the barrier to entry, we increase adoption and daily active usage, turning the agent from a developer tool into an embedded team member.
+Currently, users must run `maxwells-daemon` locally or in a self-hosted CI pipeline to analyze issues or review code. This creates friction, requiring infrastructure setup and terminal access. A GitHub App integration allows teams to interact with the agent natively within their existing workflow. By lowering the barrier to entry, we increase adoption and daily active usage, turning the agent from a developer tool into an embedded team member.
 
 ## 🎯 Metric Definition
 Success =

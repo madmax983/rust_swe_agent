@@ -1,5 +1,5 @@
+use maxwells_daemon::model::litellm::is_anthropic_model;
 use proptest::prelude::*;
-use rust_swe_agent::model::litellm::is_anthropic_model;
 
 proptest! {
     #[test]

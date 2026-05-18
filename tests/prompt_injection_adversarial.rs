@@ -16,8 +16,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
-use rust_swe_agent::prompt_guard::{PromptGuard, UntrustedKind};
+use maxwells_daemon::policy::{PolicyDecision, PolicyEngine, PolicyProfile};
+use maxwells_daemon::prompt_guard::{PromptGuard, UntrustedKind};
 
 // ── PromptGuard: XML envelope wrapping ───────────────────────────────────────
 

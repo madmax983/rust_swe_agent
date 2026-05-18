@@ -148,7 +148,7 @@ pub enum ArtifactSchemaError {
         found: ArtifactKind,
     },
     #[error(
-        "{path}: unsupported future artifact schema for {kind}: version {version}; this binary supports major {supported_major}. Re-run with a newer rust-swe-agent."
+        "{path}: unsupported future artifact schema for {kind}: version {version}; this binary supports major {supported_major}. Re-run with a newer max."
     )]
     UnsupportedFuture {
         path: String,

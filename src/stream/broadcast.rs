@@ -26,7 +26,7 @@ pub const DEFAULT_CAPACITY: usize = 256;
 /// ## Examples
 ///
 /// ```rust
-/// # use rust_swe_agent::stream::{BroadcastSink, StreamSink, StreamEvent};
+/// # use maxwells_daemon::stream::{BroadcastSink, StreamSink, StreamEvent};
 /// let sink = BroadcastSink::new(16);
 /// let rx = sink.subscribe();
 ///

@@ -50,8 +50,8 @@ jobs:
         with:
           shared-key: nightly-smoke
 
-      - name: Build rust-swe-agent (release)
-        run: cargo build --release --bin rust-swe-agent --no-default-features
+      - name: Build max (release)
+        run: cargo build --release --bin max --no-default-features
 
       - name: Fetch one SWE-bench Lite instance + clone repo
         id: fetch
@@ -73,7 +73,7 @@ jobs:
             echo "::error::OPENROUTER_API_KEY secret is not set on this repository."
             exit 1
           fi
-          "${GITHUB_WORKSPACE}/target/release/rust-swe-agent" bench swebench \
+          "${GITHUB_WORKSPACE}/target/release/max" bench swebench \
             --dataset-path "${GITHUB_WORKSPACE}/runs-input/dataset.jsonl" \
             --output "${GITHUB_WORKSPACE}/runs" \
             --model "${SWE_BENCH_MODEL}" \

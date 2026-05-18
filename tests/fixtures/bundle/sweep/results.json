@@ -37,7 +37,7 @@
   "manifest": {
     "purpose": "fixture",
     "harness": {
-      "name": "rust_swe_agent",
+      "name": "maxwells-daemon",
       "version": "fixture",
       "git_sha": "fixture-sha-bundle",
       "git_dirty": false,
@@ -72,7 +72,7 @@
     },
     "cli": {
       "argv": [
-        "rust-swe-agent",
+        "max",
         "bench",
         "swebench",
         "--dataset-path",

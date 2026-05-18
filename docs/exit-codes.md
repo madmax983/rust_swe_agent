@@ -1,6 +1,6 @@
 # CLI Exit-Code Contract
 
-`rust-swe-agent` emits a stable, documented process exit code for every
+`max` emits a stable, documented process exit code for every
 terminal outcome so CI and orchestration scripts can react correctly without
 parsing human-oriented output.
 
@@ -82,7 +82,7 @@ coarse sweep-level result.
 set -uo pipefail
 
 # Run in a conditional so the exit status is captured even under `set -e`.
-rust-swe-agent bench compare \
+max bench compare \
   --baseline runs/before \
   --candidate runs/after \
   --max-regressions 0 \
@@ -101,7 +101,7 @@ esac
 ### Handling preflight / config failure
 
 ```bash
-rust-swe-agent bench swebench --dataset lite --output runs/
+max bench swebench --dataset lite --output runs/
 exit_code=$?
 if [ $exit_code -eq 3 ]; then
   echo "Preflight failed — is Docker running?"
@@ -112,7 +112,7 @@ fi
 ### Handling budget halt
 
 ```bash
-rust-swe-agent bench forecast --dataset lite --output /tmp/forecast \
+max bench forecast --dataset lite --output /tmp/forecast \
   --fail-over-cap --sweep-cost-limit-usd 50
 exit_code=$?
 if [ $exit_code -eq 5 ]; then
@@ -124,7 +124,7 @@ fi
 ### Gating optimistic calibration
 
 ```bash
-rust-swe-agent bench calibrate \
+max bench calibrate \
   --forecast runs/forecast.json \
   --results runs/sweep/results.json \
   --fail-on-optimistic
@@ -140,7 +140,7 @@ fi
 ```bash
 # A Ctrl-C during a sweep exits 130; treat as a known outcome, not error.
 # Capture exit status before || true masks it.
-rust-swe-agent bench swebench --dataset lite --output runs/
+max bench swebench --dataset lite --output runs/
 exit_code=$?
 if [ $exit_code -eq 130 ] || [ $exit_code -eq 137 ]; then
   echo "Sweep was cancelled — partial results in runs/"
@@ -150,7 +150,7 @@ fi
 ### Handling verification failure
 
 ```bash
-rust-swe-agent mini --task "Fix the bug" \
+max mini --task "Fix the bug" \
   --verify "unit-tests:cargo test -q" \
   --verify "lint:cargo clippy -- -D warnings"
 exit_code=$?

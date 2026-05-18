@@ -1,7 +1,19 @@
 #![allow(clippy::unwrap_used)]
 
 use clap::CommandFactory as _;
-use rust_swe_agent::cli::Cli;
+use maxwells_daemon::cli::Cli;
+
+#[test]
+fn cli_uses_maxwell_branding() {
+    let root = Cli::command();
+
+    assert_eq!(root.get_name(), "max");
+    assert!(
+        root.get_about()
+            .is_some_and(|about| about.to_string().contains("Maxwell's Daemon")),
+        "root CLI about text should use Maxwell's Daemon branding"
+    );
+}
 
 #[test]
 fn mini_help_documents_task_timeout_seconds_and_step_limit_interaction() {

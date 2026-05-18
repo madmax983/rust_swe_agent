@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::model::MessageExtra;
-use rust_swe_agent::trajectory::{MessageRecord, Trajectory, TrajectoryInfo};
+use maxwells_daemon::model::MessageExtra;
+use maxwells_daemon::trajectory::{MessageRecord, Trajectory, TrajectoryInfo};
 
 fn sample_python_shaped_trajectory() -> &'static str {
     r#"{

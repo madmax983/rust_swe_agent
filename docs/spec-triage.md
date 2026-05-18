@@ -10,7 +10,7 @@ It never re-runs instances and never calls a model provider.
 ## CLI
 
 ```bash
-rust-swe-agent bench triage --sweep runs/sweep
+max bench triage --sweep runs/sweep
 ```
 
 Options:
@@ -159,7 +159,7 @@ Run it without mutating the fixture by copying it first:
 
 ```bash
 cp -R tests/fixtures/triage/sweep /tmp/rust-swe-triage-fixture
-rust-swe-agent bench triage --sweep /tmp/rust-swe-triage-fixture --top 3
+max bench triage --sweep /tmp/rust-swe-triage-fixture --top 3
 ```
 
 Expected top three clusters:

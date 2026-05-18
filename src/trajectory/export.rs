@@ -25,9 +25,9 @@ pub trait TrajectoryExporter {
 /// ## Examples
 ///
 /// ```rust
-/// use rust_swe_agent::trajectory::Trajectory;
-/// use rust_swe_agent::model::Message;
-/// use rust_swe_agent::trajectory::export::{TrajectoryExporter, MarkdownExporter};
+/// use maxwells_daemon::trajectory::Trajectory;
+/// use maxwells_daemon::model::Message;
+/// use maxwells_daemon::trajectory::export::{TrajectoryExporter, MarkdownExporter};
 ///
 /// let mut traj = Trajectory::new();
 /// traj.info.task = Some("Fix tests".to_string());

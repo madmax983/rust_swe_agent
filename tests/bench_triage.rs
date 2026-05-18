@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use rust_swe_agent::run::triage::{FailureSignature, normalize_signature_text};
+use maxwells_daemon::run::triage::{FailureSignature, normalize_signature_text};
 
 mod support;
 use support::binary_path;

@@ -89,7 +89,7 @@ To ensure two sweeps are scored by the same evaluator, use identical flags:
 
 ```bash
 # Baseline sweep
-rust-swe-agent bench evaluate \
+max bench evaluate \
   --sweep ./sweeps/baseline \
   --backend sb-cli \
   --sb-subset swe-bench-m \
@@ -98,7 +98,7 @@ rust-swe-agent bench evaluate \
   --parallel 4
 
 # Candidate sweep — identical evaluator flags
-rust-swe-agent bench evaluate \
+max bench evaluate \
   --sweep ./sweeps/candidate \
   --backend sb-cli \
   --sb-subset swe-bench-m \
@@ -107,7 +107,7 @@ rust-swe-agent bench evaluate \
   --parallel 4
 
 # Compare — will report evaluator_provenance_status: matching
-rust-swe-agent bench compare ./sweeps/baseline ./sweeps/candidate
+max bench compare ./sweeps/baseline ./sweeps/candidate
 ```
 
 If `sb-cli` is upgraded between evaluations, the `backend_version` mismatch

@@ -7,18 +7,18 @@ instances in filter mode.
 ## CLI
 
 ```bash
-rust-swe-agent bench inspect --sweep <dir> --instance <instance_id>
-rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --full
-rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --format json
-rust-swe-agent bench inspect --sweep <dir> --instance <instance_id> --show-expected
-rust-swe-agent bench inspect --sweep <dir> --filter resolved=false
-rust-swe-agent bench inspect --sweep <dir> --filter failure_category=step_limit
-rust-swe-agent bench inspect --diff <baseline.traj.json> <candidate.traj.json>
-rust-swe-agent bench inspect --diff <baseline.traj.json> <candidate.traj.json> --format json
-rust-swe-agent bench inspect --diff <baseline.traj.json> <candidate.traj.json> --format unified
-rust-swe-agent bench inspect --diff <baseline.traj.json> <candidate.traj.json> --show-noise
-rust-swe-agent bench compare --baseline <dir> --candidate <dir> --inspect-diff <instance_id>
-rust-swe-agent bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
+max bench inspect --sweep <dir> --instance <instance_id>
+max bench inspect --sweep <dir> --instance <instance_id> --full
+max bench inspect --sweep <dir> --instance <instance_id> --format json
+max bench inspect --sweep <dir> --instance <instance_id> --show-expected
+max bench inspect --sweep <dir> --filter resolved=false
+max bench inspect --sweep <dir> --filter failure_category=step_limit
+max bench inspect --diff <baseline.traj.json> <candidate.traj.json>
+max bench inspect --diff <baseline.traj.json> <candidate.traj.json> --format json
+max bench inspect --diff <baseline.traj.json> <candidate.traj.json> --format unified
+max bench inspect --diff <baseline.traj.json> <candidate.traj.json> --show-noise
+max bench compare --baseline <dir> --candidate <dir> --inspect-diff <instance_id>
+max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
 ```
 
 ### Inputs

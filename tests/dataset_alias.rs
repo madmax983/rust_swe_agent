@@ -9,11 +9,11 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use rust_swe_agent::Config;
-use rust_swe_agent::run::dataset::{
+use maxwells_daemon::Config;
+use maxwells_daemon::run::dataset::{
     DatasetSource, DatasetSourceKind, SwebenchAlias, SwebenchSplit, cache_path_for, write_cache,
 };
-use rust_swe_agent::run::swebench::{DatasetManifest, SwebenchArgs, run};
+use maxwells_daemon::run::swebench::{DatasetManifest, SwebenchArgs, run};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ fn base_args(dataset_source: DatasetSource, output_dir: PathBuf) -> SwebenchArgs
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -314,7 +314,7 @@ async fn named_and_local_datasets_produce_identical_sampling_for_same_seed() {
         out: PathBuf,
         sample: usize,
         seed: u64,
-    ) -> rust_swe_agent::run::swebench::SweepResults {
+    ) -> maxwells_daemon::run::swebench::SweepResults {
         let mut args = base_args(source, out);
         args.dataset_cache_dir = cache_dir;
         args.sample = Some(sample);

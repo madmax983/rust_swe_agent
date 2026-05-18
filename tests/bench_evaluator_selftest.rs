@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rust_swe_agent::run::evaluator_selftest::{
+use maxwells_daemon::run::evaluator_selftest::{
     SelftestArgs, SelftestExitStatus, run as run_selftest,
 };
 use std::path::PathBuf;

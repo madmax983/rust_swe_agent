@@ -2,16 +2,16 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use rust_swe_agent::Config;
-use rust_swe_agent::artifact::{
+use maxwells_daemon::Config;
+use maxwells_daemon::artifact::{
     ArtifactKind, ArtifactSchemaVersion, CompatibilityClass, classify_json_value,
 };
-use rust_swe_agent::run::evaluate::{EvaluateArgs, EvaluateBackend};
-use rust_swe_agent::run::forecast::{ForecastArgs, ForecastOutcome, forecast_from_results};
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::run::evaluate::{EvaluateArgs, EvaluateBackend};
+use maxwells_daemon::run::forecast::{ForecastArgs, ForecastOutcome, forecast_from_results};
+use maxwells_daemon::run::swebench::{
     InstanceResult, SwebenchArgs, SweepResults, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{Trajectory, outcome};
+use maxwells_daemon::trajectory::{Trajectory, outcome};
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -116,10 +116,10 @@ fn artifact_writer_pretty_matches_string_serializer() {
         "instances": [{"instance_id": "task-a"}]
     });
     let expected =
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &payload).unwrap();
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &payload).unwrap();
     let mut actual = Vec::new();
 
-    rust_swe_agent::artifact::to_writer_pretty(&mut actual, ArtifactKind::SweepResults, &payload)
+    maxwells_daemon::artifact::to_writer_pretty(&mut actual, ArtifactKind::SweepResults, &payload)
         .unwrap();
 
     assert_eq!(String::from_utf8(actual).unwrap(), expected);
@@ -128,7 +128,7 @@ fn artifact_writer_pretty_matches_string_serializer() {
 #[test]
 fn sweep_results_serialization_includes_dual_cost_metadata() {
     let json =
-        rust_swe_agent::artifact::to_string_pretty(ArtifactKind::SweepResults, &fixture_results())
+        maxwells_daemon::artifact::to_string_pretty(ArtifactKind::SweepResults, &fixture_results())
             .unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
@@ -221,7 +221,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
     ))
     .await
     .unwrap();
-    rust_swe_agent::run::evaluate::run(&EvaluateArgs {
+    maxwells_daemon::run::evaluate::run(&EvaluateArgs {
         sweep_dir: output.clone(),
         dataset_path: None,
         backend: EvaluateBackend::None,
@@ -230,7 +230,7 @@ async fn evaluate_run_writes_versioned_evaluation_json() {
         sb_subset: "verified".into(),
         sb_split: "test".into(),
         run_id: None,
-        breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
     })
     .unwrap();
@@ -250,7 +250,7 @@ fn forecast_json_includes_artifact_header() {
     let results = fixture_results();
     let report = forecast_from_results(&results, 42, 2, 1, 80.0, None).unwrap();
 
-    let json = rust_swe_agent::run::forecast::to_json(&report).unwrap();
+    let json = maxwells_daemon::run::forecast::to_json(&report).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
     assert_eq!(value["artifact_kind"], "forecast_report");
@@ -270,7 +270,7 @@ async fn forecast_run_keeps_calibration_results_versioned_after_manifest_mark() 
     write_dataset(&dataset, &["task-a"]);
     let output = work.path().join("runs");
 
-    let outcome = rust_swe_agent::run::forecast::run(ForecastArgs {
+    let outcome = maxwells_daemon::run::forecast::run(ForecastArgs {
         sweep: base_args(dataset, output.clone(), config_with_workdir(&repo)),
         calibration_n: 1,
         seed: 42,
@@ -448,7 +448,7 @@ fn forecast_calibration_reader_rejects_future_results_schema_before_metrics() {
     let calibration = tempfile::tempdir().unwrap();
     write_results_value(calibration.path(), &versioned_results_value(2, 0));
 
-    let err = rust_swe_agent::run::forecast::load_calibration_results(calibration.path())
+    let err = maxwells_daemon::run::forecast::load_calibration_results(calibration.path())
         .expect_err("future calibration artifacts must fail before metrics");
 
     let message = err.to_string();
@@ -464,7 +464,7 @@ fn forecast_calibration_reader_warns_for_legacy_results_schema() {
     let calibration = tempfile::tempdir().unwrap();
     write_results_value(calibration.path(), &legacy_results_value());
 
-    let loaded = rust_swe_agent::run::forecast::load_calibration_results(calibration.path())
+    let loaded = maxwells_daemon::run::forecast::load_calibration_results(calibration.path())
         .expect("legacy calibration artifacts should remain readable");
 
     assert_eq!(
@@ -512,7 +512,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
         &read_json_file(&output.join("all_preds.metadata.json")),
     );
 
-    let eval = rust_swe_agent::run::evaluate::run(&EvaluateArgs {
+    let eval = maxwells_daemon::run::evaluate::run(&EvaluateArgs {
         sweep_dir: output.clone(),
         dataset_path: None,
         backend: EvaluateBackend::None,
@@ -521,12 +521,12 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
         sb_subset: "verified".into(),
         sb_split: "test".into(),
         run_id: None,
-        breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         cost_attribution: false,
     })
     .unwrap();
     let eval_json = serde_json::from_str(
-        &rust_swe_agent::artifact::to_string_pretty(ArtifactKind::EvaluationResults, &eval)
+        &maxwells_daemon::artifact::to_string_pretty(ArtifactKind::EvaluationResults, &eval)
             .unwrap(),
     )
     .unwrap();
@@ -534,7 +534,7 @@ async fn current_contract_fixtures_match_emitted_artifact_top_level_fields() {
 
     let forecast = forecast_from_results(&fixture_results(), 42, 2, 1, 80.0, None).unwrap();
     let forecast_json =
-        serde_json::from_str(&rust_swe_agent::run::forecast::to_json(&forecast).unwrap()).unwrap();
+        serde_json::from_str(&maxwells_daemon::run::forecast::to_json(&forecast).unwrap()).unwrap();
     assert_contract_shape_matches_fixture("current/forecast.json", &forecast_json);
 
     let preflight = serde_json::json!({
@@ -756,7 +756,7 @@ fn config_with_workdir(dir: &Path) -> Config {
 
 fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Config) -> SwebenchArgs {
     SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -770,7 +770,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -839,7 +839,7 @@ fn fixture_results() -> SweepResults {
     let instances = vec![instance("a", 100, 10, 0.01), instance("b", 200, 20, 0.02)];
     SweepResults {
         total: instances.len(),
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -862,7 +862,7 @@ fn fixture_results() -> SweepResults {
         total_completion_tokens: 30,
         estimated_cost_usd: 0.03,
         actual_cost_usd: Some(0.03),
-        actual_cost_source: Some(rust_swe_agent::cost::CostSource::RateCardEstimate),
+        actual_cost_source: Some(maxwells_daemon::cost::CostSource::RateCardEstimate),
         baseline_cost_usd: Some(0.00135),
         baseline_cost_model: Some("claude-3-5-sonnet".into()),
         cache_hit_rate: 0.0,

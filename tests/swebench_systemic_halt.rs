@@ -10,12 +10,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::artifact::ArtifactKind;
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::artifact::ArtifactKind;
+use maxwells_daemon::run::swebench::{
     SWEEP_STATUS_COMPLETED, SWEEP_STATUS_SYSTEMIC_HALT, SwebenchArgs, SweepHaltReport,
     SweepResults, circuit_breaker::CircuitBreaker, run,
 };
-use rust_swe_agent::trajectory::FailureCategory;
+use maxwells_daemon::trajectory::FailureCategory;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -53,13 +53,13 @@ fn init_repo(dir: &Path) {
     git(dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
 }
 
-fn config_with_workdir(dir: &Path) -> rust_swe_agent::Config {
+fn config_with_workdir(dir: &Path) -> maxwells_daemon::Config {
     let workdir = dir
         .display()
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    rust_swe_agent::Config::from_toml_str(&format!("[environment]\nworkdir = \"{workdir}\"\n"))
+    maxwells_daemon::Config::from_toml_str(&format!("[environment]\nworkdir = \"{workdir}\"\n"))
         .unwrap()
 }
 
@@ -75,7 +75,7 @@ fn base_args(
     responses: Vec<String>,
 ) -> SwebenchArgs {
     SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output,
         parallel: 1,
@@ -89,7 +89,7 @@ fn base_args(
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,

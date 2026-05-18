@@ -10,12 +10,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::Config;
-use rust_swe_agent::run::github_pr::{GithubPrSweepConfig, PublishMode};
-use rust_swe_agent::run::swebench::{
+use maxwells_daemon::Config;
+use maxwells_daemon::run::github_pr::{GithubPrSweepConfig, PublishMode};
+use maxwells_daemon::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::trajectory::{
     FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
 };
 
@@ -139,7 +139,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 2,
@@ -153,7 +153,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -247,7 +247,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -261,7 +261,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -324,7 +324,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -338,7 +338,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -401,7 +401,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -415,7 +415,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -505,7 +505,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -519,7 +519,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -583,7 +583,7 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
 
     let cfg = config_with_workdir_and_redaction(&repo, secret);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -597,7 +597,7 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -689,7 +689,7 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
 
     let cfg = config_with_workdir_and_redaction(&repo, secret);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -703,7 +703,7 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -733,7 +733,7 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
             timeout_secs: 1,
             max_retries: 0,
             backoff_base_ms: 1,
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
         }),
         reproduced_from: None,
         abort_on_systemic_failure: true,
@@ -792,7 +792,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
-        dataset_source: rust_swe_agent::run::dataset::DatasetSource::LocalPath(dataset),
+        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
         dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
         output_dir: output.clone(),
         parallel: 1,
@@ -806,7 +806,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
         sample: None,
         seed: None,
         stratify_by: None,
-        stratify_mode: rust_swe_agent::run::swebench::StratifyMode::Proportional,
+        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
         max_retries: 0,
         retry_on: None,
         retry_backoff_base_ms: 0,
@@ -836,7 +836,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
             timeout_secs: 1,
             max_retries: 0,
             backoff_base_ms: 1,
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
         }),
         reproduced_from: None,
         abort_on_systemic_failure: true,

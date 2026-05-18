@@ -2,8 +2,10 @@
 
 use std::path::PathBuf;
 
-use rust_swe_agent::config::RedactionCfg;
-use rust_swe_agent::run::github_pr::{GithubPrOptions, PublishMode, build_pr_plan, render_dry_run};
+use maxwells_daemon::config::RedactionCfg;
+use maxwells_daemon::run::github_pr::{
+    GithubPrOptions, PublishMode, build_pr_plan, render_dry_run,
+};
 
 const SIMPLE_PATCH: &str = "diff --git a/src/lib.rs b/src/lib.rs\n\
 index e69de29..8ab686e 100644\n\
@@ -13,17 +15,16 @@ index e69de29..8ab686e 100644\n\
 +pub fn meaning() -> u32 {\n\
 +    42\n\
 +}\n";
-const EXPECTED_HEAD_BRANCH: &str =
-    "rust-swe-agent/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec";
+const EXPECTED_HEAD_BRANCH: &str = "max/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec";
 
 fn options() -> GithubPrOptions {
     GithubPrOptions {
-        target_repo: "madmax983/rust_swe_agent".into(),
+        target_repo: "madmax983/maxwells-daemon".into(),
         target_branch: "trunk".into(),
         task_id: "sympy__sympy-12345".into(),
         trajectory_ref: "runs/sympy__sympy-12345/run-1.traj.json".into(),
         patch_path: PathBuf::from("runs/sympy__sympy-12345/run-1.patch"),
-        branch_prefix: "rust-swe-agent".into(),
+        branch_prefix: "max".into(),
         token_env: "GITHUB_TOKEN".into(),
         mode: PublishMode::DryRun,
         timeout_secs: 30,
@@ -64,8 +65,8 @@ fn pr_head_branch_preserves_task_id_uniqueness_when_slugs_collide() {
     let second = build_pr_plan(&second_options, SIMPLE_PATCH).unwrap();
     let first_again = build_pr_plan(&first_options, SIMPLE_PATCH).unwrap();
 
-    assert!(first.head_branch.starts_with("rust-swe-agent/repo-x-123"));
-    assert!(second.head_branch.starts_with("rust-swe-agent/repo-x-123"));
+    assert!(first.head_branch.starts_with("max/repo-x-123"));
+    assert!(second.head_branch.starts_with("max/repo-x-123"));
     assert_ne!(first.head_branch, second.head_branch);
     assert_eq!(first.head_branch, first_again.head_branch);
 }
@@ -87,9 +88,9 @@ fn dry_run_renders_pr_fields_without_token_material() {
     let rendered = render_dry_run(&plan);
 
     for expected in [
-        "target_repo: madmax983/rust_swe_agent",
+        "target_repo: madmax983/maxwells-daemon",
         "base: trunk",
-        "head: rust-swe-agent/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec",
+        "head: max/sympy-sympy-12345-fee0ebc7d2afbf054f865bcd1d77abec",
         "title:",
         "body:",
         "patch_summary:",

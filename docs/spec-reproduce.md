@@ -7,7 +7,7 @@ result against the corresponding replay result.
 ## Synopsis
 
 ```
-rust-swe-agent bench reproduce \
+max bench reproduce \
   --from  <source-sweep-dir> \
   --output <output-dir> \
   [--allow-drift <FIELD>]... \

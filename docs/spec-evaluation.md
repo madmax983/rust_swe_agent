@@ -27,7 +27,7 @@ duplicate `instance_id` rows within one predictions file.
 ## Command
 
 ```bash
-rust-swe-agent bench evaluate \
+max bench evaluate \
   --sweep <sweep_dir> \
   [--dataset <dataset.jsonl>] \
   [--sb-subset swe-bench-m] \

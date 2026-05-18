@@ -143,7 +143,7 @@ pub struct ToolsetManifest {
 ///
 /// ## Examples
 /// ```
-/// use rust_swe_agent::tool::{ToolManifestEntry, ToolSource};
+/// use maxwells_daemon::tool::{ToolManifestEntry, ToolSource};
 ///
 /// let entry = ToolManifestEntry {
 ///     name: "bash".into(),
@@ -215,7 +215,7 @@ pub trait ToolProvider: Send + Sync {
 ///
 /// ## Examples
 /// ```
-/// use rust_swe_agent::tool::CommandTool;
+/// use maxwells_daemon::tool::CommandTool;
 ///
 /// let grep_tool = CommandTool {
 ///     name: "grep_search".into(),
@@ -273,8 +273,8 @@ impl ToolRegistry {
     ///
     /// ## Examples
     /// ```
-    /// use rust_swe_agent::tool::ToolRegistry;
-    /// use rust_swe_agent::config::ToolCfg;
+    /// use maxwells_daemon::tool::ToolRegistry;
+    /// use maxwells_daemon::config::ToolCfg;
     ///
     /// let config = vec![ToolCfg {
     ///     name: "echo".into(),
@@ -652,7 +652,7 @@ fn mcp_initialize_request(id: u64, protocol_version: &str) -> serde_json::Value 
             "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {
-                "name": "rust-swe-agent",
+                "name": env!("CARGO_PKG_NAME"),
                 "version": env!("CARGO_PKG_VERSION"),
             },
         },
@@ -862,7 +862,7 @@ pub async fn discover_mcp_servers(
 ///
 /// ## Examples
 /// ```
-/// use rust_swe_agent::tool::validate_tool_name;
+/// use maxwells_daemon::tool::validate_tool_name;
 ///
 /// assert!(validate_tool_name("valid_tool-name").is_ok());
 /// assert!(validate_tool_name("1invalid").is_err());
@@ -874,7 +874,7 @@ pub async fn discover_mcp_servers(
 ///
 /// ## Examples
 /// ```
-/// use rust_swe_agent::tool::validate_tool_name;
+/// use maxwells_daemon::tool::validate_tool_name;
 ///
 /// assert!(validate_tool_name("valid_tool-name").is_ok());
 /// assert!(validate_tool_name("1invalid").is_err());

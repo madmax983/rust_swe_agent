@@ -14,8 +14,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
+use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
+use maxwells_daemon::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
 mod support;
 use support::binary_path;
@@ -110,14 +110,14 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
 }
 
 fn write_results_with_model(dir: &Path, instances: Vec<InstanceResult>, model_name: Option<&str>) {
-    let filter_spec = rust_swe_agent::run::swebench::FilterSpec::default();
+    let filter_spec = maxwells_daemon::run::swebench::FilterSpec::default();
     write_results_with_filter_spec_and_model(dir, instances, &filter_spec, model_name);
 }
 
 fn write_results_with_filter_spec(
     dir: &Path,
     instances: Vec<InstanceResult>,
-    filter_spec: &rust_swe_agent::run::swebench::FilterSpec,
+    filter_spec: &maxwells_daemon::run::swebench::FilterSpec,
 ) {
     write_results_with_filter_spec_and_model(dir, instances, filter_spec, None);
 }
@@ -126,12 +126,12 @@ fn write_results_with_filter_spec(
 fn write_results_with_filter_spec_and_model(
     dir: &Path,
     instances: Vec<InstanceResult>,
-    filter_spec: &rust_swe_agent::run::swebench::FilterSpec,
+    filter_spec: &maxwells_daemon::run::swebench::FilterSpec,
     model_name: Option<&str>,
 ) {
     let sweep = SweepResults {
         total: instances.len(),
-        sweep_status: rust_swe_agent::run::swebench::SWEEP_STATUS_COMPLETED.into(),
+        sweep_status: maxwells_daemon::run::swebench::SWEEP_STATUS_COMPLETED.into(),
         cancelled_at: None,
         cancel_deadline_at: None,
         cancel_exit_code: None,
@@ -179,45 +179,45 @@ fn write_results_with_filter_spec_and_model(
                 / f64::from(u32::try_from(instances.len()).unwrap())
         },
         filter_spec: filter_spec.clone(),
-        manifest: model_name.map(|name| rust_swe_agent::run::swebench::ProvenanceManifest {
+        manifest: model_name.map(|name| maxwells_daemon::run::swebench::ProvenanceManifest {
             purpose: None,
-            harness: rust_swe_agent::run::swebench::HarnessManifest {
-                name: "rust_swe_agent".into(),
+            harness: maxwells_daemon::run::swebench::HarnessManifest {
+                name: "maxwells-daemon".into(),
                 version: "test".into(),
                 git_sha: None,
                 git_dirty: None,
                 git_resolution: "test".into(),
             },
-            dataset: rust_swe_agent::run::swebench::DatasetManifest {
+            dataset: maxwells_daemon::run::swebench::DatasetManifest {
                 path: "test.jsonl".into(),
                 sha256: "test".into(),
                 instance_count: instances.len(),
                 filter_spec: Some(filter_spec.clone()),
                 ..Default::default()
             },
-            prompt_template: rust_swe_agent::run::swebench::PromptTemplateManifest {
+            prompt_template: maxwells_daemon::run::swebench::PromptTemplateManifest {
                 source: "inline".into(),
                 path: None,
                 sha256: "test".into(),
             },
-            config: rust_swe_agent::run::swebench::ConfigManifest {
+            config: maxwells_daemon::run::swebench::ConfigManifest {
                 resolved: "test".into(),
                 overlay_paths: Vec::new(),
             },
-            model: rust_swe_agent::run::swebench::ModelManifest {
+            model: maxwells_daemon::run::swebench::ModelManifest {
                 name: name.into(),
                 backend: "litellm".into(),
                 backend_version: None,
                 base_url: None,
             },
-            runtime: rust_swe_agent::run::swebench::RuntimeManifest {
+            runtime: maxwells_daemon::run::swebench::RuntimeManifest {
                 started_at_utc: "2026-05-01T00:00:00Z".into(),
                 finished_at_utc: Some("2026-05-01T00:01:00Z".into()),
                 host_os: "linux".into(),
                 resume_mode: false,
                 rust_version: None,
             },
-            cli: rust_swe_agent::run::swebench::CliManifest { argv: Vec::new() },
+            cli: maxwells_daemon::run::swebench::CliManifest { argv: Vec::new() },
             circuit_breaker: None,
             reproduced_from: None,
         }),
@@ -305,11 +305,11 @@ fn write_diff_traj(
     });
     t.info.steps = Some(1);
 
-    let mut asst = rust_swe_agent::model::Message::assistant(assistant);
+    let mut asst = maxwells_daemon::model::Message::assistant(assistant);
     asst.extra.actions = Some(vec![command.into()]);
     t.record_message(&asst);
 
-    let mut obs = rust_swe_agent::model::Message::user("tool result");
+    let mut obs = maxwells_daemon::model::Message::user("tool result");
     obs.extra.other.insert(
         "run_result".into(),
         serde_json::json!({
@@ -355,7 +355,7 @@ fn write_run_traj(
     t.info.steps = Some(1);
 
     let traj_path =
-        rust_swe_agent::run::swebench::trajectory_path_for_run(dir, instance_id, run_index);
+        maxwells_daemon::run::swebench::trajectory_path_for_run(dir, instance_id, run_index);
     std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();
     std::fs::write(traj_path, serde_json::to_string_pretty(&t).unwrap()).unwrap();
 }
@@ -463,7 +463,7 @@ fn bloated_patch_with_unrelated_whitespace_edits() -> String {
 }
 
 fn write_run_patch(dir: &Path, instance_id: &str, patch: &str) {
-    let patch_path = rust_swe_agent::run::swebench::patch_path_for_run(dir, instance_id, 1);
+    let patch_path = maxwells_daemon::run::swebench::patch_path_for_run(dir, instance_id, 1);
     std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
     std::fs::write(patch_path, patch).unwrap();
 }
@@ -812,7 +812,7 @@ fn compare_reports_tests_before_submit_rate_drop_with_flat_resolved_rate() {
         .map(|row| (row.instance_id.clone(), row))
         .collect();
 
-    let report = rust_swe_agent::run::compare::diff(
+    let report = maxwells_daemon::run::compare::diff(
         Path::new("/baseline"),
         Path::new("/candidate"),
         &baseline,
@@ -838,13 +838,13 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
     write_wallclock_timeout_results_json(baseline_dir.path(), "slow");
     write_results(candidate_dir.path(), vec![submitted("slow")]);
     let report =
-        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+        maxwells_daemon::run::compare::compute(&maxwells_daemon::run::compare::CompareArgs {
             baseline: baseline_dir.path().to_path_buf(),
             candidate: candidate_dir.path().to_path_buf(),
-            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            format: maxwells_daemon::run::compare::CompareFormat::Json,
             max_regressions: None,
             max_patch_size_regression_pct: None,
-            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
@@ -856,7 +856,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
     assert_eq!(
         report
             .transitions
-            .get(&rust_swe_agent::run::compare::TransitionKind::FailPass),
+            .get(&maxwells_daemon::run::compare::TransitionKind::FailPass),
         Some(&1)
     );
     assert!(report.regressions.is_empty());
@@ -864,13 +864,13 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
     write_results(baseline_dir.path(), vec![submitted("slow")]);
     write_wallclock_timeout_results_json(candidate_dir.path(), "slow");
     let report =
-        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+        maxwells_daemon::run::compare::compute(&maxwells_daemon::run::compare::CompareArgs {
             baseline: baseline_dir.path().to_path_buf(),
             candidate: candidate_dir.path().to_path_buf(),
-            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            format: maxwells_daemon::run::compare::CompareFormat::Json,
             max_regressions: None,
             max_patch_size_regression_pct: None,
-            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: true,
             cost_attribution_min_delta_usd: 1.0,
@@ -882,7 +882,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
     assert_eq!(
         report
             .transitions
-            .get(&rust_swe_agent::run::compare::TransitionKind::PassFail),
+            .get(&maxwells_daemon::run::compare::TransitionKind::PassFail),
         Some(&1)
     );
     assert_eq!(report.regressions.len(), 1);
@@ -1271,7 +1271,7 @@ fn evaluate_writes_patch_stats_with_gold_distance_and_data_driven_classifiers() 
     write_results(sweep_dir.path(), vec![submitted("django__django-1")]);
 
     let patch_path =
-        rust_swe_agent::run::swebench::patch_path_for_run(sweep_dir.path(), "django__django-1", 1);
+        maxwells_daemon::run::swebench::patch_path_for_run(sweep_dir.path(), "django__django-1", 1);
     std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
     std::fs::write(&patch_path, patch_stats_agent_patch()).unwrap();
 
@@ -1499,13 +1499,13 @@ fn compare_uses_manifest_model_for_fallback_cost_repricing() {
     );
 
     let report =
-        rust_swe_agent::run::compare::compute(&rust_swe_agent::run::compare::CompareArgs {
+        maxwells_daemon::run::compare::compute(&maxwells_daemon::run::compare::CompareArgs {
             baseline: baseline_dir.path().to_path_buf(),
             candidate: candidate_dir.path().to_path_buf(),
-            format: rust_swe_agent::run::compare::CompareFormat::Json,
+            format: maxwells_daemon::run::compare::CompareFormat::Json,
             max_regressions: None,
             max_patch_size_regression_pct: None,
-            breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+            breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
             min_delta_pp: 0.0,
             cost_attribution: false,
             cost_attribution_min_delta_usd: 1.0,
@@ -1758,7 +1758,7 @@ fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
     write_results_with_filter_spec(
         baseline_dir.path(),
         vec![submitted("a"), errored("b", FailureCategory::StepLimit)],
-        &rust_swe_agent::run::swebench::FilterSpec {
+        &maxwells_daemon::run::swebench::FilterSpec {
             original_count: 10,
             selected_count: 2,
             instance_ids: Some(vec!["a".into(), "b".into()]),
@@ -1772,7 +1772,7 @@ fn compare_cost_attribution_warns_when_dataset_subsets_differ() {
     write_results_with_filter_spec(
         candidate_dir.path(),
         vec![errored("a", FailureCategory::ModelApi), submitted("c")],
-        &rust_swe_agent::run::swebench::FilterSpec {
+        &maxwells_daemon::run::swebench::FilterSpec {
             original_count: 10,
             selected_count: 2,
             instance_ids: Some(vec!["a".into(), "c".into()]),

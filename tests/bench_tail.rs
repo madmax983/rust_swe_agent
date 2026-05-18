@@ -7,8 +7,8 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::{TimeZone, Utc};
-use rust_swe_agent::run::tail::{SnapshotOptions, render_text, snapshot};
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::run::tail::{SnapshotOptions, render_text, snapshot};
+use maxwells_daemon::trajectory::{
     FailureCategory, FallbackAttemptRecord, FallbackSummary, TokenUsage, Trajectory, outcome,
 };
 
@@ -83,7 +83,7 @@ fn snapshot_keeps_zero_actual_cost_separate_from_baseline_cost() {
     traj.info.exit_reason = Some("submitted".into());
     traj.info.total_cost_usd = Some(0.0);
     traj.info.actual_cost_usd = Some(0.0);
-    traj.info.actual_cost_source = Some(rust_swe_agent::cost::CostSource::FreeTierInferred);
+    traj.info.actual_cost_source = Some(maxwells_daemon::cost::CostSource::FreeTierInferred);
     traj.info.baseline_cost_usd = Some(1.8);
     traj.info.baseline_cost_model = Some("claude-3-5-sonnet".into());
     traj.info.token_usage = Some(TokenUsage {
@@ -190,7 +190,7 @@ fn snapshot_counts_running_sweep_and_ignores_half_written_trajectory() {
                     "host_os": "linux",
                     "resume_mode": false
                 },
-                "cli": {"argv": ["rust-swe-agent", "bench", "swebench", "--parallel", "2"]}
+                "cli": {"argv": ["max", "bench", "swebench", "--parallel", "2"]}
             },
             "instances": []
         }),
@@ -338,7 +338,7 @@ fn snapshot_renders_cancelling_deadline_state() {
                     "host_os": "linux",
                     "resume_mode": false
                 },
-                "cli": {"argv": ["rust-swe-agent", "bench", "swebench", "--parallel", "2"]}
+                "cli": {"argv": ["max", "bench", "swebench", "--parallel", "2"]}
             }
         }),
     );
@@ -355,7 +355,7 @@ fn snapshot_renders_cancelling_deadline_state() {
     assert_eq!(snap.in_flight, 1);
     assert_eq!(snap.pending, 1);
     assert!(!snap.is_complete);
-    let text = rust_swe_agent::run::tail::render_text(&snap);
+    let text = maxwells_daemon::run::tail::render_text(&snap);
     assert!(
         text.contains("Status:      cancelling (0m:15s left)"),
         "{text}"

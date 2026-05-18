@@ -286,7 +286,7 @@ pub fn effective_test_command_patterns(
 ///
 /// ## Examples
 /// ```
-/// use rust_swe_agent::trajectory::{detect_test_command, effective_test_command_patterns};
+/// use maxwells_daemon::trajectory::{detect_test_command, effective_test_command_patterns};
 ///
 /// let patterns = effective_test_command_patterns(&[], false).unwrap();
 /// let cmd = "cargo test --all-features";
@@ -423,7 +423,7 @@ impl TokenUsage {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::TokenUsage;
+    /// use maxwells_daemon::trajectory::TokenUsage;
     /// let usage = TokenUsage { prompt_tokens: 10, cache_read_tokens: 5, cache_creation_tokens: 2, completion_tokens: 20 };
     /// assert_eq!(usage.total_prompt_tokens(), 17);
     /// ```
@@ -439,7 +439,7 @@ impl TokenUsage {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::TokenUsage;
+    /// use maxwells_daemon::trajectory::TokenUsage;
     /// let usage = TokenUsage { prompt_tokens: 10, cache_read_tokens: 5, cache_creation_tokens: 0, completion_tokens: 20 };
     /// assert!(usage.has_cached_prompt_tokens());
     /// ```
@@ -608,7 +608,7 @@ impl Trajectory {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use maxwells_daemon::trajectory::Trajectory;
     /// let traj = Trajectory::new();
     /// assert_eq!(traj.messages.len(), 0);
     /// ```
@@ -621,8 +621,8 @@ impl Trajectory {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::Trajectory;
-    /// use rust_swe_agent::model::Message;
+    /// use maxwells_daemon::trajectory::Trajectory;
+    /// use maxwells_daemon::model::Message;
     /// let mut traj = Trajectory::new();
     /// traj.record_message(&Message::user("Hello"));
     /// assert_eq!(traj.messages.len(), 1);
@@ -640,8 +640,8 @@ impl Trajectory {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::Trajectory;
-    /// use rust_swe_agent::model::{Message, MessageExtra};
+    /// use maxwells_daemon::trajectory::Trajectory;
+    /// use maxwells_daemon::model::{Message, MessageExtra};
     /// let mut traj = Trajectory::new();
     /// traj.record_with_extra(&Message::user("Hello"), MessageExtra::default());
     /// assert_eq!(traj.messages.len(), 1);
@@ -659,7 +659,7 @@ impl Trajectory {
     /// ## Examples
     ///
     /// ```rust,no_run
-    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use maxwells_daemon::trajectory::Trajectory;
     /// use std::path::Path;
     /// let traj = Trajectory::new();
     /// traj.save_pretty(Path::new("run.traj.json")).unwrap();
@@ -675,7 +675,7 @@ impl Trajectory {
     /// ## Examples
     ///
     /// ```rust
-    /// use rust_swe_agent::trajectory::Trajectory;
+    /// use maxwells_daemon::trajectory::Trajectory;
     /// let traj = Trajectory::new();
     /// let json = traj.to_json_pretty().unwrap();
     /// assert!(json.contains("mini-swe-agent-1.2"));

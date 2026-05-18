@@ -14,20 +14,20 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rust_swe_agent::agent::default::DefaultAgentBuilder;
-use rust_swe_agent::env::RunRequest;
-use rust_swe_agent::error::{EnvError, ModelError};
-use rust_swe_agent::model::{
+use maxwells_daemon::agent::default::DefaultAgentBuilder;
+use maxwells_daemon::env::RunRequest;
+use maxwells_daemon::error::{EnvError, ModelError};
+use maxwells_daemon::model::{
     Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, SamplingParams,
 };
-use rust_swe_agent::redaction::Redactor;
-use rust_swe_agent::run::compare::{CompareArgs, CompareFormat, compute as compare_compute};
-use rust_swe_agent::run::evaluate::BreakdownSelection;
-use rust_swe_agent::run::swebench::{InstanceResult, SweepResults};
-use rust_swe_agent::trajectory::{
+use maxwells_daemon::redaction::Redactor;
+use maxwells_daemon::run::compare::{CompareArgs, CompareFormat, compute as compare_compute};
+use maxwells_daemon::run::evaluate::BreakdownSelection;
+use maxwells_daemon::run::swebench::{InstanceResult, SweepResults};
+use maxwells_daemon::trajectory::{
     FORMAT_VERSION, MessageRecord, Trajectory, TrajectoryInfo, outcome,
 };
-use rust_swe_agent::{Agent, Config, DeterministicModel, Environment, FallbackModel, RunResult};
+use maxwells_daemon::{Agent, Config, DeterministicModel, Environment, FallbackModel, RunResult};
 
 mod support;
 
@@ -309,7 +309,7 @@ impl Model for AlwaysFail {
         &self,
         _messages: &[Message],
         _opts: &QueryOpts,
-    ) -> Result<ModelResponse, rust_swe_agent::error::ModelError> {
+    ) -> Result<ModelResponse, maxwells_daemon::error::ModelError> {
         Err(ModelError::RateLimited(
             "scripted rate limit for test".into(),
         ))
@@ -475,7 +475,7 @@ fn sampling_params_summary_line_minimal() {
 
 #[test]
 fn sampling_drift_block_as_drift_field_soft() {
-    use rust_swe_agent::run::reproduce::{DriftSeverity, SamplingDriftBlock};
+    use maxwells_daemon::run::reproduce::{DriftSeverity, SamplingDriftBlock};
     let block = SamplingDriftBlock {
         instances_drifted: 2,
         steps_drifted: 5,
@@ -489,7 +489,7 @@ fn sampling_drift_block_as_drift_field_soft() {
 
 #[test]
 fn sampling_drift_block_as_drift_field_hard() {
-    use rust_swe_agent::run::reproduce::{DriftSeverity, SamplingDriftBlock};
+    use maxwells_daemon::run::reproduce::{DriftSeverity, SamplingDriftBlock};
     let block = SamplingDriftBlock {
         instances_drifted: 1,
         steps_drifted: 3,
@@ -511,13 +511,13 @@ fn bench_compare_text_output_includes_sampling_drift() {
     write_traj_with_temperature(&baseline_dir, "task1", 0.0);
     write_traj_with_temperature(&candidate_dir, "task1", 0.9);
 
-    let args = rust_swe_agent::run::compare::CompareArgs {
+    let args = maxwells_daemon::run::compare::CompareArgs {
         baseline: baseline_dir,
         candidate: candidate_dir,
-        format: rust_swe_agent::run::compare::CompareFormat::Text,
+        format: maxwells_daemon::run::compare::CompareFormat::Text,
         max_regressions: None,
         max_patch_size_regression_pct: None,
-        breakdown: rust_swe_agent::run::evaluate::BreakdownSelection::none(),
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
         min_delta_pp: 0.0,
         cost_attribution: false,
         cost_attribution_min_delta_usd: 0.0,
@@ -546,26 +546,26 @@ fn load_all_trajectories_finds_multi_run_files() {
     write_traj_with_temperature(&inst_dir, "run-2", 0.2);
 
     let trajs =
-        rust_swe_agent::trajectory::load_all_trajectories_for_instance(work.path(), instance_id);
+        maxwells_daemon::trajectory::load_all_trajectories_for_instance(work.path(), instance_id);
     assert_eq!(trajs.len(), 2, "should load both run-1 and run-2");
 }
 
 #[test]
 fn inspect_redaction_masks_sampling_extra_secret_key() {
-    use rust_swe_agent::run::inspect::redact_trajectory_for_inspect;
-    use rust_swe_agent::trajectory::{MessageRecord, Trajectory, TrajectoryInfo};
+    use maxwells_daemon::run::inspect::redact_trajectory_for_inspect;
+    use maxwells_daemon::trajectory::{MessageRecord, Trajectory, TrajectoryInfo};
 
     let mut secret_extra = serde_json::Map::new();
     secret_extra.insert("api_key".into(), serde_json::json!("sk-1234567890abcdef"));
     secret_extra.insert("window".into(), serde_json::json!(8192));
 
     let mut traj = Trajectory {
-        trajectory_format: rust_swe_agent::trajectory::FORMAT_VERSION.into(),
+        trajectory_format: maxwells_daemon::trajectory::FORMAT_VERSION.into(),
         info: TrajectoryInfo::default(),
         messages: vec![MessageRecord {
             role: "assistant".into(),
             content: "ok".into(),
-            extra: rust_swe_agent::model::MessageExtra {
+            extra: maxwells_daemon::model::MessageExtra {
                 sampling: Some(SamplingParams {
                     model: "m".into(),
                     temperature: None,
@@ -640,7 +640,7 @@ fn bench_compare_flags_sampling_presence_vs_absence_as_drift() {
     write_traj_with_temperature(&baseline_dir, "task1", 0.0);
     write_legacy_traj(&candidate_dir, "task1");
 
-    let args = rust_swe_agent::run::compare::CompareArgs {
+    let args = maxwells_daemon::run::compare::CompareArgs {
         baseline: baseline_dir,
         candidate: candidate_dir,
         format: CompareFormat::Json,

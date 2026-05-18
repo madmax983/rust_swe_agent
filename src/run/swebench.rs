@@ -1181,7 +1181,7 @@ pub struct SwebenchArgs {
     /// Dataset source: either a local JSONL path or a named alias + split.
     pub dataset_source: crate::run::dataset::DatasetSource,
     /// Directory used for the named-dataset on-disk cache.
-    /// Defaults to `~/.cache/rust-swe-agent/datasets` when constructed from
+    /// Defaults to `~/.cache/max/datasets` when constructed from
     /// CLI args; tests inject a temp dir for isolation.
     pub dataset_cache_dir: PathBuf,
     pub output_dir: PathBuf,
@@ -4876,7 +4876,7 @@ mod tests {
             timeout_secs: 1,
             max_retries: 0,
             backoff_base_ms: 1,
-            branch_prefix: "rust-swe-agent".into(),
+            branch_prefix: "max".into(),
         };
 
         let actual = publish_github_pr_for_result(
@@ -5556,7 +5556,7 @@ mod tests {
     fn redact_argv_masks_secret_flags() {
         let redacted = redact_argv(
             vec![
-                "rust-swe-agent".into(),
+                "max".into(),
                 "--anthropic-api-key".into(),
                 "sk-test".into(),
                 "--github-token=ghp_123".into(),
@@ -5570,11 +5570,7 @@ mod tests {
     #[test]
     fn redact_argv_does_not_mask_max_tokens_flag() {
         let redacted = redact_argv(
-            vec![
-                "rust-swe-agent".into(),
-                "--max-tokens".into(),
-                "4096".into(),
-            ],
+            vec!["max".into(), "--max-tokens".into(), "4096".into()],
             &crate::config::RedactionCfg::default(),
         );
         assert_eq!(redacted[1], "--max-tokens");
@@ -5589,7 +5585,7 @@ mod tests {
         };
         let redacted = redact_argv(
             vec![
-                "rust-swe-agent".into(),
+                "max".into(),
                 "--note=prefix-review-secret-value-suffix".into(),
             ],
             &cfg,

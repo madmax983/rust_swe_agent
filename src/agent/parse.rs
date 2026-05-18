@@ -89,7 +89,7 @@ fn extract_first_registered_tool_block(content: &str, tool_names: &[String]) -> 
 /// Extracting a basic shell command:
 ///
 /// ```
-/// use rust_swe_agent::agent::{extract_action, Action};
+/// use maxwells_daemon::agent::{extract_action, Action};
 ///
 /// let response = "I will check the directory contents:\n```bash\nls -la\n```";
 /// let action = extract_action(response);
@@ -100,7 +100,7 @@ fn extract_first_registered_tool_block(content: &str, tool_names: &[String]) -> 
 /// Handling a task submission:
 ///
 /// ```
-/// use rust_swe_agent::agent::{extract_action, Action};
+/// use maxwells_daemon::agent::{extract_action, Action};
 ///
 /// let response = "I am done.\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nBug fixed!\n```";
 /// let action = extract_action(response);
