@@ -6,6 +6,7 @@
 //! ranked text summary ordered by `|delta_resolved_vs_baseline|`.
 
 use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -130,6 +131,14 @@ pub struct ToolAblationReport {
     /// The CLI exits with `ExitCode::SystemicHalt` (11) rather than 0 or 2.
     #[serde(default)]
     pub systemic_halt: bool,
+    /// SHA-256 hex digest of the raw dataset bytes used for this run.
+    /// On resume, compared against the current dataset to detect content drift.
+    #[serde(default)]
+    pub dataset_sha256: String,
+    /// SHA-256 hex digest of the serialized config (raw JSON) used for this run.
+    /// On resume, compared against the current config to detect in-place edits.
+    #[serde(default)]
+    pub config_sha256: String,
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -320,9 +329,15 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         )));
     }
 
-    // Resolve the shared instance list once.
+    // Resolve the shared instance list once and fingerprint both the dataset
+    // and the config so resume can detect content changes, not just path changes.
     let (dataset_bytes, _) =
         crate::run::dataset::resolve_dataset(&args.dataset_source, &args.dataset_cache_dir)?;
+    let dataset_sha256 = hex_sha256(&dataset_bytes);
+    let config_sha256 = {
+        let raw = serde_json::to_vec(&base_cfg.raw).unwrap_or_default();
+        hex_sha256(&raw)
+    };
     let all_instances = load_dataset_from_bytes_pub(&dataset_bytes)?;
     let (selected_instances, _filter_spec) = apply_subset(
         all_instances,
@@ -374,7 +389,25 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     if args.resume && report_path.exists() {
         if let Ok(text) = std::fs::read_to_string(&report_path) {
             if let Ok(prior) = serde_json::from_str::<ToolAblationReport>(&text) {
-                if prior.config_path == current_config_path {
+                // Reject prior results when the config path or its content changed.
+                let config_ok = prior.config_path == current_config_path
+                    && (prior.config_sha256.is_empty() || prior.config_sha256 == config_sha256);
+                // Reject prior results when the dataset content changed, even if
+                // the instance IDs look identical.
+                let dataset_ok =
+                    prior.dataset_sha256.is_empty() || prior.dataset_sha256 == dataset_sha256;
+
+                if !config_ok {
+                    tracing::warn!(
+                        "resume: config changed since prior tool-ablation.json \
+                         (path or content); ignoring prior results"
+                    );
+                } else if !dataset_ok {
+                    tracing::warn!(
+                        "resume: dataset content changed since prior tool-ablation.json \
+                         (SHA-256 mismatch); ignoring prior results"
+                    );
+                } else {
                     if prior.instance_ids != instance_ids {
                         tracing::warn!(
                             persisted = prior.instance_ids.len(),
@@ -396,13 +429,6 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                             }
                         }
                     }
-                } else {
-                    tracing::warn!(
-                        prior_config = %prior.config_path,
-                        current_config = %current_config_path,
-                        "resume: config path differs from prior tool-ablation.json; \
-                         ignoring prior results to avoid mixing incompatible arms"
-                    );
                 }
             }
         }
@@ -636,6 +662,8 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         arms: all_results,
         cancel_exit_code,
         systemic_halt,
+        dataset_sha256,
+        config_sha256,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
@@ -800,4 +828,9 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn hex_sha256(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    format!("{digest:x}")
 }
