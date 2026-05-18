@@ -424,9 +424,10 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.provenance = Some(provenance);
     let redactor = Redactor::default_enabled();
     for inst in &mut eval.instances {
-        if let Some(log) = inst.patch_error_log.take() {
-            inst.patch_error_log = Some(redactor.redact_text(&log, surface::EXPORT).text);
-        }
+        inst.patch_error_log = inst
+            .patch_error_log
+            .as_ref()
+            .map(|log| redactor.redact_text(log, surface::EXPORT).text);
     }
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
