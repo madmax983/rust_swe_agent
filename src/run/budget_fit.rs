@@ -156,13 +156,8 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         .as_ref()
         .map(|m| m.cli.argv.clone())
         .unwrap_or_default();
-    let cost_limit_from_results = loaded
-        .manifest
-        .as_ref()
-        .and_then(|_| None::<f64>); // populated from SweepResults.cost_limit_usd below
-    let _ = cost_limit_from_results;
-
-    // Re-read raw results to get cost_limit_usd
+    // cost_limit_usd lives in SweepResults but LoadedSweep does not re-expose it,
+    // so read it directly from the JSON artifact.
     let cost_limit_usd = read_cost_limit(&args.sweep_dir);
     let step_limit = extract_argv_value(&argv, "--step-limit")
         .and_then(|v| v.parse::<u32>().ok())
@@ -170,8 +165,8 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     let task_timeout_secs = extract_argv_value(&argv, "--task-timeout-secs")
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v as f64);
-    let per_task_budget_usd = extract_argv_value(&argv, "--per-task-budget-usd")
-        .and_then(|v| v.parse::<f64>().ok());
+    let per_task_budget_usd =
+        extract_argv_value(&argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
 
     // Apply instance filters (same key=value syntax as bench inspect)
     let instances = apply_filter(instances, &args.filter);
@@ -287,10 +282,19 @@ pub fn render_text(report: &BudgetFitReport) -> String {
         if let Some(rec) = axis.recommended_cap {
             let _ = writeln!(s, "  Recommended cap: {rec:.4}");
         } else {
-            let _ = writeln!(s, "  Recommended cap: (none — {}", axis.recommended_cap_rationale);
+            let _ = writeln!(
+                s,
+                "  Recommended cap: (none — {}",
+                axis.recommended_cap_rationale
+            );
             let _ = writeln!(s, "  )");
         }
-        let _ = writeln!(s, "  At-cap count: {} ({:.1}%)", axis.at_cap_count, axis.at_cap_share * 100.0);
+        let _ = writeln!(
+            s,
+            "  At-cap count: {} ({:.1}%)",
+            axis.at_cap_count,
+            axis.at_cap_share * 100.0
+        );
         let _ = writeln!(s, "  Rationale: {}", axis.recommended_cap_rationale);
 
         for (bucket, stats) in &axis.distribution_by_outcome {
@@ -525,7 +529,10 @@ fn build_axis_report(
 
     // Distribution stats per bucket
     let mut distribution_by_outcome: BTreeMap<String, DistributionStats> = BTreeMap::new();
-    distribution_by_outcome.insert(BUCKET_RESOLVED.into(), compute_distribution(&resolved_values));
+    distribution_by_outcome.insert(
+        BUCKET_RESOLVED.into(),
+        compute_distribution(&resolved_values),
+    );
     distribution_by_outcome.insert(
         BUCKET_UNRESOLVED_CAP_BOUND.into(),
         compute_distribution(&cap_bound_values),
@@ -557,32 +564,34 @@ fn build_axis_report(
         );
 
     // projected_impact_if_tightened_to_p95 (always uses p95, not target_percentile)
-    let projected_impact_if_tightened_to_p95 =
-        configured_cap.and_then(|cap| {
-            if resolved_values.is_empty() {
-                return None;
-            }
-            let p95 = percentile_of_sorted(&{
+    let projected_impact_if_tightened_to_p95 = configured_cap.and_then(|cap| {
+        if resolved_values.is_empty() {
+            return None;
+        }
+        let p95 = percentile_of_sorted(
+            &{
                 let mut v = resolved_values.clone();
                 v.sort_by(f64_cmp);
                 v
-            }, 95.0)?;
-            let tighten_cap = round_up(p95, round_unit);
-            if tighten_cap >= cap {
-                return None; // no tightening needed
-            }
-            let lost_resolved = resolved_values.iter().filter(|&&v| v > tighten_cap).count() as i64;
-            let savings = estimated_cost_savings(instances, axis, cap, tighten_cap);
-            Some(ProjectedImpact {
-                estimated_resolved_delta: -lost_resolved,
-                estimated_cost_delta_usd: -savings,
-                derivation: format!(
-                    "Tightening from {cap:.4} to {tighten_cap:.4}: \
+            },
+            95.0,
+        )?;
+        let tighten_cap = round_up(p95, round_unit);
+        if tighten_cap >= cap {
+            return None; // no tightening needed
+        }
+        let lost_resolved = resolved_values.iter().filter(|&&v| v > tighten_cap).count() as i64;
+        let savings = estimated_cost_savings(instances, axis, cap, tighten_cap);
+        Some(ProjectedImpact {
+            estimated_resolved_delta: -lost_resolved,
+            estimated_cost_delta_usd: -savings,
+            derivation: format!(
+                "Tightening from {cap:.4} to {tighten_cap:.4}: \
                      {lost_resolved} resolved instances use more than {tighten_cap:.4} {axis}; \
                      estimated savings ${savings:.4}."
-                ),
-            })
-        });
+            ),
+        })
+    });
 
     AxisReport {
         axis_name: axis.to_owned(),
@@ -616,14 +625,9 @@ fn make_recommendation(
     instances: &[&InstanceResult],
 ) -> (Option<f64>, String, Option<ProjectedImpact>) {
     // No cap configured for this axis
-    if configured_cap.is_none() {
-        return (
-            None,
-            "no cap configured for this axis".to_owned(),
-            None,
-        );
-    }
-    let cap = configured_cap.unwrap();
+    let Some(cap) = configured_cap else {
+        return (None, "no cap configured for this axis".to_owned(), None);
+    };
 
     // P{target} of resolved
     let resolved_p_target = {
@@ -638,10 +642,12 @@ fn make_recommendation(
     // When behavior.json is present and most cap-bound instances had progress-class actions,
     // recommend raising the cap; otherwise recommend tightening to p_target of resolved.
     let behavior_present = !behavior_absent && cap_bound_count > 0;
-    let has_progress_class = cap_bound_progress_count > 0
-        && cap_bound_progress_count >= cap_bound_stuck_count;
-    let has_stuck_class = cap_bound_stuck_count > 0
-        && cap_bound_stuck_count > cap_bound_progress_count;
+    // "Majority" means strictly more than half of all cap-bound instances, including those
+    // with unclassified or unrecorded behavior classes (search, git, other, no entry).
+    let has_progress_class =
+        cap_bound_progress_count > 0 && cap_bound_progress_count * 2 > cap_bound_count as i64;
+    let has_stuck_class =
+        cap_bound_stuck_count > 0 && cap_bound_stuck_count * 2 > cap_bound_count as i64;
 
     if behavior_present && has_progress_class {
         // RAISE recommendation
@@ -653,7 +659,10 @@ fn make_recommendation(
         );
         let cost_per_unit = mean_cost_per_unit(instances, axis);
         let extra_units = new_cap - cap;
-        let extra_cost = cost_per_unit * extra_units * cap_bound_progress_count as f64;
+        let extra_cost = round_to_ndp(
+            cost_per_unit * extra_units * cap_bound_progress_count as f64,
+            6,
+        );
         let impact = ProjectedImpact {
             estimated_resolved_delta: cap_bound_progress_count,
             estimated_cost_delta_usd: extra_cost,
@@ -747,10 +756,7 @@ fn make_tighten_impact(
     if new_cap >= old_cap {
         return None;
     }
-    let lost_resolved = resolved_values
-        .iter()
-        .filter(|&&v| v > new_cap)
-        .count() as i64;
+    let lost_resolved = resolved_values.iter().filter(|&&v| v > new_cap).count() as i64;
     let savings = estimated_cost_savings(instances, axis, old_cap, new_cap);
     Some(ProjectedImpact {
         estimated_resolved_delta: -lost_resolved,
@@ -801,7 +807,11 @@ fn mean_cost_per_unit(instances: &[&InstanceResult], axis: &str) -> f64 {
     }
     let total_cost: f64 = pairs.iter().map(|(_, c)| c).sum();
     let total_units: f64 = pairs.iter().map(|(v, _)| v).sum();
-    if total_units > 0.0 { total_cost / total_units } else { 0.0 }
+    if total_units > 0.0 {
+        total_cost / total_units
+    } else {
+        0.0
+    }
 }
 
 /// Compute at_cap_count and at_cap_share.
@@ -818,10 +828,7 @@ fn compute_at_cap(
     let threshold = cap * (1.0 - tolerance);
     let count = instances
         .iter()
-        .filter(|inst| {
-            axis_value(inst, axis)
-                .map_or(false, |v| v >= threshold)
-        })
+        .filter(|inst| axis_value(inst, axis).map_or(false, |v| v >= threshold))
         .count();
     let share = if n_total > 0 {
         count as f64 / n_total as f64
@@ -837,9 +844,7 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
     let dominant = axes
         .iter()
         .filter_map(|a| {
-            let cap_bound = a
-                .distribution_by_outcome
-                .get(BUCKET_UNRESOLVED_CAP_BOUND)?;
+            let cap_bound = a.distribution_by_outcome.get(BUCKET_UNRESOLVED_CAP_BOUND)?;
             if cap_bound.count > 0 {
                 Some((a.axis_name.clone(), cap_bound.count))
             } else {
@@ -884,9 +889,7 @@ fn build_headline(axes: &[AxisReport], dominant_axis: &Option<String>) -> String
                 None => format!("Dominant axis '{ax}': insufficient data for recommendation."),
                 Some(v) => format!(
                     "Dominant axis '{ax}': set cap to {v:.4} ({}); {}",
-                    axis_report
-                        .map(|a| a.unit.as_str())
-                        .unwrap_or("units"),
+                    axis_report.map(|a| a.unit.as_str()).unwrap_or("units"),
                     axis_report
                         .map(|a| a.recommended_cap_rationale.as_str())
                         .unwrap_or("")

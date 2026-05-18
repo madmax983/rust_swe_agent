@@ -23,8 +23,8 @@ use std::process::Command;
 
 use maxwells_daemon::run::budget_fit::{BudgetFitArgs, compute_budget_fit};
 use maxwells_daemon::run::swebench::{
-    CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult,
-    ModelManifest, ProvenanceManifest, PromptTemplateManifest, RuntimeManifest, SweepResults,
+    CliManifest, ConfigManifest, DatasetManifest, HarnessManifest, InstanceResult, ModelManifest,
+    PromptTemplateManifest, ProvenanceManifest, RuntimeManifest, SweepResults,
 };
 use maxwells_daemon::trajectory::FailureCategory;
 use maxwells_daemon::trajectory::outcome;
@@ -371,7 +371,12 @@ fn test_b_write_class_cap_bound_recommends_raise() {
     write_results(dir.path(), instances, make_manifest(Some(30), Some(120)));
     // behavior.json with write-class for all cap-bound instances
     let class_map: Vec<(&str, &str)> = (0..8)
-        .map(|i| (Box::leak(format!("inst-cap-{i:02}").into_boxed_str()) as &str, "write"))
+        .map(|i| {
+            (
+                Box::leak(format!("inst-cap-{i:02}").into_boxed_str()) as &str,
+                "write",
+            )
+        })
         .collect();
     write_behavior_json(dir.path(), &class_map);
 
@@ -388,8 +393,7 @@ fn test_b_write_class_cap_bound_recommends_raise() {
 
     // Should recommend raising the cap (recommended_cap > configured_cap)
     assert!(
-        steps_axis.recommended_cap.unwrap_or(0.0)
-            > steps_axis.configured_cap.unwrap_or(f64::MAX),
+        steps_axis.recommended_cap.unwrap_or(0.0) > steps_axis.configured_cap.unwrap_or(f64::MAX),
         "recommended_cap ({:?}) should exceed configured_cap ({:?}) when write-class instances hit the cap",
         steps_axis.recommended_cap,
         steps_axis.configured_cap
@@ -440,7 +444,12 @@ fn test_c_stuck_class_cap_bound_does_not_recommend_raise() {
     write_results(dir.path(), instances, make_manifest(Some(30), Some(120)));
     // behavior.json with noop-class for all cap-bound instances
     let class_map: Vec<(&str, &str)> = (0..8)
-        .map(|i| (Box::leak(format!("inst-cap-{i:02}").into_boxed_str()) as &str, "noop"))
+        .map(|i| {
+            (
+                Box::leak(format!("inst-cap-{i:02}").into_boxed_str()) as &str,
+                "noop",
+            )
+        })
         .collect();
     write_behavior_json(dir.path(), &class_map);
 
@@ -777,7 +786,11 @@ fn bench_budget_fit_axis_flag_restricts_output() {
     assert!(out.status.success());
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let axes = parsed["axes"].as_array().expect("axes must be an array");
-    assert_eq!(axes.len(), 1, "--axis steps should produce exactly one axis");
+    assert_eq!(
+        axes.len(),
+        1,
+        "--axis steps should produce exactly one axis"
+    );
     assert_eq!(axes[0]["axis_name"], "steps");
 }
 
