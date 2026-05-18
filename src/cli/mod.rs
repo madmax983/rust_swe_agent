@@ -2257,9 +2257,7 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
             .stratify_mode
             .unwrap_or(args::StratifyModeArg::Proportional)
         {
-            args::StratifyModeArg::Proportional => {
-                crate::run::swebench::StratifyMode::Proportional
-            }
+            args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
             args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
         },
         sweep_cost_limit_usd: c.sweep_cost_limit_usd,

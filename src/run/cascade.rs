@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::error::{ConfigError, Error};
 use crate::model::ModelUsage;
 use crate::run::dataset::DatasetSource;
-use crate::run::evaluate::{EvaluateArgs, EvaluateBackend, BreakdownSelection};
+use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend};
 use crate::run::swebench::{
     ApplySubsetParams, FilterSpec, StratifyBy, StratifyMode, apply_subset,
     load_dataset_from_bytes_pub,
@@ -277,11 +277,7 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
     let all_ids = state.instance_ids.clone();
 
     // Cumulative cost starts from already-recorded attempts (resume scenario).
-    let mut cumulative_cost: f64 = state
-        .instances
-        .values()
-        .map(|r| r.total_cost_usd)
-        .sum();
+    let mut cumulative_cost: f64 = state.instances.values().map(|r| r.total_cost_usd).sum();
 
     // Track per-tier aggregate stats for summary.
     let mut tier_stats: Vec<TierStats> = manifest
@@ -447,13 +443,15 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 Some("unresolved".into())
             };
 
-            let record = state.instances.entry(id.clone()).or_insert_with(|| {
-                InstanceCascadeRecord {
-                    resolving_tier: None,
-                    total_cost_usd: 0.0,
-                    attempts: vec![],
-                }
-            });
+            let record =
+                state
+                    .instances
+                    .entry(id.clone())
+                    .or_insert_with(|| InstanceCascadeRecord {
+                        resolving_tier: None,
+                        total_cost_usd: 0.0,
+                        attempts: vec![],
+                    });
 
             // Only record if not already resolved (idempotent on resume).
             if record.resolving_tier.is_none()
@@ -501,7 +499,10 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
     let summary = build_summary(&tier_stats, &state);
 
     let summary_json = serde_json::to_string_pretty(&summary)?;
-    atomic_write(&args.output_dir.join("cascade-summary.json"), summary_json.as_bytes())?;
+    atomic_write(
+        &args.output_dir.join("cascade-summary.json"),
+        summary_json.as_bytes(),
+    )?;
 
     let table_txt = render_summary_table(&summary);
     println!("{table_txt}");
@@ -665,8 +666,7 @@ fn build_summary(tier_stats: &[TierStats], state: &CascadeState) -> CascadeSumma
                 .iter()
                 .rev()
                 .find(|t| t.instances_attempted > 0)
-                .map(|t| t.total_cost_usd / t.instances_attempted as f64)
-                .unwrap_or(0.0)
+                .map_or(0.0, |t| t.total_cost_usd / t.instances_attempted as f64)
         };
         let counterfactual = top_mean * total_instances as f64;
         (counterfactual - total_cost_usd).max(0.0)
@@ -692,7 +692,13 @@ fn render_summary_table(summary: &CascadeSummary) -> String {
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_header(vec![
-            "Tier", "Model", "Attempted", "Resolved", "Rate%", "Cost($)", "$/Resolved",
+            "Tier",
+            "Model",
+            "Attempted",
+            "Resolved",
+            "Rate%",
+            "Cost($)",
+            "$/Resolved",
         ]);
 
     for row in &summary.tiers {

@@ -107,8 +107,14 @@ fn cli_cascade_help_shows_required_flags() {
         .unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("--config"), "expected --config in help:\n{stdout}");
-    assert!(stdout.contains("--output"), "expected --output in help:\n{stdout}");
+    assert!(
+        stdout.contains("--config"),
+        "expected --config in help:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("--output"),
+        "expected --output in help:\n{stdout}"
+    );
     assert!(
         stdout.contains("--dataset-path"),
         "expected --dataset-path in help:\n{stdout}"
@@ -117,7 +123,10 @@ fn cli_cascade_help_shows_required_flags() {
         stdout.contains("--sweep-cost-limit-usd"),
         "expected --sweep-cost-limit-usd in help:\n{stdout}"
     );
-    assert!(stdout.contains("--resume"), "expected --resume in help:\n{stdout}");
+    assert!(
+        stdout.contains("--resume"),
+        "expected --resume in help:\n{stdout}"
+    );
     assert!(
         stdout.contains("--eval-backend"),
         "expected --eval-backend in help:\n{stdout}"
@@ -208,12 +217,16 @@ extra_args = ["--skip-patch-validation"]
 
 #[test]
 fn manifest_parses_multiple_tiers_in_order() {
-    let content = [("haiku", "claude-haiku-4-5"), ("sonnet", "claude-sonnet-4-6"), ("opus", "claude-opus-4-7")]
-        .iter()
-        .fold(String::new(), |mut acc, (n, m)| {
-            let _ = write!(acc, "[[tier]]\nname = \"{n}\"\nmodel = \"{m}\"\n\n");
-            acc
-        });
+    let content = [
+        ("haiku", "claude-haiku-4-5"),
+        ("sonnet", "claude-sonnet-4-6"),
+        ("opus", "claude-opus-4-7"),
+    ]
+    .iter()
+    .fold(String::new(), |mut acc, (n, m)| {
+        let _ = write!(acc, "[[tier]]\nname = \"{n}\"\nmodel = \"{m}\"\n\n");
+        acc
+    });
     let manifest: CascadeManifest = toml::from_str(&content).unwrap();
     assert_eq!(manifest.tiers.len(), 3);
     assert_eq!(manifest.tiers[0].name, "haiku");
@@ -226,8 +239,16 @@ fn manifest_parses_multiple_tiers_in_order() {
 #[test]
 fn validate_tiers_accepts_unique_names() {
     let tiers = vec![
-        TierDef { name: "haiku".into(), model: "m1".into(), ..TierDef::default() },
-        TierDef { name: "sonnet".into(), model: "m2".into(), ..TierDef::default() },
+        TierDef {
+            name: "haiku".into(),
+            model: "m1".into(),
+            ..TierDef::default()
+        },
+        TierDef {
+            name: "sonnet".into(),
+            model: "m2".into(),
+            ..TierDef::default()
+        },
     ];
     assert!(validate_tiers(&tiers).is_ok());
 }
@@ -270,13 +291,27 @@ fn validate_tiers_rejects_name_with_path_separator() {
 #[test]
 fn validate_tiers_rejects_duplicate_names() {
     let tiers = vec![
-        TierDef { name: "same".into(), model: "m1".into(), ..TierDef::default() },
-        TierDef { name: "same".into(), model: "m2".into(), ..TierDef::default() },
+        TierDef {
+            name: "same".into(),
+            model: "m1".into(),
+            ..TierDef::default()
+        },
+        TierDef {
+            name: "same".into(),
+            model: "m2".into(),
+            ..TierDef::default()
+        },
     ];
     let err = validate_tiers(&tiers).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("same"), "error should name the duplicate: {err}");
-    assert!(msg.contains("duplicate"), "error should say duplicate: {err}");
+    assert!(
+        msg.contains("same"),
+        "error should name the duplicate: {err}"
+    );
+    assert!(
+        msg.contains("duplicate"),
+        "error should say duplicate: {err}"
+    );
 }
 
 // ── Integration: preflight ────────────────────────────────────────────────────
@@ -362,9 +397,15 @@ async fn cascade_creates_tier_dirs_and_cascade_json() {
     let attempts = inst["attempts"].as_array().unwrap();
     if !attempts.is_empty() {
         let attempt = &attempts[0];
-        assert!(attempt["tier_name"].is_string(), "attempt.tier_name must be string");
+        assert!(
+            attempt["tier_name"].is_string(),
+            "attempt.tier_name must be string"
+        );
         assert!(attempt["model"].is_string(), "attempt.model must be string");
-        assert!(attempt["cost_usd"].is_number(), "attempt.cost_usd must be number");
+        assert!(
+            attempt["cost_usd"].is_number(),
+            "attempt.cost_usd must be number"
+        );
     }
 }
 
@@ -535,16 +576,10 @@ async fn cascade_budget_limit_marks_skipped_budget() {
     let skipped_count = instances
         .values()
         .filter(|v| {
-            v["attempts"]
-                .as_array()
-                .is_some_and(|a| {
-                    a.iter().any(|att| {
-                        att["halted_reason"].as_str() == Some("skipped_budget")
-                    })
-                })
-                || v.get("skipped_reason")
-                    .and_then(|s| s.as_str())
-                    == Some("skipped_budget")
+            v["attempts"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|att| att["halted_reason"].as_str() == Some("skipped_budget"))
+            }) || v.get("skipped_reason").and_then(|s| s.as_str()) == Some("skipped_budget")
         })
         .count();
     assert!(
@@ -576,23 +611,24 @@ async fn cascade_resume_skips_completed_instances() {
     {
         let mut args = default_cascade_args(config.clone(), dataset.clone(), output.clone());
         // mock: only haiku resolves inst-1
-        args.mock_eval_resolved_ids = Some(vec![
-            HashSet::from(["inst-1".to_string()]),
-            HashSet::new(),
-        ]);
+        args.mock_eval_resolved_ids =
+            Some(vec![HashSet::from(["inst-1".to_string()]), HashSet::new()]);
         cascade_run(args).await.unwrap();
     }
 
     // Tamper: read cascade.json and verify state after first run.
-    let cascade_after_first: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(output.join("cascade.json")).unwrap(),
-    ).unwrap();
+    let cascade_after_first: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(output.join("cascade.json")).unwrap())
+            .unwrap();
     let inst2_attempts_after_first = cascade_after_first["instances"]["inst-2"]["attempts"]
         .as_array()
         .unwrap()
         .len();
     // Both tiers ran for inst-2 on first run.
-    assert_eq!(inst2_attempts_after_first, 2, "both tiers should have run for inst-2 on first run");
+    assert_eq!(
+        inst2_attempts_after_first, 2,
+        "both tiers should have run for inst-2 on first run"
+    );
 
     // Second run with --resume: should skip inst-1 (resolved) and inst-2 (all tiers exhausted).
     {
@@ -605,9 +641,9 @@ async fn cascade_resume_skips_completed_instances() {
         let summary = cascade_run(args).await.unwrap();
 
         // Check that cascade.json is still consistent.
-        let cascade_after_resume: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(output.join("cascade.json")).unwrap(),
-        ).unwrap();
+        let cascade_after_resume: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(output.join("cascade.json")).unwrap())
+                .unwrap();
         let inst1_resolving = cascade_after_resume["instances"]["inst-1"]["resolving_tier"]
             .as_str()
             .unwrap_or("");
@@ -674,5 +710,8 @@ async fn cascade_artifacts_have_correct_kind_field() {
         &std::fs::read_to_string(output.join("cascade-summary.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(summary["artifact_kind"].as_str().unwrap(), "cascade-summary");
+    assert_eq!(
+        summary["artifact_kind"].as_str().unwrap(),
+        "cascade-summary"
+    );
 }
