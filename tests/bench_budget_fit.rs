@@ -845,6 +845,205 @@ fn waste_estimate_usd_includes_step_limit_costs() {
     );
 }
 
+// ── step cap from resolved manifest config (not just argv) ───────────────────
+
+#[test]
+fn step_limit_read_from_resolved_config_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    // Manifest with NO --step-limit in argv but step_limit = 45 in resolved TOML.
+    let instances: Vec<InstanceResult> = (0..5)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10 + i as u32 * 3, 0.05, 20.0))
+        .collect();
+
+    // Build manifest without --step-limit in argv; put the value in resolved TOML.
+    let manifest = ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "maxwells-daemon".into(),
+            version: "0.1.0-test".into(),
+            git_sha: Some("deadbeef".into()),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest {
+            path: "tests/fixtures/test.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 5,
+            filter_spec: None,
+            ..Default::default()
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "inline".into(),
+            path: None,
+            sha256: "tpl123".into(),
+        },
+        config: ConfigManifest {
+            // TOML containing agent.step_limit = 45 (no --step-limit in argv)
+            resolved: "[agent]\nstep_limit = 45\n".into(),
+            overlay_paths: Vec::new(),
+        },
+        model: ModelManifest {
+            name: "claude-opus-4-7".into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-05-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("rustc 1.85.0".into()),
+        },
+        cli: CliManifest {
+            // No --step-limit in argv
+            argv: vec!["max".into(), "bench".into(), "swebench".into()],
+        },
+        circuit_breaker: None,
+        reproduced_from: None,
+    };
+    write_results(dir.path(), instances, manifest);
+
+    let report = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: Some("steps".into()),
+        filter: vec![],
+    })
+    .unwrap();
+
+    let steps_axis = report.axes.iter().find(|a| a.axis_name == "steps").unwrap();
+    assert_eq!(
+        steps_axis.configured_cap,
+        Some(45.0),
+        "should read step_limit=45 from manifest.config.resolved TOML when not in argv"
+    );
+    assert_eq!(
+        steps_axis.configured_cap_source.as_deref(),
+        Some("manifest.config.resolved[agent.step_limit]"),
+        "cap source should point to resolved config"
+    );
+}
+
+// ── empty evaluation.json is treated as an incompatible artifact ──────────────
+
+#[test]
+fn empty_evaluation_json_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Write evaluation.json with instances: [] — all sweep instances are uncovered.
+    let eval_json = serde_json::json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:10:00Z",
+        "instances": []
+    });
+    std::fs::write(
+        dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "empty evaluation.json on a non-empty sweep should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("missing") || msg.contains("stale") || msg.contains("partial"),
+        "error should describe the incompatible artifact: {msg}"
+    );
+}
+
+// ── unknown filter key is a usage error ──────────────────────────────────────
+
+#[test]
+fn unknown_filter_key_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        // typo: "failure_catgory" instead of "failure_category"
+        filter: vec!["failure_catgory=step_limit".into()],
+    });
+
+    assert!(
+        result.is_err(),
+        "unknown filter key should be a usage error, not silently ignored"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("failure_catgory") || msg.contains("recognised") || msg.contains("known"),
+        "error should name the bad key: {msg}"
+    );
+}
+
+// ── retry that only raises sweep budget is accepted ──────────────────────────
+
+#[test]
+fn retry_with_only_sweep_budget_change_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    // Write initial results.json using the helper (avoids hand-crafting InstanceResult JSON).
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Patch in a retry_history entry that only changes sweep_cost_limit_usd.
+    // Include all required RetryHistoryEntry fields so load_sweep can deserialize.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 20.0 },
+        "count": 3,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "retry that only changes sweep_cost_limit_usd should be accepted; got: {:?}",
+        result.unwrap_err()
+    );
+}
+
 // ── unit: distribution stats ─────────────────────────────────────────────────
 
 #[test]

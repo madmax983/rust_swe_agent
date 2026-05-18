@@ -210,26 +210,28 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // resolved_count from results.json for bucketing and --filter resolved=.
     // Only the missing-file case falls back to results.json; a malformed artifact
     // propagates as an error so bad evaluation data is not silently ignored.
+    let mut eval_file_present = false;
     let eval_resolved: HashMap<String, bool> = match load_evaluation_results(&args.sweep_dir)? {
         None => HashMap::new(), // evaluation.json absent — fall back to results.json
-        Some(eval) => eval
-            .instances
-            .iter()
-            .map(|row| {
-                (
-                    row.instance_id.clone(),
-                    row.resolved_count > 0 || row.resolved,
-                )
-            })
-            .collect(),
+        Some(eval) => {
+            eval_file_present = true;
+            eval.instances
+                .iter()
+                .map(|row| {
+                    (
+                        row.instance_id.clone(),
+                        row.resolved_count > 0 || row.resolved,
+                    )
+                })
+                .collect()
+        }
     };
 
     // Require evaluation.json to cover every instance when present.
-    // A partial artifact (subset copy or stale pre-retry file) would silently mix
-    // resolution sources: covered rows from eval, uncovered rows from results.json
-    // submission state. Missing rows are treated as an incompatible artifact; the
-    // operator must re-run `bench evaluate` or remove evaluation.json.
-    if !eval_resolved.is_empty() {
+    // Use eval_file_present (not !eval_resolved.is_empty()) so that evaluation.json
+    // with instances: [] on a non-empty sweep is also caught as a partial artifact:
+    // all instances would fall back to results.json submission state, which is wrong.
+    if eval_file_present {
         let missing_count = instances
             .iter()
             .filter(|inst| !eval_resolved.contains_key(&inst.instance_id))
@@ -254,9 +256,33 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         .as_ref()
         .map(|m| m.cli.argv.clone())
         .unwrap_or_default();
-    let step_limit = extract_argv_value(&cli_argv, "--step-limit")
-        .and_then(|v| v.parse::<u32>().ok())
-        .map(f64::from);
+    // When --step-limit was not passed explicitly, the runner still enforces the
+    // default from config (cfg.root.agent.step_limit). build_manifest serializes the
+    // effective resolved config to manifest.config.resolved as TOML, so we can
+    // read agent.step_limit from there as a fallback.
+    let (step_limit, step_limit_source): (Option<f64>, Option<String>) = {
+        if let Some(v) = extract_argv_value(&cli_argv, "--step-limit")
+            .and_then(|v| v.parse::<u32>().ok())
+            .map(f64::from)
+        {
+            (Some(v), Some("manifest.cli.argv[--step-limit]".to_owned()))
+        } else {
+            let from_config = loaded.manifest.as_ref().and_then(|m| {
+                let tv: toml::Value = m.config.resolved.parse().ok()?;
+                tv.get("agent")?
+                    .get("step_limit")?
+                    .as_integer()
+                    .map(|n| n as f64)
+            });
+            match from_config {
+                Some(v) => (
+                    Some(v),
+                    Some("manifest.config.resolved[agent.step_limit]".to_owned()),
+                ),
+                None => (None, None),
+            }
+        }
+    };
     let task_timeout_secs = extract_argv_value(&cli_argv, "--task-timeout-secs")
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v as f64);
@@ -280,7 +306,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             AXIS_STEPS,
             "steps",
             step_limit,
-            step_limit.map(|_| "manifest.cli.argv[--step-limit]".to_owned()),
+            step_limit_source,
             &instances,
             &behavior_map,
             &eval_resolved,
@@ -458,11 +484,13 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         let Some(delta) = entry.get("override_delta") else {
             continue;
         };
-        // Explicit CLI cap overrides (recorded in OverrideDelta).
+        // Explicit per-instance cap overrides (recorded in OverrideDelta).
+        // sweep_cost_limit_usd is intentionally excluded: it controls whether
+        // additional tasks may be dispatched but is not a per-instance cap analyzed
+        // by budget-fit; changing it in a retry does not affect cap percentiles.
         let has_cap_field = delta.get("step_limit").is_some()
             || delta.get("task_timeout_secs").is_some()
-            || delta.get("per_task_budget_usd").is_some()
-            || delta.get("sweep_cost_limit_usd").is_some();
+            || delta.get("per_task_budget_usd").is_some();
         // Config overlay paths — not currently stored in OverrideDelta (bench retry
         // records only explicit CLI flags), but check the raw JSON so that if the
         // schema is extended in future to record --config overlays, they are caught.
@@ -479,9 +507,9 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "budget-fit: retry '{retry_id}' changed cap parameters \
+                "budget-fit: retry '{retry_id}' changed per-instance cap parameters \
                  (step_limit / task_timeout_secs / per_task_budget_usd / \
-                 sweep_cost_limit_usd / config_overlay_paths); \
+                 config_overlay_paths); \
                  instances ran with different caps so at-cap counts and percentile \
                  recommendations would be unreliable"
             ))));
@@ -544,17 +572,23 @@ fn validate_filters(filters: &[String]) -> Result<(), Error> {
             ))));
         }
 
-        if KNOWN_FILTER_KEYS.contains(&key) {
-            if !f.contains('=') {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "budget-fit: --filter '{f}' is missing a value; expected {key}=<value>"
-                ))));
-            }
-            if val.is_empty() {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "budget-fit: --filter '{key}=' has an empty value; expected {key}=<value>"
-                ))));
-            }
+        if !KNOWN_FILTER_KEYS.contains(&key) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: --filter key '{key}' is not recognised; \
+                 known keys: {}",
+                KNOWN_FILTER_KEYS.join(", ")
+            ))));
+        }
+
+        if !f.contains('=') {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: --filter '{f}' is missing a value; expected {key}=<value>"
+            ))));
+        }
+        if val.is_empty() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: --filter '{key}=' has an empty value; expected {key}=<value>"
+            ))));
         }
 
         if key == "resolved" && val != "true" && val != "false" {
