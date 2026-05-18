@@ -1927,9 +1927,10 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
 }
 
 fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
-    let format = l.format.parse::<crate::run::ladder::LadderFormat>().map_err(|e| {
-        Error::Config(crate::error::ConfigError::Invalid(format!("ladder: {e}")))
-    })?;
+    let format = l
+        .format
+        .parse::<crate::run::ladder::LadderFormat>()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(format!("ladder: {e}"))))?;
     let report = crate::run::ladder::run(&crate::run::ladder::LadderArgs {
         root: l.root,
         dataset: l.dataset,

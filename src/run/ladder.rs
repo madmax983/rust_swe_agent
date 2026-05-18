@@ -109,7 +109,7 @@ pub struct LadderReport {
 pub fn run(args: &LadderArgs) -> Result<LadderReport, Error> {
     // Walk immediate children of root (I/O failure here exits non-zero per AC).
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&args.root)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().is_dir())
         .map(|e| e.path())
         .collect();
@@ -141,20 +141,21 @@ pub fn run(args: &LadderArgs) -> Result<LadderReport, Error> {
         raw_sweeps.retain(|s| dataset_matches(s, filter));
     }
 
+    // Resolve baseline before --last truncation so a baseline outside the
+    // last-N window still produces the delta_vs_baseline column.
+    let baseline_pct: Option<f64> = args.baseline.as_deref().and_then(|baseline_id| {
+        raw_sweeps
+            .iter()
+            .find(|s| s.dir_name == baseline_id)
+            .map(SweepData::resolved_pct)
+    });
+
     // Apply --last N: keep the N most recent (tail of the sorted list).
     if let Some(n) = args.last {
         if raw_sweeps.len() > n {
             raw_sweeps.drain(..raw_sweeps.len() - n);
         }
     }
-
-    // Resolve baseline index for the optional delta_vs_baseline column.
-    let baseline_pct: Option<f64> = args.baseline.as_deref().and_then(|baseline_id| {
-        raw_sweeps
-            .iter()
-            .find(|s| s.dir_name == baseline_id)
-            .map(|s| s.resolved_pct())
-    });
 
     // Apply redaction to free-text provenance fields before building rows.
     let redactor = Redactor::default_enabled();
@@ -196,9 +197,9 @@ pub fn run(args: &LadderArgs) -> Result<LadderReport, Error> {
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 pub fn render_text(report: &LadderReport) -> String {
+    use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
-    use comfy_table::Table;
 
     let mut out = String::new();
     let _ = writeln!(out, "\n=== bench ladder ===");
@@ -384,11 +385,10 @@ fn try_load_sweep(dir: &Path) -> Result<SweepData, String> {
         return Err("no results.json found".into());
     }
 
-    let text = std::fs::read_to_string(&results_path)
-        .map_err(|e| format!("I/O error: {e}"))?;
-
+    let file = std::fs::File::open(&results_path).map_err(|e| format!("I/O error: {e}"))?;
+    let reader = std::io::BufReader::new(file);
     let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("JSON parse error: {e}"))?;
+        serde_json::from_reader(reader).map_err(|e| format!("JSON parse error: {e}"))?;
 
     // Validate artifact schema — kind mismatch, unknown future version, etc.
     // Use a short label (no full path) because the dir is already shown in `dir`.
@@ -409,12 +409,7 @@ fn try_load_sweep(dir: &Path) -> Result<SweepData, String> {
 
     let start_timestamp = manifest.runtime.started_at_utc.clone();
     let model = manifest.model.name.clone();
-    let prompt_sha: String = manifest
-        .prompt_template
-        .sha256
-        .chars()
-        .take(8)
-        .collect();
+    let prompt_sha: String = manifest.prompt_template.sha256.chars().take(8).collect();
     let dataset_path = manifest.dataset.path.clone();
     let dataset_alias = manifest.dataset.alias.clone();
 
@@ -427,7 +422,7 @@ fn try_load_sweep(dir: &Path) -> Result<SweepData, String> {
     let step_values: Vec<f64> = sweep
         .instances
         .iter()
-        .filter_map(|i| i.steps.map(|s| s as f64))
+        .filter_map(|i| i.steps.map(f64::from))
         .collect();
 
     let mean_steps = if step_values.is_empty() {
@@ -451,9 +446,10 @@ fn try_load_sweep(dir: &Path) -> Result<SweepData, String> {
 }
 
 fn dir_name(dir: &Path) -> String {
-    dir.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| dir.display().to_string())
+    dir.file_name().map_or_else(
+        || dir.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 fn format_date(timestamp: &str) -> String {
@@ -523,7 +519,7 @@ mod tests {
             estimated_cost_usd: 0.0,
             mean_steps: None,
         };
-        assert_eq!(s.resolved_pct(), 0.0);
+        assert!(s.resolved_pct() < f64::EPSILON);
     }
 
     #[test]

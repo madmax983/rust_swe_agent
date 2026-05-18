@@ -3,7 +3,14 @@
 //! Covers the acceptance criteria from issue #270.
 //! Tests are written first (TDD red phase) against the binary.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::map_unwrap_or,
+    clippy::unnecessary_map_or,
+    clippy::redundant_closure_for_method_calls
+)]
 
 use std::path::Path;
 use std::process::Command;
@@ -102,14 +109,8 @@ fn ladder_text_shows_three_sweep_rows() {
         stdout.contains("sweep1"),
         "expected sweep1 row in text output:\n{stdout}"
     );
-    assert!(
-        stdout.contains("sweep2"),
-        "expected sweep2 row:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("sweep3"),
-        "expected sweep3 row:\n{stdout}"
-    );
+    assert!(stdout.contains("sweep2"), "expected sweep2 row:\n{stdout}");
+    assert!(stdout.contains("sweep3"), "expected sweep3 row:\n{stdout}");
 }
 
 #[test]
@@ -255,7 +256,9 @@ fn ladder_json_delta_resolved_pct_first_row_is_null() {
     let report = run_ladder_json(&fixture_root(), &[]);
     let rows = report["rows"].as_array().unwrap();
     assert!(
-        rows[0].get("delta_resolved_pct").map_or(true, |v| v.is_null()),
+        rows[0]
+            .get("delta_resolved_pct")
+            .map_or(true, |v| v.is_null()),
         "first row delta_resolved_pct must be absent or null"
     );
 }
@@ -370,10 +373,14 @@ fn ladder_dataset_filter_by_nonexistent_returns_zero_rows() {
         output.status.success(),
         "exit 0 even with 0 matching sweeps"
     );
-    let report: serde_json::Value = serde_json::from_slice(&run_ladder(
-        &fixture_root(),
-        &["--dataset", "nonexistent", "--format", "json"],
-    ).stdout).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(
+        &run_ladder(
+            &fixture_root(),
+            &["--dataset", "nonexistent", "--format", "json"],
+        )
+        .stdout,
+    )
+    .unwrap();
     let rows = report["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 0, "no rows should match a nonexistent dataset");
 }
@@ -387,7 +394,8 @@ fn ladder_baseline_adds_delta_vs_baseline_column() {
     // All rows should have delta_vs_baseline set
     for row in rows {
         assert!(
-            row.get("delta_vs_baseline").map_or(false, |v| v.is_f64() || v.is_u64()),
+            row.get("delta_vs_baseline")
+                .map_or(false, |v| v.is_f64() || v.is_u64()),
             "delta_vs_baseline should be present when --baseline is set: {row}"
         );
     }
@@ -482,10 +490,7 @@ fn ladder_output_is_deterministic() {
 fn normalize_root(s: &str) -> String {
     // Replace the absolute fixture path with a stable placeholder so snapshots
     // are machine-independent and byte-for-byte identical in CI.
-    s.replace(
-        &fixture_root().display().to_string(),
-        "[LADDER_FIXTURES]",
-    )
+    s.replace(&fixture_root().display().to_string(), "[LADDER_FIXTURES]")
 }
 
 #[test]
