@@ -57,6 +57,7 @@ pub enum ArtifactKind {
     SweepHaltReport,
     RenderOnly,
     CacheStatsReport,
+    LadderReport,
 }
 
 impl ArtifactKind {
@@ -74,6 +75,7 @@ impl ArtifactKind {
             Self::SweepHaltReport => "sweep_halt_report",
             Self::RenderOnly => "render_only",
             Self::CacheStatsReport => "cache_stats_report",
+            Self::LadderReport => "ladder_report",
         }
     }
 }

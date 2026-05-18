@@ -350,6 +350,8 @@ pub enum BenchCmd {
     InstanceHistory(InstanceHistoryCmd),
     /// Surface prompt-cache hit rate, savings, and spend for a completed sweep.
     CacheStats(CacheStatsCmd),
+    /// Resolved-rate and cost trend across sweeps in a root directory.
+    Ladder(LadderCmd),
 }
 
 /// `bench cache-stats` — surface prompt-cache hit rate per sweep (zero-cost: reads only on-disk artifacts).
@@ -370,6 +372,30 @@ pub struct CacheStatsCmd {
     /// Baseline sweep directory. When supplied, prints Δ hit_rate and Δ realized_spend_usd.
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<std::path::PathBuf>,
+}
+
+/// `bench ladder` — resolved-rate and cost trend across sweeps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct LadderCmd {
+    /// Root directory containing sweep subdirectories to scan.
+    #[arg(long, value_name = "DIR")]
+    pub root: std::path::PathBuf,
+
+    /// Filter to sweeps whose recorded dataset matches this alias or normalized path.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Truncate to the N most recent matching sweeps after sorting.
+    #[arg(long, value_name = "N")]
+    pub last: Option<usize>,
+
+    /// Sweep directory name to use as baseline; adds a Δ vs baseline column.
+    #[arg(long, value_name = "SWEEP_ID")]
+    pub baseline: Option<String>,
+
+    /// Output format: `text` (default), `json`, or `markdown`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.
