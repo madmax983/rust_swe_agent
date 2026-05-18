@@ -384,49 +384,90 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
             continue;
         }
 
-        // Budget guard: mark remaining as skipped_budget if cap reached (AC#7).
-        if let Some(limit) = args.sweep_cost_limit_usd {
-            if cumulative_cost >= limit {
-                // Count only newly-added markers to avoid double-counting on repeat
-                // resume runs where the budget is still exhausted (P2-387).
-                let mut newly_skipped = 0_usize;
-                for id in &pending_ids {
-                    let record = state.instances.entry(id.clone()).or_insert_with(|| {
-                        InstanceCascadeRecord {
+        // Separate instances whose model tier already ran but whose evaluator
+        // failed (eval_pending) from instances that still need a model run.
+        // eval_pending instances bypass the budget guard: retrying the evaluator
+        // costs no model budget.
+        let eval_pending_set: HashSet<&str> = pending_ids
+            .iter()
+            .filter(|id| {
+                state.instances.get(id.as_str()).is_some_and(|r| {
+                    r.attempts.iter().any(|a| {
+                        a.tier_name == tier_def.name
+                            && a.halted_reason.as_deref() == Some("eval_pending")
+                    })
+                })
+            })
+            .map(String::as_str)
+            .collect();
+
+        // Budget guard: mark only model-pending instances as skipped_budget (AC#7).
+        let budget_exhausted = args
+            .sweep_cost_limit_usd
+            .is_some_and(|lim| cumulative_cost >= lim);
+        if budget_exhausted {
+            // Count only newly-added markers to avoid double-counting on repeat
+            // resume runs where the budget is still exhausted.
+            let mut newly_skipped = 0_usize;
+            for id in &pending_ids {
+                if eval_pending_set.contains(id.as_str()) {
+                    continue; // Evaluator retry is free; don't gate it.
+                }
+                let record =
+                    state
+                        .instances
+                        .entry(id.clone())
+                        .or_insert_with(|| InstanceCascadeRecord {
                             resolving_tier: None,
                             total_cost_usd: 0.0,
                             attempts: vec![],
-                        }
-                    });
-                    // Don't push a duplicate placeholder that already exists.
-                    if record.attempts.iter().any(|a| {
-                        a.tier_name == tier_def.name
-                            && a.halted_reason.as_deref() == Some("skipped_budget")
-                    }) {
-                        continue;
-                    }
-                    record.attempts.push(TierAttempt {
-                        tier_name: tier_def.name.clone(),
-                        model: tier_def.model.clone(),
-                        outcome: None,
-                        eval_exit_reason: None,
-                        cost_usd: 0.0,
-                        steps: None,
-                        halted_reason: Some("skipped_budget".into()),
-                    });
-                    newly_skipped += 1;
+                        });
+                // Don't push a duplicate placeholder that already exists.
+                if record.attempts.iter().any(|a| {
+                    a.tier_name == tier_def.name
+                        && a.halted_reason.as_deref() == Some("skipped_budget")
+                }) {
+                    continue;
                 }
-                tier_stats[tier_idx].instances_attempted += newly_skipped;
-                write_cascade_state(&state_path, &state)?;
-                break;
+                record.attempts.push(TierAttempt {
+                    tier_name: tier_def.name.clone(),
+                    model: tier_def.model.clone(),
+                    outcome: None,
+                    eval_exit_reason: None,
+                    cost_usd: 0.0,
+                    steps: None,
+                    halted_reason: Some("skipped_budget".into()),
+                });
+                newly_skipped += 1;
             }
+            tier_stats[tier_idx].instances_attempted += newly_skipped;
+            write_cascade_state(&state_path, &state)?;
+            if eval_pending_set.is_empty() {
+                break; // No evaluator retries outstanding; stop the cascade.
+            }
+            // eval_pending instances remain; fall through to retry their evaluator.
         }
 
         // Run this tier's sweep for pending instances.
+        // When budget is exhausted, restrict the sweep to eval_pending instances so
+        // the inner sweep (resume: true) only retries the evaluator without launching
+        // new model calls for fresh instances.
         let tier_sweep_dir = args.output_dir.join(format!("tier-{}", tier_def.name));
         std::fs::create_dir_all(&tier_sweep_dir)?;
 
-        let ids_csv = pending_ids.join(",");
+        let sweep_ids: Vec<&String> = if budget_exhausted {
+            pending_ids
+                .iter()
+                .filter(|id| eval_pending_set.contains(id.as_str()))
+                .collect()
+        } else {
+            pending_ids.iter().collect()
+        };
+        let ids_csv = sweep_ids
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
         let sweep_results = run_tier(
             tier_def,
             tier_sweep_dir.clone(),
@@ -546,9 +587,17 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         } else {
             // Wrap the synchronous sb-cli subprocess in spawn_blocking so it
             // doesn't stall the Tokio executor thread for the minutes it may run.
+            // Pass the local dataset path so the evaluator uses the same gold
+            // data as the tier sweep rather than falling back to the configured
+            // SWE-bench subset/split (which can fail or evaluate the wrong data
+            // for custom/local datasets).
+            let eval_dataset_path = match &args.dataset_source {
+                crate::run::dataset::DatasetSource::LocalPath(p) => Some(p.clone()),
+                crate::run::dataset::DatasetSource::Named { .. } => None,
+            };
             let eval_args = EvaluateArgs {
                 sweep_dir: tier_sweep_dir.clone(),
-                dataset_path: None,
+                dataset_path: eval_dataset_path,
                 backend: args.eval_backend,
                 timeout_per_instance_secs: args.eval_timeout_per_instance_secs,
                 parallel: args.parallel,
