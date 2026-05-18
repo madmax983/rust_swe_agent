@@ -201,6 +201,21 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     let mut instances: Vec<&InstanceResult> = loaded.instances.values().collect();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
+    // Reject sweeps that used --rerun/--samples (reruns > 1). load_sweep returns one
+    // aggregated InstanceResult per instance: cost and duration are *summed* across run
+    // slots while steps and failure_category come from the first slot only. Building
+    // distributions from these aggregates mixes per-instance totals with per-run caps
+    // (e.g. a two-run instance can exceed a per-task cost cap just from summing) and
+    // ignores cap-bound outcomes that appear only in later run slots.
+    if instances.iter().any(|inst| inst.runs > 1) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: sweep used --rerun/--samples (instances have runs > 1); \
+             aggregated rows sum cost and duration across run slots, which corrupts \
+             per-cap percentile analysis; budget-fit requires single-run sweeps"
+                .into(),
+        )));
+    }
+
     // Behavior enrichment: present but malformed is an error (not a silent fallback).
     // Only the missing-file case proceeds as if behavior enrichment were absent.
     let behavior_map = load_behavior_map(&args.sweep_dir)?;
@@ -291,8 +306,36 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // completely different from individual task costs, and sweep-budget halts are
     // recorded as not-started rows rather than CostLimit/BudgetExhausted instances,
     // so using it as a per-instance cap would produce nonsense percentile recommendations.
-    let per_task_budget_usd =
-        extract_argv_value(&cli_argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
+    // When --per-task-budget-usd was set via --config rather than as an explicit CLI flag,
+    // fall back to agent.per_task_budget_usd from the resolved config TOML.
+    let (per_task_budget_usd, per_task_budget_usd_source): (Option<f64>, Option<String>) = {
+        if let Some(v) = extract_argv_value(&cli_argv, "--per-task-budget-usd")
+            .and_then(|v| v.parse::<f64>().ok())
+        {
+            (
+                Some(v),
+                Some("manifest.cli.argv[--per-task-budget-usd]".to_owned()),
+            )
+        } else {
+            let from_config = loaded.manifest.as_ref().and_then(|m| {
+                let tv: toml::Value = m.config.resolved.parse().ok()?;
+                let agent = tv.get("agent")?;
+                agent.get("per_task_budget_usd")?.as_float().or_else(|| {
+                    agent
+                        .get("per_task_budget_usd")?
+                        .as_integer()
+                        .map(|n| n as f64)
+                })
+            });
+            match from_config {
+                Some(v) => (
+                    Some(v),
+                    Some("manifest.config.resolved[agent.per_task_budget_usd]".to_owned()),
+                ),
+                None => (None, None),
+            }
+        }
+    };
 
     // Apply instance filters (same key=value syntax as bench inspect)
     validate_filters(&args.filter)?;
@@ -319,7 +362,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             AXIS_COST_USD,
             "USD",
             per_task_budget_usd,
-            per_task_budget_usd.map(|_| "manifest.cli.argv[--per-task-budget-usd]".to_owned()),
+            per_task_budget_usd_source,
             &instances,
             &behavior_map,
             &eval_resolved,
@@ -491,6 +534,10 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         let has_cap_field = delta.get("step_limit").is_some()
             || delta.get("task_timeout_secs").is_some()
             || delta.get("per_task_budget_usd").is_some();
+        // A model change affects cost behavior and per-instance success rates; the
+        // mixed-model population would yield unreliable mean_cost_per_unit estimates
+        // and percentile recommendations derived from a heterogeneous set.
+        let has_model_change = delta.get("model").is_some();
         // Config overlay paths — not currently stored in OverrideDelta (bench retry
         // records only explicit CLI flags), but check the raw JSON so that if the
         // schema is extended in future to record --config overlays, they are caught.
@@ -501,17 +548,17 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
             .and_then(|v| v.as_array())
             .is_some_and(|arr| !arr.is_empty());
 
-        if has_cap_field || has_config_overlay {
+        if has_cap_field || has_model_change || has_config_overlay {
             let retry_id = entry
                 .get("retry_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "budget-fit: retry '{retry_id}' changed per-instance cap parameters \
+                "budget-fit: retry '{retry_id}' changed incompatible parameters \
                  (step_limit / task_timeout_secs / per_task_budget_usd / \
-                 config_overlay_paths); \
-                 instances ran with different caps so at-cap counts and percentile \
-                 recommendations would be unreliable"
+                 model / config_overlay_paths); \
+                 instances ran with different caps or models so at-cap counts and \
+                 cost percentile recommendations would be unreliable"
             ))));
         }
     }
