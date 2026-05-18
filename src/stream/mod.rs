@@ -115,6 +115,59 @@ impl StreamSink for NullSink {
     fn emit(&self, _event: StreamEvent) {}
 }
 
+/// Fan out one event to many sinks. Used so the agent can drive an SSE
+/// broadcast, the ratatui dashboard, and an stderr status line from the
+/// same emission path without each subsystem owning a side channel.
+pub struct MultiSink {
+    sinks: Vec<std::sync::Arc<dyn StreamSink>>,
+}
+
+impl MultiSink {
+    #[must_use]
+    pub fn new(sinks: Vec<std::sync::Arc<dyn StreamSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl StreamSink for MultiSink {
+    fn emit(&self, event: StreamEvent) {
+        for sink in &self.sinks {
+            sink.emit(event.clone());
+        }
+    }
+}
+
+/// Issue #312 `--yolo`-without-`--interactive` status-line printer.
+/// Prints one terse `[status] step N/M cost $X.XXXX` line to stderr on
+/// each `AssistantMessage` (a clean per-step boundary that fires once
+/// after every model turn, before tool execution).
+pub struct StatusLineStderrSink {
+    step_limit: u32,
+}
+
+impl StatusLineStderrSink {
+    #[must_use]
+    pub fn new(step_limit: u32) -> Self {
+        Self { step_limit }
+    }
+}
+
+impl StreamSink for StatusLineStderrSink {
+    fn emit(&self, event: StreamEvent) {
+        if let StreamEvent::AssistantMessage { step, cost_usd, .. } = event {
+            let cost = cost_usd.unwrap_or(0.0);
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!(
+                    "[status] step {}/{}  cost ${:.4}\n",
+                    step, self.step_limit, cost
+                )
+                .as_bytes(),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -150,6 +203,119 @@ mod tests {
             task: "t".into(),
             model: "m".into(),
             started_at: "s".into(),
+        });
+    }
+
+    /// Test sink that captures emitted events into a shared vec so tests
+    /// can verify fan-out and ordering.
+    #[derive(Default)]
+    struct CapturingSink {
+        events: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl CapturingSink {
+        fn names(&self) -> Vec<&'static str> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl StreamSink for CapturingSink {
+        fn emit(&self, event: StreamEvent) {
+            self.events.lock().unwrap().push(event.event_name());
+        }
+    }
+
+    #[test]
+    fn multi_sink_fans_out_to_every_sink_in_order() {
+        let a = std::sync::Arc::new(CapturingSink::default());
+        let b = std::sync::Arc::new(CapturingSink::default());
+        let multi = MultiSink::new(vec![
+            a.clone() as std::sync::Arc<dyn StreamSink>,
+            b.clone() as std::sync::Arc<dyn StreamSink>,
+        ]);
+        multi.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        multi.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "echo".into(),
+            timestamp: "t".into(),
+        });
+        assert_eq!(a.names(), vec!["run_started", "bash_start"]);
+        assert_eq!(b.names(), vec!["run_started", "bash_start"]);
+    }
+
+    #[test]
+    fn multi_sink_empty_is_noop() {
+        let multi = MultiSink::new(vec![]);
+        // Just verify it doesn't panic.
+        multi.emit(StreamEvent::Observation {
+            step: 0,
+            content: "x".into(),
+            timestamp: "t".into(),
+        });
+    }
+
+    #[test]
+    fn status_line_sink_silent_on_non_assistant_events() {
+        // We can't easily capture the stderr write — but we can at
+        // least confirm the sink doesn't panic for the non-matching arms.
+        let sink = StatusLineStderrSink::new(50);
+        sink.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+        sink.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "echo".into(),
+            timestamp: "t".into(),
+        });
+        sink.emit(StreamEvent::BashResult {
+            step: 1,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+        sink.emit(StreamEvent::Observation {
+            step: 1,
+            content: "x".into(),
+            timestamp: "t".into(),
+        });
+        sink.emit(StreamEvent::FormatError {
+            step: 1,
+            content: "x".into(),
+            timestamp: "t".into(),
+        });
+        sink.emit(StreamEvent::RunEnded {
+            exit_reason: "submitted".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 1,
+            total_cost_usd: 0.0,
+            ended_at: "t".into(),
+        });
+    }
+
+    #[test]
+    fn status_line_sink_emits_on_assistant_message() {
+        // Smoke: also doesn't panic for the matching arm.
+        let sink = StatusLineStderrSink::new(7);
+        sink.emit(StreamEvent::AssistantMessage {
+            step: 3,
+            content: "x".into(),
+            cost_usd: Some(0.1234),
+            timestamp: "t".into(),
+        });
+        sink.emit(StreamEvent::AssistantMessage {
+            step: 4,
+            content: "y".into(),
+            cost_usd: None,
+            timestamp: "t".into(),
         });
     }
 }

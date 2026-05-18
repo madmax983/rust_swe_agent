@@ -24,9 +24,7 @@ use maxwells_daemon::Config;
 use maxwells_daemon::run::swebench::{
     SwebenchArgs, patch_path_for_run, run, trajectory_path_for_run,
 };
-use maxwells_daemon::trajectory::{
-    FORMAT_VERSION, FailureCategory, Trajectory, TrajectoryInfo, outcome,
-};
+use maxwells_daemon::trajectory::{FORMAT_VERSION, Trajectory, TrajectoryInfo, outcome};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -73,6 +71,7 @@ fn config_with_workdir(dir: &Path) -> Config {
     Config::from_toml_str(&toml).unwrap()
 }
 
+#[allow(dead_code)]
 fn config_with_workdir_and_budget(dir: &Path, per_task_budget_usd: f64) -> Config {
     let workdir = dir
         .display()
@@ -85,15 +84,15 @@ fn config_with_workdir_and_budget(dir: &Path, per_task_budget_usd: f64) -> Confi
     Config::from_toml_str(&toml).unwrap()
 }
 
+#[allow(dead_code)]
 fn config_with_workdir_and_step_limit(dir: &Path, step_limit: u32) -> Config {
     let workdir = dir
         .display()
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    let toml = format!(
-        "[environment]\nworkdir = \"{workdir}\"\n[agent]\nstep_limit = {step_limit}\n"
-    );
+    let toml =
+        format!("[environment]\nworkdir = \"{workdir}\"\n[agent]\nstep_limit = {step_limit}\n");
     Config::from_toml_str(&toml).unwrap()
 }
 
@@ -145,22 +144,33 @@ fn write_complete_trajectory(path: &Path) {
 fn trajectory_info_has_partial_field_defaults_false() {
     let info = TrajectoryInfo::default();
     assert!(!info.partial, "partial should default to false");
-    assert!(info.partial_reason.is_none(), "partial_reason should default to None");
+    assert!(
+        info.partial_reason.is_none(),
+        "partial_reason should default to None"
+    );
 }
 
 #[test]
 fn partial_true_serializes_and_roundtrips() {
-    let mut info = TrajectoryInfo::default();
-    info.partial = true;
-    info.partial_reason = Some("in_progress".into());
+    let info = TrajectoryInfo {
+        partial: true,
+        partial_reason: Some("in_progress".into()),
+        ..Default::default()
+    };
     let traj = Trajectory {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
     };
     let json = serde_json::to_string_pretty(&traj).unwrap();
-    assert!(json.contains("\"partial\": true"), "partial should serialize: {json}");
-    assert!(json.contains("\"in_progress\""), "partial_reason should serialize: {json}");
+    assert!(
+        json.contains("\"partial\": true"),
+        "partial should serialize: {json}"
+    );
+    assert!(
+        json.contains("\"in_progress\""),
+        "partial_reason should serialize: {json}"
+    );
 
     let back: Trajectory = serde_json::from_str(&json).unwrap();
     assert!(back.info.partial);
@@ -179,8 +189,14 @@ fn partial_false_omitted_from_json_for_backward_compat() {
     };
     let json = serde_json::to_string_pretty(&traj).unwrap();
     // partial=false and partial_reason=None should NOT appear
-    assert!(!json.contains("\"partial\""), "partial=false should be omitted: {json}");
-    assert!(!json.contains("\"partial_reason\""), "partial_reason=null should be omitted: {json}");
+    assert!(
+        !json.contains("\"partial\""),
+        "partial=false should be omitted: {json}"
+    );
+    assert!(
+        !json.contains("\"partial_reason\""),
+        "partial_reason=null should be omitted: {json}"
+    );
 }
 
 #[test]
@@ -193,7 +209,10 @@ fn legacy_trajectory_without_partial_field_parses_as_false() {
   "messages": []
 }"#;
     let traj: Trajectory = serde_json::from_str(json).unwrap();
-    assert!(!traj.info.partial, "legacy trajectory should parse as partial=false");
+    assert!(
+        !traj.info.partial,
+        "legacy trajectory should parse as partial=false"
+    );
     assert!(traj.info.partial_reason.is_none());
 }
 
@@ -262,7 +281,10 @@ fn save_pretty_writes_partial_false_on_final() {
 
     let json = std::fs::read_to_string(&path).unwrap();
     // partial=false should be absent from the final file
-    assert!(!json.contains("\"partial\""), "final trajectory should not have partial=true: {json}");
+    assert!(
+        !json.contains("\"partial\""),
+        "final trajectory should not have partial=true: {json}"
+    );
 }
 
 // ─── RED Phase: Per-turn checkpoint latency ───────────────────────────────
@@ -284,15 +306,20 @@ fn checkpoint_write_latency_p95_under_50ms() {
     }
 
     let mut latencies_ms: Vec<u64> = Vec::with_capacity(50);
-    for step in 0..50 {
-        traj.info.steps = Some(step as u32);
+    for step in 0_u32..50 {
+        traj.info.steps = Some(step);
         let start = Instant::now();
         traj.save_partial_atomic(&path).unwrap();
-        let elapsed = start.elapsed().as_millis() as u64;
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         latencies_ms.push(elapsed);
     }
 
     latencies_ms.sort_unstable();
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let p95_idx = (latencies_ms.len() as f64 * 0.95) as usize;
     let p95 = latencies_ms[p95_idx.min(latencies_ms.len() - 1)];
     assert!(
@@ -326,14 +353,17 @@ async fn resume_classifies_partial_trajectory_and_reruns_not_skips() {
     let complete_path = trajectory_path_for_run(&output, "complete-inst", 1);
     write_complete_trajectory(&complete_path);
     std::fs::write(
-        &complete_path.with_extension("").with_extension("").with_extension("patch"),
+        complete_path
+            .with_extension("")
+            .with_extension("")
+            .with_extension("patch"),
         b"",
     )
     .unwrap_or(());
     // Write the actual patch file for complete-inst
-    let complete_patch = patch_path_for_run(&output, "complete-inst", 1);
-    std::fs::create_dir_all(complete_patch.parent().unwrap()).unwrap();
-    std::fs::write(&complete_patch, b"").unwrap();
+    let inst_patch_file = patch_path_for_run(&output, "complete-inst", 1);
+    std::fs::create_dir_all(inst_patch_file.parent().unwrap()).unwrap();
+    std::fs::write(&inst_patch_file, b"").unwrap();
 
     let cfg = config_with_workdir(&repo);
     let results = run(SwebenchArgs {
@@ -462,7 +492,10 @@ async fn resume_corrupted_trajectory_reruns_from_step_zero() {
     .unwrap();
 
     // Corrupted trajectory should be re-run (0 skipped)
-    assert_eq!(results.skipped, 0, "corrupted trajectory should trigger re-run");
+    assert_eq!(
+        results.skipped, 0,
+        "corrupted trajectory should trigger re-run"
+    );
     // The instance should have been successfully re-run
     let final_traj: Trajectory = serde_json::from_str(
         &std::fs::read_to_string(trajectory_path_for_run(&output, "corrupted-inst", 1)).unwrap(),
@@ -506,6 +539,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         patch_capture: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
+        interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
     };
 
@@ -518,11 +552,15 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
     let traj: serde_json::Value = serde_json::from_str(&json).unwrap();
     // partial=false means it's absent or explicitly false
     let partial = traj["info"]["partial"].as_bool().unwrap_or(false);
-    assert!(!partial, "final trajectory should have partial=false; got: {json}");
+    assert!(
+        !partial,
+        "final trajectory should have partial=false; got: {json}"
+    );
 }
 
 // ─── RED Phase: Bundle exclusion ──────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn bench_bundle_excludes_partial_trajectories_with_warning() {
     use maxwells_daemon::run::bundle::{BundleCreateArgs, create_bundle};
@@ -646,8 +684,8 @@ fn bench_bundle_excludes_partial_trajectories_with_warning() {
 
     let bundle_path = work.path().join("bundle.tar.gz");
     let args = BundleCreateArgs {
-        sweep_dir: sweep_dir.clone(),
-        output_path: bundle_path.clone(),
+        sweep_dir,
+        output_path: bundle_path,
         instance: None,
     };
 
@@ -663,7 +701,9 @@ fn bench_bundle_excludes_partial_trajectories_with_warning() {
             );
             // The partial exclusion should be reported
             assert!(
-                report.partial_excluded.contains(&"partial-inst".to_string()),
+                report
+                    .partial_excluded
+                    .contains(&"partial-inst".to_string()),
                 "partial_excluded should list the skipped instance: {:?}",
                 report.partial_excluded
             );
@@ -692,7 +732,7 @@ fn bench_inspect_partial_trajectory_shows_banner() {
     // Create a partial trajectory file
     let traj_dir = sweep_dir.join("partial-inst");
     std::fs::create_dir_all(&traj_dir).unwrap();
-    let mut info = TrajectoryInfo {
+    let info = TrajectoryInfo {
         steps: Some(4),
         model_name: Some("test-model".into()),
         partial: true,
@@ -753,14 +793,14 @@ fn bench_inspect_partial_trajectory_shows_banner() {
     .unwrap();
 
     let args = InspectArgs {
-        sweep: sweep_dir.clone(),
+        sweep: sweep_dir,
         instance: Some("partial-inst".into()),
         filter: None,
         full: false,
         show_expected: false,
     };
 
-    let report = inspect(args, InspectFormat::Text).unwrap();
+    let report = inspect(&args, &InspectFormat::Text).unwrap();
     // The rendered output should contain a PARTIAL banner
     assert!(
         report.contains("PARTIAL") || report.contains("partial"),
@@ -836,8 +876,7 @@ async fn sweep_summary_table_shows_partial_count() {
     .unwrap();
 
     // The summary table method should be available (this verifies the API exists)
-    let table = results.summary_table();
-    // The table may or may not show "Partial: 0" — but it should not error
+    let _ = results.summary_table();
     // The partial count field should be accessible
     let _ = results.partial_count();
 }
@@ -870,6 +909,9 @@ fn final_trajectory_after_resume_has_partial_false() {
     let final_json = std::fs::read_to_string(&path).unwrap();
     let final_val: serde_json::Value = serde_json::from_str(&final_json).unwrap();
     let partial = final_val["info"]["partial"].as_bool().unwrap_or(false);
-    assert!(!partial, "final trajectory after resume should have partial=false");
+    assert!(
+        !partial,
+        "final trajectory after resume should have partial=false"
+    );
     assert_eq!(final_val["info"]["outcome"].as_str(), Some("submitted"));
 }

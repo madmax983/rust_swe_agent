@@ -233,6 +233,10 @@ failure_category: patch_apply_failed
 total_cost_usd:   0.098732
 tokens:           prompt=38011 completion=3502
 resolved:         false
+Failing tests: <patch_apply_failed>
+patch error log:
+error: patch failed: src/core.py:10
+error: src/core.py: patch does not apply
 
 [step 8] assistant
 ```bash
@@ -246,3 +250,7 @@ stderr:
 error: patch failed: src/core.py:10
 … [77 more lines, full output at trajectory.json#/steps/9]
 ```
+
+When `patch_error_log` is absent in the artifact (older sweeps or backends that
+do not emit it), `bench inspect` renders `patch error log: <not captured>`
+instead of erroring.

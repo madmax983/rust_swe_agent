@@ -7,7 +7,7 @@
 
 use maxwells_daemon::{
     config::Config,
-    run::mini::{MiniArgs, run},
+    run::mini::{InteractiveMode, MiniArgs, run},
     trajectory::{VerificationCheck, verification_status},
 };
 
@@ -35,7 +35,8 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         patch_capture: None,
         verification_checks: checks,
         verification_timeout_secs: 10,
-    resume_from: None,
+        interactive_mode: InteractiveMode::Off,
+        resume_from: None,
     }
 }
 

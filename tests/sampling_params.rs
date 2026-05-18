@@ -187,7 +187,7 @@ async fn fresh_trajectory_has_sampling_on_every_assistant_step() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -378,7 +378,7 @@ max_tokens = 4096
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();

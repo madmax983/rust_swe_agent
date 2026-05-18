@@ -200,6 +200,7 @@ struct ResolvedConfigForBundle {
     redaction: Option<RedactionCfg>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, BundleError> {
     if !args.sweep_dir.is_dir() {
         return Err(BundleError::MissingSource(format!(

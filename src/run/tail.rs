@@ -356,13 +356,17 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
 
 fn count_partial_trajectories(sweep_dir: &Path) -> usize {
     let mut count = 0;
-    let Ok(entries) = std::fs::read_dir(sweep_dir) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(sweep_dir) else {
+        return 0;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-        let Ok(nested) = std::fs::read_dir(&path) else { continue };
+        let Ok(nested) = std::fs::read_dir(&path) else {
+            continue;
+        };
         for nested_entry in nested.flatten() {
             let nested_path = nested_entry.path();
             let name = nested_path
@@ -372,7 +376,10 @@ fn count_partial_trajectories(sweep_dir: &Path) -> usize {
             if name.starts_with("run-") && name.ends_with(".traj.json") {
                 if let Ok(text) = std::fs::read_to_string(&nested_path) {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if v.pointer("/info/partial").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if v.pointer("/info/partial")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                        {
                             count += 1;
                         }
                     }

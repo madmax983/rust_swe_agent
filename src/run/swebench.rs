@@ -4065,7 +4065,11 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         let traj_path = trajectory_path_for_run(&output_dir, &id, run_index);
         let before_fp = trajectory_fingerprint(&traj_path);
         // Only pass the partial trajectory on the first attempt; retries start fresh.
-        let attempt_resume = if attempts == 1 { resume_from.clone() } else { None };
+        let attempt_resume = if attempts == 1 {
+            resume_from.clone()
+        } else {
+            None
+        };
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
@@ -4086,6 +4090,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             verification_checks: vec![],
             verification_timeout_secs: 60,
             resume_from: attempt_resume,
+            interactive_mode: crate::run::mini::InteractiveMode::Off,
         };
         let run_err = crate::run::mini::run(args).await.err();
 
@@ -4502,6 +4507,19 @@ pub fn apply_subset(
         }
         let include: HashSet<&str> = ids.iter().map(String::as_str).collect();
         instances.retain(|i| include.contains(i.instance_id.as_str()));
+        // Reorder to honour the requested ID sequence rather than the original
+        // dataset order.  This matters for tool-ablation: the outer run
+        // shuffles the dataset (--sample) and writes the shuffled IDs to a
+        // per-arm file; if the child sweep then re-sorts by dataset order,
+        // partial runs under a budget cap or cancellation see a biased prefix
+        // (the first K in dataset order) instead of the first K of the random
+        // sample.
+        let pos: std::collections::HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
+        instances.sort_by_key(|inst| pos[inst.instance_id.as_str()]);
     }
 
     if let Some(n) = params.sample {
@@ -4636,24 +4654,29 @@ fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<S
     let Some(raw) = instance_ids_arg.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let text = if let Some(path) = raw.strip_prefix('@') {
-        std::fs::read_to_string(path).map_err(|e| {
+    // File content uses line-only splitting so that instance IDs that contain
+    // a literal comma are preserved intact.  Inline text keeps the historical
+    // comma-or-newline splitting for convenience.
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(path) = raw.strip_prefix('@') {
+        let text = std::fs::read_to_string(path).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "failed to read --instance-ids file `{path}`: {e}"
             )))
-        })?
-    } else {
-        raw.to_owned()
-    };
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for part in text.split([',', '\n']) {
-        let id = part.trim();
-        if id.is_empty() {
-            continue;
+        })?;
+        for id in text.lines() {
+            let id = id.trim();
+            if !id.is_empty() && seen.insert(id.to_owned()) {
+                ids.push(id.to_owned());
+            }
         }
-        if seen.insert(id.to_owned()) {
-            ids.push(id.to_owned());
+    } else {
+        for part in raw.split([',', '\n']) {
+            let id = part.trim();
+            if !id.is_empty() && seen.insert(id.to_owned()) {
+                ids.push(id.to_owned());
+            }
         }
     }
     if ids.is_empty() {
@@ -6529,7 +6552,7 @@ instance = "inst"
         assert_eq!(v["artifact_kind"], "preflight_report");
         assert_eq!(
             v["schema_version"],
-            serde_json::json!({"major": 1, "minor": 8})
+            serde_json::json!({"major": 1, "minor": 9})
         );
         assert!(v.get("mode").is_some());
         assert!(v.get("checks").is_some());

@@ -21,6 +21,16 @@ pub enum OnOffArg {
     Off,
 }
 
+/// Confirmation-prompt UI selector for `mini --interactive` (issue #312).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UiKind {
+    /// Single-line stderr prompt — the default. Works over any TTY.
+    Stderr,
+    /// Full-screen ratatui dashboard with a modal prompt and live
+    /// trajectory feed.
+    Ratatui,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct MiniGithubPrArgs {
     /// Open a GitHub pull request from the final patch after a submitted run.
@@ -100,6 +110,7 @@ pub struct SwebenchGithubPrArgs {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MiniCmd {
     /// The task prompt.
     #[arg(long)]
@@ -232,6 +243,23 @@ pub struct MiniCmd {
     /// `json` (stable, schema-versioned, suitable for CI diffing).
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Issue #312 — pause before every bash/tool action and ask the
+    /// operator to approve, reject, or abort. Mutually exclusive with
+    /// `--render-only`. Requires a TTY unless `--yolo` is also set.
+    #[arg(long, default_value_t = false, conflicts_with = "render_only")]
+    pub interactive: bool,
+
+    /// Run unattended but still print the interactive status line on
+    /// each step boundary. Implied by `--interactive --yolo`; usable on
+    /// its own when no prompts are wanted but the status line helps.
+    #[arg(long, default_value_t = false)]
+    pub yolo: bool,
+
+    /// UI for the confirmation prompt: `stderr` (default, single-line)
+    /// or `ratatui` (full-screen dashboard).
+    #[arg(long, value_enum, default_value_t = UiKind::Stderr)]
+    pub ui: UiKind,
 }
 
 #[derive(Debug, Args)]
@@ -345,11 +373,17 @@ pub enum BenchCmd {
     Behavior(BehaviorCmd),
     /// Measure MCP tool usage and correlate with outcome across a sweep.
     ToolCoverage(ToolCoverageCmd),
+    /// Systematic per-tool removal ablation: baseline plus one arm per removed tool.
+    ToolAblation(ToolAblationCmd),
     /// Join historical sweeps on instance_id and report resolution history,
     /// stability class, and flip provenance.
     InstanceHistory(InstanceHistoryCmd),
     /// Surface prompt-cache hit rate, savings, and spend for a completed sweep.
     CacheStats(CacheStatsCmd),
+    /// Right-size step, cost, and wallclock caps from a completed sweep's distributions.
+    BudgetFit(BudgetFitCmd),
+    /// Resolved-rate and cost trend across sweeps in a root directory.
+    Ladder(LadderCmd),
 }
 
 /// `bench cache-stats` — surface prompt-cache hit rate per sweep (zero-cost: reads only on-disk artifacts).
@@ -370,6 +404,61 @@ pub struct CacheStatsCmd {
     /// Baseline sweep directory. When supplied, prints Δ hit_rate and Δ realized_spend_usd.
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<std::path::PathBuf>,
+}
+
+/// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct BudgetFitCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Restrict output to a single axis: `steps`, `cost_usd`, or `wall_clock_s`.
+    #[arg(long, value_name = "AXIS")]
+    pub axis: Option<String>,
+
+    /// Fraction of configured cap within which an instance counts as "at-cap".
+    /// Range: 0.0–0.5. Default: 0.05 (5%).
+    #[arg(long, default_value = "0.05", value_name = "FRAC")]
+    pub at_cap_tolerance: f64,
+
+    /// Percentile of the resolved distribution used to compute `recommended_cap`.
+    /// Range: 50–99. Default: 95.
+    #[arg(long, default_value = "95", value_name = "PCT")]
+    pub target_percentile: u8,
+
+    /// Key=value filter applied before analysis (same syntax as `bench inspect --filter`).
+    /// May be specified multiple times.
+    #[arg(long = "filter", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
+}
+
+/// `bench ladder` — resolved-rate and cost trend across sweeps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct LadderCmd {
+    /// Root directory containing sweep subdirectories to scan.
+    #[arg(long, value_name = "DIR")]
+    pub root: std::path::PathBuf,
+
+    /// Filter to sweeps whose recorded dataset matches this alias or normalized path.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Truncate to the N most recent matching sweeps after sorting.
+    #[arg(long, value_name = "N")]
+    pub last: Option<usize>,
+
+    /// Sweep directory name to use as baseline; adds a Δ vs baseline column.
+    #[arg(long, value_name = "SWEEP_ID")]
+    pub baseline: Option<String>,
+
+    /// Output format: `text` (default), `json`, or `markdown`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.
@@ -1384,6 +1473,98 @@ pub struct EvaluatorSelftestCmd {
     /// Parallel worker count for the `sb-cli` evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+}
+
+/// `bench tool-ablation` — systematic per-tool removal ablation experiment.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ToolAblationCmd {
+    /// Path to the base config TOML. Tool list is read from `agent.tools`.
+    #[arg(long)]
+    pub config: PathBuf,
+
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias (e.g. `verified`). Alternative to `--dataset-path`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long)]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Root output directory. Arm results land in `{output}/{arm_name}/`.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Restrict ablation to this tool name (repeatable). Default: all user tools.
+    #[arg(long = "ablate", value_name = "TOOL", action = clap::ArgAction::Append)]
+    pub ablate: Vec<String>,
+
+    /// Print the planned arm manifest and exit without running any sweeps.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
+
+    /// Output format for `--render-only`: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Shared USD ceiling across all arms. Arms that would start after the
+    /// limit is reached are recorded as `skipped_budget`.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Number of arms to run concurrently (default: 1 = sequential).
+    #[arg(long, default_value_t = 1)]
+    pub matrix_parallelism: usize,
+
+    /// Resume from a previous run, skipping `complete` and `skipped_budget` arms.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Worker parallelism per arm sweep.
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
+    pub parallel: usize,
+
+    /// Add one arm per *pair* of removed tools (O(N²) cost — opt-in).
+    /// The CLI prints the expected arm count and projected cost ceiling before starting.
+    #[arg(long, default_value_t = false)]
+    pub include_pair_ablation: bool,
+
+    /// Skip startup preflight checks before launching arm sweeps.
+    #[arg(long, default_value_t = false)]
+    pub skip_preflight: bool,
+
+    /// Skip model-endpoint probe during preflight.
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
+
+    /// Seconds each arm sweep waits for in-flight tasks after a cancel signal.
+    #[arg(long, default_value_t = 60)]
+    pub cancel_deadline_secs: u64,
 }
 
 /// `bench tool-coverage` — measure MCP tool usage by outcome bucket.

@@ -1,0 +1,53 @@
+---
+source: tests/bench_ladder.rs
+assertion_line: 504
+expression: normalize_root(&stdout)
+---
+{
+  "artifact_kind": "ladder_report",
+  "schema_version": {
+    "major": 1,
+    "minor": 9
+  },
+  "root": "[LADDER_FIXTURES]",
+  "rows": [
+    {
+      "sweep_id": "sweep1",
+      "date": "2026-04-28 00:00",
+      "model": "model-a",
+      "prompt_sha": "aaaa1234",
+      "n": 4,
+      "resolved_pct": 50.0,
+      "usd_per_resolved": 0.05,
+      "mean_steps": 4.0
+    },
+    {
+      "sweep_id": "sweep2",
+      "date": "2026-04-29 00:00",
+      "model": "model-a",
+      "prompt_sha": "aaaa1234",
+      "n": 4,
+      "resolved_pct": 75.0,
+      "usd_per_resolved": 0.03333333333333333,
+      "mean_steps": 4.0,
+      "delta_resolved_pct": 25.0
+    },
+    {
+      "sweep_id": "sweep3",
+      "date": "2026-04-30 00:00",
+      "model": "model-b",
+      "prompt_sha": "bbbb5678",
+      "n": 4,
+      "resolved_pct": 50.0,
+      "usd_per_resolved": 0.05,
+      "mean_steps": 4.0,
+      "delta_resolved_pct": -25.0
+    }
+  ],
+  "skipped": [
+    {
+      "dir": "sweep_bad",
+      "reason": "results.json: artifact kind mismatch: expected sweep_results, found trajectory"
+    }
+  ]
+}

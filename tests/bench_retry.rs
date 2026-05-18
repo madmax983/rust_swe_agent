@@ -444,11 +444,11 @@ fn merge_preserves_prior_retry_history_entries() {
 // ─── Schema tests ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_version_is_1_8() {
+fn schema_version_is_1_9() {
     assert_eq!(
         maxwells_daemon::artifact::ArtifactSchemaVersion::CURRENT,
-        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 8),
-        "schema bumped to 1.8 for per-call sampling parameters (issue #177)"
+        maxwells_daemon::artifact::ArtifactSchemaVersion::new(1, 9),
+        "schema bumped to 1.9 for patch_error_log in InstanceEvaluation (issue #273)"
     );
 }
 

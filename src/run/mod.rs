@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod behavior;
+pub mod budget_fit;
 pub mod bundle;
 pub mod cache_stats;
 pub mod calibrate;
@@ -17,6 +18,7 @@ pub mod grep;
 pub mod hello_world;
 pub mod inspect;
 pub mod instance_history;
+pub mod ladder;
 pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
@@ -28,6 +30,7 @@ pub mod reproduce;
 pub mod retry;
 pub mod swebench;
 pub mod tail;
+pub mod tool_ablation;
 pub mod tool_coverage;
 pub mod trajectory_diff;
 pub mod triage;

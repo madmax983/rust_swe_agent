@@ -44,6 +44,7 @@ pub enum Command {
     Cleanup,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run() -> Result<(), Error> {
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         // Print clap's formatted error or help text, then add the outcome label
@@ -133,6 +134,15 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::CacheStats(c),
         } => bench_cache_stats(c),
+        Command::Bench {
+            cmd: args::BenchCmd::BudgetFit(b),
+        } => bench_budget_fit(b),
+        Command::Bench {
+            cmd: args::BenchCmd::ToolAblation(t),
+        } => Box::pin(bench_tool_ablation(t)).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Ladder(l),
+        } => bench_ladder(l),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -244,6 +254,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     };
 
     let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -259,6 +270,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         verification_checks,
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: None,
+        interactive_mode,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -962,6 +974,25 @@ fn swebench_args_from_cmd(
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
     })
+}
+
+/// Map `(interactive, yolo, ui)` CLI flags onto a `run::mini::InteractiveMode`.
+fn resolve_interactive_mode(
+    interactive: bool,
+    yolo: bool,
+    ui: args::UiKind,
+) -> crate::run::mini::InteractiveMode {
+    use crate::run::mini::InteractiveMode;
+    match (interactive, yolo) {
+        (false, false) => InteractiveMode::Off,
+        // `--interactive --yolo` short-circuits to status-line mode — the
+        // operator wants live progress on stderr without prompts.
+        (_, true) => InteractiveMode::YoloStatusOnly,
+        (true, false) => match ui {
+            args::UiKind::Stderr => InteractiveMode::StderrPrompt,
+            args::UiKind::Ratatui => InteractiveMode::Ratatui,
+        },
+    }
 }
 
 fn parse_verify_checks(
@@ -1924,6 +1955,249 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
+    if !(0.0..=0.5).contains(&b.at_cap_tolerance) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: --at-cap-tolerance must be in [0.0, 0.5], got {}",
+            b.at_cap_tolerance
+        ))));
+    }
+    if b.target_percentile < 50 || b.target_percentile > 99 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: --target-percentile must be in [50, 99], got {}",
+            b.target_percentile
+        ))));
+    }
+    if let Some(ref ax) = b.axis {
+        let valid = ["steps", "cost_usd", "wall_clock_s"];
+        if !valid.contains(&ax.as_str()) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: unknown --axis `{ax}` (expected one of: {})",
+                valid.join(", ")
+            ))));
+        }
+    }
+    let is_json = match b.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::budget_fit::run(&crate::run::budget_fit::BudgetFitArgs {
+        sweep_dir: b.sweep,
+        at_cap_tolerance: b.at_cap_tolerance,
+        target_percentile: b.target_percentile,
+        axis: b.axis,
+        filter: b.filter,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", crate::run::budget_fit::render_text(&report));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
+    let cache_dir = t
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    // Validate format before doing any work (needed by both render-only and run paths).
+    let is_json_format = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "tool-ablation: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+
+    // --format json without --render-only would start a paid run and silently
+    // ignore the format flag (the run output is always text).  Catch it early.
+    if is_json_format && !t.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format json is only valid with --render-only; \
+             omit --format or add --render-only"
+                .into(),
+        )));
+    }
+
+    // render-only only needs the config; dataset is not required.
+    if t.render_only {
+        let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
+        let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
+
+        // Validate --ablate names up front so render-only rejects unknown names
+        // the same way a real run would, rather than silently dropping them.
+        if !t.ablate.is_empty() {
+            let unknown: Vec<&str> = t
+                .ablate
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !all_tools.iter().any(|t| t == *name))
+                .collect();
+            if !unknown.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "tool-ablation: unknown tool name(s) in --ablate: {}",
+                    unknown.join(", ")
+                ))));
+            }
+        }
+
+        let arm_plan = crate::run::tool_ablation::generate_arm_plan(
+            &all_tools,
+            &t.ablate,
+            t.include_pair_ablation,
+        );
+
+        // Reject duplicate arm names now so --render-only previews the same
+        // validity constraints as a real run (pair collisions such as
+        // `(a, b__c)` and `(a__b, c)` both produce the name `pair_a__b__c`).
+        {
+            let mut seen = std::collections::HashSet::new();
+            for arm in &arm_plan {
+                if !seen.insert(arm.name.as_str()) {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "ambiguous arm name `{}`; rename conflicting tools to avoid collision",
+                        arm.name
+                    ))));
+                }
+            }
+        }
+
+        if t.include_pair_ablation {
+            let pair_count = arm_plan.iter().filter(|a| a.ablated_pair.is_some()).count();
+            eprintln!(
+                "bench tool-ablation: --include-pair-ablation adds {pair_count} pair arm(s) \
+                 (total {} arms)",
+                arm_plan.len()
+            );
+        }
+
+        let manifest = crate::run::tool_ablation::ArmManifest {
+            schema_version: "tool-ablation-1.0".into(),
+            config_path: t.config.display().to_string(),
+            arms: arm_plan,
+        };
+
+        if is_json_format {
+            println!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_json(&manifest)?
+            );
+        } else {
+            print!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_text(&manifest)
+            );
+        }
+        return Ok(());
+    }
+
+    // Dataset is required for the non-render-only sweep path.
+    let dataset_source = match (&t.dataset_path, &t.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = t.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
+
+    let ablation_args = crate::run::tool_ablation::ToolAblationArgs {
+        config_path: t.config,
+        dataset_source,
+        dataset_cache_dir: cache_dir,
+        output_dir: t.output,
+        ablate: t.ablate,
+        sweep_cost_limit_usd: t.sweep_cost_limit_usd,
+        matrix_parallelism: t.matrix_parallelism,
+        resume: t.resume,
+        instance_ids: t.instance_ids,
+        limit: t.limit,
+        sample: t.sample,
+        seed: t.seed,
+        parallel: t.parallel,
+        include_pair_ablation: t.include_pair_ablation,
+        skip_preflight: t.skip_preflight,
+        skip_model_probe: t.skip_model_probe,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        cancel_deadline_secs: t.cancel_deadline_secs,
+        install_os_signal_handlers: true,
+    };
+
+    let report = crate::run::tool_ablation::run(ablation_args).await?;
+    print!(
+        "{}",
+        crate::run::tool_ablation::render_text_summary(&report)
+    );
+    if report.systemic_halt {
+        exit_with_outcome(
+            ExitCode::SystemicHalt,
+            "an ablation arm hit the systemic-failure circuit breaker",
+        );
+    }
+    if let Some(code) = report.cancel_exit_code {
+        let outcome = if code == crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL {
+            ExitCode::Interrupted
+        } else {
+            ExitCode::Killed
+        };
+        exit_with_outcome(outcome, "ablation was cancelled");
+    }
+    Ok(())
+}
+
+fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
+    let format = l
+        .format
+        .parse::<crate::run::ladder::LadderFormat>()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(format!("ladder: {e}"))))?;
+    let report = crate::run::ladder::run(&crate::run::ladder::LadderArgs {
+        root: l.root,
+        dataset: l.dataset,
+        last: l.last,
+        baseline: l.baseline,
+        format,
+    })?;
+    match format {
+        crate::run::ladder::LadderFormat::Text => {
+            print!("{}", crate::run::ladder::render_text(&report));
+        }
+        crate::run::ladder::LadderFormat::Json => {
+            let json = crate::run::ladder::render_json(&report)?;
+            println!("{json}");
+        }
+        crate::run::ladder::LadderFormat::Markdown => {
+            print!("{}", crate::run::ladder::render_markdown(&report));
+        }
+    }
+    Ok(())
+}
+
 fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
     let is_json = match t.format.as_str() {
         "text" => false,
@@ -2655,7 +2929,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::{
         Cli, args, cancellation_exit_code, maybe_publish_mini_github_pr, mini_github_pr_options,
-        parse_verify_checks, required_github_arg, swebench_args_from_cmd,
+        parse_verify_checks, required_github_arg, resolve_interactive_mode, swebench_args_from_cmd,
         swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
         validate_swebench_github_pr_args,
     };
@@ -2896,6 +3170,9 @@ mod tests {
             },
             render_only: false,
             format: "text".into(),
+            interactive: false,
+            yolo: false,
+            ui: args::UiKind::Stderr,
         }
     }
 
@@ -2991,6 +3268,44 @@ mod tests {
          @@ -1 +1 @@\n\
          -base\n\
          +patched\n"
+    }
+
+    #[test]
+    fn resolve_interactive_mode_off_when_neither_flag_set() {
+        let m = resolve_interactive_mode(false, false, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::Off);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_alone_is_status_only() {
+        let m = resolve_interactive_mode(false, true, args::UiKind::Stderr);
+        assert_eq!(m, crate::run::mini::InteractiveMode::YoloStatusOnly);
+    }
+
+    #[test]
+    fn resolve_interactive_mode_interactive_picks_ui() {
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::StderrPrompt
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, false, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::Ratatui
+        );
+    }
+
+    #[test]
+    fn resolve_interactive_mode_yolo_overrides_interactive() {
+        // `--interactive --yolo` short-circuits to status-line mode for
+        // operators who want live progress but no prompts.
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Stderr),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
+        assert_eq!(
+            resolve_interactive_mode(true, true, args::UiKind::Ratatui),
+            crate::run::mini::InteractiveMode::YoloStatusOnly
+        );
     }
 
     #[test]

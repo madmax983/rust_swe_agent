@@ -73,7 +73,7 @@ async fn keep_last_observations_elides_older_from_model_prompt() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -149,7 +149,7 @@ async fn trajectory_records_full_content_and_elision_metadata() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -227,7 +227,7 @@ async fn no_elision_markers_when_flags_unset() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -276,7 +276,7 @@ async fn max_input_tokens_bounds_prompt_bytes() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -323,7 +323,7 @@ async fn history_compaction_failed_when_irreducible() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -371,7 +371,7 @@ async fn both_flags_compose_taking_more_aggressive() {
         extra_context: None,
         renderer: None,
         stream: None,
-    resume_from: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
