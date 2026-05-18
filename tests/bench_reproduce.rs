@@ -163,6 +163,7 @@ fn minimal_sweep_results(manifest: Option<ProvenanceManifest>) -> SweepResults {
         model_mix: Default::default(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     }
 }
 

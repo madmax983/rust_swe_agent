@@ -144,6 +144,7 @@ fn unzip_cassette(cassette: Vec<CassetteEntry>) -> CassetteVecs {
 
 // ── main entry point ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: ReplayArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
@@ -228,6 +229,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         extra_context: resolved_skills.merged_extra_context,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build_with_tool_providers(tool_providers)?;
     resolved_skills

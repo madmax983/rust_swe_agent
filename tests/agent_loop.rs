@@ -75,6 +75,7 @@ async fn two_turn_echo_submit_produces_well_formed_trajectory() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -148,6 +149,7 @@ async fn provider_native_bash_tool_call_executes_without_format_error_turn() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -218,6 +220,7 @@ async fn fenced_action_wins_over_conflicting_native_tool_call() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -276,6 +279,7 @@ async fn ignores_native_tool_calls_from_unselected_choices() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -328,6 +332,7 @@ async fn records_pytest_invocation_before_submit_from_action_text() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -363,6 +368,7 @@ async fn echoing_pytest_does_not_register_as_test_invocation() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -399,6 +405,7 @@ test_command_patterns = ["project-(check|test)"]
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -431,6 +438,7 @@ async fn pipeline_segment_after_single_pipe_counts_test_command() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -456,6 +464,7 @@ fn invalid_custom_test_command_regex_rejects_agent_build() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build() else {
         panic!("invalid regex should reject agent build");
@@ -485,6 +494,7 @@ async fn submit_without_test_commands_records_no_pre_submit_tests() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -604,6 +614,7 @@ timeout_secs = 3
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -708,6 +719,7 @@ extra_deny_patterns = ["forbidden-file"]
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -748,6 +760,7 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build_with_tool_providers(vec![provider])
     .unwrap();
@@ -804,6 +817,7 @@ async fn mcp_server_tool_executes_from_matching_fenced_block() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build_with_tool_providers(vec![provider])
     .unwrap();
@@ -851,6 +865,7 @@ async fn pre_tool_use_hook_can_block_the_bash_command() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -896,6 +911,7 @@ async fn blocked_pre_tool_use_test_command_does_not_count_as_test_invocation() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -937,6 +953,7 @@ async fn post_tool_use_hook_output_is_added_to_next_observation() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -990,6 +1007,7 @@ async fn tool_hooks_receive_cancellation_token() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1032,6 +1050,7 @@ async fn failing_post_tool_use_hook_is_reported_but_does_not_abort() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1076,6 +1095,7 @@ async fn post_tool_use_env_payload_is_capped_for_large_outputs() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1107,6 +1127,7 @@ async fn post_tool_use_environment_error_is_reported_not_propagated() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1152,6 +1173,7 @@ async fn post_tool_use_hook_output_is_truncated_before_observation_rendering() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1200,6 +1222,7 @@ async fn pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_to
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1244,6 +1267,7 @@ async fn pre_tool_use_hook_env_preserves_full_command_for_policy_checks() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -1282,6 +1306,7 @@ async fn tool_hook_task_context_keeps_raw_task_while_trajectory_is_redacted() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();

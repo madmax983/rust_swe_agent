@@ -174,6 +174,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     };
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

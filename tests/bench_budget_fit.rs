@@ -256,6 +256,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>, manifest: Provenanc
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     };
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

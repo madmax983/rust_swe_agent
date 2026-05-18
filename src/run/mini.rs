@@ -116,6 +116,10 @@ pub struct MiniArgs {
     pub verification_checks: Vec<crate::trajectory::VerificationCheck>,
     /// Per-check timeout in seconds. Defaults to 60.
     pub verification_timeout_secs: u64,
+    /// When `Some`, the agent is resumed from this partial trajectory rather
+    /// than starting fresh. Budget accounting and message history are seeded
+    /// from the checkpoint.
+    pub resume_from: Option<crate::trajectory::Trajectory>,
     /// Issue #312 — operator interaction mode for this run.
     pub interactive_mode: InteractiveMode,
 }
@@ -177,6 +181,31 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         None => (None, None),
     };
 
+    let resume_state = args.resume_from.map(|traj| {
+        let history = traj.messages_as_model_history();
+        let steps = traj.info.steps.unwrap_or(0);
+        let total_cost_usd = traj.info.actual_cost_usd.unwrap_or(0.0);
+        let (prompt_tokens, cache_read_tokens, cache_creation_tokens, completion_tokens) =
+            traj.info.token_usage.as_ref().map_or((0, 0, 0, 0), |t| {
+                (
+                    t.prompt_tokens,
+                    t.cache_read_tokens,
+                    t.cache_creation_tokens,
+                    t.completion_tokens,
+                )
+            });
+        Box::new(crate::agent::default::ResumeState {
+            trajectory: traj,
+            history,
+            steps,
+            total_cost_usd,
+            prompt_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            completion_tokens,
+            resumed_at: chrono::Utc::now().to_rfc3339(),
+        })
+    });
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
     let sink = compose_stream_sinks(
         sse_sink,
@@ -199,6 +228,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         extra_context: resolved_skills.merged_extra_context.clone(),
         renderer: None,
         stream: sink,
+        resume_from: resume_state,
     }
     .build_with_tool_providers(tool_providers)?;
     agent.cancellation = args.cancellation.clone();
@@ -210,6 +240,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let traj_path = args
         .output_dir
         .join(format!("{}.traj.json", args.trajectory_name));
+    // Enable per-turn checkpointing to the trajectory path so interruptions
+    // don't discard all in-flight progress.
+    agent.checkpoint_path = Some(traj_path.clone());
 
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
@@ -1550,6 +1583,7 @@ index 8a1218a..24c5735 100644\n\
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            resume_from: None,
             interactive_mode: InteractiveMode::Off,
         };
 
@@ -1635,6 +1669,7 @@ index 8a1218a..24c5735 100644\n\
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            resume_from: None,
             interactive_mode: InteractiveMode::Off,
         };
 

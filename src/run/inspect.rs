@@ -164,6 +164,13 @@ pub struct InspectReport {
     pub expected_tests: Option<ExpectedTests>,
     #[serde(default)]
     pub steps: Vec<InspectStep>,
+    /// Whether this is a partial (mid-run checkpoint) trajectory.
+    /// `true` means the instance was interrupted and the trajectory is incomplete.
+    #[serde(default)]
+    pub partial: bool,
+    /// Human-readable reason this trajectory is partial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -360,6 +367,8 @@ fn build_instance_report(
                 expected_tests: dataset_instance
                     .map(|inst| extract_expected_tests(inst, &minimal_redactor)),
                 steps: vec![],
+                partial: false,
+                partial_reason: None,
             });
         }
     };
@@ -443,6 +452,8 @@ fn build_instance_report(
         patch_error_log,
         expected_tests,
         steps,
+        partial: traj.info.partial,
+        partial_reason: traj.info.partial_reason,
     })
 }
 
@@ -590,6 +601,13 @@ pub fn render_text(output: &InspectOutput) -> String {
     }
 }
 
+/// Convenience wrapper: run inspect and render to text. Returns the rendered
+/// string, or an `Error` if the sweep / instance can't be found.
+pub fn inspect(args: &InspectArgs, _format: &InspectFormat) -> Result<String, Error> {
+    let output = run(args)?;
+    Ok(render_text(&output))
+}
+
 use comfy_table::Table;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
@@ -663,6 +681,14 @@ fn render_summary_text(report: &SummaryReport) -> String {
 fn render_instance_text(report: &InspectReport) -> String {
     let mut s = String::new();
     let color = std::io::stdout().is_terminal();
+    if report.partial {
+        let steps = report.steps.len();
+        let reason = report.partial_reason.as_deref().unwrap_or("in_progress");
+        let _ = writeln!(
+            s,
+            "\n⚠  PARTIAL TRAJECTORY — {steps} steps persisted, instance not terminated ({reason})\n"
+        );
+    }
     s.push_str("\n=== bench inspect ===\n");
     let _ = writeln!(
         s,

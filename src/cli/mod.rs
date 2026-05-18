@@ -269,6 +269,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         patch_capture,
         verification_checks,
         verification_timeout_secs: m.verify_timeout_secs,
+        resume_from: None,
         interactive_mode,
     };
     let run_result = crate::run::mini::run(args).await;
@@ -3219,6 +3220,7 @@ mod tests {
             model_mix: std::collections::BTreeMap::new(),
             systemic_halt_category: None,
             retry_history: vec![],
+            partial: 0,
         }
     }
 

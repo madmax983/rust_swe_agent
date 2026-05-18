@@ -161,6 +161,17 @@ cargo run --quiet -- --log info mini --interactive --task "Create runs/live-task
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
 
+If a sweep is interrupted (node preemption, OOM, Ctrl-C), re-run the same
+`bench swebench` command with `--resume` added. Trajectories already marked
+complete on disk are skipped entirely. Trajectories that were mid-run at the
+time of interruption are persisted as partial checkpoints (`partial: true` in
+the trajectory `info` block) and will continue from the last completed turn
+rather than restarting from step 0, saving both API budget and wall-clock time.
+`bench tail` shows a `Partial:` line when stale partial checkpoints are present
+on disk, and the final `results.json` records a `partial` count for accounting.
+See [`docs/spec-checkpointing.md`](docs/spec-checkpointing.md) for the full
+specification and implementation details.
+
 At each bash action the prompt prints the proposed command, the current step,
 cumulative cost, and the cache marker, then reads one keystroke: `y` approves,
 `n` rejects (the model receives a synthetic `Exit code: 1` observation and may

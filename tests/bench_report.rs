@@ -204,6 +204,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     };
     std::fs::write(
         dir.join("results.json"),

@@ -54,6 +54,11 @@ pub struct TailSnapshot {
     pub model_mix: BTreeMap<String, usize>,
     /// Non-None when actionable failures are building up or the breaker tripped.
     pub circuit_breaker_status: Option<String>,
+    /// Count of trajectories persisted with `partial: true` on disk.
+    /// Non-zero when a prior sweep was interrupted and the sweep directory
+    /// has not yet been resumed. Zero during a live run (partials are
+    /// in-flight, not persisted-and-stale).
+    pub partial_persisted: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -345,7 +350,44 @@ pub fn snapshot(sweep_dir: &Path, options: &SnapshotOptions) -> Result<TailSnaps
         total_fallbacks,
         model_mix,
         circuit_breaker_status,
+        partial_persisted: count_partial_trajectories(sweep_dir),
     })
+}
+
+fn count_partial_trajectories(sweep_dir: &Path) -> usize {
+    let mut count = 0;
+    let Ok(entries) = std::fs::read_dir(sweep_dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(nested) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for nested_entry in nested.flatten() {
+            let nested_path = nested_entry.path();
+            let name = nested_path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("");
+            if name.starts_with("run-") && name.ends_with(".traj.json") {
+                if let Ok(text) = std::fs::read_to_string(&nested_path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if v.pointer("/info/partial")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    count
 }
 
 fn read_json_value(
@@ -604,6 +646,11 @@ fn terminal_record_from_trajectory(
         }
     };
     let info = traj.info;
+    if info.partial {
+        // Partial trajectories are not terminal records — don't include them
+        // in completed/outcome counts. The partial count is tracked separately.
+        return Ok(None);
+    }
     let actual_cost_usd = info.actual_cost_usd.or_else(|| {
         if info.model_name.as_deref().is_some_and(is_free_tier_model) {
             Some(0.0)
@@ -846,6 +893,13 @@ pub fn render_text(snapshot: &TailSnapshot) -> String {
         "Progress:    {}/{} completed, {} in flight, {} pending",
         snapshot.completed, snapshot.total, snapshot.in_flight, snapshot.pending
     );
+    if snapshot.partial_persisted > 0 {
+        let _ = writeln!(
+            out,
+            "Partial:     {} — mid-run checkpoint(s) from prior interrupted run (re-run with --resume)",
+            snapshot.partial_persisted
+        );
+    }
     let _ = writeln!(
         out,
         "Actual cost: ${:.4}  burn ${:.4}/min",

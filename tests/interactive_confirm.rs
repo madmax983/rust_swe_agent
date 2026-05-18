@@ -43,6 +43,7 @@ async fn approve_lets_command_execute() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -77,6 +78,7 @@ async fn reject_records_synthetic_observation_and_event() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -121,6 +123,7 @@ async fn abort_terminates_with_user_interrupt() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -168,6 +171,7 @@ async fn scripted_approve_reject_approve_abort_sequence() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -230,6 +234,7 @@ async fn confirmer_not_called_on_submit() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -271,6 +276,7 @@ async fn confirm_context_carries_command_and_step_metadata() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();

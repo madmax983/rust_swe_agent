@@ -890,6 +890,7 @@ fn sweep_results(
         model_mix: BTreeMap::new(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     }
 }
 

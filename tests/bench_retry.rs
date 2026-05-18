@@ -110,6 +110,7 @@ fn base_sweep(instances: Vec<InstanceResult>) -> SweepResults {
         model_mix: Default::default(),
         systemic_halt_category: None,
         retry_history: vec![],
+        partial: 0,
     }
 }
 

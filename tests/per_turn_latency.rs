@@ -149,6 +149,7 @@ async fn assistant_turn_records_model_latency_when_model_is_real() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -195,6 +196,7 @@ async fn observation_turn_records_tool_latency_when_bash_runs() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -230,6 +232,7 @@ async fn deterministic_model_assistant_turn_omits_model_latency() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -269,6 +272,7 @@ async fn per_turn_stage_times_reconcile_to_duration_within_5_percent() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -324,6 +328,7 @@ async fn slow_post_tool_hook_time_is_attributed_to_current_obs_turn() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -378,6 +383,7 @@ async fn slow_pre_tool_hook_makes_harness_overhead_dominate_observation_turn() {
         extra_context: None,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();

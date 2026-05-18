@@ -26,6 +26,10 @@ pub struct BundleCreateArgs {
 pub struct BundleCreateReport {
     pub output_path: PathBuf,
     pub files: Vec<BundleFileEntry>,
+    /// Instance IDs excluded from the bundle because their trajectories had
+    /// `partial: true`. Normally empty; non-empty signals an incomplete sweep.
+    #[allow(dead_code)]
+    pub partial_excluded: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +200,7 @@ struct ResolvedConfigForBundle {
     redaction: Option<RedactionCfg>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, BundleError> {
     if !args.sweep_dir.is_dir() {
         return Err(BundleError::MissingSource(format!(
@@ -243,6 +248,7 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     }
 
     let mut patch_files = Vec::new();
+    let mut partial_excluded: Vec<String> = Vec::new();
     for instance_id in &included_ids {
         let row = result_row_for_instance(&results_value, instance_id).ok_or_else(|| {
             BundleError::MissingSource(format!(
@@ -252,6 +258,23 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
         let trajectory_sources =
             find_trajectory_paths_for_bundle(&args.sweep_dir, instance_id, row)?;
         if trajectory_sources.is_empty() {
+            continue;
+        }
+        // Check if any trajectory for this instance is partial; if so, skip the
+        // entire instance with a warning — bundles must be completed-sweep artifacts.
+        let mut instance_has_partial = false;
+        for (trajectory_src, _) in &trajectory_sources {
+            if let Ok(text) = std::fs::read_to_string(trajectory_src) {
+                if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&text) {
+                    if traj.info.partial {
+                        instance_has_partial = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if instance_has_partial {
+            partial_excluded.push(instance_id.clone());
             continue;
         }
         for (trajectory_src, trajectory_dest) in trajectory_sources {
@@ -267,6 +290,13 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
             strict_redaction_check(&patch_dest, &patch, &redactor)?;
             patch_files.push(workspace.prepare_bytes(patch_dest, patch)?);
         }
+    }
+    if !partial_excluded.is_empty() {
+        eprintln!(
+            "bundle: WARNING — {} partial (mid-run) trajectories excluded from bundle: {}",
+            partial_excluded.len(),
+            partial_excluded.join(", ")
+        );
     }
     files.extend(patch_files);
 
@@ -296,6 +326,7 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     Ok(BundleCreateReport {
         output_path: args.output_path.clone(),
         files: file_entries,
+        partial_excluded,
     })
 }
 

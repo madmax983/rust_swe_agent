@@ -385,6 +385,7 @@ paths = ["{skill_path}"]
         extra_context: resolved.merged_extra_context,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build()
     .unwrap();
@@ -449,6 +450,7 @@ paths = ["{skill_path}"]
         verification_checks: vec![],
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
+        resume_from: None,
     })
     .await
     .unwrap();
@@ -518,6 +520,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         verification_checks: vec![],
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
+        resume_from: None,
     })
     .await
     .unwrap();
