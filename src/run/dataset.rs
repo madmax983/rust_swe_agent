@@ -175,8 +175,25 @@ impl CacheStatus {
 pub fn default_cache_dir() -> PathBuf {
     home_dir().map_or_else(
         || PathBuf::from(".dataset-cache"),
-        |h| h.join(".cache").join("max").join("datasets"),
+        |h| default_cache_dir_from_home(&h),
     )
+}
+
+fn default_cache_dir_from_home(home: &Path) -> PathBuf {
+    home.join(".cache").join("max").join("datasets")
+}
+
+fn legacy_default_cache_dir_from_home(home: &Path) -> PathBuf {
+    home.join(".cache").join("rust-swe-agent").join("datasets")
+}
+
+fn legacy_default_cache_dir_for(cache_dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    if cache_dir == default_cache_dir_from_home(home) {
+        Some(legacy_default_cache_dir_from_home(home))
+    } else {
+        None
+    }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -276,48 +293,116 @@ pub fn resolve_dataset(
             };
             Ok((bytes, meta))
         }
-        DatasetSource::Named { alias, split } => match check_cache(cache_dir, alias, split) {
-            CacheStatus::Hit {
-                path,
-                sha256,
-                instance_count,
-            } => {
-                let bytes = std::fs::read(&path)?;
-                let meta = ResolvedDatasetMeta {
-                    path: path.clone(),
-                    sha256,
-                    instance_count,
-                    alias: Some(alias.clone()),
-                    split: Some(split.clone()),
-                    cache_path: Some(path),
-                };
-                Ok((bytes, meta))
-            }
-            CacheStatus::Miss { expected_path } => {
-                Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "dataset alias `{alias}` split `{split}` not in cache: \
-                        expected file at `{path}`\n\
-                        \n\
-                        To populate the cache, download the SWE-bench JSONL for the \
-                        `{alias}` dataset (`{split}` split) and place it at:\n\
-                        \n  {path}\n\
-                        \n\
-                        See: https://www.swebench.com/SWE-bench/guides/datasets/ for \
-                        dataset download instructions.",
-                    path = expected_path.display()
-                ))))
-            }
-            CacheStatus::Corrupt { path, reason } => {
-                Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "cached dataset `{alias}` split `{split}` at `{p}` is corrupt: {reason}\n\
-                        \n\
-                        Delete the file and re-populate the cache:\n\
-                        \n  {p}",
-                    p = path.display()
-                ))))
-            }
-        },
+        DatasetSource::Named { alias, split } => {
+            let home = home_dir();
+            let legacy_cache_dir = legacy_default_cache_dir_for(cache_dir, home.as_deref());
+            resolve_named_dataset(alias, split, cache_dir, legacy_cache_dir.as_deref())
+        }
     }
+}
+
+fn resolve_named_dataset(
+    alias: &SwebenchAlias,
+    split: &SwebenchSplit,
+    cache_dir: &Path,
+    legacy_cache_dir: Option<&Path>,
+) -> Result<(Vec<u8>, ResolvedDatasetMeta), Error> {
+    match check_cache(cache_dir, alias, split) {
+        CacheStatus::Hit {
+            path,
+            sha256,
+            instance_count,
+        } => read_cache_hit(alias, split, path, sha256, instance_count),
+        CacheStatus::Miss { expected_path } => {
+            if let Some(legacy_cache_dir) = legacy_cache_dir.filter(|dir| *dir != cache_dir) {
+                match check_cache(legacy_cache_dir, alias, split) {
+                    CacheStatus::Hit {
+                        path,
+                        sha256,
+                        instance_count,
+                    } => return read_cache_hit(alias, split, path, sha256, instance_count),
+                    CacheStatus::Miss {
+                        expected_path: legacy_expected_path,
+                    } => {
+                        return Err(cache_miss_error(
+                            alias,
+                            split,
+                            &expected_path,
+                            Some(&legacy_expected_path),
+                        ));
+                    }
+                    CacheStatus::Corrupt { path, reason } => {
+                        return Err(cache_corrupt_error(alias, split, &path, &reason));
+                    }
+                }
+            }
+            Err(cache_miss_error(alias, split, &expected_path, None))
+        }
+        CacheStatus::Corrupt { path, reason } => {
+            Err(cache_corrupt_error(alias, split, &path, &reason))
+        }
+    }
+}
+
+fn read_cache_hit(
+    alias: &SwebenchAlias,
+    split: &SwebenchSplit,
+    path: PathBuf,
+    sha256: String,
+    instance_count: usize,
+) -> Result<(Vec<u8>, ResolvedDatasetMeta), Error> {
+    let bytes = std::fs::read(&path)?;
+    let meta = ResolvedDatasetMeta {
+        path: path.clone(),
+        sha256,
+        instance_count,
+        alias: Some(alias.clone()),
+        split: Some(split.clone()),
+        cache_path: Some(path),
+    };
+    Ok((bytes, meta))
+}
+
+fn cache_miss_error(
+    alias: &SwebenchAlias,
+    split: &SwebenchSplit,
+    expected_path: &Path,
+    legacy_expected_path: Option<&Path>,
+) -> Error {
+    let legacy_note = legacy_expected_path.map_or_else(String::new, |path| {
+        format!(
+            "\n                        Also checked the legacy pre-rename cache path:\n\
+                        \n  {}",
+            path.display()
+        )
+    });
+    Error::Config(crate::error::ConfigError::Invalid(format!(
+        "dataset alias `{alias}` split `{split}` not in cache: \
+            expected file at `{path}`{legacy_note}\n\
+            \n\
+            To populate the cache, download the SWE-bench JSONL for the \
+            `{alias}` dataset (`{split}` split) and place it at:\n\
+            \n  {path}\n\
+            \n\
+            See: https://www.swebench.com/SWE-bench/guides/datasets/ for \
+            dataset download instructions.",
+        path = expected_path.display()
+    )))
+}
+
+fn cache_corrupt_error(
+    alias: &SwebenchAlias,
+    split: &SwebenchSplit,
+    path: &Path,
+    reason: &str,
+) -> Error {
+    Error::Config(crate::error::ConfigError::Invalid(format!(
+        "cached dataset `{alias}` split `{split}` at `{p}` is corrupt: {reason}\n\
+            \n\
+            Delete the file and re-populate the cache:\n\
+            \n  {p}",
+        p = path.display()
+    )))
 }
 
 /// Count non-empty lines in a JSONL byte slice (does not validate JSON).
@@ -619,6 +704,38 @@ mod tests {
     }
 
     #[test]
+    fn resolve_dataset_named_default_cache_miss_reads_legacy_default_cache() {
+        let default_dir = tempfile::tempdir().unwrap();
+        let legacy_dir = tempfile::tempdir().unwrap();
+        let content = b"{\"instance_id\":\"legacy-1\",\"problem_statement\":\"p\"}\n";
+        write_cache(
+            legacy_dir.path(),
+            &SwebenchAlias::Verified,
+            &SwebenchSplit::Test,
+            content,
+        )
+        .unwrap();
+
+        let (bytes, meta) = resolve_named_dataset(
+            &SwebenchAlias::Verified,
+            &SwebenchSplit::Test,
+            default_dir.path(),
+            Some(legacy_dir.path()),
+        )
+        .unwrap();
+
+        let legacy_path = cache_path_for(
+            legacy_dir.path(),
+            &SwebenchAlias::Verified,
+            &SwebenchSplit::Test,
+        );
+        assert_eq!(bytes, content);
+        assert_eq!(meta.path, legacy_path);
+        assert_eq!(meta.cache_path, Some(legacy_path));
+        assert_eq!(meta.instance_count, 1);
+    }
+
+    #[test]
     fn resolve_dataset_named_cache_miss_returns_actionable_error() {
         let dir = tempfile::tempdir().unwrap();
         let source = DatasetSource::Named {
@@ -650,5 +767,18 @@ mod tests {
         let err = resolve_dataset(&source, dir.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("corrupt"), "{msg}");
+    }
+
+    #[test]
+    fn legacy_default_cache_fallback_only_applies_to_new_default_cache() {
+        let home = PathBuf::from("/home/maxwell");
+        let default_dir = default_cache_dir_from_home(&home);
+        let custom_dir = home.join("custom-cache");
+
+        assert_eq!(
+            legacy_default_cache_dir_for(&default_dir, Some(&home)),
+            Some(home.join(".cache").join("rust-swe-agent").join("datasets"))
+        );
+        assert_eq!(legacy_default_cache_dir_for(&custom_dir, Some(&home)), None);
     }
 }

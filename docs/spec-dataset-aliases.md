@@ -78,6 +78,10 @@ or corrupt — no tasks will be launched.
 The default cache root is `~/.cache/max/datasets/`.  Override it
 with `--dataset-cache-dir /custom/path`.
 
+When the default cache root is used, the resolver also checks the legacy
+pre-rename root `~/.cache/rust-swe-agent/datasets/` if the new path misses.
+Explicit `--dataset-cache-dir` values are used as-is.
+
 Layout:
 
 ```
