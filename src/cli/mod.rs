@@ -44,6 +44,7 @@ pub enum Command {
     Cleanup,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run() -> Result<(), Error> {
     let cli = Cli::try_parse().unwrap_or_else(|e| {
         // Print clap's formatted error or help text, then add the outcome label
@@ -133,6 +134,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::CacheStats(c),
         } => bench_cache_stats(c),
+        Command::Bench {
+            cmd: args::BenchCmd::BudgetFit(b),
+        } => bench_budget_fit(b),
         Command::Bench {
             cmd: args::BenchCmd::ToolAblation(t),
         } => Box::pin(bench_tool_ablation(t)).await,
@@ -1946,6 +1950,52 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         println!("{json}");
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
+    Ok(())
+}
+
+fn bench_budget_fit(b: args::BudgetFitCmd) -> Result<(), Error> {
+    if !(0.0..=0.5).contains(&b.at_cap_tolerance) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: --at-cap-tolerance must be in [0.0, 0.5], got {}",
+            b.at_cap_tolerance
+        ))));
+    }
+    if b.target_percentile < 50 || b.target_percentile > 99 {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: --target-percentile must be in [50, 99], got {}",
+            b.target_percentile
+        ))));
+    }
+    if let Some(ref ax) = b.axis {
+        let valid = ["steps", "cost_usd", "wall_clock_s"];
+        if !valid.contains(&ax.as_str()) {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: unknown --axis `{ax}` (expected one of: {})",
+                valid.join(", ")
+            ))));
+        }
+    }
+    let is_json = match b.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::budget_fit::run(&crate::run::budget_fit::BudgetFitArgs {
+        sweep_dir: b.sweep,
+        at_cap_tolerance: b.at_cap_tolerance,
+        target_percentile: b.target_percentile,
+        axis: b.axis,
+        filter: b.filter,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", crate::run::budget_fit::render_text(&report));
     }
     Ok(())
 }

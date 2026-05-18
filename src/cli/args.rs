@@ -380,6 +380,8 @@ pub enum BenchCmd {
     InstanceHistory(InstanceHistoryCmd),
     /// Surface prompt-cache hit rate, savings, and spend for a completed sweep.
     CacheStats(CacheStatsCmd),
+    /// Right-size step, cost, and wallclock caps from a completed sweep's distributions.
+    BudgetFit(BudgetFitCmd),
     /// Resolved-rate and cost trend across sweeps in a root directory.
     Ladder(LadderCmd),
 }
@@ -402,6 +404,37 @@ pub struct CacheStatsCmd {
     /// Baseline sweep directory. When supplied, prints Δ hit_rate and Δ realized_spend_usd.
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<std::path::PathBuf>,
+}
+
+/// `bench budget-fit` — right-size step, cost, and wallclock caps (zero-cost: reads only on-disk artifacts).
+#[derive(Debug, Args)]
+pub struct BudgetFitCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Restrict output to a single axis: `steps`, `cost_usd`, or `wall_clock_s`.
+    #[arg(long, value_name = "AXIS")]
+    pub axis: Option<String>,
+
+    /// Fraction of configured cap within which an instance counts as "at-cap".
+    /// Range: 0.0–0.5. Default: 0.05 (5%).
+    #[arg(long, default_value = "0.05", value_name = "FRAC")]
+    pub at_cap_tolerance: f64,
+
+    /// Percentile of the resolved distribution used to compute `recommended_cap`.
+    /// Range: 50–99. Default: 95.
+    #[arg(long, default_value = "95", value_name = "PCT")]
+    pub target_percentile: u8,
+
+    /// Key=value filter applied before analysis (same syntax as `bench inspect --filter`).
+    /// May be specified multiple times.
+    #[arg(long = "filter", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub filter: Vec<String>,
 }
 
 /// `bench ladder` — resolved-rate and cost trend across sweeps (zero-cost: reads only on-disk artifacts).
