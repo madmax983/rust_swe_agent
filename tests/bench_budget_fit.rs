@@ -14,7 +14,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::too_many_lines,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::items_after_statements
 )]
 
 use std::collections::BTreeMap;
@@ -308,7 +310,7 @@ fn test_a_resolved_under_cap_recommends_tighten() {
     let instances: Vec<InstanceResult> = steps_vals
         .iter()
         .enumerate()
-        .map(|(i, &s)| resolved_instance(&format!("inst-{i:02}"), s, 0.05, s as f64 * 2.0))
+        .map(|(i, &s)| resolved_instance(&format!("inst-{i:02}"), s, 0.05, f64::from(s) * 2.0))
         .collect();
     write_results(dir.path(), instances, make_manifest(Some(80), None));
 
@@ -556,7 +558,12 @@ fn test_e_determinism_byte_identical_modulo_generated_at() {
     let instances: Vec<InstanceResult> = (0..10)
         .map(|i| {
             if i < 8 {
-                resolved_instance(&format!("inst-{i:02}"), 10 + i * 2, 0.05, 20.0 + i as f64)
+                resolved_instance(
+                    &format!("inst-{i:02}"),
+                    10 + i * 2,
+                    0.05,
+                    20.0 + f64::from(i),
+                )
             } else {
                 cap_bound_instance(
                     &format!("inst-cap-{i}"),
@@ -609,7 +616,7 @@ fn test_f_target_percentile_changes_recommendation() {
     let instances: Vec<InstanceResult> = steps_vals
         .iter()
         .enumerate()
-        .map(|(i, &s)| resolved_instance(&format!("inst-{i:02}"), s, 0.05, s as f64 * 2.0))
+        .map(|(i, &s)| resolved_instance(&format!("inst-{i:02}"), s, 0.05, f64::from(s) * 2.0))
         .collect();
     write_results(dir.path(), instances, make_manifest(Some(80), None));
 
@@ -671,7 +678,7 @@ fn bench_budget_fit_in_help() {
 fn bench_budget_fit_cli_writes_artifact_and_exits_0() {
     let dir = tempfile::tempdir().unwrap();
     let instances: Vec<InstanceResult> = (0..5)
-        .map(|i| resolved_instance(&format!("inst-{i}"), 10 + i * 3, 0.04, 20.0 + i as f64))
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10 + i * 3, 0.04, 20.0 + f64::from(i)))
         .collect();
     write_results(dir.path(), instances, make_manifest(Some(60), Some(120)));
 
@@ -702,7 +709,7 @@ fn bench_budget_fit_cli_writes_artifact_and_exits_0() {
 fn bench_budget_fit_format_json_prints_valid_json() {
     let dir = tempfile::tempdir().unwrap();
     let instances: Vec<InstanceResult> = (0..5)
-        .map(|i| resolved_instance(&format!("inst-{i}"), 10 + i * 3, 0.04, 20.0 + i as f64))
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10 + i * 3, 0.04, 20.0 + f64::from(i)))
         .collect();
     write_results(dir.path(), instances, make_manifest(Some(60), Some(120)));
 

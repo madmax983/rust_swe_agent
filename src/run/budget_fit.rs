@@ -151,7 +151,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     let behavior_map = load_behavior_map(&args.sweep_dir);
 
     // Extract configured caps from manifest
-    let argv = loaded
+    let cli_argv = loaded
         .manifest
         .as_ref()
         .map(|m| m.cli.argv.clone())
@@ -159,14 +159,14 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // cost_limit_usd lives in SweepResults but LoadedSweep does not re-expose it,
     // so read it directly from the JSON artifact.
     let cost_limit_usd = read_cost_limit(&args.sweep_dir);
-    let step_limit = extract_argv_value(&argv, "--step-limit")
+    let step_limit = extract_argv_value(&cli_argv, "--step-limit")
         .and_then(|v| v.parse::<u32>().ok())
-        .map(|v| v as f64);
-    let task_timeout_secs = extract_argv_value(&argv, "--task-timeout-secs")
+        .map(f64::from);
+    let task_timeout_secs = extract_argv_value(&cli_argv, "--task-timeout-secs")
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v as f64);
     let per_task_budget_usd =
-        extract_argv_value(&argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
+        extract_argv_value(&cli_argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
 
     // Apply instance filters (same key=value syntax as bench inspect)
     validate_filters(&args.filter)?;
@@ -228,11 +228,10 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     };
 
     let summary = build_summary(&axes);
-    let sweep_label = args
-        .sweep_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| args.sweep_dir.display().to_string());
+    let sweep_label = args.sweep_dir.file_name().map_or_else(
+        || args.sweep_dir.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
 
     Ok(BudgetFitReport {
         sweep: sweep_label,
@@ -345,17 +344,14 @@ fn read_cost_limit(sweep_dir: &Path) -> Option<f64> {
 /// Returns empty map when file is absent or unreadable.
 fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
     let path = sweep_dir.join("behavior.json");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return BTreeMap::new(),
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return BTreeMap::new();
     };
-    let val: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => return BTreeMap::new(),
+    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+        return BTreeMap::new();
     };
-    let per_instance = match val.get("per_instance").and_then(|v| v.as_array()) {
-        Some(a) => a,
-        None => return BTreeMap::new(),
+    let Some(per_instance) = val.get("per_instance").and_then(|v| v.as_array()) else {
+        return BTreeMap::new();
     };
     let mut map = BTreeMap::new();
     for inst in per_instance {
@@ -363,9 +359,8 @@ fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
             Some(s) => s.to_owned(),
             None => continue,
         };
-        let class_counts = match inst.get("class_counts").and_then(|v| v.as_object()) {
-            Some(m) => m,
-            None => continue,
+        let Some(class_counts) = inst.get("class_counts").and_then(|v| v.as_object()) else {
+            continue;
         };
         // Dominant class = the one with the highest count
         let dominant = class_counts
@@ -490,7 +485,7 @@ fn outcome_bucket(inst: &InstanceResult, cap_cat: Option<FailureCategory>) -> &'
 /// Extract the axis value for an instance.
 fn axis_value(inst: &InstanceResult, axis: &str) -> Option<f64> {
     match axis {
-        AXIS_STEPS => inst.steps.map(|s| s as f64),
+        AXIS_STEPS => inst.steps.map(f64::from),
         AXIS_COST_USD => inst.cost_usd,
         AXIS_WALL_CLOCK_S => inst.duration_secs,
         _ => None,
@@ -498,7 +493,7 @@ fn axis_value(inst: &InstanceResult, axis: &str) -> Option<f64> {
 }
 
 /// Build an `AxisReport` for one axis.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_axis_report(
     axis: &str,
     unit: &str,
@@ -594,7 +589,7 @@ fn build_axis_report(
         let p95 = percentile_of_sorted(
             &{
                 let mut v = resolved_values.clone();
-                v.sort_by(f64_cmp);
+                v.sort_by(|a, b| f64_cmp(*a, *b));
                 v
             },
             95.0,
@@ -603,7 +598,9 @@ fn build_axis_report(
         if tighten_cap >= cap {
             return None; // no tightening needed
         }
-        let lost_resolved = resolved_values.iter().filter(|&&v| v > tighten_cap).count() as i64;
+        let lost_resolved =
+            i64::try_from(resolved_values.iter().filter(|&&v| v > tighten_cap).count())
+                .unwrap_or(i64::MAX);
         let savings = estimated_cost_savings(instances, axis, cap, tighten_cap);
         Some(ProjectedImpact {
             estimated_resolved_delta: -lost_resolved,
@@ -633,7 +630,7 @@ fn build_axis_report(
 }
 
 /// Compute recommended cap, rationale, and projected impact.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn make_recommendation(
     axis: &str,
     configured_cap: Option<f64>,
@@ -655,8 +652,8 @@ fn make_recommendation(
     // P{target} of resolved
     let resolved_p_target = {
         let mut sorted = resolved_values.to_vec();
-        sorted.sort_by(f64_cmp);
-        percentile_of_sorted(&sorted, target_percentile as f64).map(|v| round_up(v, round_unit))
+        sorted.sort_by(|a, b| f64_cmp(*a, *b));
+        percentile_of_sorted(&sorted, f64::from(target_percentile)).map(|v| round_up(v, round_unit))
     };
 
     let cap_bound_count = cap_bound_values.len();
@@ -667,10 +664,11 @@ fn make_recommendation(
     let behavior_present = !behavior_absent && cap_bound_count > 0;
     // "Majority" means strictly more than half of all cap-bound instances, including those
     // with unclassified or unrecorded behavior classes (search, git, other, no entry).
+    let cap_bound_count_i64 = i64::try_from(cap_bound_count).unwrap_or(i64::MAX);
     let has_progress_class =
-        cap_bound_progress_count > 0 && cap_bound_progress_count * 2 > cap_bound_count as i64;
+        cap_bound_progress_count > 0 && cap_bound_progress_count * 2 > cap_bound_count_i64;
     let has_stuck_class =
-        cap_bound_stuck_count > 0 && cap_bound_stuck_count * 2 > cap_bound_count as i64;
+        cap_bound_stuck_count > 0 && cap_bound_stuck_count * 2 > cap_bound_count_i64;
 
     if behavior_present && has_progress_class {
         // RAISE recommendation
@@ -738,8 +736,7 @@ fn make_recommendation(
             // No resolved instances → cannot compute P{target}
             let rationale = format!(
                 "no resolved instances to base recommendation on; \
-                 {} cap-bound failure(s) recorded.",
-                cap_bound_count
+                 {cap_bound_count} cap-bound failure(s) recorded."
             );
             (None, rationale, None)
         }
@@ -747,8 +744,7 @@ fn make_recommendation(
             // P{target} is at or above cap — no tightening useful
             let rationale = format!(
                 "P{target_percentile} of resolved ({p_target:.4}) ≥ configured cap ({cap:.4}); \
-                 cap is already well-sized. {} cap-bound failure(s).",
-                cap_bound_count
+                 cap is already well-sized. {cap_bound_count} cap-bound failure(s)."
             );
             (Some(p_target), rationale, None)
         }
@@ -791,7 +787,8 @@ fn make_tighten_impact(
     if new_cap >= old_cap {
         return None;
     }
-    let lost_resolved = resolved_values.iter().filter(|&&v| v > new_cap).count() as i64;
+    let lost_resolved =
+        i64::try_from(resolved_values.iter().filter(|&&v| v > new_cap).count()).unwrap_or(i64::MAX);
     let savings = estimated_cost_savings(instances, axis, old_cap, new_cap);
     Some(ProjectedImpact {
         estimated_resolved_delta: -lost_resolved,
@@ -822,7 +819,7 @@ fn estimated_cost_savings(
     // Eligible: instances whose value exceeds new_cap (they'd terminate earlier)
     let eligible = instances
         .iter()
-        .filter(|inst| axis_value(inst, axis).map_or(false, |v| v > new_cap))
+        .filter(|inst| axis_value(inst, axis).is_some_and(|v| v > new_cap))
         .count() as f64;
     round_to_ndp(cpu * cap_reduction * eligible, 6)
 }
@@ -863,7 +860,7 @@ fn compute_at_cap(
     let threshold = cap * (1.0 - tolerance);
     let count = instances
         .iter()
-        .filter(|inst| axis_value(inst, axis).map_or(false, |v| v >= threshold))
+        .filter(|inst| axis_value(inst, axis).is_some_and(|v| v >= threshold))
         .count();
     let share = if n_total > 0 {
         count as f64 / n_total as f64
@@ -898,7 +895,7 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
 
     let waste_usd = compute_waste_usd(axes);
 
-    let headline = build_headline(axes, &dominant_axis);
+    let headline = build_headline(axes, dominant_axis.as_ref());
 
     CrossAxisSummary {
         dominant_axis,
@@ -914,7 +911,7 @@ fn compute_waste_usd(axes: &[AxisReport]) -> f64 {
     axes.iter().map(|a| a.cap_bound_cost_usd).sum()
 }
 
-fn build_headline(axes: &[AxisReport], dominant_axis: &Option<String>) -> String {
+fn build_headline(axes: &[AxisReport], dominant_axis: Option<&String>) -> String {
     match dominant_axis {
         None => "No cap-bound failures detected; consider tightening caps to reduce cost.".into(),
         Some(ax) => {
@@ -924,10 +921,8 @@ fn build_headline(axes: &[AxisReport], dominant_axis: &Option<String>) -> String
                 None => format!("Dominant axis '{ax}': insufficient data for recommendation."),
                 Some(v) => format!(
                     "Dominant axis '{ax}': set cap to {v:.4} ({}); {}",
-                    axis_report.map(|a| a.unit.as_str()).unwrap_or("units"),
-                    axis_report
-                        .map(|a| a.recommended_cap_rationale.as_str())
-                        .unwrap_or("")
+                    axis_report.map_or("units", |a| a.unit.as_str()),
+                    axis_report.map_or("", |a| a.recommended_cap_rationale.as_str())
                 ),
             }
         }
@@ -951,7 +946,7 @@ pub fn compute_distribution(values: &[f64]) -> DistributionStats {
         };
     }
     let mut sorted = values.to_vec();
-    sorted.sort_by(f64_cmp);
+    sorted.sort_by(|a, b| f64_cmp(*a, *b));
     let n = sorted.len();
     let mean = sorted.iter().sum::<f64>() / n as f64;
     let max = sorted.last().copied();
@@ -969,6 +964,7 @@ pub fn compute_distribution(values: &[f64]) -> DistributionStats {
 }
 
 /// Compute the p-th percentile of a sorted slice using linear interpolation.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn percentile_of_sorted(sorted: &[f64], p: f64) -> Option<f64> {
     let n = sorted.len();
     if n == 0 {
@@ -994,12 +990,12 @@ fn round_up(v: f64, unit: f64) -> f64 {
 
 /// Round to N decimal places for deterministic serialization.
 fn round_to_ndp(v: f64, n: u32) -> f64 {
-    let factor = 10f64.powi(n as i32);
+    let factor = 10f64.powi(i32::try_from(n).unwrap_or(i32::MAX));
     (v * factor).round() / factor
 }
 
-fn f64_cmp(a: &f64, b: &f64) -> std::cmp::Ordering {
-    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+fn f64_cmp(a: f64, b: f64) -> std::cmp::Ordering {
+    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
 }
 
 fn utc_now_iso8601() -> String {
