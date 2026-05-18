@@ -7,16 +7,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::agent::{Agent, DefaultAgent, default::DefaultAgentBuilder};
+use crate::agent::{
+    Agent, ConfirmCallback, DefaultAgent, RatatuiDashboardHandle, StderrCliConfirmer,
+    default::DefaultAgentBuilder,
+};
 use crate::config::{Config, EnvKind};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment, RunRequest};
-use crate::error::Error;
+use crate::error::{ConfigError, Error};
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, FallbackModel, Model, ModelUsage};
 use crate::redaction::surface;
-use crate::stream::{BroadcastSink, SseServer, StreamSink};
+use crate::stream::{BroadcastSink, MultiSink, SseServer, StatusLineStderrSink, StreamSink};
 use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
@@ -113,6 +116,25 @@ pub struct MiniArgs {
     pub verification_checks: Vec<crate::trajectory::VerificationCheck>,
     /// Per-check timeout in seconds. Defaults to 60.
     pub verification_timeout_secs: u64,
+    /// Issue #312 — operator interaction mode for this run.
+    pub interactive_mode: InteractiveMode,
+}
+
+/// Operator-interaction mode for `mini --interactive` (issue #312).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InteractiveMode {
+    /// Default unattended behaviour — no prompts, no status line.
+    #[default]
+    Off,
+    /// Print a per-step status line to stderr but don't prompt before
+    /// bash actions (`--yolo` without `--interactive`).
+    YoloStatusOnly,
+    /// Pause before every bash/tool action and ask the operator on a
+    /// stderr single-line prompt.
+    StderrPrompt,
+    /// Same as `StderrPrompt` but render the prompt inside a full-screen
+    /// ratatui dashboard that also streams trajectory events.
+    Ratatui,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -141,17 +163,31 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
     // emits below.
-    let (sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) = match args.stream_addr {
-        Some(addr) => {
-            let bcast = Arc::new(BroadcastSink::default());
-            let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
-                Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
-            })?;
-            tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
-            (Some(bcast as Arc<dyn StreamSink>), Some(server))
-        }
-        None => (None, None),
-    };
+    let (sse_sink, server): (Option<Arc<dyn StreamSink>>, Option<SseServer>) =
+        match args.stream_addr {
+            Some(addr) => {
+                let bcast = Arc::new(BroadcastSink::default());
+                let server = SseServer::start(addr, bcast.clone()).await.map_err(|e| {
+                    Error::Trajectory(format!("failed to bind SSE server on {addr}: {e}"))
+                })?;
+                tracing::info!(addr = %server.local_addr(), "streaming events on http://{}/", server.local_addr());
+                (Some(bcast as Arc<dyn StreamSink>), Some(server))
+            }
+            None => (None, None),
+        };
+
+    let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
+    let sink = compose_stream_sinks(
+        sse_sink,
+        dashboard.as_ref().map(RatatuiDashboardHandle::stream_sink),
+        if args.interactive_mode == InteractiveMode::YoloStatusOnly {
+            Some(Arc::new(StatusLineStderrSink::new(
+                args.config.root.agent.step_limit,
+            )) as Arc<dyn StreamSink>)
+        } else {
+            None
+        },
+    );
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
         config: args.config.clone(),
@@ -164,6 +200,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
     .build_with_tool_providers(tool_providers)?;
     agent.cancellation = args.cancellation.clone();
+    agent.confirm_callback = confirm_callback;
     resolved_skills
         .active_skills
         .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
@@ -378,6 +415,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if let Some(server) = server {
         server.shutdown().await;
     }
+    if let Some(dashboard) = dashboard {
+        dashboard.shutdown().await;
+    }
     if let Some(err) = verification_err {
         return Err(err);
     }
@@ -385,6 +425,60 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         return Err(crate::error::Error::AgentStagnation { count, window });
     }
     Ok(())
+}
+
+/// Pair of pieces resolved from an `InteractiveMode`: the optional
+/// confirm callback to set on `DefaultAgent` and the optional ratatui
+/// dashboard handle whose lifetime brackets the run.
+type InteractivePieces = (
+    Option<Arc<dyn ConfirmCallback>>,
+    Option<RatatuiDashboardHandle>,
+);
+
+fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, Error> {
+    match mode {
+        InteractiveMode::Off | InteractiveMode::YoloStatusOnly => Ok((None, None)),
+        InteractiveMode::StderrPrompt => {
+            let confirmer = StderrCliConfirmer::new_if_tty().ok_or_else(|| {
+                Error::Config(ConfigError::Invalid(
+                    "interactive mode requires a TTY; pass --yolo for unattended runs".into(),
+                ))
+            })?;
+            Ok((Some(Arc::new(confirmer) as Arc<dyn ConfirmCallback>), None))
+        }
+        InteractiveMode::Ratatui => {
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+                || !std::io::IsTerminal::is_terminal(&std::io::stdout())
+            {
+                return Err(Error::Config(ConfigError::Invalid(
+                    "ratatui interactive mode requires a TTY on stdin and stdout; \
+                     pass --yolo for unattended runs"
+                        .into(),
+                )));
+            }
+            let handle = crate::agent::RatatuiDashboard::start().map_err(|e| {
+                Error::Trajectory(format!("failed to start ratatui dashboard: {e}"))
+            })?;
+            let cb = handle.confirm_callback();
+            Ok((Some(cb), Some(handle)))
+        }
+    }
+}
+
+fn compose_stream_sinks(
+    sse: Option<Arc<dyn StreamSink>>,
+    dashboard: Option<Arc<dyn StreamSink>>,
+    status_line: Option<Arc<dyn StreamSink>>,
+) -> Option<Arc<dyn StreamSink>> {
+    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line]
+        .into_iter()
+        .flatten()
+        .collect();
+    match sinks.len() {
+        0 => None,
+        1 => sinks.into_iter().next(),
+        _ => Some(Arc::new(MultiSink::new(sinks)) as Arc<dyn StreamSink>),
+    }
 }
 
 fn finalize_cancelled_if_requested(
@@ -1405,6 +1499,7 @@ index 8a1218a..24c5735 100644\n\
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            interactive_mode: InteractiveMode::Off,
         };
 
         run(args).await.unwrap();
@@ -1489,6 +1584,7 @@ index 8a1218a..24c5735 100644\n\
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            interactive_mode: InteractiveMode::Off,
         };
 
         run(args).await.unwrap();

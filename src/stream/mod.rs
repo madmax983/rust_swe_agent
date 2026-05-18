@@ -115,6 +115,62 @@ impl StreamSink for NullSink {
     fn emit(&self, _event: StreamEvent) {}
 }
 
+/// Fan out one event to many sinks. Used so the agent can drive an SSE
+/// broadcast, the ratatui dashboard, and an stderr status line from the
+/// same emission path without each subsystem owning a side channel.
+pub struct MultiSink {
+    sinks: Vec<std::sync::Arc<dyn StreamSink>>,
+}
+
+impl MultiSink {
+    #[must_use]
+    pub fn new(sinks: Vec<std::sync::Arc<dyn StreamSink>>) -> Self {
+        Self { sinks }
+    }
+}
+
+impl StreamSink for MultiSink {
+    fn emit(&self, event: StreamEvent) {
+        for sink in &self.sinks {
+            sink.emit(event.clone());
+        }
+    }
+}
+
+/// Issue #312 `--yolo`-without-`--interactive` status-line printer.
+/// Prints one terse `[status] step N/M cost $X.XXXX` line to stderr on
+/// each `AssistantMessage` (a clean per-step boundary that fires once
+/// after every model turn, before tool execution).
+pub struct StatusLineStderrSink {
+    step_limit: u32,
+}
+
+impl StatusLineStderrSink {
+    #[must_use]
+    pub fn new(step_limit: u32) -> Self {
+        Self { step_limit }
+    }
+}
+
+impl StreamSink for StatusLineStderrSink {
+    fn emit(&self, event: StreamEvent) {
+        if let StreamEvent::AssistantMessage {
+            step, cost_usd, ..
+        } = event
+        {
+            let cost = cost_usd.unwrap_or(0.0);
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!(
+                    "[status] step {}/{}  cost ${:.4}\n",
+                    step, self.step_limit, cost
+                )
+                .as_bytes(),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -250,6 +250,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     };
 
     let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
         task: m.task,
         extra_context: m.extra_context,
@@ -264,6 +265,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         patch_capture,
         verification_checks,
         verification_timeout_secs: m.verify_timeout_secs,
+        interactive_mode,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -967,6 +969,25 @@ fn swebench_args_from_cmd(
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
     })
+}
+
+/// Map `(interactive, yolo, ui)` CLI flags onto a `run::mini::InteractiveMode`.
+fn resolve_interactive_mode(
+    interactive: bool,
+    yolo: bool,
+    ui: args::UiKind,
+) -> crate::run::mini::InteractiveMode {
+    use crate::run::mini::InteractiveMode;
+    match (interactive, yolo) {
+        (false, false) => InteractiveMode::Off,
+        // `--interactive --yolo` short-circuits to status-line mode — the
+        // operator wants live progress on stderr without prompts.
+        (_, true) => InteractiveMode::YoloStatusOnly,
+        (true, false) => match ui {
+            args::UiKind::Stderr => InteractiveMode::StderrPrompt,
+            args::UiKind::Ratatui => InteractiveMode::Ratatui,
+        },
+    }
 }
 
 fn parse_verify_checks(
@@ -3098,6 +3119,9 @@ mod tests {
             },
             render_only: false,
             format: "text".into(),
+            interactive: false,
+            yolo: false,
+            ui: args::UiKind::Stderr,
         }
     }
 

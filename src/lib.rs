@@ -53,7 +53,9 @@ pub use skills::{
     ActiveSkill, ActiveSkillManifest, ActiveSkillSet, ResolvedSkillContext, SkillActivationReason,
     SkillManifest, SkillRegistry, SkillResolveRequest, resolve_for_task,
 };
-pub use stream::{BroadcastSink, NullSink, SseServer, StreamEvent, StreamSink};
+pub use stream::{
+    BroadcastSink, MultiSink, NullSink, SseServer, StatusLineStderrSink, StreamEvent, StreamSink,
+};
 pub use tool::{
     BASH_TOOL_NAME, CommandTool, McpStdioServer, ToolCall, ToolDefinition, ToolInvocation,
     ToolManifestEntry, ToolOutput, ToolPromptInfo, ToolProvider, ToolRegistry, ToolSource,
