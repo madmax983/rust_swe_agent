@@ -167,7 +167,7 @@ Running `bench budget-fit` twice on the same sweep produces byte-identical `budg
 
 ## Redaction
 
-Instance IDs and path-shaped fields written to `budget-fit.json` are passed through the existing redaction pipeline when used with `bench bundle`. The artifact reads from `results.json` which is already redacted at write time.
+`budget-fit.json` is not currently included in the `bench bundle` artifact. The report reads from `results.json` which is already written at sweep time; if that file is redacted before bundling, the source data is clean, but `budget-fit.json` itself must be redacted separately if required.
 
 ## Exit Codes
 

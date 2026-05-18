@@ -145,7 +145,10 @@ pub struct BudgetFitReport {
 /// Never re-runs instances, never calls a model.
 pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error> {
     let loaded = load_sweep(&args.sweep_dir)?;
-    let instances: Vec<&InstanceResult> = loaded.instances.values().collect();
+    // Sort by instance_id so float summation order is deterministic across runs
+    // (HashMap::values() order is seed-dependent).
+    let mut instances: Vec<&InstanceResult> = loaded.instances.values().collect();
+    instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
     // Optional behavior enrichment
     let behavior_map = load_behavior_map(&args.sweep_dir);
@@ -518,6 +521,9 @@ fn build_axis_report(
     let mut cap_bound_progress_count: i64 = 0;
     let mut cap_bound_stuck_count: i64 = 0;
     let mut cap_bound_total_cost: f64 = 0.0;
+    // Cap-bound instances whose axis value is missing (legacy rows); counted for
+    // recommendations and dominance but excluded from the numeric distribution.
+    let mut cap_bound_no_value_count: usize = 0;
 
     for inst in instances {
         let bucket = outcome_bucket(inst, cap_cat);
@@ -540,8 +546,17 @@ fn build_axis_report(
                 _ => errored_values.push(v),
             }
         } else if outcome_bucket(inst, cap_cat) == BUCKET_UNRESOLVED_CAP_BOUND {
-            // Count cost even without axis value
+            // Instance is cap-bound but this axis field is absent (legacy row).
+            // Track it in count and cost but it has no value for percentile computation.
+            cap_bound_no_value_count += 1;
             cap_bound_total_cost += inst.cost_usd.unwrap_or(0.0);
+            if let Some(cls) = behavior_map.get(&inst.instance_id) {
+                if PROGRESS_CLASSES.contains(&cls.as_str()) {
+                    cap_bound_progress_count += 1;
+                } else if STUCK_CLASSES.contains(&cls.as_str()) {
+                    cap_bound_stuck_count += 1;
+                }
+            }
         }
     }
 
@@ -551,10 +566,12 @@ fn build_axis_report(
         BUCKET_RESOLVED.into(),
         compute_distribution(&resolved_values),
     );
-    distribution_by_outcome.insert(
-        BUCKET_UNRESOLVED_CAP_BOUND.into(),
-        compute_distribution(&cap_bound_values),
-    );
+    {
+        let mut cap_bound_stats = compute_distribution(&cap_bound_values);
+        // Include legacy rows that have the failure_category but no numeric axis value.
+        cap_bound_stats.count += cap_bound_no_value_count;
+        distribution_by_outcome.insert(BUCKET_UNRESOLVED_CAP_BOUND.into(), cap_bound_stats);
+    }
     distribution_by_outcome.insert(
         BUCKET_UNRESOLVED_OTHER.into(),
         compute_distribution(&other_values),
@@ -565,13 +582,16 @@ fn build_axis_report(
     let (at_cap_count, at_cap_share) =
         compute_at_cap(instances, axis, configured_cap, at_cap_tolerance, n_total);
 
+    // Total cap-bound count includes instances without axis values (legacy rows).
+    let cap_bound_total_count = cap_bound_values.len() + cap_bound_no_value_count;
+
     // Recommendation logic
     let (recommended_cap, recommended_cap_rationale, projected_impact_if_recommended) =
         make_recommendation(
             axis,
             configured_cap,
             &resolved_values,
-            &cap_bound_values,
+            cap_bound_total_count,
             cap_bound_progress_count,
             cap_bound_stuck_count,
             cap_bound_total_cost,
@@ -635,7 +655,7 @@ fn make_recommendation(
     axis: &str,
     configured_cap: Option<f64>,
     resolved_values: &[f64],
-    cap_bound_values: &[f64],
+    cap_bound_count: usize,
     cap_bound_progress_count: i64,
     cap_bound_stuck_count: i64,
     _cap_bound_total_cost: f64,
@@ -655,8 +675,6 @@ fn make_recommendation(
         sorted.sort_by(|a, b| f64_cmp(*a, *b));
         percentile_of_sorted(&sorted, f64::from(target_percentile)).map(|v| round_up(v, round_unit))
     };
-
-    let cap_bound_count = cap_bound_values.len();
 
     // --- Behavior-enriched recommendation ---
     // When behavior.json is present and most cap-bound instances had progress-class actions,
@@ -714,6 +732,15 @@ fn make_recommendation(
                 None,
             );
         };
+        // If P{target} is already at or above cap, no tightening is useful.
+        if recommended >= cap {
+            let rationale = format!(
+                "P{target_percentile} of resolved ({recommended:.4}) ≥ configured cap ({cap:.4}); \
+                 cap is already well-sized. {cap_bound_stuck_count} stuck-class cap-bound instance(s) detected; \
+                 raising is unlikely to help."
+            );
+            return (Some(recommended), rationale, None);
+        }
         let rationale = format!(
             "{cap_bound_stuck_count} cap-bound instance(s) had stuck-class actions \
              (noop/read/nav); raising the cap is unlikely to help. \
@@ -872,8 +899,9 @@ fn compute_at_cap(
 
 /// Build the cross-axis summary.
 fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
-    // Dominant axis: axis with most cap-bound unresolved instances
-    let dominant = axes
+    // Dominant axis: axis with most cap-bound unresolved instances.
+    // When two axes share the maximum count, no single axis dominates.
+    let candidates: Vec<(String, usize)> = axes
         .iter()
         .filter_map(|a| {
             let cap_bound = a.distribution_by_outcome.get(BUCKET_UNRESOLVED_CAP_BOUND)?;
@@ -883,14 +911,33 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
                 None
             }
         })
-        .max_by_key(|(_, c)| *c);
+        .collect();
+
+    let max_count = candidates.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    let dominant = if max_count == 0 {
+        None
+    } else {
+        let tied: Vec<_> = candidates.iter().filter(|(_, c)| *c == max_count).collect();
+        if tied.len() == 1 {
+            Some((tied[0].0.clone(), max_count))
+        } else {
+            None // tie — no single dominant axis
+        }
+    };
 
     let (dominant_axis, dominant_axis_reason) = match dominant {
         Some((name, count)) => (
             Some(name.clone()),
             format!("{count} cap-bound unresolved instance(s) on axis '{name}'"),
         ),
-        None => (None, "no cap-bound failures detected".to_owned()),
+        None if max_count == 0 => (None, "no cap-bound failures detected".to_owned()),
+        None => {
+            let names: Vec<_> = candidates.iter().map(|(n, _)| n.as_str()).collect();
+            (
+                None,
+                format!("tied cap-bound failures across axes: {}", names.join(", ")),
+            )
+        }
     };
 
     let waste_usd = compute_waste_usd(axes);
