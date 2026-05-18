@@ -134,6 +134,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::CacheStats(c),
         } => bench_cache_stats(c),
         Command::Bench {
+            cmd: args::BenchCmd::ToolAblation(t),
+        } => Box::pin(bench_tool_ablation(t)).await,
+        Command::Bench {
             cmd: args::BenchCmd::Ladder(l),
         } => bench_ladder(l),
         #[cfg(feature = "docker")]
@@ -1922,6 +1925,176 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         println!("{json}");
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
+    let cache_dir = t
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    // Validate format before doing any work (needed by both render-only and run paths).
+    let is_json_format = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "tool-ablation: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+
+    // --format json without --render-only would start a paid run and silently
+    // ignore the format flag (the run output is always text).  Catch it early.
+    if is_json_format && !t.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format json is only valid with --render-only; \
+             omit --format or add --render-only"
+                .into(),
+        )));
+    }
+
+    // render-only only needs the config; dataset is not required.
+    if t.render_only {
+        let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
+        let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
+
+        // Validate --ablate names up front so render-only rejects unknown names
+        // the same way a real run would, rather than silently dropping them.
+        if !t.ablate.is_empty() {
+            let unknown: Vec<&str> = t
+                .ablate
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !all_tools.iter().any(|t| t == *name))
+                .collect();
+            if !unknown.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "tool-ablation: unknown tool name(s) in --ablate: {}",
+                    unknown.join(", ")
+                ))));
+            }
+        }
+
+        let arm_plan = crate::run::tool_ablation::generate_arm_plan(
+            &all_tools,
+            &t.ablate,
+            t.include_pair_ablation,
+        );
+
+        // Reject duplicate arm names now so --render-only previews the same
+        // validity constraints as a real run (pair collisions such as
+        // `(a, b__c)` and `(a__b, c)` both produce the name `pair_a__b__c`).
+        {
+            let mut seen = std::collections::HashSet::new();
+            for arm in &arm_plan {
+                if !seen.insert(arm.name.as_str()) {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "ambiguous arm name `{}`; rename conflicting tools to avoid collision",
+                        arm.name
+                    ))));
+                }
+            }
+        }
+
+        if t.include_pair_ablation {
+            let pair_count = arm_plan.iter().filter(|a| a.ablated_pair.is_some()).count();
+            eprintln!(
+                "bench tool-ablation: --include-pair-ablation adds {pair_count} pair arm(s) \
+                 (total {} arms)",
+                arm_plan.len()
+            );
+        }
+
+        let manifest = crate::run::tool_ablation::ArmManifest {
+            schema_version: "tool-ablation-1.0".into(),
+            config_path: t.config.display().to_string(),
+            arms: arm_plan,
+        };
+
+        if is_json_format {
+            println!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_json(&manifest)?
+            );
+        } else {
+            print!(
+                "{}",
+                crate::run::tool_ablation::render_manifest_text(&manifest)
+            );
+        }
+        return Ok(());
+    }
+
+    // Dataset is required for the non-render-only sweep path.
+    let dataset_source = match (&t.dataset_path, &t.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = t.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
+
+    let ablation_args = crate::run::tool_ablation::ToolAblationArgs {
+        config_path: t.config,
+        dataset_source,
+        dataset_cache_dir: cache_dir,
+        output_dir: t.output,
+        ablate: t.ablate,
+        sweep_cost_limit_usd: t.sweep_cost_limit_usd,
+        matrix_parallelism: t.matrix_parallelism,
+        resume: t.resume,
+        instance_ids: t.instance_ids,
+        limit: t.limit,
+        sample: t.sample,
+        seed: t.seed,
+        parallel: t.parallel,
+        include_pair_ablation: t.include_pair_ablation,
+        skip_preflight: t.skip_preflight,
+        skip_model_probe: t.skip_model_probe,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        cancel_deadline_secs: t.cancel_deadline_secs,
+        install_os_signal_handlers: true,
+    };
+
+    let report = crate::run::tool_ablation::run(ablation_args).await?;
+    print!(
+        "{}",
+        crate::run::tool_ablation::render_text_summary(&report)
+    );
+    if report.systemic_halt {
+        exit_with_outcome(
+            ExitCode::SystemicHalt,
+            "an ablation arm hit the systemic-failure circuit breaker",
+        );
+    }
+    if let Some(code) = report.cancel_exit_code {
+        let outcome = if code == crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL {
+            ExitCode::Interrupted
+        } else {
+            ExitCode::Killed
+        };
+        exit_with_outcome(outcome, "ablation was cancelled");
     }
     Ok(())
 }

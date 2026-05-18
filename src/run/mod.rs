@@ -29,6 +29,7 @@ pub mod reproduce;
 pub mod retry;
 pub mod swebench;
 pub mod tail;
+pub mod tool_ablation;
 pub mod tool_coverage;
 pub mod trajectory_diff;
 pub mod triage;

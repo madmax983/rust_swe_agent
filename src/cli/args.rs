@@ -345,6 +345,8 @@ pub enum BenchCmd {
     Behavior(BehaviorCmd),
     /// Measure MCP tool usage and correlate with outcome across a sweep.
     ToolCoverage(ToolCoverageCmd),
+    /// Systematic per-tool removal ablation: baseline plus one arm per removed tool.
+    ToolAblation(ToolAblationCmd),
     /// Join historical sweeps on instance_id and report resolution history,
     /// stability class, and flip provenance.
     InstanceHistory(InstanceHistoryCmd),
@@ -1408,6 +1410,98 @@ pub struct EvaluatorSelftestCmd {
     /// Parallel worker count for the `sb-cli` evaluation backend.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
+}
+
+/// `bench tool-ablation` — systematic per-tool removal ablation experiment.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ToolAblationCmd {
+    /// Path to the base config TOML. Tool list is read from `agent.tools`.
+    #[arg(long)]
+    pub config: PathBuf,
+
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias (e.g. `verified`). Alternative to `--dataset-path`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long)]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Root output directory. Arm results land in `{output}/{arm_name}/`.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Restrict ablation to this tool name (repeatable). Default: all user tools.
+    #[arg(long = "ablate", value_name = "TOOL", action = clap::ArgAction::Append)]
+    pub ablate: Vec<String>,
+
+    /// Print the planned arm manifest and exit without running any sweeps.
+    #[arg(long, default_value_t = false)]
+    pub render_only: bool,
+
+    /// Output format for `--render-only`: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+
+    /// Shared USD ceiling across all arms. Arms that would start after the
+    /// limit is reached are recorded as `skipped_budget`.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Number of arms to run concurrently (default: 1 = sequential).
+    #[arg(long, default_value_t = 1)]
+    pub matrix_parallelism: usize,
+
+    /// Resume from a previous run, skipping `complete` and `skipped_budget` arms.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Worker parallelism per arm sweep.
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
+    pub parallel: usize,
+
+    /// Add one arm per *pair* of removed tools (O(N²) cost — opt-in).
+    /// The CLI prints the expected arm count and projected cost ceiling before starting.
+    #[arg(long, default_value_t = false)]
+    pub include_pair_ablation: bool,
+
+    /// Skip startup preflight checks before launching arm sweeps.
+    #[arg(long, default_value_t = false)]
+    pub skip_preflight: bool,
+
+    /// Skip model-endpoint probe during preflight.
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
+
+    /// Seconds each arm sweep waits for in-flight tasks after a cancel signal.
+    #[arg(long, default_value_t = 60)]
+    pub cancel_deadline_secs: u64,
 }
 
 /// `bench tool-coverage` — measure MCP tool usage by outcome bucket.
