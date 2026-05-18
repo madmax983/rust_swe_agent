@@ -144,6 +144,17 @@ pub struct BudgetFitReport {
 /// Reads `results.json` (required) and `behavior.json` (optional, enables enrichment).
 /// Never re-runs instances, never calls a model.
 pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error> {
+    // Require results.json to be present. load_sweep can succeed via trajectory
+    // fallback without it, but budget-fit needs the completed-sweep summary for
+    // manifest data (configured caps) and accurate aggregate statistics.
+    let results_path = args.sweep_dir.join("results.json");
+    if !results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: results.json not found in {}; \
+             this command requires a completed sweep directory",
+            args.sweep_dir.display()
+        ))));
+    }
     let loaded = load_sweep(&args.sweep_dir)?;
     // Sort by instance_id so float summation order is deterministic across runs
     // (HashMap::values() order is seed-dependent).
@@ -768,12 +779,14 @@ fn make_recommendation(
             (None, rationale, None)
         }
         Some(p_target) if p_target >= cap => {
-            // P{target} is at or above cap — no tightening useful
+            // P{target} of resolved is at or above the cap — tightening would cut off
+            // resolved runs, and the cap is not obviously too generous. Emit no
+            // recommendation rather than returning p_target, which would look like a raise.
             let rationale = format!(
                 "P{target_percentile} of resolved ({p_target:.4}) ≥ configured cap ({cap:.4}); \
                  cap is already well-sized. {cap_bound_count} cap-bound failure(s)."
             );
-            (Some(p_target), rationale, None)
+            (None, rationale, None)
         }
         Some(p_target) => {
             let rationale = if cap_bound_count > 0 && behavior_absent {
@@ -942,7 +955,7 @@ fn build_summary(axes: &[AxisReport]) -> CrossAxisSummary {
 
     let waste_usd = compute_waste_usd(axes);
 
-    let headline = build_headline(axes, dominant_axis.as_ref());
+    let headline = build_headline(axes, dominant_axis.as_ref(), &dominant_axis_reason);
 
     CrossAxisSummary {
         dominant_axis,
@@ -958,9 +971,23 @@ fn compute_waste_usd(axes: &[AxisReport]) -> f64 {
     axes.iter().map(|a| a.cap_bound_cost_usd).sum()
 }
 
-fn build_headline(axes: &[AxisReport], dominant_axis: Option<&String>) -> String {
+fn build_headline(
+    axes: &[AxisReport],
+    dominant_axis: Option<&String>,
+    dominant_axis_reason: &str,
+) -> String {
     match dominant_axis {
-        None => "No cap-bound failures detected; consider tightening caps to reduce cost.".into(),
+        None => {
+            // Distinguish "truly no cap failures" from "tied cap-bound counts across axes".
+            if dominant_axis_reason.starts_with("tied") {
+                format!(
+                    "Cap-bound failures detected on multiple axes ({dominant_axis_reason}); \
+                     review each axis recommendation individually."
+                )
+            } else {
+                "No cap-bound failures detected; consider tightening caps to reduce cost.".into()
+            }
+        }
         Some(ax) => {
             let axis_report = axes.iter().find(|a| &a.axis_name == ax);
             let rec = axis_report.and_then(|a| a.recommended_cap);
