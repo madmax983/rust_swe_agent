@@ -16,8 +16,9 @@ use crate::error::{ConfigError, Error};
 use crate::model::ModelUsage;
 use crate::run::dataset::DatasetSource;
 use crate::run::swebench::{
-    ApplySubsetParams, SWEEP_STATUS_CANCELLED, StratifyMode, SwebenchArgs, SweepResults,
-    apply_subset, load_dataset_from_bytes_pub,
+    ApplySubsetParams, CANCEL_EXIT_CODE_GRACEFUL, SWEEP_STATUS_CANCELLED,
+    SWEEP_STATUS_SYSTEMIC_HALT, StratifyMode, SwebenchArgs, SweepResults, apply_subset,
+    load_dataset_from_bytes_pub,
 };
 
 // ── public argument struct ────────────────────────────────────────────────────
@@ -120,9 +121,11 @@ pub struct ToolAblationReport {
     /// Deterministic instance list used by all arms.
     pub instance_ids: Vec<String>,
     pub arms: Vec<ArmAblationResult>,
-    /// True when the run was cancelled (SIGINT/SIGTERM); the CLI exits 130.
+    /// Set to 130 (graceful SIGINT) or 137 (escalated SIGTERM) when any arm
+    /// was cancelled; `None` means the run completed without interruption.
+    /// The CLI uses this to propagate the correct signal exit code.
     #[serde(default)]
-    pub cancelled: bool,
+    pub cancel_exit_code: Option<i32>,
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -332,38 +335,70 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         .iter()
         .map(|i| i.instance_id.clone())
         .collect();
+
+    if instance_ids.is_empty() {
+        return Err(Error::Config(ConfigError::Invalid(
+            "instance selection produced 0 instances; check --limit/--sample/--instance-ids".into(),
+        )));
+    }
+
     let mut instance_ids_csv = instance_ids.join(",");
 
     std::fs::create_dir_all(&args.output_dir)?;
     let report_path = args.output_dir.join("tool-ablation.json");
+
+    // Validate arm names are unique (tool names with `__` can still produce
+    // colliding pair arm names; fail fast rather than silently overwrite dirs).
+    let mut seen_names = std::collections::HashSet::new();
+    for arm in &arm_plan {
+        if !seen_names.insert(arm.name.as_str()) {
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "ambiguous arm name `{}`; rename conflicting tools to avoid collision",
+                arm.name
+            ))));
+        }
+    }
 
     // Resume: populate already-complete arms from the prior report so they are
     // skipped during execution and their costs count toward the budget ceiling.
     // Use the prior instance list to keep all arms consistent — if the caller
     // changed --limit/--sample/--instance-ids the new resolution is discarded
     // with a warning, mirroring the behaviour of `bench matrix --resume`.
+    let current_config_path = args.config_path.display().to_string();
     let mut arm_results: Vec<Option<ArmAblationResult>> = vec![None; arm_plan.len()];
     let mut cumulative_cost = 0.0f64;
     if args.resume && report_path.exists() {
         if let Ok(text) = std::fs::read_to_string(&report_path) {
             if let Ok(prior) = serde_json::from_str::<ToolAblationReport>(&text) {
-                if prior.instance_ids != instance_ids {
-                    tracing::warn!(
-                        persisted = prior.instance_ids.len(),
-                        resolved = instance_ids.len(),
-                        "resume: instance set differs from prior tool-ablation.json; \
-                         using prior list to maintain arm consistency"
-                    );
-                    instance_ids.clone_from(&prior.instance_ids);
-                    instance_ids_csv = instance_ids.join(",");
-                }
-                for (idx, planned) in arm_plan.iter().enumerate() {
-                    if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name) {
-                        if prior_arm.status == "complete" || prior_arm.status == "skipped_budget" {
-                            cumulative_cost += prior_arm.cost_usd;
-                            arm_results[idx] = Some(prior_arm.clone());
+                if prior.config_path == current_config_path {
+                    if prior.instance_ids != instance_ids {
+                        tracing::warn!(
+                            persisted = prior.instance_ids.len(),
+                            resolved = instance_ids.len(),
+                            "resume: instance set differs from prior tool-ablation.json; \
+                             using prior list to maintain arm consistency"
+                        );
+                        instance_ids.clone_from(&prior.instance_ids);
+                        instance_ids_csv = instance_ids.join(",");
+                    }
+                    for (idx, planned) in arm_plan.iter().enumerate() {
+                        if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name)
+                        {
+                            if prior_arm.status == "complete"
+                                || prior_arm.status == "skipped_budget"
+                            {
+                                cumulative_cost += prior_arm.cost_usd;
+                                arm_results[idx] = Some(prior_arm.clone());
+                            }
                         }
                     }
+                } else {
+                    tracing::warn!(
+                        prior_config = %prior.config_path,
+                        current_config = %current_config_path,
+                        "resume: config path differs from prior tool-ablation.json; \
+                         ignoring prior results to avoid mixing incompatible arms"
+                    );
                 }
             }
         }
@@ -384,6 +419,9 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     };
 
     let mut cancelled = false;
+    // Tracks the highest cancellation exit code seen across cancelled arms
+    // (137 SIGTERM escalation beats 130 SIGINT graceful).
+    let mut cancel_exit_code: Option<i32> = None;
     let mut next_to_launch = 0usize;
     let mut join_set: tokio::task::JoinSet<(usize, Result<SweepResults, Error>)> =
         tokio::task::JoinSet::new();
@@ -458,14 +496,35 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
             Some(Ok((arm_idx, Ok(results)))) => {
                 cumulative_cost += results.estimated_cost_usd;
 
+                // Systemic halt is a harness failure (bad environment, broken
+                // API key, Docker misconfiguration).  Propagate as an error so
+                // the operator is alerted and subsequent arms are not launched.
+                if results.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
+                    return Err(Error::Config(ConfigError::Invalid(format!(
+                        "arm `{}` hit the systemic-failure circuit breaker; \
+                         fix the environment (API key, Docker, quota) and retry",
+                        arm_plan[arm_idx].name
+                    ))));
+                }
+
                 // When an arm signals cancellation, stop launching new arms and
                 // drain the already-in-flight ones before exiting.
                 if results.sweep_status == SWEEP_STATUS_CANCELLED {
                     cancelled = true;
+                    let code = results
+                        .cancel_exit_code
+                        .unwrap_or(CANCEL_EXIT_CODE_GRACEFUL);
+                    cancel_exit_code =
+                        Some(cancel_exit_code.map_or(code, |existing| existing.max(code)));
                 }
 
+                // Arms that hit the per-arm budget mid-run did not process the
+                // full shared instance set; mark them so delta computation skips
+                // them and rankings reflect only fully-run arms.
                 let status = if results.sweep_status == SWEEP_STATUS_CANCELLED {
                     "cancelled"
+                } else if results.budget_halted > 0 {
+                    "partial_budget"
                 } else {
                     "complete"
                 };
@@ -544,8 +603,11 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
 
     #[allow(clippy::cast_precision_loss)]
     for arm in &mut all_results {
-        // Preserve zero deltas for arms that produced no data.
-        if arm.status == "skipped_budget" || arm.status == "not_started" {
+        // Preserve zero deltas for arms that did not run the full instance set.
+        if matches!(
+            arm.status.as_str(),
+            "skipped_budget" | "not_started" | "partial_budget"
+        ) {
             continue;
         }
         let rate = if arm.total > 0 {
@@ -568,7 +630,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         generated_at: chrono::Utc::now().to_rfc3339(),
         instance_ids,
         arms: all_results,
-        cancelled,
+        cancel_exit_code,
     };
 
     let json = serde_json::to_string_pretty(&report)?;

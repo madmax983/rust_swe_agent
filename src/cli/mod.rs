@@ -2034,8 +2034,13 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         "{}",
         crate::run::tool_ablation::render_text_summary(&report)
     );
-    if report.cancelled {
-        exit_with_outcome(ExitCode::Interrupted, "ablation was cancelled");
+    if let Some(code) = report.cancel_exit_code {
+        let outcome = if code == crate::run::swebench::CANCEL_EXIT_CODE_GRACEFUL {
+            ExitCode::Interrupted
+        } else {
+            ExitCode::Killed
+        };
+        exit_with_outcome(outcome, "ablation was cancelled");
     }
     Ok(())
 }
