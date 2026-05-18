@@ -133,6 +133,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::CacheStats(c),
         } => bench_cache_stats(c),
+        Command::Bench {
+            cmd: args::BenchCmd::Ladder(l),
+        } => bench_ladder(l),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1919,6 +1922,32 @@ fn bench_cache_stats(c: args::CacheStatsCmd) -> Result<(), Error> {
         println!("{json}");
     } else {
         print!("{}", crate::run::cache_stats::render_text(&report, c.top));
+    }
+    Ok(())
+}
+
+fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
+    let format = l.format.parse::<crate::run::ladder::LadderFormat>().map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!("ladder: {e}")))
+    })?;
+    let report = crate::run::ladder::run(&crate::run::ladder::LadderArgs {
+        root: l.root,
+        dataset: l.dataset,
+        last: l.last,
+        baseline: l.baseline,
+        format,
+    })?;
+    match format {
+        crate::run::ladder::LadderFormat::Text => {
+            print!("{}", crate::run::ladder::render_text(&report));
+        }
+        crate::run::ladder::LadderFormat::Json => {
+            let json = crate::run::ladder::render_json(&report)?;
+            println!("{json}");
+        }
+        crate::run::ladder::LadderFormat::Markdown => {
+            print!("{}", crate::run::ladder::render_markdown(&report));
+        }
     }
     Ok(())
 }

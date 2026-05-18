@@ -1,0 +1,20 @@
+---
+source: tests/bench_ladder.rs
+assertion_line: 512
+expression: normalize_root(&stdout)
+---
+## bench ladder
+
+Root: [LADDER_FIXTURES]  Sweeps: 3  Skipped: 1
+
+| sweep_id | date | model | prompt_sha | n | resolved% | $/resolved | mean_steps | Δ resolved% |
+|---|---|---|---|---|---|---|---|---|
+| sweep1 | 2026-04-28 00:00 | model-a | aaaa1234 | 4 | 50.00% | $0.0500 | 4.0 | — |
+| sweep2 | 2026-04-29 00:00 | model-a | aaaa1234 | 4 | 75.00% | $0.0333 | 4.0 | +25.00pp |
+| sweep3 | 2026-04-30 00:00 | model-b | bbbb5678 | 4 | 50.00% | $0.0500 | 4.0 | -25.00pp |
+
+### Skipped (1)
+
+| dir | reason |
+|---|---|
+| sweep_bad | results.json: artifact kind mismatch: expected sweep_results, found trajectory |
