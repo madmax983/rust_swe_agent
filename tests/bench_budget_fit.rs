@@ -2418,3 +2418,98 @@ fn original_docker_environment_with_retry_is_rejected() {
         "error should mention environment: {msg}"
     );
 }
+
+// ── budget-halted instances are rejected ──────────────────────────────────────
+//
+// When a sweep hits --sweep-cost-limit-usd, tasks that never ran get
+// exit_reason = "budget_halt" with no steps/cost/duration.  Including them
+// in n_total would distort at-cap percentile analysis.
+
+#[test]
+fn budget_halted_sweep_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Patch the first instance to look like a budget-halted (never-ran) row.
+    let path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    if let Some(first) = val["instances"].as_array_mut().and_then(|a| a.first_mut()) {
+        first["exit_reason"] = serde_json::json!("budget_halt");
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "sweep with budget-halted instances should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("budget_halt") || msg.contains("budget"),
+        "error should mention budget-halted rows: {msg}"
+    );
+}
+
+// ── harness-mismatched retry entry is rejected ────────────────────────────────
+//
+// An entry in retry_history with harness_mismatch=true was produced by a
+// different harness version and may have different agent-loop accounting or
+// failure categorization.  Budget-fit must reject it.
+
+#[test]
+fn harness_mismatch_retry_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Patch in a retry entry with harness_mismatch=true.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-mismatch",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": true,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "retry with harness_mismatch=true should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("harness_mismatch") || msg.contains("harness"),
+        "error should mention harness mismatch: {msg}"
+    );
+}

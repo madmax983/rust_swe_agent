@@ -232,6 +232,22 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         )));
     }
 
+    // Reject sweeps halted by --sweep-cost-limit-usd. Budget-halted instances
+    // have no steps/cost/duration because they never ran; including them in the
+    // instance set inflates n_total and dilutes at-cap shares.
+    if instances
+        .iter()
+        .any(|inst| inst.exit_reason == "budget_halt")
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: sweep contains budget-halted instances (exit_reason = budget_halt); \
+             tasks that never ran have no steps/cost/duration and would distort per-instance \
+             cap percentile analysis; re-run the sweep without a sweep-level cost limit or \
+             filter budget-halted rows before running budget-fit"
+                .into(),
+        )));
+    }
+
     // Behavior enrichment: present but malformed is an error (not a silent fallback).
     // Only the missing-file case proceeds as if behavior enrichment were absent.
     // A behavior.json produced by a fresh `bench behavior --per-instance` run after a
@@ -734,8 +750,34 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
                 .into(),
         )));
     }
+    // Note: the symmetric case (original local, retry in docker) is also undetectable
+    // because OverrideDelta does not record --env/--docker-image.  Similarly, dataset
+    // overrides (--dataset/--dataset-path), non-cap agent settings
+    // (--history-max-input-tokens, --detect-stagnation, --hide-budget-from-agent,
+    // --mcp-server), and retry-added --config overlays are not serialised in
+    // OverrideDelta and cannot be detected here; these are known schema gaps.
 
     for entry in history {
+        // Reject entries produced by a different harness version.  The
+        // --allow-harness-mismatch flag lets bench retry override this check at
+        // run time, but budget-fit cannot safely merge rows that may have used
+        // different agent-loop accounting or failure categorization.
+        if entry
+            .get("harness_mismatch")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            let retry_id = entry
+                .get("retry_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: retry '{retry_id}' has harness_mismatch=true; rows produced \
+                 by a different harness version may use different agent-loop accounting or \
+                 failure categorization, making merged percentile distributions unreliable"
+            ))));
+        }
+
         let Some(delta) = entry.get("override_delta") else {
             continue;
         };
@@ -764,9 +806,12 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
             .get("model")
             .and_then(|v| v.as_str())
             .is_some_and(|m| orig_model.is_none_or(|orig| m != orig));
-        // Config overlay paths — not currently stored in OverrideDelta (bench retry
-        // records only explicit CLI flags), but check the raw JSON so that if the
-        // schema is extended in future to record --config overlays, they are caught.
+        // Config overlay paths — bench retry does not currently serialise --config
+        // usage into OverrideDelta, so this field is never populated in practice.
+        // Keep the check for forward-compatibility: if the schema is extended to
+        // record overlay paths, they will be caught here automatically.
+        // Note: a retry that ADDS a --config overlay when the original had none is
+        // a known undetectable gap (OverrideDelta schema limitation).
         let has_config_overlay = delta
             .get("config_overlay_paths")
             .and_then(|v| v.as_array())
