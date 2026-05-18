@@ -364,6 +364,17 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     std::fs::create_dir_all(&args.output_dir)?;
     let report_path = args.output_dir.join("tool-ablation.json");
 
+    // A negative budget would immediately mark every arm as skipped_budget and
+    // exit 0 with an all-skipped report, which looks like normal exhaustion.
+    // Reject it up front as a configuration error.
+    if let Some(limit) = args.sweep_cost_limit_usd {
+        if limit < 0.0 {
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--sweep-cost-limit-usd must be non-negative (got {limit})"
+            ))));
+        }
+    }
+
     // Validate arm names are unique (tool names with `__` can still produce
     // colliding pair arm names; fail fast rather than silently overwrite dirs).
     let mut seen_names = std::collections::HashSet::new();
@@ -390,78 +401,91 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     let mut arm_results: Vec<Option<ArmAblationResult>> = vec![None; arm_plan.len()];
     let mut cumulative_cost = 0.0f64;
     let mut effective_resume = args.resume;
-    if args.resume && report_path.exists() {
-        match std::fs::read_to_string(&report_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<ToolAblationReport>(&text).ok())
-        {
-            None => {
-                // The report file exists but cannot be read or parsed.  Fall
-                // back to a fresh run so we do not reuse trajectory files that
-                // were produced under unknown (potentially corrupt) inputs.
-                tracing::warn!(
-                    "resume: tool-ablation.json exists but could not be read or parsed; \
-                     ignoring prior results and disabling arm resume"
-                );
-                effective_resume = false;
-            }
-            Some(prior) => {
-                // A report without stored fingerprints (written by an older
-                // version before SHA-256 was added) cannot be verified against
-                // the current config/dataset.  Treat missing digests as
-                // unverifiable and disable resume rather than silently skipping
-                // the integrity check.
-                let has_config_fp = !prior.config_sha256.is_empty();
-                let has_dataset_fp = !prior.dataset_sha256.is_empty();
+    if args.resume {
+        if report_path.exists() {
+            match std::fs::read_to_string(&report_path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<ToolAblationReport>(&text).ok())
+            {
+                None => {
+                    // The report file exists but cannot be read or parsed.  Fall
+                    // back to a fresh run so we do not reuse trajectory files that
+                    // were produced under unknown (potentially corrupt) inputs.
+                    tracing::warn!(
+                        "resume: tool-ablation.json exists but could not be read or parsed; \
+                         ignoring prior results and disabling arm resume"
+                    );
+                    effective_resume = false;
+                }
+                Some(prior) => {
+                    // A report without stored fingerprints (written by an older
+                    // version before SHA-256 was added) cannot be verified against
+                    // the current config/dataset.  Treat missing digests as
+                    // unverifiable and disable resume rather than silently skipping
+                    // the integrity check.
+                    let has_config_fp = !prior.config_sha256.is_empty();
+                    let has_dataset_fp = !prior.dataset_sha256.is_empty();
 
-                let config_ok = has_config_fp
-                    && prior.config_path == current_config_path
-                    && prior.config_sha256 == config_sha256;
-                let dataset_ok = has_dataset_fp && prior.dataset_sha256 == dataset_sha256;
+                    let config_ok = has_config_fp
+                        && prior.config_path == current_config_path
+                        && prior.config_sha256 == config_sha256;
+                    let dataset_ok = has_dataset_fp && prior.dataset_sha256 == dataset_sha256;
 
-                if !has_config_fp || !has_dataset_fp {
-                    tracing::warn!(
-                        "resume: prior tool-ablation.json has no SHA-256 fingerprints \
-                         (written by an older version); ignoring prior results and \
-                         disabling arm resume to avoid mixing unverifiable completed \
-                         arms with the current run"
-                    );
-                    effective_resume = false;
-                } else if !config_ok {
-                    tracing::warn!(
-                        "resume: config changed since prior tool-ablation.json \
-                         (path or content); ignoring prior results and disabling arm resume"
-                    );
-                    effective_resume = false;
-                } else if !dataset_ok {
-                    tracing::warn!(
-                        "resume: dataset content changed since prior tool-ablation.json \
-                         (SHA-256 mismatch); ignoring prior results and disabling arm resume"
-                    );
-                    effective_resume = false;
-                } else {
-                    if prior.instance_ids != instance_ids {
+                    if !has_config_fp || !has_dataset_fp {
                         tracing::warn!(
-                            persisted = prior.instance_ids.len(),
-                            resolved = instance_ids.len(),
-                            "resume: instance set differs from prior tool-ablation.json; \
-                             using prior list to maintain arm consistency"
+                            "resume: prior tool-ablation.json has no SHA-256 fingerprints \
+                             (written by an older version); ignoring prior results and \
+                             disabling arm resume to avoid mixing unverifiable completed \
+                             arms with the current run"
                         );
-                        instance_ids.clone_from(&prior.instance_ids);
-                    }
-                    for (idx, planned) in arm_plan.iter().enumerate() {
-                        if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name)
-                        {
-                            if prior_arm.status == "complete"
-                                || prior_arm.status == "skipped_budget"
+                        effective_resume = false;
+                    } else if !config_ok {
+                        tracing::warn!(
+                            "resume: config changed since prior tool-ablation.json \
+                             (path or content); ignoring prior results and disabling arm resume"
+                        );
+                        effective_resume = false;
+                    } else if !dataset_ok {
+                        tracing::warn!(
+                            "resume: dataset content changed since prior tool-ablation.json \
+                             (SHA-256 mismatch); ignoring prior results and disabling arm resume"
+                        );
+                        effective_resume = false;
+                    } else {
+                        if prior.instance_ids != instance_ids {
+                            tracing::warn!(
+                                persisted = prior.instance_ids.len(),
+                                resolved = instance_ids.len(),
+                                "resume: instance set differs from prior tool-ablation.json; \
+                                 using prior list to maintain arm consistency"
+                            );
+                            instance_ids.clone_from(&prior.instance_ids);
+                        }
+                        for (idx, planned) in arm_plan.iter().enumerate() {
+                            if let Some(prior_arm) =
+                                prior.arms.iter().find(|a| a.name == planned.name)
                             {
-                                cumulative_cost += prior_arm.cost_usd;
-                                arm_results[idx] = Some(prior_arm.clone());
+                                if prior_arm.status == "complete"
+                                    || prior_arm.status == "skipped_budget"
+                                {
+                                    cumulative_cost += prior_arm.cost_usd;
+                                    arm_results[idx] = Some(prior_arm.clone());
+                                }
                             }
                         }
                     }
                 }
             }
+        } else {
+            // No prior report — arm directories may contain stale trajectories
+            // from a different run (copied output dir, partial cleanup, etc.).
+            // Disable per-arm resume so swebench::run starts each arm fresh
+            // without inheriting unverified trajectory files.
+            tracing::warn!(
+                "resume: tool-ablation.json not found; disabling arm resume to avoid \
+                 inheriting unverified trajectory files from existing arm directories"
+            );
+            effective_resume = false;
         }
     }
 
@@ -629,7 +653,14 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                     resolved,
                     errored: results.errored,
                     total: results.total,
-                    cost_usd: results.estimated_cost_usd,
+                    // Prefer actual provider cost when available so that the
+                    // persisted cost_usd reflects real billing.  A later
+                    // --resume adds cost_usd to cumulative_cost; using the
+                    // estimate there can understate spend and launch extra
+                    // arms past the shared --sweep-cost-limit-usd cap.
+                    cost_usd: results
+                        .actual_cost_total_usd()
+                        .unwrap_or(results.estimated_cost_usd),
                     step_mean: mean_f64(&steps),
                     step_p95: percentile_f64(&steps, 0.95),
                     delta_resolved_vs_baseline: 0.0,
