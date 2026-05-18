@@ -159,17 +159,16 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         ))));
     }
 
-    // Require sweep_status == "completed". Partial/cancelled/running sweeps
-    // produce incomplete populations and misleading cap recommendations.
-    // Legacy results.json files that predate the sweep_status field are treated as
-    // completed (matching the serde default in SweepResults).
-    let sweep_status =
-        read_sweep_status(&args.sweep_dir).unwrap_or_else(|| SWEEP_STATUS_COMPLETED.to_owned());
-    if sweep_status != SWEEP_STATUS_COMPLETED {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "budget-fit: sweep status is '{sweep_status}', not 'completed'; \
-             only completed sweeps produce reliable cap recommendations"
-        ))));
+    // Check if sweep_status is explicitly present in results.json. When it is
+    // and != "completed", reject immediately (no need to load all instances).
+    let explicit_status = read_sweep_status(&args.sweep_dir);
+    if let Some(ref s) = explicit_status {
+        if s != SWEEP_STATUS_COMPLETED {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: sweep status is '{s}', not 'completed'; \
+                 only completed sweeps produce reliable cap recommendations"
+            ))));
+        }
     }
 
     // Reject sweeps where a retry changed cap parameters. The merged results.json
@@ -178,13 +177,33 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     check_retry_cap_overrides(&args.sweep_dir)?;
 
     let loaded = load_sweep(&args.sweep_dir)?;
+
+    // For legacy results.json files that lack sweep_status, confirm completeness via
+    // manifest.runtime.finished_at_utc. An absent finished_at_utc means the sweep was
+    // interrupted before writing a proper summary; load_sweep may still succeed via
+    // trajectory scan, but the population is incomplete.
+    if explicit_status.is_none() {
+        let finished = loaded
+            .manifest
+            .as_ref()
+            .and_then(|m| m.runtime.finished_at_utc.as_ref());
+        if finished.is_none() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "budget-fit: legacy results.json lacks both sweep_status and \
+                 manifest.runtime.finished_at_utc; cannot confirm sweep completed"
+                    .into(),
+            )));
+        }
+    }
+
     // Sort by instance_id so float summation order is deterministic across runs
     // (HashMap::values() order is seed-dependent).
     let mut instances: Vec<&InstanceResult> = loaded.instances.values().collect();
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
-    // Optional behavior enrichment
-    let behavior_map = load_behavior_map(&args.sweep_dir);
+    // Behavior enrichment: present but malformed is an error (not a silent fallback).
+    // Only the missing-file case proceeds as if behavior enrichment were absent.
+    let behavior_map = load_behavior_map(&args.sweep_dir)?;
 
     // Load evaluation.json when present. The evaluator is the authoritative source
     // for whether a submitted patch actually resolved the issue; use it to override
@@ -193,16 +212,28 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // propagates as an error so bad evaluation data is not silently ignored.
     let eval_resolved: HashMap<String, bool> = match load_evaluation_results(&args.sweep_dir)? {
         None => HashMap::new(), // evaluation.json absent — fall back to results.json
-        Some(eval) => eval
-            .instances
-            .iter()
-            .map(|row| {
-                (
-                    row.instance_id.clone(),
-                    row.resolved_count > 0 || row.resolved,
-                )
-            })
-            .collect(),
+        Some(eval) => {
+            // Reject evaluation produced before bench retry: the retry updates
+            // results.json but leaves evaluation.json in place, so evaluation rows
+            // for retried instances describe the pre-retry resolved state.
+            if has_any_retry_history(&args.sweep_dir) {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "budget-fit: evaluation.json predates bench retry; re-run \
+                     bench evaluate after retry or remove evaluation.json to use \
+                     results.json submission state"
+                        .into(),
+                )));
+            }
+            eval.instances
+                .iter()
+                .map(|row| {
+                    (
+                        row.instance_id.clone(),
+                        row.resolved_count > 0 || row.resolved,
+                    )
+                })
+                .collect()
+        }
     };
 
     // Extract configured caps from manifest
@@ -459,17 +490,18 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
 }
 
 /// Map of instance_id → dominant action class, loaded from `behavior.json`.
-/// Returns empty map when file is absent or unreadable.
-fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
+/// Returns `Ok(empty)` when the file is absent; returns `Err` when the file exists
+/// but is malformed (so bad enrichment data is never silently ignored).
+fn load_behavior_map(sweep_dir: &Path) -> Result<BTreeMap<String, String>, Error> {
     let path = sweep_dir.join("behavior.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return BTreeMap::new();
-    };
-    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
-        return BTreeMap::new();
-    };
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let val: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Trajectory(format!("budget-fit: behavior.json is malformed: {e}")))?;
     let Some(per_instance) = val.get("per_instance").and_then(|v| v.as_array()) else {
-        return BTreeMap::new();
+        return Ok(BTreeMap::new());
     };
     let mut map = BTreeMap::new();
     for inst in per_instance {
@@ -489,7 +521,25 @@ fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
             map.insert(id, cls);
         }
     }
-    map
+    Ok(map)
+}
+
+/// Return `true` when `results.json` contains a non-empty `retry_history` array.
+///
+/// This is a lightweight presence check — it does not inspect cap overrides,
+/// which is handled separately by `check_retry_cap_overrides`. Used to detect
+/// whether `evaluation.json` may be stale (pre-retry).
+fn has_any_retry_history(sweep_dir: &Path) -> bool {
+    let path = sweep_dir.join("results.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+        return false;
+    };
+    val.get("retry_history")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| !arr.is_empty())
 }
 
 /// Keys that budget-fit actively matches; others pass through without filtering.
