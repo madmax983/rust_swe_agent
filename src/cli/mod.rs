@@ -1933,31 +1933,7 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         .clone()
         .unwrap_or_else(crate::run::dataset::default_cache_dir);
 
-    let dataset_source = match (&t.dataset_path, &t.dataset) {
-        (Some(_), Some(_)) => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
-            )));
-        }
-        (None, None) => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "one of --dataset-path or --dataset is required".into(),
-            )));
-        }
-        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
-        (None, Some(alias_str)) => {
-            let alias = alias_str
-                .parse::<crate::run::dataset::SwebenchAlias>()
-                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-            let split_str = t.split.as_deref().unwrap_or("test");
-            let split = split_str
-                .parse::<crate::run::dataset::SwebenchSplit>()
-                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
-            crate::run::dataset::DatasetSource::Named { alias, split }
-        }
-    };
-
-    // Validate format before doing any work.
+    // Validate format before doing any work (needed by both render-only and run paths).
     let is_json_format = match t.format.as_str() {
         "text" => false,
         "json" => true,
@@ -1968,6 +1944,7 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         }
     };
 
+    // render-only only needs the config; dataset is not required.
     if t.render_only {
         let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
         let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
@@ -2005,6 +1982,31 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         }
         return Ok(());
     }
+
+    // Dataset is required for the non-render-only sweep path.
+    let dataset_source = match (&t.dataset_path, &t.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = t.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
 
     let ablation_args = crate::run::tool_ablation::ToolAblationArgs {
         config_path: t.config,

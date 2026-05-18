@@ -454,6 +454,8 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         install_os_signal_handlers: args.install_os_signal_handlers,
         deterministic_responses: args.deterministic_responses.clone(),
         deterministic_usage_per_call: args.deterministic_usage_per_call.clone(),
+        max_rpm: base_cfg.root.sweep.max_rpm,
+        max_input_tpm: base_cfg.root.sweep.max_input_tpm,
     };
 
     let mut cancelled = false;
@@ -618,11 +620,19 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     #[allow(clippy::cast_precision_loss)]
     let mut all_results: Vec<ArmAblationResult> = arm_results.into_iter().flatten().collect();
 
-    // Compute deltas relative to the baseline arm.  Arms that never ran keep
-    // their zero deltas so skipped-budget entries are not misleadingly ranked.
+    // Compute deltas relative to the baseline arm, but only when the baseline
+    // itself completed the full instance set.  A cancelled, halted, or partial
+    // baseline produces unreliable rates; in that case leave all deltas at
+    // their initialised value of 0.0 so the summary is not misleading.
     #[allow(clippy::cast_precision_loss)]
-    let (baseline_rate, baseline_cpr) =
-        all_results
+    let baseline_complete = all_results
+        .iter()
+        .find(|a| a.name == "baseline")
+        .is_some_and(|a| a.status == "complete");
+
+    if baseline_complete {
+        #[allow(clippy::cast_precision_loss)]
+        let (baseline_rate, baseline_cpr) = all_results
             .iter()
             .find(|a| a.name == "baseline")
             .map_or((0.0, 0.0), |a| {
@@ -639,27 +649,28 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                 (rate, cpr)
             });
 
-    #[allow(clippy::cast_precision_loss)]
-    for arm in &mut all_results {
-        // Preserve zero deltas for arms that did not run the full instance set.
-        if matches!(
-            arm.status.as_str(),
-            "skipped_budget" | "not_started" | "partial_budget" | "cancelled" | "systemic_halt"
-        ) {
-            continue;
+        #[allow(clippy::cast_precision_loss)]
+        for arm in &mut all_results {
+            // Preserve zero deltas for arms that did not run the full instance set.
+            if matches!(
+                arm.status.as_str(),
+                "skipped_budget" | "not_started" | "partial_budget" | "cancelled" | "systemic_halt"
+            ) {
+                continue;
+            }
+            let rate = if arm.total > 0 {
+                arm.resolved as f64 / arm.total as f64
+            } else {
+                0.0
+            };
+            let cpr = if arm.resolved > 0 {
+                arm.cost_usd / arm.resolved as f64
+            } else {
+                0.0
+            };
+            arm.delta_resolved_vs_baseline = rate - baseline_rate;
+            arm.delta_cost_per_resolve_vs_baseline = cpr - baseline_cpr;
         }
-        let rate = if arm.total > 0 {
-            arm.resolved as f64 / arm.total as f64
-        } else {
-            0.0
-        };
-        let cpr = if arm.resolved > 0 {
-            arm.cost_usd / arm.resolved as f64
-        } else {
-            0.0
-        };
-        arm.delta_resolved_vs_baseline = rate - baseline_rate;
-        arm.delta_cost_per_resolve_vs_baseline = cpr - baseline_cpr;
     }
 
     let report = ToolAblationReport {
@@ -700,6 +711,8 @@ struct AblationRunCtx {
     skip_model_probe: bool,
     cancel_deadline_secs: u64,
     install_os_signal_handlers: bool,
+    max_rpm: Option<u32>,
+    max_input_tpm: Option<u64>,
     deterministic_responses: Option<Vec<String>>,
     deterministic_usage_per_call: Option<ModelUsage>,
 }
@@ -744,8 +757,8 @@ async fn run_arm_ablation(
         preflight_total_timeout_s: 120,
         preflight_mode: "sweep".into(),
         skip_patch_validation: false,
-        max_rpm: None,
-        max_input_tpm: None,
+        max_rpm: ctx.max_rpm,
+        max_input_tpm: ctx.max_input_tpm,
         cancel_deadline_secs: ctx.cancel_deadline_secs,
         install_os_signal_handlers: ctx.install_os_signal_handlers,
         cancellation_signals: None,
