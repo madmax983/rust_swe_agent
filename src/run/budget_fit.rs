@@ -161,7 +161,10 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
 
     // Require sweep_status == "completed". Partial/cancelled/running sweeps
     // produce incomplete populations and misleading cap recommendations.
-    let sweep_status = read_sweep_status(&args.sweep_dir).unwrap_or_default();
+    // Legacy results.json files that predate the sweep_status field are treated as
+    // completed (matching the serde default in SweepResults).
+    let sweep_status =
+        read_sweep_status(&args.sweep_dir).unwrap_or_else(|| SWEEP_STATUS_COMPLETED.to_owned());
     if sweep_status != SWEEP_STATUS_COMPLETED {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "budget-fit: sweep status is '{sweep_status}', not 'completed'; \
@@ -186,21 +189,21 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // Load evaluation.json when present. The evaluator is the authoritative source
     // for whether a submitted patch actually resolved the issue; use it to override
     // resolved_count from results.json for bucketing and --filter resolved=.
-    let eval_resolved: HashMap<String, bool> = load_evaluation_results(&args.sweep_dir)
-        .ok()
-        .flatten()
-        .map(|eval| {
-            eval.instances
-                .iter()
-                .map(|row| {
-                    (
-                        row.instance_id.clone(),
-                        row.resolved_count > 0 || row.resolved,
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Only the missing-file case falls back to results.json; a malformed artifact
+    // propagates as an error so bad evaluation data is not silently ignored.
+    let eval_resolved: HashMap<String, bool> = match load_evaluation_results(&args.sweep_dir)? {
+        None => HashMap::new(), // evaluation.json absent — fall back to results.json
+        Some(eval) => eval
+            .instances
+            .iter()
+            .map(|row| {
+                (
+                    row.instance_id.clone(),
+                    row.resolved_count > 0 || row.resolved,
+                )
+            })
+            .collect(),
+    };
 
     // Extract configured caps from manifest
     let cli_argv = loaded
@@ -423,18 +426,30 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         let Some(delta) = entry.get("override_delta") else {
             continue;
         };
-        let has_cap_override = delta.get("step_limit").is_some()
+        // Explicit CLI cap overrides (recorded in OverrideDelta).
+        let has_cap_field = delta.get("step_limit").is_some()
             || delta.get("task_timeout_secs").is_some()
             || delta.get("per_task_budget_usd").is_some()
             || delta.get("sweep_cost_limit_usd").is_some();
-        if has_cap_override {
+        // Config overlay paths — not currently stored in OverrideDelta (bench retry
+        // records only explicit CLI flags), but check the raw JSON so that if the
+        // schema is extended in future to record --config overlays, they are caught.
+        // Note: config-based cap changes via --config that are NOT reflected in
+        // override_delta cannot be detected from the current results.json schema.
+        let has_config_overlay = delta
+            .get("config_overlay_paths")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| !arr.is_empty());
+
+        if has_cap_field || has_config_overlay {
             let retry_id = entry
                 .get("retry_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "budget-fit: retry '{retry_id}' changed cap parameters \
-                 (step_limit / task_timeout_secs / per_task_budget_usd / sweep_cost_limit_usd); \
+                 (step_limit / task_timeout_secs / per_task_budget_usd / \
+                 sweep_cost_limit_usd / config_overlay_paths); \
                  instances ran with different caps so at-cap counts and percentile \
                  recommendations would be unreliable"
             ))));
@@ -477,14 +492,38 @@ fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
     map
 }
 
+/// Keys that budget-fit actively matches; others pass through without filtering.
+const KNOWN_FILTER_KEYS: &[&str] = &["resolved", "failure_category"];
+
 /// Validate filter expressions before applying them.
 ///
-/// Returns an error for well-known keys with invalid values (e.g. `resolved=yes`).
+/// Returns an error for missing separators, empty values on known keys, or
+/// invalid values for well-known keys (e.g. `resolved=yes`).
 fn validate_filters(filters: &[String]) -> Result<(), Error> {
     for f in filters {
         let mut it = f.splitn(2, '=');
         let key = it.next().unwrap_or_default().trim();
         let val = it.next().unwrap_or_default().trim();
+
+        if key.is_empty() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: --filter '{f}' has an empty key; expected key=value"
+            ))));
+        }
+
+        if KNOWN_FILTER_KEYS.contains(&key) {
+            if !f.contains('=') {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "budget-fit: --filter '{f}' is missing a value; expected {key}=<value>"
+                ))));
+            }
+            if val.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "budget-fit: --filter '{key}=' has an empty value; expected {key}=<value>"
+                ))));
+            }
+        }
+
         if key == "resolved" && val != "true" && val != "false" {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "budget-fit: --filter resolved=<VALUE> must be `true` or `false`, got `{val}`"
