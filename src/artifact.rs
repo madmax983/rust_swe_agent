@@ -20,7 +20,7 @@ pub struct ArtifactSchemaVersion {
 }
 
 impl ArtifactSchemaVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 8 };
+    pub const CURRENT: Self = Self { major: 1, minor: 9 };
     pub const LEGACY_PRE_VERSIONING: Self = Self { major: 0, minor: 0 };
 
     #[must_use]
@@ -57,6 +57,7 @@ pub enum ArtifactKind {
     SweepHaltReport,
     RenderOnly,
     CacheStatsReport,
+    LadderReport,
 }
 
 impl ArtifactKind {
@@ -74,6 +75,7 @@ impl ArtifactKind {
             Self::SweepHaltReport => "sweep_halt_report",
             Self::RenderOnly => "render_only",
             Self::CacheStatsReport => "cache_stats_report",
+            Self::LadderReport => "ladder_report",
         }
     }
 }
