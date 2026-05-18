@@ -1622,7 +1622,7 @@ fn stale_evaluation_after_retry_is_rejected() {
     let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
     val["retry_history"] = serde_json::json!([{
         "retry_id": "retry-1",
-        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "timestamp_utc": "2026-05-01T00:10:00Z",
         "selection": {},
         "override_delta": { "sweep_cost_limit_usd": 30.0 },
         "count": 1,
@@ -1636,10 +1636,10 @@ fn stale_evaluation_after_retry_is_rejected() {
     }]);
     std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
 
-    // Write evaluation.json covering all instances (full InstanceEvaluation schema).
+    // Write evaluation.json that predates the retry (stale).
     let eval_json = serde_json::json!({
         "sweep": dir.path().to_string_lossy(),
-        "generated_at": "2026-05-01T00:10:00Z",
+        "generated_at": "2026-05-01T00:05:00Z",
         "instances": [
             { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
             { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
@@ -2511,5 +2511,109 @@ fn harness_mismatch_retry_is_rejected() {
     assert!(
         msg.contains("harness_mismatch") || msg.contains("harness"),
         "error should mention harness mismatch: {msg}"
+    );
+}
+
+// ── fresh evaluation.json after retry is accepted ─────────────────────────────
+//
+// If evaluation.json was regenerated AFTER the last retry (generated_at >
+// retry timestamp_utc), the eval reflects post-retry resolved state and
+// budget-fit should accept it without a stale-eval error.
+
+#[test]
+fn fresh_evaluation_after_retry_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Retry happened at 00:05; eval was regenerated at 00:10 (fresh).
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-1",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    // evaluation.json generated AFTER the retry — this is a fresh eval.
+    let eval_json = serde_json::json!({
+        "sweep": dir.path().to_string_lossy(),
+        "generated_at": "2026-05-01T00:10:00Z",
+        "instances": [
+            { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
+            { "instance_id": "inst-2", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_json).unwrap(),
+    )
+    .unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "fresh evaluation.json (generated after retry) should be accepted: {:?}",
+        result.unwrap_err()
+    );
+}
+
+// ── resumed sweep is rejected ─────────────────────────────────────────────────
+//
+// A sweep run with --resume includes rows from a prior invocation whose caps,
+// model, and config may differ.  Budget-fit cannot verify the prior run used
+// identical settings, so it must reject any sweep where
+// manifest.runtime.resume_mode = true.
+
+#[test]
+fn resumed_sweep_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+
+    // Build a manifest with resume_mode = true.
+    let mut manifest = make_manifest(None, None);
+    manifest.runtime.resume_mode = true;
+
+    write_results(dir.path(), instances, manifest);
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "sweep with resume_mode=true should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("resume") || msg.contains("resume_mode"),
+        "error should mention resume or resume_mode: {msg}"
     );
 }

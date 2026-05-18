@@ -196,6 +196,25 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         }
     }
 
+    // Reject sweeps started with --resume. Previously-run rows from the prior
+    // invocation carry the prior run's effective settings but the manifest records
+    // only the resume run's argv/config. If caps, model, or config changed between
+    // the original run and the resume, budget-fit would compare those rows against
+    // the wrong caps.
+    if loaded
+        .manifest
+        .as_ref()
+        .is_some_and(|m| m.runtime.resume_mode)
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: sweep was run with --resume (manifest.runtime.resume_mode = true); \
+             previously-run rows from the earlier invocation are included with the current \
+             manifest's caps, but budget-fit cannot verify the prior run used identical \
+             settings; re-run the full sweep without --resume"
+                .into(),
+        )));
+    }
+
     // Sort by instance_id so float summation order is deterministic across runs
     // (HashMap::values() order is seed-dependent).
     let mut instances: Vec<&InstanceResult> = loaded.instances.values().collect();
@@ -300,15 +319,19 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         }
     }
 
-    // Reject stale evaluation.json from before a retry.  The retry path preserves
-    // evaluation.json while rewriting results.json, so retried instances can be bucketed
-    // with their pre-retry resolved state.  Require a fresh bench evaluate.
-    if eval_file_present && has_retry_history(&args.sweep_dir) {
+    // Reject stale evaluation.json from before a retry.  Compare timestamps:
+    // if evaluation.json.generated_at predates the last retry's timestamp_utc, the
+    // eval reflects pre-retry resolved state and must be refreshed.  A freshly
+    // regenerated eval (generated_at > last retry) is valid and accepted.
+    if eval_file_present
+        && has_retry_history(&args.sweep_dir)
+        && !eval_is_fresh_after_retry(&args.sweep_dir)
+    {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
-            "budget-fit: evaluation.json may be stale — the sweep has retry history; \
-             retried instances may have a different resolution state than recorded in \
-             evaluation.json. Re-run bench evaluate to refresh, or remove evaluation.json \
-             to fall back to results.json submission state."
+            "budget-fit: evaluation.json predates the last retry or timestamps cannot \
+             be compared — retried instances may have a different resolution state than \
+             recorded in evaluation.json; re-run bench evaluate to refresh, or remove \
+             evaluation.json to fall back to results.json submission state"
                 .into(),
         )));
     }
@@ -590,6 +613,34 @@ fn extract_argv_value(argv: &[String], flag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Return `true` when `evaluation.json.generated_at` is strictly later than the
+/// latest `timestamp_utc` in `results.json`'s `retry_history`.
+///
+/// Returns `false` conservatively when either timestamp cannot be parsed (so the
+/// caller treats the evaluation as potentially stale).
+fn eval_is_fresh_after_retry(sweep_dir: &Path) -> bool {
+    (|| -> Option<bool> {
+        let eval_text = std::fs::read_to_string(sweep_dir.join("evaluation.json")).ok()?;
+        let eval_val: serde_json::Value = serde_json::from_str(&eval_text).ok()?;
+        let eval_ts = eval_val.get("generated_at")?.as_str()?;
+        let eval_time = chrono::DateTime::parse_from_rfc3339(eval_ts).ok()?;
+
+        let results_text = std::fs::read_to_string(sweep_dir.join("results.json")).ok()?;
+        let results_val: serde_json::Value = serde_json::from_str(&results_text).ok()?;
+        let history = results_val.get("retry_history")?.as_array()?;
+        let last_retry = history
+            .iter()
+            .filter_map(|entry| {
+                let ts = entry.get("timestamp_utc")?.as_str()?;
+                chrono::DateTime::parse_from_rfc3339(ts).ok()
+            })
+            .max()?;
+
+        Some(eval_time > last_retry)
+    })()
+    .unwrap_or(false)
 }
 
 /// Return `true` when `results.json` contains a non-empty `retry_history` array.
