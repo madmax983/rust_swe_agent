@@ -226,6 +226,10 @@ a valid trajectory in hand:
 - [`bench report`](docs/spec-report.md): produce a self-contained markdown or
   HTML sweep summary — provenance, top-line metrics, failure mix, and top failed
   instances — ready to drop into a PR, Slack thread, or paper appendix.
+- [`bench ladder`](docs/spec-ladder.md): resolved-rate and cost trend across
+  sweeps in a root directory — the single command for answering "am I making
+  progress?" across a week of prompt iteration. Includes `--baseline`, `--last`,
+  `--dataset`, and three output formats (text, json, markdown).
 
 ## Nightly E2E smoke
 
