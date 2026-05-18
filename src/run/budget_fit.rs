@@ -7,15 +7,17 @@
 
 #![allow(clippy::cast_precision_loss)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::run::compare::load_sweep;
-use crate::run::swebench::{InstanceResult, resolved_count as instance_resolved_count};
+use crate::run::compare::{load_evaluation_results, load_sweep};
+use crate::run::swebench::{
+    InstanceResult, SWEEP_STATUS_COMPLETED, resolved_count as instance_resolved_count,
+};
 use crate::trajectory::FailureCategory;
 
 // ── axis constants ────────────────────────────────────────────────────────────
@@ -143,6 +145,7 @@ pub struct BudgetFitReport {
 ///
 /// Reads `results.json` (required) and `behavior.json` (optional, enables enrichment).
 /// Never re-runs instances, never calls a model.
+#[allow(clippy::too_many_lines)]
 pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error> {
     // Require results.json to be present. load_sweep can succeed via trajectory
     // fallback without it, but budget-fit needs the completed-sweep summary for
@@ -155,6 +158,22 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             args.sweep_dir.display()
         ))));
     }
+
+    // Require sweep_status == "completed". Partial/cancelled/running sweeps
+    // produce incomplete populations and misleading cap recommendations.
+    let sweep_status = read_sweep_status(&args.sweep_dir).unwrap_or_default();
+    if sweep_status != SWEEP_STATUS_COMPLETED {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "budget-fit: sweep status is '{sweep_status}', not 'completed'; \
+             only completed sweeps produce reliable cap recommendations"
+        ))));
+    }
+
+    // Reject sweeps where a retry changed cap parameters. The merged results.json
+    // keeps the original manifest caps while some rows ran with different limits,
+    // so at-cap counts and percentile recommendations would be against the wrong cap.
+    check_retry_cap_overrides(&args.sweep_dir)?;
+
     let loaded = load_sweep(&args.sweep_dir)?;
     // Sort by instance_id so float summation order is deterministic across runs
     // (HashMap::values() order is seed-dependent).
@@ -163,6 +182,25 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
 
     // Optional behavior enrichment
     let behavior_map = load_behavior_map(&args.sweep_dir);
+
+    // Load evaluation.json when present. The evaluator is the authoritative source
+    // for whether a submitted patch actually resolved the issue; use it to override
+    // resolved_count from results.json for bucketing and --filter resolved=.
+    let eval_resolved: HashMap<String, bool> = load_evaluation_results(&args.sweep_dir)
+        .ok()
+        .flatten()
+        .map(|eval| {
+            eval.instances
+                .iter()
+                .map(|row| {
+                    (
+                        row.instance_id.clone(),
+                        row.resolved_count > 0 || row.resolved,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Extract configured caps from manifest
     let cli_argv = loaded
@@ -184,7 +222,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
 
     // Apply instance filters (same key=value syntax as bench inspect)
     validate_filters(&args.filter)?;
-    let instances = apply_filter(instances, &args.filter);
+    let instances = apply_filter(instances, &args.filter, &eval_resolved);
 
     let n_total = instances.len();
 
@@ -197,6 +235,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             step_limit.map(|_| "manifest.cli.argv[--step-limit]".to_owned()),
             &instances,
             &behavior_map,
+            &eval_resolved,
             args.at_cap_tolerance,
             args.target_percentile,
             UNIT_STEPS,
@@ -214,6 +253,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
                 }),
             &instances,
             &behavior_map,
+            &eval_resolved,
             args.at_cap_tolerance,
             args.target_percentile,
             UNIT_COST_USD,
@@ -226,6 +266,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             task_timeout_secs.map(|_| "manifest.cli.argv[--task-timeout-secs]".to_owned()),
             &instances,
             &behavior_map,
+            &eval_resolved,
             args.at_cap_tolerance,
             args.target_percentile,
             UNIT_WALL_CLOCK_S,
@@ -354,6 +395,54 @@ fn read_cost_limit(sweep_dir: &Path) -> Option<f64> {
     val.get("cost_limit_usd")?.as_f64()
 }
 
+/// Read `sweep_status` from `results.json`.
+fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
+    let path = sweep_dir.join("results.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    val.get("sweep_status")?.as_str().map(str::to_owned)
+}
+
+/// Return an error if any retry in `retry_history` changed cap parameters.
+///
+/// When a retry is run with a different step_limit/timeout/budget, the merged
+/// results.json has multiple caps active across different rows, making at-cap
+/// counts and percentile recommendations unreliable.
+fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
+    let path = sweep_dir.join("results.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(()); // existence already checked; fail-open here
+    };
+    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+        return Ok(());
+    };
+    let Some(history) = val.get("retry_history").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    for entry in history {
+        let Some(delta) = entry.get("override_delta") else {
+            continue;
+        };
+        let has_cap_override = delta.get("step_limit").is_some()
+            || delta.get("task_timeout_secs").is_some()
+            || delta.get("per_task_budget_usd").is_some()
+            || delta.get("sweep_cost_limit_usd").is_some();
+        if has_cap_override {
+            let retry_id = entry
+                .get("retry_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: retry '{retry_id}' changed cap parameters \
+                 (step_limit / task_timeout_secs / per_task_budget_usd / sweep_cost_limit_usd); \
+                 instances ran with different caps so at-cap counts and percentile \
+                 recommendations would be unreliable"
+            ))));
+        }
+    }
+    Ok(())
+}
+
 /// Map of instance_id → dominant action class, loaded from `behavior.json`.
 /// Returns empty map when file is absent or unreadable.
 fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
@@ -409,6 +498,7 @@ fn validate_filters(filters: &[String]) -> Result<(), Error> {
 fn apply_filter<'a>(
     instances: Vec<&'a InstanceResult>,
     filters: &[String],
+    eval_resolved: &HashMap<String, bool>,
 ) -> Vec<&'a InstanceResult> {
     if filters.is_empty() {
         return instances;
@@ -428,7 +518,11 @@ fn apply_filter<'a>(
                         // "true"/"false" validated in validate_filters; any other value
                         // is already rejected before we reach here.
                         let expected = val == "true";
-                        (instance_resolved_count(inst) > 0) == expected
+                        let is_resolved = eval_resolved
+                            .get(&inst.instance_id)
+                            .copied()
+                            .unwrap_or_else(|| instance_resolved_count(inst) > 0);
+                        is_resolved == expected
                     }
                     _ => true, // unknown filter keys pass through (not an error)
                 }
@@ -467,11 +561,15 @@ fn cap_failure_category(axis: &str) -> Option<FailureCategory> {
 }
 
 /// Determine which outcome bucket an instance belongs to for the given axis.
-fn outcome_bucket(inst: &InstanceResult, cap_cat: Option<FailureCategory>) -> &'static str {
-    // Use the project's legacy-safe helper: older results have runs==0 and
-    // resolved_count==0 even for successfully submitted rows; the helper
-    // falls back to outcome/failure_category inspection in that case.
-    if instance_resolved_count(inst) > 0 {
+///
+/// `is_resolved` should come from evaluation.json when present (authoritative),
+/// falling back to `instance_resolved_count(inst) > 0` from results.json.
+fn outcome_bucket(
+    inst: &InstanceResult,
+    cap_cat: Option<FailureCategory>,
+    is_resolved: bool,
+) -> &'static str {
+    if is_resolved {
         return BUCKET_RESOLVED;
     }
     if let (Some(c), Some(expected)) = (inst.failure_category, cap_cat) {
@@ -515,6 +613,7 @@ fn build_axis_report(
     configured_cap_source: Option<String>,
     instances: &[&InstanceResult],
     behavior_map: &BTreeMap<String, String>,
+    eval_resolved: &HashMap<String, bool>,
     at_cap_tolerance: f64,
     target_percentile: u8,
     round_unit: f64,
@@ -537,7 +636,11 @@ fn build_axis_report(
     let mut cap_bound_no_value_count: usize = 0;
 
     for inst in instances {
-        let bucket = outcome_bucket(inst, cap_cat);
+        let is_resolved = eval_resolved
+            .get(&inst.instance_id)
+            .copied()
+            .unwrap_or_else(|| instance_resolved_count(inst) > 0);
+        let bucket = outcome_bucket(inst, cap_cat, is_resolved);
         if let Some(v) = axis_value(inst, axis) {
             match bucket {
                 BUCKET_RESOLVED => resolved_values.push(v),
@@ -556,7 +659,7 @@ fn build_axis_report(
                 BUCKET_UNRESOLVED_OTHER => other_values.push(v),
                 _ => errored_values.push(v),
             }
-        } else if outcome_bucket(inst, cap_cat) == BUCKET_UNRESOLVED_CAP_BOUND {
+        } else if bucket == BUCKET_UNRESOLVED_CAP_BOUND {
             // Instance is cap-bound but this axis field is absent (legacy row).
             // Track it in count and cost but it has no value for percentile computation.
             cap_bound_no_value_count += 1;
