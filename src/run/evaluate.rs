@@ -8,6 +8,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::compare::{load_run_slots, load_sweep};
 use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};
 use crate::run::swebench::{self, InstanceResult, TokenBreakdown, effective_runs};
@@ -184,6 +185,11 @@ pub struct InstanceEvaluation {
     pub eval_log_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_stats: Option<PatchStats>,
+    /// Captured `git apply` stderr from the evaluator, present only when
+    /// `eval_exit_reason == "patch_apply_failed"`. Passes through the
+    /// secret-redactor before being persisted or printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_error_log: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -416,6 +422,13 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
     eval.model_mix_summary = build_model_mix_summary_from_slots(&run_slots, &resolved_by_run);
     eval.latency_summary = build_latency_summary_from_slots(&args.sweep_dir, &run_slots);
     eval.provenance = Some(provenance);
+    let redactor = Redactor::default_enabled();
+    for inst in &mut eval.instances {
+        inst.patch_error_log = inst
+            .patch_error_log
+            .as_ref()
+            .map(|log| redactor.redact_text(log, surface::EXPORT).text);
+    }
     let file = std::fs::File::create(evaluation_path(&args.sweep_dir))?;
     crate::artifact::to_writer_pretty(
         file,
@@ -911,6 +924,7 @@ fn none_eval_for_result(id: &str, r: &InstanceResult) -> InstanceEvaluation {
         },
         eval_log_path: None,
         patch_stats: None,
+        patch_error_log: None,
     }
 }
 
@@ -1118,6 +1132,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                             },
                             eval_log_path: None,
                             patch_stats: None,
+                            patch_error_log: None,
                         },
                     );
                 }
@@ -1136,6 +1151,7 @@ fn parse_sb_cli_results(path: &Path) -> Result<HashMap<String, InstanceEvaluatio
                                 eval_exit_reason: EvalExitReason::Resolved,
                                 eval_log_path: None,
                                 patch_stats: None,
+                                patch_error_log: None,
                             },
                         );
                     }
@@ -1185,6 +1201,13 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         .or_else(|| v.get("log_path"))
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
+    let patch_error_log = if matches!(eval_exit_reason, EvalExitReason::PatchApplyFailed) {
+        v.get("patch_error_log")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    } else {
+        None
+    };
     Some(InstanceEvaluation {
         instance_id: id,
         resolved,
@@ -1196,6 +1219,7 @@ fn parse_generic_eval_row(v: &serde_json::Value) -> Option<InstanceEvaluation> {
         eval_exit_reason,
         eval_log_path,
         patch_stats: None,
+        patch_error_log,
     })
 }
 
@@ -1237,6 +1261,7 @@ fn merge_with_results(
             },
             eval_log_path: None,
             patch_stats: None,
+            patch_error_log: None,
         });
     }
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -1450,6 +1475,7 @@ fn missing_eval_for_result(id: &str, result: &InstanceResult) -> InstanceEvaluat
         },
         eval_log_path: None,
         patch_stats: None,
+        patch_error_log: None,
     }
 }
 
@@ -2093,6 +2119,7 @@ mod tests {
             },
             eval_log_path: None,
             patch_stats: None,
+            patch_error_log: None,
         }
     }
 
@@ -2197,6 +2224,7 @@ mod tests {
                         eval_exit_reason: EvalExitReason::Unresolved,
                         eval_log_path: None,
                         patch_stats: None,
+                        patch_error_log: None,
                     },
                 )]),
             ),
@@ -2215,6 +2243,7 @@ mod tests {
                         eval_exit_reason: EvalExitReason::Resolved,
                         eval_log_path: None,
                         patch_stats: None,
+                        patch_error_log: None,
                     },
                 )]),
             ),
@@ -2256,6 +2285,7 @@ mod tests {
             eval_exit_reason: EvalExitReason::Unresolved,
             eval_log_path: None,
             patch_stats: None,
+            patch_error_log: None,
         }];
         let rows = build_breakdown(
             &evals,
@@ -3028,5 +3058,120 @@ mod tests {
         assert_eq!(instances, 1, "one instance should be elided");
         assert_eq!(bytes, 500, "should total 500 bytes elided");
         assert_eq!(compaction_failed, 1, "one compaction_failed instance");
+    }
+
+    #[test]
+    fn parse_generic_eval_row_extracts_patch_error_log_for_patch_apply_failed() {
+        let row = serde_json::json!({
+            "instance_id": "django__django-001",
+            "resolved": false,
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "patch_apply_failed",
+            "patch_error_log": "error: patch failed: myapp/models.py:42\nerror: myapp/models.py: patch does not apply"
+        });
+        let eval = parse_generic_eval_row(&row).unwrap();
+        assert!(matches!(
+            eval.eval_exit_reason,
+            EvalExitReason::PatchApplyFailed
+        ));
+        assert_eq!(
+            eval.patch_error_log.as_deref(),
+            Some(
+                "error: patch failed: myapp/models.py:42\nerror: myapp/models.py: patch does not apply"
+            )
+        );
+    }
+
+    #[test]
+    fn parse_generic_eval_row_omits_patch_error_log_for_other_reasons() {
+        let row = serde_json::json!({
+            "instance_id": "django__django-002",
+            "resolved": false,
+            "tests_passed": [],
+            "tests_failed": [],
+            "eval_exit_reason": "unresolved",
+            "patch_error_log": "this should be ignored"
+        });
+        let eval = parse_generic_eval_row(&row).unwrap();
+        assert!(matches!(eval.eval_exit_reason, EvalExitReason::Unresolved));
+        assert!(
+            eval.patch_error_log.is_none(),
+            "patch_error_log must be None for non-patch_apply_failed rows"
+        );
+    }
+
+    #[test]
+    fn instance_evaluation_patch_error_log_round_trips_through_json() {
+        let inst = eval_row("inst-patch-fail", false);
+        let inst = InstanceEvaluation {
+            eval_exit_reason: EvalExitReason::PatchApplyFailed,
+            patch_error_log: Some("error: patch failed: src/foo.py:10".into()),
+            ..inst
+        };
+        let json = serde_json::to_string(&inst).unwrap();
+        let back: InstanceEvaluation = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.patch_error_log.as_deref(),
+            Some("error: patch failed: src/foo.py:10")
+        );
+    }
+
+    #[test]
+    fn instance_evaluation_patch_error_log_is_skipped_when_none() {
+        let inst = eval_row("inst-resolved", true);
+        let json = serde_json::to_string(&inst).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.get("patch_error_log").is_none(),
+            "patch_error_log should be absent (not null) when None: {json}"
+        );
+    }
+
+    #[test]
+    fn parse_sb_cli_results_round_trips_patch_error_log_from_fixture() {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/evaluate/sb_cli_patch_apply_failed.json");
+        let parsed = parse_sb_cli_results(&fixture_path)
+            .unwrap_or_else(|e| panic!("failed to parse fixture: {e}"));
+
+        let patch_fail = parsed
+            .get("django__django-001")
+            .unwrap_or_else(|| panic!("fixture row django__django-001 should be present"));
+        assert!(matches!(
+            patch_fail.eval_exit_reason,
+            EvalExitReason::PatchApplyFailed
+        ));
+        assert_eq!(
+            patch_fail.patch_error_log.as_deref(),
+            Some(
+                "error: patch failed: django/db/models/query.py:42\nerror: django/db/models/query.py: patch does not apply"
+            ),
+            "patch_error_log should round-trip from sb-cli fixture"
+        );
+
+        let resolved = parsed
+            .get("django__django-002")
+            .unwrap_or_else(|| panic!("fixture row django__django-002 should be present"));
+        assert!(matches!(
+            resolved.eval_exit_reason,
+            EvalExitReason::Resolved
+        ));
+        assert!(
+            resolved.patch_error_log.is_none(),
+            "patch_error_log must be None for resolved rows"
+        );
+
+        let unresolved = parsed
+            .get("django__django-003")
+            .unwrap_or_else(|| panic!("fixture row django__django-003 should be present"));
+        assert!(matches!(
+            unresolved.eval_exit_reason,
+            EvalExitReason::Unresolved
+        ));
+        assert!(
+            unresolved.patch_error_log.is_none(),
+            "patch_error_log must be None for unresolved rows (not patch_apply_failed)"
+        );
     }
 }
