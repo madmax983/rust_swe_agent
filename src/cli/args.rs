@@ -1388,6 +1388,7 @@ pub struct EvaluatorSelftestCmd {
 
 /// `bench tool-ablation` — systematic per-tool removal ablation experiment.
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ToolAblationCmd {
     /// Path to the base config TOML. Tool list is read from `agent.tools`.
     #[arg(long)]

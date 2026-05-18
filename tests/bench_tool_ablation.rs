@@ -604,8 +604,8 @@ fn cli_render_only_json_outputs_schema_versioned_object() {
         "render-only --format json should succeed"
     );
     let stdout = String::from_utf8(result.stdout).unwrap();
-    let v: serde_json::Value =
-        serde_json::from_str(&stdout).expect("render-only json output must be valid JSON");
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("render-only json output must be valid JSON: {e}\n{stdout}"));
     assert_eq!(
         v["schema_version"], "tool-ablation-1.0",
         "schema version required: {v}"

@@ -393,7 +393,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         let steps: Vec<f64> = results
             .instances
             .iter()
-            .filter_map(|r| r.steps.map(|s| s as f64))
+            .filter_map(|r| r.steps.map(f64::from))
             .collect();
 
         let status = if results.sweep_status == SWEEP_STATUS_CANCELLED {
@@ -419,24 +419,26 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     }
 
     // Compute deltas relative to the baseline arm.
-    let (baseline_rate, baseline_cpr) = arm_results
-        .iter()
-        .find(|a| a.name == "baseline")
-        .map(|a| {
-            let rate = if a.total > 0 {
-                a.resolved as f64 / a.total as f64
-            } else {
-                0.0
-            };
-            let cpr = if a.resolved > 0 {
-                a.cost_usd / a.resolved as f64
-            } else {
-                0.0
-            };
-            (rate, cpr)
-        })
-        .unwrap_or((0.0, 0.0));
+    #[allow(clippy::cast_precision_loss)]
+    let (baseline_rate, baseline_cpr) =
+        arm_results
+            .iter()
+            .find(|a| a.name == "baseline")
+            .map_or((0.0, 0.0), |a| {
+                let rate = if a.total > 0 {
+                    a.resolved as f64 / a.total as f64
+                } else {
+                    0.0
+                };
+                let cpr = if a.resolved > 0 {
+                    a.cost_usd / a.resolved as f64
+                } else {
+                    0.0
+                };
+                (rate, cpr)
+            });
 
+    #[allow(clippy::cast_precision_loss)]
     for arm in &mut arm_results {
         let rate = if arm.total > 0 {
             arm.resolved as f64 / arm.total as f64
@@ -514,13 +516,17 @@ fn mean_f64(values: &[f64]) -> f64 {
     values.iter().sum::<f64>() / values.len() as f64
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 fn percentile_f64(values: &[f64], p: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    #[allow(clippy::cast_precision_loss)]
     let idx = ((sorted.len() as f64) * p).ceil() as usize;
     sorted[idx.min(sorted.len() - 1)]
 }
@@ -532,6 +538,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::many_single_char_names)]
 fn utc_now_iso8601() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -539,13 +546,13 @@ fn utc_now_iso8601() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     // Format as a basic ISO-8601 UTC string.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
+    let sec = secs % 60;
+    let min = (secs / 60) % 60;
+    let hour = (secs / 3600) % 24;
     let days = secs / 86400;
     // Approximate Gregorian date (good enough for artifact timestamps).
-    let (y, mo, d) = days_to_ymd(days);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
 fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
