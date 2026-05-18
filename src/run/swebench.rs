@@ -4565,24 +4565,29 @@ fn parse_instance_ids_arg(instance_ids_arg: Option<&str>) -> Result<Option<Vec<S
     let Some(raw) = instance_ids_arg.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let text = if let Some(path) = raw.strip_prefix('@') {
-        std::fs::read_to_string(path).map_err(|e| {
+    // File content uses line-only splitting so that instance IDs that contain
+    // a literal comma are preserved intact.  Inline text keeps the historical
+    // comma-or-newline splitting for convenience.
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(path) = raw.strip_prefix('@') {
+        let text = std::fs::read_to_string(path).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "failed to read --instance-ids file `{path}`: {e}"
             )))
-        })?
-    } else {
-        raw.to_owned()
-    };
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for part in text.split([',', '\n']) {
-        let id = part.trim();
-        if id.is_empty() {
-            continue;
+        })?;
+        for id in text.lines() {
+            let id = id.trim();
+            if !id.is_empty() && seen.insert(id.to_owned()) {
+                ids.push(id.to_owned());
+            }
         }
-        if seen.insert(id.to_owned()) {
-            ids.push(id.to_owned());
+    } else {
+        for part in raw.split([',', '\n']) {
+            let id = part.trim();
+            if !id.is_empty() && seen.insert(id.to_owned()) {
+                ids.push(id.to_owned());
+            }
         }
     }
     if ids.is_empty() {

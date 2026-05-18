@@ -361,12 +361,6 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         )));
     }
 
-    // The swebench instance-id parser splits on both ',' and '\n', so joining
-    // with newlines is safe even for IDs that contain a literal comma
-    // (possible in local JSONL datasets).  Comma-joining would split such IDs
-    // into multiple unknown fragments, silently producing wrong selections.
-    let mut instance_ids_csv = instance_ids.join("\n");
-
     std::fs::create_dir_all(&args.output_dir)?;
     let report_path = args.output_dir.join("tool-ablation.json");
 
@@ -454,7 +448,6 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                              using prior list to maintain arm consistency"
                         );
                         instance_ids.clone_from(&prior.instance_ids);
-                        instance_ids_csv = instance_ids.join("\n");
                     }
                     for (idx, planned) in arm_plan.iter().enumerate() {
                         if let Some(prior_arm) = prior.arms.iter().find(|a| a.name == planned.name)
@@ -543,18 +536,23 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
             let arm_cfg = build_arm_config(&base_cfg, &planned);
             let arm_dir = args.output_dir.join(&planned.name);
             std::fs::create_dir_all(&arm_dir)?;
+            // Write selected IDs one per line so the child sweep can reload
+            // them without re-splitting on commas.  IDs that contain a literal
+            // comma (possible in local JSONL datasets) are preserved intact.
+            let ids_file = arm_dir.join("instance_ids.txt");
+            std::fs::write(&ids_file, instance_ids.join("\n"))?;
+            let ids_arg = format!("@{}", ids_file.display());
             // Pass the *remaining* budget so the underlying sweep can also halt
             // at the shared ceiling rather than only being stopped between arms.
             let remaining = args
                 .sweep_cost_limit_usd
                 .map(|l| (l - cumulative_cost).max(0.0));
-            let ids_csv = instance_ids_csv.clone();
             let ctx = arm_ctx.clone();
 
             join_set.spawn(async move {
                 (
                     i,
-                    run_arm_ablation(arm_cfg, arm_dir, ids_csv, remaining, ctx).await,
+                    run_arm_ablation(arm_cfg, arm_dir, ids_arg, remaining, ctx).await,
                 )
             });
         }
@@ -573,7 +571,13 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
             }
             Some(Ok((_, Err(e)))) => return Err(e),
             Some(Ok((arm_idx, Ok(results)))) => {
-                cumulative_cost += results.estimated_cost_usd;
+                // Prefer actual provider cost when available so the shared
+                // budget ceiling is enforced against real spend rather than
+                // pre-run estimates, which can be lower when providers bill
+                // more than the model predicts.
+                cumulative_cost += results
+                    .actual_cost_total_usd()
+                    .unwrap_or(results.estimated_cost_usd);
 
                 // Systemic halt is a harness failure (bad environment, broken
                 // API key, Docker misconfiguration).  Stop launching new arms
@@ -759,7 +763,7 @@ struct AblationRunCtx {
 async fn run_arm_ablation(
     arm_cfg: Config,
     arm_dir: PathBuf,
-    instance_ids_csv: String,
+    ids_arg: String,
     cost_limit_usd: Option<f64>,
     ctx: AblationRunCtx,
 ) -> Result<SweepResults, Error> {
@@ -773,7 +777,7 @@ async fn run_arm_ablation(
         resume: ctx.resume,
         cost_limit_usd,
         task_timeout_secs: None,
-        instance_ids: Some(instance_ids_csv),
+        instance_ids: Some(ids_arg),
         limit: None,
         sample: None,
         seed: None,

@@ -1982,6 +1982,21 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
             t.include_pair_ablation,
         );
 
+        // Reject duplicate arm names now so --render-only previews the same
+        // validity constraints as a real run (pair collisions such as
+        // `(a, b__c)` and `(a__b, c)` both produce the name `pair_a__b__c`).
+        {
+            let mut seen = std::collections::HashSet::new();
+            for arm in &arm_plan {
+                if !seen.insert(arm.name.as_str()) {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "ambiguous arm name `{}`; rename conflicting tools to avoid collision",
+                        arm.name
+                    ))));
+                }
+            }
+        }
+
         if t.include_pair_ablation {
             let pair_count = arm_plan.iter().filter(|a| a.ablated_pair.is_some()).count();
             eprintln!(
