@@ -393,8 +393,21 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     let mut cumulative_cost = 0.0f64;
     let mut effective_resume = args.resume;
     if args.resume && report_path.exists() {
-        if let Ok(text) = std::fs::read_to_string(&report_path) {
-            if let Ok(prior) = serde_json::from_str::<ToolAblationReport>(&text) {
+        match std::fs::read_to_string(&report_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<ToolAblationReport>(&text).ok())
+        {
+            None => {
+                // The report file exists but cannot be read or parsed.  Fall
+                // back to a fresh run so we do not reuse trajectory files that
+                // were produced under unknown (potentially corrupt) inputs.
+                tracing::warn!(
+                    "resume: tool-ablation.json exists but could not be read or parsed; \
+                     ignoring prior results and disabling arm resume"
+                );
+                effective_resume = false;
+            }
+            Some(prior) => {
                 // Reject prior results when the config path or its content changed.
                 let config_ok = prior.config_path == current_config_path
                     && (prior.config_sha256.is_empty() || prior.config_sha256 == config_sha256);
@@ -471,7 +484,15 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         // With a budget cap, launch one new arm per cycle so `cumulative_cost`
         // is updated between launches and the ceiling cannot be overrun by more
         // than one arm's spend.
-        let fill_limit = if args.sweep_cost_limit_usd.is_some() {
+        //
+        // When per-arm rate limits (max_rpm / max_input_tpm) are configured,
+        // each arm creates its own governor.  Running arms in parallel would
+        // multiply the effective rate by the concurrency factor, defeating the
+        // limit.  Cap to 1 so at most one arm runs at a time in that case.
+        let fill_limit = if args.sweep_cost_limit_usd.is_some()
+            || arm_ctx.max_rpm.is_some()
+            || arm_ctx.max_input_tpm.is_some()
+        {
             join_set.len().saturating_add(1)
         } else {
             args.matrix_parallelism

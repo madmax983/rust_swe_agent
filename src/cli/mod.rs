@@ -1944,10 +1944,38 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         }
     };
 
+    // --format json without --render-only would start a paid run and silently
+    // ignore the format flag (the run output is always text).  Catch it early.
+    if is_json_format && !t.render_only {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--format json is only valid with --render-only; \
+             omit --format or add --render-only"
+                .into(),
+        )));
+    }
+
     // render-only only needs the config; dataset is not required.
     if t.render_only {
         let cfg = crate::config::Config::load(&t.config).map_err(Error::Config)?;
         let all_tools = crate::run::tool_ablation::enumerate_tools(&cfg);
+
+        // Validate --ablate names up front so render-only rejects unknown names
+        // the same way a real run would, rather than silently dropping them.
+        if !t.ablate.is_empty() {
+            let unknown: Vec<&str> = t
+                .ablate
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !all_tools.iter().any(|t| t == *name))
+                .collect();
+            if !unknown.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "tool-ablation: unknown tool name(s) in --ablate: {}",
+                    unknown.join(", ")
+                ))));
+            }
+        }
+
         let arm_plan = crate::run::tool_ablation::generate_arm_plan(
             &all_tools,
             &t.ablate,
