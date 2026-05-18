@@ -434,51 +434,46 @@ fn build_per_instance(forecast: &ForecastReport, actual: &SweepResults) -> PerIn
         input_tokens: DistributionCalibration::new(
             forecast.per_instance.input_tokens,
             quantiles(
-                &actual
+                actual
                     .instances
                     .iter()
-                    .map(|row| row.prompt_tokens.map_or(0.0, as_f64_u64))
-                    .collect::<Vec<_>>(),
+                    .map(|row| row.prompt_tokens.map_or(0.0, as_f64_u64)),
             ),
         ),
         output_tokens: DistributionCalibration::new(
             forecast.per_instance.output_tokens,
             quantiles(
-                &actual
+                actual
                     .instances
                     .iter()
-                    .map(|row| row.completion_tokens.map_or(0.0, as_f64_u64))
-                    .collect::<Vec<_>>(),
+                    .map(|row| row.completion_tokens.map_or(0.0, as_f64_u64)),
             ),
         ),
         usd_cost: DistributionCalibration::new(
             forecast.per_instance.usd_cost,
             quantiles(
-                &actual
+                actual
                     .instances
                     .iter()
-                    .map(|row| row.effective_cost_usd(model_name).unwrap_or_default())
-                    .collect::<Vec<_>>(),
+                    .map(|row| row.effective_cost_usd(model_name).unwrap_or_default()),
             ),
         ),
         step_count: DistributionCalibration::new(
             forecast.per_instance.step_count,
             quantiles(
-                &actual
+                actual
                     .instances
                     .iter()
-                    .map(|row| row.steps.map_or(0.0, f64::from))
-                    .collect::<Vec<_>>(),
+                    .map(|row| row.steps.map_or(0.0, f64::from)),
             ),
         ),
         wall_clock_seconds: DistributionCalibration::new(
             forecast.per_instance.wall_clock_seconds,
             quantiles(
-                &actual
+                actual
                     .instances
                     .iter()
-                    .map(|row| row.duration_secs.unwrap_or_default())
-                    .collect::<Vec<_>>(),
+                    .map(|row| row.duration_secs.unwrap_or_default()),
             ),
         ),
     }
@@ -749,15 +744,15 @@ fn manifest_wall_clock_seconds(manifest: Option<&ProvenanceManifest>) -> Option<
     }
 }
 
-fn quantiles(values: &[f64]) -> QuantileSummary {
-    if values.is_empty() {
+fn quantiles(values: impl Iterator<Item = f64>) -> QuantileSummary {
+    let mut sorted: Vec<f64> = values.collect();
+    if sorted.is_empty() {
         return QuantileSummary {
             p10: 0.0,
             median: 0.0,
             p90: 0.0,
         };
     }
-    let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
     QuantileSummary {
         p10: quantile_sorted(&sorted, 0.10),
