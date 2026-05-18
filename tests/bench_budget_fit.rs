@@ -1637,9 +1637,12 @@ fn stale_evaluation_after_retry_is_rejected() {
     std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
 
     // Write evaluation.json that predates the retry (stale).
+    // Legacy format (no artifact_kind/schema_version header) accepted by load_evaluation_results.
     let eval_json = serde_json::json!({
-        "sweep": dir.path().to_string_lossy(),
-        "generated_at": "2026-05-01T00:05:00Z",
+        "provenance": {
+            "backend": "sb-cli",
+            "eval_ended_at": "2026-05-01T00:05:00Z"
+        },
         "instances": [
             { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
             { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
@@ -2549,9 +2552,12 @@ fn fresh_evaluation_after_retry_is_accepted() {
     std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
 
     // evaluation.json generated AFTER the retry — this is a fresh eval.
+    // Legacy format (no artifact_kind/schema_version header) accepted by load_evaluation_results.
     let eval_json = serde_json::json!({
-        "sweep": dir.path().to_string_lossy(),
-        "generated_at": "2026-05-01T00:10:00Z",
+        "provenance": {
+            "backend": "sb-cli",
+            "eval_ended_at": "2026-05-01T00:10:00Z"
+        },
         "instances": [
             { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
             { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
@@ -2941,11 +2947,14 @@ fn unparseable_retry_timestamp_treats_eval_as_stale() {
     ]);
     std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
 
-    // evaluation.json generated_at is after the parseable retry — but the
-    // unparseable entry should still make eval_is_fresh_after_retry return false.
+    // eval_ended_at is after the parseable retry — but the unparseable entry
+    // should still make eval_is_fresh_after_retry return false.
+    // Legacy format (no artifact_kind/schema_version header) accepted by load_evaluation_results.
     let eval_json = serde_json::json!({
-        "sweep": dir.path().to_string_lossy(),
-        "generated_at": "2026-05-01T00:10:00Z",
+        "provenance": {
+            "backend": "sb-cli",
+            "eval_ended_at": "2026-05-01T00:10:00Z"
+        },
         "instances": [
             { "instance_id": "inst-0", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },
             { "instance_id": "inst-1", "resolved_count": 1, "resolved": true, "tests_failed": [], "eval_exit_reason": "resolved" },

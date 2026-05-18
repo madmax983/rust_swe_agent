@@ -659,11 +659,19 @@ fn extract_argv_value(argv: &[String], flag: &str) -> Option<String> {
 ///
 /// Returns `false` conservatively when either timestamp cannot be parsed (so the
 /// caller treats the evaluation as potentially stale).
+/// Return `true` when `evaluation.json.provenance.eval_ended_at` is strictly
+/// later than the latest `timestamp_utc` in `results.json`'s `retry_history`.
+///
+/// `EvaluationResults` is serialized via `artifact::to_writer_pretty` which
+/// adds only `artifact_kind`/`schema_version` at the top level — there is no
+/// `generated_at` field; the evaluation completion time is at
+/// `provenance.eval_ended_at`.  Returns `false` conservatively when any
+/// timestamp cannot be parsed or the provenance field is absent.
 fn eval_is_fresh_after_retry(sweep_dir: &Path) -> bool {
     (|| -> Option<bool> {
         let eval_text = std::fs::read_to_string(sweep_dir.join("evaluation.json")).ok()?;
         let eval_val: serde_json::Value = serde_json::from_str(&eval_text).ok()?;
-        let eval_ts = eval_val.get("generated_at")?.as_str()?;
+        let eval_ts = eval_val.get("provenance")?.get("eval_ended_at")?.as_str()?;
         let eval_time = chrono::DateTime::parse_from_rfc3339(eval_ts).ok()?;
 
         let results_text = std::fs::read_to_string(sweep_dir.join("results.json")).ok()?;
