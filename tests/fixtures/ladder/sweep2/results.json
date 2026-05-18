@@ -1,0 +1,50 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": { "major": 1, "minor": 8 },
+  "total": 4,
+  "sweep_status": "completed",
+  "submitted": 3,
+  "skipped": 0,
+  "errored": 1,
+  "total_cost_usd": 0.10,
+  "pass_at_k": 0.75,
+  "instances": [
+    { "instance_id": "inst-a", "exit_reason": "submitted", "steps": 4, "cost_usd": 0.025, "runs": 1, "resolved_count": 1, "pass_at_1": true },
+    { "instance_id": "inst-b", "exit_reason": "submitted", "steps": 4, "cost_usd": 0.025, "runs": 1, "resolved_count": 1, "pass_at_1": true },
+    { "instance_id": "inst-c", "exit_reason": "submitted", "steps": 4, "cost_usd": 0.025, "runs": 1, "resolved_count": 1, "pass_at_1": true },
+    { "instance_id": "inst-d", "exit_reason": "error", "steps": 4, "cost_usd": 0.025, "runs": 1, "resolved_count": 0, "pass_at_1": false }
+  ],
+  "manifest": {
+    "harness": {
+      "name": "maxwells-daemon",
+      "version": "0.1.0",
+      "git_sha": null,
+      "git_dirty": null,
+      "git_resolution": "test"
+    },
+    "dataset": {
+      "path": "swebench-lite.jsonl",
+      "sha256": "aaa000000000000000000000000000000000000000000000000000000000000000",
+      "instance_count": 4,
+      "alias": "lite"
+    },
+    "prompt_template": {
+      "source": "inline",
+      "sha256": "aaaa123400000000000000000000000000000000000000000000000000000000"
+    },
+    "config": {
+      "resolved": "{}"
+    },
+    "model": {
+      "name": "model-a",
+      "backend": "litellm"
+    },
+    "runtime": {
+      "started_at_utc": "2026-04-29T00:00:00Z",
+      "host_os": "linux"
+    },
+    "cli": {
+      "argv": []
+    }
+  }
+}
