@@ -658,11 +658,23 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         .unwrap_or(cli_default_step_limit);
     let orig_timeout: Option<f64> =
         argv_f64("--task-timeout-secs").or_else(|| toml_f64("task_timeout_secs"));
+    // per_task_budget_usd and cost_limit_usd are mutually exclusive per-instance cost
+    // caps (mixed use is already rejected earlier in compute_budget_fit).  Track both
+    // here so that a retry that omits the cost cap is caught regardless of which key
+    // the original manifest used.
     let orig_budget: Option<f64> =
         argv_f64("--per-task-budget-usd").or_else(|| toml_f64("per_task_budget_usd"));
+    let orig_cost_limit: Option<f64> = toml_f64("cost_limit_usd");
+    let orig_has_cost_cap = orig_budget.is_some() || orig_cost_limit.is_some();
+
+    // Original model name (from manifest.model.name).
+    let orig_model: Option<&str> = val
+        .get("manifest")
+        .and_then(|m| m.get("model"))
+        .and_then(|m| m.get("name"))
+        .and_then(|v| v.as_str());
 
     let orig_has_timeout = argv_has("--task-timeout-secs");
-    let orig_has_budget = argv_has("--per-task-budget-usd");
 
     for entry in history {
         let Some(delta) = entry.get("override_delta") else {
@@ -688,7 +700,11 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         // A model change affects cost behavior and per-instance success rates; the
         // mixed-model population would yield unreliable mean_cost_per_unit estimates
         // and percentile recommendations derived from a heterogeneous set.
-        let has_model_change = delta.get("model").is_some();
+        // Only flag when the recorded model value actually differs from the original.
+        let has_model_change = delta
+            .get("model")
+            .and_then(|v| v.as_str())
+            .is_some_and(|m| orig_model.is_none_or(|orig| m != orig));
         // Config overlay paths — not currently stored in OverrideDelta (bench retry
         // records only explicit CLI flags), but check the raw JSON so that if the
         // schema is extended in future to record --config overlays, they are caught.
@@ -707,10 +723,13 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         let silent_step = argv_has("--step-limit")
             && delta.get("step_limit").is_none()
             && (orig_step_limit - cli_default_step_limit).abs() > 0.5;
-        // task_timeout_secs and per_task_budget_usd default to None; any omission
-        // when they were present in the original argv is a real cap removal.
+        // task_timeout_secs defaults to None; any omission when present is a real removal.
         let silent_timeout = orig_has_timeout && delta.get("task_timeout_secs").is_none();
-        let silent_budget = orig_has_budget && delta.get("per_task_budget_usd").is_none();
+        // per-task cost caps (per_task_budget_usd / cost_limit_usd) can come from argv
+        // OR from manifest.config.resolved TOML.  A retry without --per-task-budget-usd
+        // in override_delta uses Config::defaults(), which has no cost cap; detect this
+        // regardless of whether the original cap was argv- or config-sourced.
+        let silent_budget = orig_has_cost_cap && delta.get("per_task_budget_usd").is_none();
 
         if has_cap_field
             || has_model_change

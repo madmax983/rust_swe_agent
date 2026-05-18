@@ -2026,3 +2026,155 @@ fn retry_omitting_default_step_limit_is_accepted() {
         result.unwrap_err()
     );
 }
+
+// ── config-sourced per-task budget missing from retry is rejected ─────────────
+//
+// When the original sweep's per-task budget cap came from manifest.config.resolved
+// TOML (not from --per-task-budget-usd in argv) and the retry omits both --config
+// and --per-task-budget-usd, Config::defaults() has no cost cap.  Budget-fit must
+// reject this as a silent reset regardless of whether the cap was argv- or
+// config-sourced.
+
+#[test]
+fn config_sourced_per_task_budget_silent_reset_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+
+    // Manifest: NO --per-task-budget-usd in argv; cap comes from resolved TOML only.
+    let manifest = ProvenanceManifest {
+        purpose: None,
+        harness: HarnessManifest {
+            name: "maxwells-daemon".into(),
+            version: "0.1.0-test".into(),
+            git_sha: Some("deadbeef".into()),
+            git_dirty: Some(false),
+            git_resolution: "exact".into(),
+        },
+        dataset: DatasetManifest {
+            path: "tests/fixtures/test.jsonl".into(),
+            sha256: "abc123".into(),
+            instance_count: 3,
+            filter_spec: None,
+            ..Default::default()
+        },
+        prompt_template: PromptTemplateManifest {
+            source: "inline".into(),
+            path: None,
+            sha256: "tpl123".into(),
+        },
+        config: ConfigManifest {
+            resolved: "[agent]\nper_task_budget_usd = 0.10\n".into(),
+            overlay_paths: Vec::new(),
+        },
+        model: ModelManifest {
+            name: "claude-opus-4-7".into(),
+            backend: "litellm".into(),
+            backend_version: None,
+            base_url: None,
+        },
+        runtime: RuntimeManifest {
+            started_at_utc: "2026-05-01T00:00:00Z".into(),
+            finished_at_utc: Some("2026-05-01T00:10:00Z".into()),
+            host_os: "linux".into(),
+            resume_mode: false,
+            rust_version: Some("rustc 1.85.0".into()),
+        },
+        cli: CliManifest {
+            // No --per-task-budget-usd in argv; cap comes from the config overlay.
+            argv: vec!["max".into(), "bench".into(), "swebench".into()],
+        },
+        circuit_breaker: None,
+        reproduced_from: None,
+    };
+    write_results(dir.path(), instances, manifest);
+
+    // Retry omits per_task_budget_usd from override_delta.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-no-budget",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_err(),
+        "retry that drops a config-sourced per_task_budget_usd should be rejected"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("reset") || msg.contains("caps") || msg.contains("retry"),
+        "error should mention the implicit cap reset: {msg}"
+    );
+}
+
+// ── retry that re-states the same model is accepted ──────────────────────────
+//
+// When an operator explicitly passes --model X to bench retry and X is the same
+// model the original sweep used, override_delta records a model field but the
+// population is not mixed-model.  Budget-fit must accept this.
+
+#[test]
+fn retry_restating_same_model_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    // Original model: claude-opus-4-7 (matches make_manifest default).
+    write_results(dir.path(), instances, make_manifest(None, None));
+
+    // Retry explicitly re-states the same model.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-same-model",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "model": "claude-opus-4-7" },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "retry that re-states the same model should be accepted; got: {:?}",
+        result.unwrap_err()
+    );
+}
