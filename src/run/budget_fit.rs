@@ -216,6 +216,22 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         )));
     }
 
+    // Reject sweeps with multi-attempt instances (attempts > 1). run_one accumulates
+    // cost_usd across all API-retry attempts inside a single run while steps and
+    // duration_secs come from the terminal attempt only. Comparing that aggregate
+    // cost against a per-instance cap that was defined for a single attempt inflates
+    // cost percentiles and misidentifies the cap-bound boundary.
+    if instances.iter().any(|inst| inst.attempts > 1) {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: one or more instances used multiple attempts (attempts > 1); \
+             cost_usd is summed across all API-retry attempts while steps and \
+             duration_secs reflect only the terminal attempt, which corrupts \
+             cost percentile analysis; re-run without --max-retries or disable \
+             within-run retries before using budget-fit"
+                .into(),
+        )));
+    }
+
     // Behavior enrichment: present but malformed is an error (not a silent fallback).
     // Only the missing-file case proceeds as if behavior enrichment were absent.
     // A behavior.json produced by a fresh `bench behavior --per-instance` run after a
@@ -675,6 +691,49 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         .and_then(|v| v.as_str());
 
     let orig_has_timeout = argv_has("--task-timeout-secs");
+
+    // If the original sweep used config overlays, any retry may have run without them
+    // (retry_swebench_args starts from Config::defaults() when --config is not passed
+    // and OverrideDelta does not record config file usage).  We cannot verify the
+    // overlays were preserved, so reject any retry history when overlays were present.
+    let orig_overlay_paths_nonempty = val
+        .get("manifest")
+        .and_then(|m| m.get("config"))
+        .and_then(|c| c.get("overlay_paths"))
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty());
+    if orig_overlay_paths_nonempty {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: original sweep used config overlays (manifest.config.overlay_paths \
+             is non-empty) but OverrideDelta does not record whether the retry preserved \
+             them; retried rows may have run with different prompts or agent settings, \
+             making percentile distributions from the merged population unreliable"
+                .into(),
+        )));
+    }
+
+    // If the original sweep ran in a non-default environment (docker), any retry
+    // may have run in a different environment because --env/--docker-image overrides
+    // are applied by retry_swebench_args but not recorded in OverrideDelta.  A mixed
+    // local/docker population yields incomparable wall-clock distributions.
+    let orig_env_nondefault = resolved_toml
+        .as_ref()
+        .and_then(|tv| tv.get("environment"))
+        .is_some_and(|env| {
+            env.get("kind")
+                .and_then(|k| k.as_str())
+                .is_some_and(|k| k != "local")
+                || env.get("docker_image").is_some()
+        });
+    if orig_env_nondefault {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "budget-fit: original sweep used a non-default environment (docker) but \
+             --env/--docker-image overrides are not recorded in OverrideDelta; retried \
+             rows may have run in a different environment, making wall-clock and \
+             cap-bound distributions from the merged population unreliable"
+                .into(),
+        )));
+    }
 
     for entry in history {
         let Some(delta) = entry.get("override_delta") else {
