@@ -590,6 +590,12 @@ fn read_sweep_status(sweep_dir: &Path) -> Option<String> {
 /// sweep configured a cap (step_limit / task_timeout_secs / per_task_budget_usd) via
 /// argv but the retry omits that field from `override_delta`, the retried rows run at
 /// the CLI default rather than the original cap — a silent mixed-cap situation.
+///
+/// Both directions are value-compared against the original resolved caps so that
+/// retries that explicitly preserve the same cap (delta value == original) are
+/// accepted, and originals that used the CLI default (step_limit = 50) are not
+/// incorrectly flagged when the retry omits the flag.
+#[allow(clippy::too_many_lines)]
 fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
     let path = sweep_dir.join("results.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -602,9 +608,6 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         return Ok(());
     };
 
-    // Determine which per-instance caps the original manifest explicitly configured
-    // via CLI argv.  Absent fields used CLI defaults; a retry that omits the same
-    // field also uses CLI defaults — which differ from the original cap value.
     let orig_argv: Vec<&str> = val
         .get("manifest")
         .and_then(|m| m.get("cli"))
@@ -612,12 +615,52 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         .and_then(|a| a.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
+
+    // Extract a numeric value for a flag from orig_argv (both "--flag N" and "--flag=N").
+    let argv_f64 = |flag: &str| -> Option<f64> {
+        let prefix = format!("{flag}=");
+        for i in 0..orig_argv.len() {
+            if orig_argv[i] == flag {
+                return orig_argv.get(i + 1).and_then(|v| v.parse::<f64>().ok());
+            }
+            if let Some(v) = orig_argv[i].strip_prefix(prefix.as_str()) {
+                return v.parse::<f64>().ok();
+            }
+        }
+        None
+    };
     let argv_has = |flag: &str| -> bool {
         let prefix = format!("{flag}=");
         orig_argv.windows(2).any(|w| w[0] == flag)
             || orig_argv.iter().any(|a| a.starts_with(prefix.as_str()))
     };
-    let orig_has_step = argv_has("--step-limit");
+
+    // Parse resolved TOML once so cap values not set via argv can still be compared.
+    let resolved_toml: Option<toml::Value> = val
+        .get("manifest")
+        .and_then(|m| m.get("config"))
+        .and_then(|c| c.get("resolved"))
+        .and_then(|r| r.as_str())
+        .and_then(|s| s.parse::<toml::Value>().ok());
+    let toml_f64 = |key: &str| -> Option<f64> {
+        resolved_toml
+            .as_ref()?
+            .get("agent")?
+            .get(key)
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
+    };
+
+    // Effective original cap values (argv takes precedence over TOML; step_limit
+    // falls back to the CLI default of 50 when absent from both).
+    let cli_default_step_limit: f64 = 50.0;
+    let orig_step_limit: f64 = argv_f64("--step-limit")
+        .or_else(|| toml_f64("step_limit"))
+        .unwrap_or(cli_default_step_limit);
+    let orig_timeout: Option<f64> =
+        argv_f64("--task-timeout-secs").or_else(|| toml_f64("task_timeout_secs"));
+    let orig_budget: Option<f64> =
+        argv_f64("--per-task-budget-usd").or_else(|| toml_f64("per_task_budget_usd"));
+
     let orig_has_timeout = argv_has("--task-timeout-secs");
     let orig_has_budget = argv_has("--per-task-budget-usd");
 
@@ -625,13 +668,23 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         let Some(delta) = entry.get("override_delta") else {
             continue;
         };
-        // Explicit per-instance cap overrides (recorded in OverrideDelta).
-        // sweep_cost_limit_usd is intentionally excluded: it controls whether
-        // additional tasks may be dispatched but is not a per-instance cap analyzed
-        // by budget-fit; changing it in a retry does not affect cap percentiles.
-        let has_cap_field = delta.get("step_limit").is_some()
-            || delta.get("task_timeout_secs").is_some()
-            || delta.get("per_task_budget_usd").is_some();
+        // Explicit per-instance cap overrides: only flag when the delta value actually
+        // differs from what the original instances used.  A retry that explicitly
+        // re-states the same cap (e.g. step_limit=30 when original was 30) is fine.
+        // sweep_cost_limit_usd is intentionally excluded: it is not a per-instance cap.
+        let cap_step_changed = delta
+            .get("step_limit")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|v| (v - orig_step_limit).abs() > 0.5);
+        let cap_timeout_changed = delta
+            .get("task_timeout_secs")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|v| orig_timeout.is_none_or(|orig| (v - orig).abs() > 0.5));
+        let cap_budget_changed = delta
+            .get("per_task_budget_usd")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|v| orig_budget.is_none_or(|orig| (v - orig).abs() > 1e-9));
+        let has_cap_field = cap_step_changed || cap_timeout_changed || cap_budget_changed;
         // A model change affects cost behavior and per-instance success rates; the
         // mixed-model population would yield unreliable mean_cost_per_unit estimates
         // and percentile recommendations derived from a heterogeneous set.
@@ -639,16 +692,23 @@ fn check_retry_cap_overrides(sweep_dir: &Path) -> Result<(), Error> {
         // Config overlay paths — not currently stored in OverrideDelta (bench retry
         // records only explicit CLI flags), but check the raw JSON so that if the
         // schema is extended in future to record --config overlays, they are caught.
-        // Note: config-based cap changes via --config that are NOT reflected in
-        // override_delta cannot be detected from the current results.json schema.
         let has_config_overlay = delta
             .get("config_overlay_paths")
             .and_then(|v| v.as_array())
             .is_some_and(|arr| !arr.is_empty());
 
-        // Silent cap reset: the original had a non-default cap in argv but the retry
-        // omits it from override_delta → retry_swebench_args rebuilds at CLI default.
-        let silent_step = orig_has_step && delta.get("step_limit").is_none();
+        // Silent cap reset: the original explicitly configured a cap in argv that
+        // differs from the CLI/config default, but the retry omits it from
+        // override_delta → retry_swebench_args rebuilds at the CLI default instead.
+        //
+        // step_limit has a non-None CLI default (50).  When the original used
+        // --step-limit 50 (== the default), omitting it from override_delta is
+        // harmless: retry_swebench_args also lands on 50 via Config::defaults().
+        let silent_step = argv_has("--step-limit")
+            && delta.get("step_limit").is_none()
+            && (orig_step_limit - cli_default_step_limit).abs() > 0.5;
+        // task_timeout_secs and per_task_budget_usd default to None; any omission
+        // when they were present in the original argv is a real cap removal.
         let silent_timeout = orig_has_timeout && delta.get("task_timeout_secs").is_none();
         let silent_budget = orig_has_budget && delta.get("per_task_budget_usd").is_none();
 

@@ -1926,3 +1926,103 @@ fn well_sized_cap_rationale_appears_in_headline() {
         "headline should include the well-sized rationale: {headline}"
     );
 }
+
+// ── retry with same cap value in override_delta is accepted ──────────────────
+//
+// When an operator passes --step-limit 30 to bench retry (same as the original),
+// bench retry records step_limit=30 in override_delta.  The presence of the field
+// should not be treated as a cap change since the value is identical.
+
+#[test]
+fn retry_preserving_same_step_limit_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    // Original has --step-limit 30.
+    write_results(dir.path(), instances, make_manifest(Some(30), None));
+
+    // Retry explicitly re-states the same step_limit (30 == original).
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-same-cap",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "step_limit": 30 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "retry that re-states the same step_limit value should be accepted; got: {:?}",
+        result.unwrap_err()
+    );
+}
+
+// ── retry omitting CLI-default step-limit is accepted ────────────────────────
+//
+// When the original sweep used --step-limit 50 (= CLI default) and a retry omits
+// step_limit from override_delta, retry_swebench_args rebuilds at Config::defaults()
+// which also resolves to 50.  No actual cap change occurred.
+
+#[test]
+fn retry_omitting_default_step_limit_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let instances: Vec<InstanceResult> = (0..3)
+        .map(|i| resolved_instance(&format!("inst-{i}"), 10, 0.05, 20.0))
+        .collect();
+    // Original has --step-limit 50 (the CLI default).
+    write_results(dir.path(), instances, make_manifest(Some(50), None));
+
+    // Retry only changes sweep_cost_limit_usd; step_limit absent from delta.
+    let results_path = dir.path().join("results.json");
+    let text = std::fs::read_to_string(&results_path).unwrap();
+    let mut val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    val["retry_history"] = serde_json::json!([{
+        "retry_id": "retry-default-cap",
+        "timestamp_utc": "2026-05-01T00:05:00Z",
+        "selection": {},
+        "override_delta": { "sweep_cost_limit_usd": 30.0 },
+        "count": 1,
+        "harness_mismatch": false,
+        "pre_submitted": 3,
+        "pre_errored": 0,
+        "pre_resolved_count": 3,
+        "post_submitted": 3,
+        "post_errored": 0,
+        "post_resolved_count": 3
+    }]);
+    std::fs::write(&results_path, serde_json::to_string_pretty(&val).unwrap()).unwrap();
+
+    let result = compute_budget_fit(&BudgetFitArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        at_cap_tolerance: 0.05,
+        target_percentile: 95,
+        axis: None,
+        filter: vec![],
+    });
+
+    assert!(
+        result.is_ok(),
+        "retry omitting --step-limit when original used the CLI default (50) should be accepted; got: {:?}",
+        result.unwrap_err()
+    );
+}
