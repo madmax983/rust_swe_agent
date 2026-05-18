@@ -23,3 +23,30 @@ Success = Mid-run resumption re-uses >90% of previously successful steps after a
 ## 🕳️ Gap Analysis
 - **SWE-agent**: Supports resuming from trajectory checkpoints.
 - **maxwells-daemon today**: Has a `--resume` flag, but it only looks for completed tasks (`resume-skip`). Incomplete runs are treated as absent, discarding all partial work and completely re-running the instance.
+
+## 🛠️ Implementation
+
+### How it works
+
+1. **Incremental checkpointing**: The agent writes (atomically, via temp-file rename) an updated trajectory file at the end of every model turn with `partial: true` in the `info` block. At run termination the final trajectory is written with `partial: false`.
+
+2. **Resume detection** (`--resume` flag on `bench swebench`): When the sweep starts, it classifies every existing trajectory on disk:
+   - `partial: false` + valid JSON → **skipped** (already complete).
+   - `partial: true` → **resumed**: the existing trajectory is loaded from disk and passed through `SweepRun.resume_from` → `RunOneParams.resume_from` → `MiniArgs.resume_from` into the agent. The agent replays the prior messages without re-calling the model, then continues from the last completed turn.
+   - Missing / corrupted JSON → **re-run** from step 0.
+
+3. **First-attempt only**: `resume_from` is passed only on `attempts == 1`. Retries start from step 0 so a buggy partial trajectory doesn't loop indefinitely.
+
+4. **Observability**:
+   - `bench tail` shows a `Partial:` line when any persisted partial trajectories are found on disk.
+   - The final `results.json` records the count in `partial`.
+   - The `results.json` summary table prints `Partial (resumed): N — mid-run checkpoints re-run via --resume`.
+
+### Key files
+
+| File | Change |
+|------|--------|
+| `src/run/swebench.rs` | `SweepRun.resume_from`, `RunOneParams.resume_from`, `load_full_trajectory`, `partial_resumed` counter, `summary_table` partial row |
+| `src/run/tail.rs` | `TailSnapshot.partial_persisted`, `count_partial_trajectories`, partial row in `render_text`, partial guard in `terminal_record_from_trajectory` |
+| `src/cli/args.rs` | Updated `--resume` help text |
+| `src/run/mini.rs` | `MiniArgs.resume_from` (pre-existing field wired up) |

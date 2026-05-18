@@ -29,6 +29,7 @@ fn build_agent(
         extra_context: None,
         renderer: None,
         stream: None,
+    resume_from: None,
     }
     .build()
     .unwrap()
@@ -257,6 +258,7 @@ fn stagnation_config_rejects_window_smaller_than_threshold() {
         extra_context: None,
         renderer: None,
         stream: None,
+    resume_from: None,
     }
     .build();
 
@@ -281,6 +283,7 @@ fn stagnation_config_rejects_zero_threshold() {
         extra_context: None,
         renderer: None,
         stream: None,
+    resume_from: None,
     }
     .build();
 
@@ -303,6 +306,7 @@ fn stagnation_config_rejects_zero_window() {
         extra_context: None,
         renderer: None,
         stream: None,
+    resume_from: None,
     }
     .build();
 

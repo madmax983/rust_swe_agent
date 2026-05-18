@@ -228,6 +228,7 @@ pub async fn run(args: ReplayArgs) -> Result<(), Error> {
         extra_context: resolved_skills.merged_extra_context,
         renderer: None,
         stream: None,
+        resume_from: None,
     }
     .build_with_tool_providers(tool_providers)?;
     resolved_skills

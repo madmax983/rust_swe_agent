@@ -351,6 +351,29 @@ fn ceil_char_boundary(input: &str, idx: usize) -> usize {
     i
 }
 
+/// State restored from a mid-run checkpoint when resuming an interrupted agent.
+pub struct ResumeState {
+    /// The partial trajectory loaded from disk (will become the base for
+    /// the resumed run's trajectory, with `partial` cleared on final write).
+    pub trajectory: crate::trajectory::Trajectory,
+    /// Reconstructed message history from `trajectory.messages_as_model_history()`.
+    pub history: Vec<crate::model::Message>,
+    /// Steps already completed (counts toward step-limit cap).
+    pub steps: u32,
+    /// Accumulated cost in USD already spent (counts toward cost caps).
+    pub total_cost_usd: f64,
+    /// Accumulated uncached input tokens.
+    pub prompt_tokens: u64,
+    /// Accumulated prompt-cache-read tokens.
+    pub cache_read_tokens: u64,
+    /// Accumulated prompt-cache-creation tokens.
+    pub cache_creation_tokens: u64,
+    /// Accumulated completion tokens.
+    pub completion_tokens: u64,
+    /// ISO 8601 timestamp when this resume was initiated.
+    pub resumed_at: String,
+}
+
 pub struct DefaultAgent {
     pub config: Config,
     pub model: Arc<dyn Model>,
@@ -408,6 +431,10 @@ pub struct DefaultAgentBuilder {
     pub extra_context: Option<String>,
     pub renderer: Option<Arc<Renderer>>,
     pub stream: Option<Arc<dyn StreamSink>>,
+    /// When `Some`, the agent is initialized from the persisted checkpoint
+    /// state rather than starting fresh. Budget and step counters are
+    /// seeded from the checkpoint so caps apply to the combined run.
+    pub resume_from: Option<Box<ResumeState>>,
 }
 
 impl DefaultAgentBuilder {
@@ -521,6 +548,35 @@ impl DefaultAgentBuilder {
         });
 
         let started_at_instant = Instant::now();
+
+        // When resuming from a checkpoint, override history, trajectory, and
+        // accumulated counters with the persisted state.
+        let (history, trajectory, init_steps, init_cost, init_prompt, init_cache_read,
+             init_cache_create, init_completion) =
+            if let Some(resume) = self.resume_from {
+                let mut traj = resume.trajectory;
+                traj.info.resume_history.push(crate::trajectory::ResumeRecord {
+                    original_started_at: traj.info.started_at.clone(),
+                    resumed_at: resume.resumed_at.clone(),
+                    prior_steps: resume.steps,
+                    prior_cost_usd: resume.total_cost_usd,
+                });
+                traj.info.partial = false;
+                traj.info.partial_reason = None;
+                (
+                    resume.history,
+                    traj,
+                    resume.steps,
+                    resume.total_cost_usd,
+                    resume.prompt_tokens,
+                    resume.cache_read_tokens,
+                    resume.cache_creation_tokens,
+                    resume.completion_tokens,
+                )
+            } else {
+                (history, trajectory, 0, 0.0, 0, 0, 0, 0)
+            };
+
         Ok(DefaultAgent {
             config: self.config,
             model: self.model,
@@ -528,16 +584,16 @@ impl DefaultAgentBuilder {
             renderer,
             history,
             trajectory,
-            steps: 0,
-            total_cost_usd: 0.0,
+            steps: init_steps,
+            total_cost_usd: init_cost,
             actual_cost_source: None,
             started_at_instant,
             last_measurement_end: started_at_instant,
             wallclock_deadline: None,
-            prompt_tokens: 0,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-            completion_tokens: 0,
+            prompt_tokens: init_prompt,
+            cache_read_tokens: init_cache_read,
+            cache_creation_tokens: init_cache_create,
+            completion_tokens: init_completion,
             stream,
             redactor,
             cancellation: None,
@@ -2292,6 +2348,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap()
@@ -2358,6 +2415,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap();
@@ -2403,6 +2461,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap();
@@ -2501,6 +2560,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap();
@@ -2725,6 +2785,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap()
@@ -2858,6 +2919,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap();

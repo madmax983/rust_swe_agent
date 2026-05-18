@@ -33,6 +33,7 @@ fn make_agent_with_sink(
         extra_context: None,
         renderer: None,
         stream: Some(sink),
+    resume_from: None,
     }
     .build()
     .unwrap()

@@ -35,6 +35,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         patch_capture: None,
         verification_checks: checks,
         verification_timeout_secs: 10,
+    resume_from: None,
     }
 }
 

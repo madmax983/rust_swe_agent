@@ -73,6 +73,7 @@ mod tests {
             extra_context: None,
             renderer: None,
             stream: None,
+            resume_from: None,
         }
         .build()
         .unwrap();

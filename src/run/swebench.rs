@@ -953,6 +953,13 @@ impl SweepResults {
             "Skipped:            {} — trajectory already on disk",
             self.skipped
         );
+        if self.partial > 0 {
+            let _ = writeln!(
+                s,
+                "Partial (resumed):  {} — mid-run checkpoints re-run via --resume",
+                self.partial
+            );
+        }
         let _ = writeln!(
             s,
             "Budget-halted:      {} — never started; sweep-level USD limit reached",
@@ -1391,6 +1398,13 @@ fn existing_trajectory_path_for_run(
     legacy_trajectory_path_for(output_dir, instance_id)
 }
 
+/// Load a full `Trajectory` from disk, returning `None` on any error
+/// (file not found, parse failure). Used for partial-resume loading.
+fn load_full_trajectory(path: &std::path::Path) -> Option<crate::trajectory::Trajectory> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 pub fn existing_patch_path_for_run(
     output_dir: &std::path::Path,
     instance_id: &str,
@@ -1663,6 +1677,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     let mut set = tokio::task::JoinSet::new();
     let mut skipped_results: Vec<RunSlotResult> = Vec::new();
     let mut pending: std::collections::VecDeque<SweepRun> = std::collections::VecDeque::new();
+    let mut partial_resumed: usize = 0;
 
     // Sweep-level cumulative USD spend. Prefer the provider-recorded
     // per-instance `cost_usd`; fall back to token-based re-pricing for
@@ -1720,15 +1735,24 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     // Partial trajectories (mid-run checkpoints) are always
                     // re-run; they are not considered complete for resume purposes.
                     if info.partial {
+                        let traj_path = existing_trajectory_path_for_run(
+                            &args.output_dir,
+                            &inst.instance_id,
+                            run_index,
+                        );
+                        let resume_traj = load_full_trajectory(&traj_path);
                         tracing::info!(
                             instance = %inst.instance_id,
                             run_index,
                             steps = ?info.steps,
-                            "resume: partial (checkpointed) trajectory found — re-running"
+                            has_resume_traj = resume_traj.is_some(),
+                            "resume: partial (checkpointed) trajectory found — resuming"
                         );
+                        partial_resumed += 1;
                         pending.push_back(SweepRun {
                             inst: inst.clone(),
                             run_index,
+                            resume_from: resume_traj,
                         });
                         continue;
                     }
@@ -1743,6 +1767,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         pending.push_back(SweepRun {
                             inst: inst.clone(),
                             run_index,
+                            resume_from: None,
                         });
                         continue;
                     }
@@ -1818,6 +1843,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             pending.push_back(SweepRun {
                 inst: inst.clone(),
                 run_index,
+                resume_from: None,
             });
         }
     }
@@ -1860,6 +1886,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 governor,
                 cancellation: crate::run::mini::MiniCancellation::new(force_cancel_rx.clone()),
                 github_pr: args.github_pr.clone(),
+                resume_from: run.resume_from.clone(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -2279,7 +2306,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         model_mix,
         systemic_halt_category,
         retry_history: vec![],
-        partial: 0,
+        partial: partial_resumed,
     };
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
@@ -3172,6 +3199,8 @@ fn persist_cancelled_wait_trajectory(
 struct SweepRun {
     inst: SweBenchInstance,
     run_index: u32,
+    /// Partial trajectory to resume from, if this run was previously interrupted.
+    resume_from: Option<crate::trajectory::Trajectory>,
 }
 
 #[derive(Debug, Clone)]
@@ -3964,6 +3993,8 @@ struct RunOneParams {
     governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>,
     cancellation: crate::run::mini::MiniCancellation,
     github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
+    /// Partial trajectory to resume from, if this run was previously interrupted.
+    resume_from: Option<crate::trajectory::Trajectory>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3979,6 +4010,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         governor,
         cancellation,
         github_pr,
+        resume_from,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -4032,6 +4064,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             .map(|v| deterministic_for_attempt(v, attempts, retry_policy.max_retries > 0));
         let traj_path = trajectory_path_for_run(&output_dir, &id, run_index);
         let before_fp = trajectory_fingerprint(&traj_path);
+        // Only pass the partial trajectory on the first attempt; retries start fresh.
+        let attempt_resume = if attempts == 1 { resume_from.clone() } else { None };
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
@@ -4051,6 +4085,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             }),
             verification_checks: vec![],
             verification_timeout_secs: 60,
+            resume_from: attempt_resume,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

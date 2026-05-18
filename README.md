@@ -158,6 +158,17 @@ cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt con
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
 
+If a sweep is interrupted (node preemption, OOM, Ctrl-C), re-run the same
+`bench swebench` command with `--resume` added. Trajectories already marked
+complete on disk are skipped entirely. Trajectories that were mid-run at the
+time of interruption are persisted as partial checkpoints (`partial: true` in
+the trajectory `info` block) and will continue from the last completed turn
+rather than restarting from step 0, saving both API budget and wall-clock time.
+`bench tail` shows a `Partial:` line when stale partial checkpoints are present
+on disk, and the final `results.json` records a `partial` count for accounting.
+See [`docs/spec-checkpointing.md`](docs/spec-checkpointing.md) for the full
+specification and implementation details.
+
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your
 budget, and finally `bench calibrate` against the completed `results.json`.

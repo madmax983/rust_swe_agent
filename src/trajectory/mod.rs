@@ -51,6 +51,22 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// Provenance record for a single resume of a mid-run checkpoint.
+/// Appended to `info.resume_history` when an agent is resumed from a
+/// partial trajectory. Treated as ignored metadata by `bench reproduce`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeRecord {
+    /// `info.started_at` from the original (pre-resume) trajectory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_started_at: Option<String>,
+    /// ISO 8601 timestamp when this resume was initiated.
+    pub resumed_at: String,
+    /// Steps already completed before this resume.
+    pub prior_steps: u32,
+    /// Accumulated cost (USD) already spent before this resume.
+    pub prior_cost_usd: f64,
+}
+
 /// Operator-supplied verification check run after the agent finishes.
 /// Operator-supplied verification check run after the agent finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -541,6 +557,10 @@ pub struct TrajectoryInfo {
     /// killed without a clean shutdown. `None` on completed trajectories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_reason: Option<String>,
+    /// Audit trail of resume events. Empty for trajectories that ran
+    /// continuously. Each entry corresponds to one `--resume` continuation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resume_history: Vec<ResumeRecord>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -700,11 +720,50 @@ impl Trajectory {
         checkpoint.info.partial = true;
         checkpoint.info.partial_reason = Some("in_progress".into());
 
-        let tmp_path = path.with_extension("json.tmp");
+        let tmp_path = path.with_extension("partial.tmp");
         let s = serde_json::to_string_pretty(&checkpoint)?;
-        std::fs::write(&tmp_path, &s)?;
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp_path)?;
+            f.write_all(s.as_bytes())?;
+            f.sync_all()?;
+        }
+        // Best-effort fsync of parent directory (ensures rename is durable).
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         std::fs::rename(&tmp_path, path)?;
         Ok(())
+    }
+
+    /// Reconstructs the in-memory message history from serialized trajectory
+    /// records, for use when resuming an agent from a mid-run checkpoint.
+    ///
+    /// Each `MessageRecord` is converted back to a `Message` using its `role`
+    /// and `content`. The `cache_hint` is set to `None` on all messages; the
+    /// agent's `retag_cache_hints` will re-apply the rolling cache policy on
+    /// the next model call.
+    pub fn messages_as_model_history(&self) -> Vec<crate::model::Message> {
+        use crate::model::{CacheHint, Message, Role};
+        self.messages
+            .iter()
+            .map(|rec| {
+                let role = match rec.role.as_str() {
+                    "system" => Role::System,
+                    "assistant" => Role::Assistant,
+                    "tool" => Role::Tool,
+                    _ => Role::User,
+                };
+                Message {
+                    role,
+                    content: rec.content.clone(),
+                    cache_hint: CacheHint::None,
+                    extra: rec.extra.clone(),
+                }
+            })
+            .collect()
     }
 
     /// Serializes the trajectory to a pretty-printed JSON string.

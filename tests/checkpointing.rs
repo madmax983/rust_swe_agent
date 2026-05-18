@@ -506,6 +506,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         patch_capture: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
+        resume_from: None,
     };
 
     mini_run(args).await.unwrap();
