@@ -126,6 +126,10 @@ pub struct ToolAblationReport {
     /// The CLI uses this to propagate the correct signal exit code.
     #[serde(default)]
     pub cancel_exit_code: Option<i32>,
+    /// True when any arm tripped the systemic-failure circuit breaker.
+    /// The CLI exits with `ExitCode::SystemicHalt` (11) rather than 0 or 2.
+    #[serde(default)]
+    pub systemic_halt: bool,
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -419,6 +423,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     };
 
     let mut cancelled = false;
+    let mut systemic_halt = false;
     // Tracks the highest cancellation exit code seen across cancelled arms
     // (137 SIGTERM escalation beats 130 SIGINT graceful).
     let mut cancel_exit_code: Option<i32> = None;
@@ -436,7 +441,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
             args.matrix_parallelism
         };
 
-        while !cancelled && join_set.len() < fill_limit {
+        while !cancelled && !systemic_halt && join_set.len() < fill_limit {
             // Advance past arms already in a terminal state (resume or prior
             // budget-skip from this run).
             while next_to_launch < arm_plan.len() && arm_results[next_to_launch].is_some() {
@@ -497,14 +502,12 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                 cumulative_cost += results.estimated_cost_usd;
 
                 // Systemic halt is a harness failure (bad environment, broken
-                // API key, Docker misconfiguration).  Propagate as an error so
-                // the operator is alerted and subsequent arms are not launched.
+                // API key, Docker misconfiguration).  Stop launching new arms
+                // and drain in-flight ones; the report is written with
+                // `systemic_halt: true` so the CLI can exit with code 11
+                // (ExitCode::SystemicHalt) rather than a generic usage error.
                 if results.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
-                    return Err(Error::Config(ConfigError::Invalid(format!(
-                        "arm `{}` hit the systemic-failure circuit breaker; \
-                         fix the environment (API key, Docker, quota) and retry",
-                        arm_plan[arm_idx].name
-                    ))));
+                    systemic_halt = true;
                 }
 
                 // When an arm signals cancellation, stop launching new arms and
@@ -518,10 +521,11 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
                         Some(cancel_exit_code.map_or(code, |existing| existing.max(code)));
                 }
 
-                // Arms that hit the per-arm budget mid-run did not process the
-                // full shared instance set; mark them so delta computation skips
-                // them and rankings reflect only fully-run arms.
-                let status = if results.sweep_status == SWEEP_STATUS_CANCELLED {
+                // Arms that did not run the full instance set get a non-complete
+                // status so delta computation skips them.
+                let status = if results.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
+                    "systemic_halt"
+                } else if results.sweep_status == SWEEP_STATUS_CANCELLED {
                     "cancelled"
                 } else if results.budget_halted > 0 {
                     "partial_budget"
@@ -606,7 +610,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         // Preserve zero deltas for arms that did not run the full instance set.
         if matches!(
             arm.status.as_str(),
-            "skipped_budget" | "not_started" | "partial_budget"
+            "skipped_budget" | "not_started" | "partial_budget" | "cancelled" | "systemic_halt"
         ) {
             continue;
         }
@@ -631,6 +635,7 @@ pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
         instance_ids,
         arms: all_results,
         cancel_exit_code,
+        systemic_halt,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
