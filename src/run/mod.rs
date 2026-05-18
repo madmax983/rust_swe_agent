@@ -19,6 +19,7 @@ pub mod hello_world;
 pub mod inspect;
 pub mod instance_history;
 pub mod ladder;
+pub mod cascade;
 pub mod matrix;
 pub mod mini;
 pub mod patch_stats;

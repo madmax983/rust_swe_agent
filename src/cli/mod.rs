@@ -143,6 +143,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Ladder(l),
         } => bench_ladder(l),
+        Command::Bench {
+            cmd: args::BenchCmd::Cascade(c),
+        } => Box::pin(bench_cascade(c)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -2195,6 +2198,86 @@ fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
             print!("{}", crate::run::ladder::render_markdown(&report));
         }
     }
+    Ok(())
+}
+
+async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
+    let cache_dir = c
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    let dataset_source = match (&c.dataset_path, &c.dataset) {
+        (Some(_), Some(_)) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+            )));
+        }
+        (None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "one of --dataset-path or --dataset is required".into(),
+            )));
+        }
+        (Some(path), None) => crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = c.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            crate::run::dataset::DatasetSource::Named { alias, split }
+        }
+    };
+
+    let eval_backend = match c.eval_backend.to_lowercase().as_str() {
+        "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
+        "none" => crate::run::evaluate::EvaluateBackend::None,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --eval-backend `{other}`; expected `sb-cli`"
+            ))));
+        }
+    };
+
+    let cascade_args = crate::run::cascade::CascadeArgs {
+        config_path: c.config,
+        dataset_source,
+        dataset_cache_dir: cache_dir,
+        output_dir: c.output,
+        instance_ids: c.instance_ids,
+        limit: c.limit,
+        sample: c.sample,
+        seed: c.seed,
+        stratify_by: c.stratify_by.map(|v| match v {
+            args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+        }),
+        stratify_mode: match c
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
+            args::StratifyModeArg::Proportional => {
+                crate::run::swebench::StratifyMode::Proportional
+            }
+            args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+        },
+        sweep_cost_limit_usd: c.sweep_cost_limit_usd,
+        resume: c.resume,
+        parallel: c.parallel,
+        skip_preflight: c.skip_preflight,
+        skip_model_probe: c.skip_model_probe,
+        eval_backend,
+        sb_subset: c.sb_subset,
+        sb_split: c.sb_split,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        cancel_deadline_secs: c.cancel_deadline_secs,
+        install_os_signal_handlers: true,
+        mock_eval_resolved_ids: None,
+    };
+
+    let _summary = crate::run::cascade::run(cascade_args).await?;
     Ok(())
 }
 
