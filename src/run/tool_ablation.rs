@@ -174,10 +174,11 @@ pub fn generate_arm_plan(
             for j in (i + 1)..to_ablate.len() {
                 let t1 = (*to_ablate[i]).clone();
                 let t2 = (*to_ablate[j]).clone();
-                // Use `pair_` prefix (not `no_`) to avoid collision with
-                // single-tool arms when a tool name contains `_and_`.
+                // Use `__` separator (not `_and_`) so that tool names
+                // containing `_and_` cannot produce two different pairs that
+                // map to the same arm name, e.g. (a, b_and_c) vs (a_and_b, c).
                 arms.push(PlannedArm {
-                    name: format!("pair_{t1}_and_{t2}"),
+                    name: format!("pair_{t1}__{t2}"),
                     ablated_tool: None,
                     ablated_pair: Some((t1, t2)),
                 });
@@ -253,10 +254,16 @@ pub fn render_text_summary(report: &ToolAblationReport) -> String {
         ]);
 
     for arm in &arms {
-        let ablated = arm.ablated_tool.as_deref().unwrap_or("(baseline)");
+        let ablated = if let Some(tool) = &arm.ablated_tool {
+            tool.clone()
+        } else if let Some((t1, t2)) = &arm.ablated_pair {
+            format!("{t1} + {t2}")
+        } else {
+            "(baseline)".to_string()
+        };
         table.add_row(vec![
             arm.name.clone(),
-            ablated.to_string(),
+            ablated,
             arm.status.clone(),
             arm.resolved.to_string(),
             format!("{:.4}", arm.cost_usd),
