@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::run::compare::load_sweep;
-use crate::run::swebench::InstanceResult;
+use crate::run::swebench::{InstanceResult, resolved_count as instance_resolved_count};
 use crate::trajectory::FailureCategory;
 
 // ── axis constants ────────────────────────────────────────────────────────────
@@ -169,6 +169,7 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
         extract_argv_value(&argv, "--per-task-budget-usd").and_then(|v| v.parse::<f64>().ok());
 
     // Apply instance filters (same key=value syntax as bench inspect)
+    validate_filters(&args.filter)?;
     let instances = apply_filter(instances, &args.filter);
 
     let n_total = instances.len();
@@ -378,6 +379,23 @@ fn load_behavior_map(sweep_dir: &Path) -> BTreeMap<String, String> {
     map
 }
 
+/// Validate filter expressions before applying them.
+///
+/// Returns an error for well-known keys with invalid values (e.g. `resolved=yes`).
+fn validate_filters(filters: &[String]) -> Result<(), Error> {
+    for f in filters {
+        let mut it = f.splitn(2, '=');
+        let key = it.next().unwrap_or_default().trim();
+        let val = it.next().unwrap_or_default().trim();
+        if key == "resolved" && val != "true" && val != "false" {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "budget-fit: --filter resolved=<VALUE> must be `true` or `false`, got `{val}`"
+            ))));
+        }
+    }
+    Ok(())
+}
+
 /// Apply key=value filters to the instance list.
 fn apply_filter<'a>(
     instances: Vec<&'a InstanceResult>,
@@ -398,10 +416,12 @@ fn apply_filter<'a>(
                         .failure_category
                         .is_some_and(|c| failure_category_label(c) == val),
                     "resolved" => {
+                        // "true"/"false" validated in validate_filters; any other value
+                        // is already rejected before we reach here.
                         let expected = val == "true";
-                        (inst.resolved_count > 0) == expected
+                        (instance_resolved_count(inst) > 0) == expected
                     }
-                    _ => true, // unknown filter keys are ignored (not an error)
+                    _ => true, // unknown filter keys pass through (not an error)
                 }
             })
         })
@@ -439,7 +459,10 @@ fn cap_failure_category(axis: &str) -> Option<FailureCategory> {
 
 /// Determine which outcome bucket an instance belongs to for the given axis.
 fn outcome_bucket(inst: &InstanceResult, cap_cat: Option<FailureCategory>) -> &'static str {
-    if inst.resolved_count > 0 {
+    // Use the project's legacy-safe helper: older results have runs==0 and
+    // resolved_count==0 even for successfully submitted rows; the helper
+    // falls back to outcome/failure_category inspection in that case.
+    if instance_resolved_count(inst) > 0 {
         return BUCKET_RESOLVED;
     }
     if let (Some(c), Some(expected)) = (inst.failure_category, cap_cat) {
@@ -679,8 +702,20 @@ fn make_recommendation(
     }
 
     if behavior_present && has_stuck_class {
-        // Do NOT raise — instances are stuck
-        let recommended = resolved_p_target.unwrap_or(cap);
+        // Do NOT raise — instances are stuck. If there are no resolved instances
+        // we cannot derive a percentile-based cap; return None rather than
+        // fabricating a recommendation from the current cap.
+        let Some(recommended) = resolved_p_target else {
+            return (
+                None,
+                format!(
+                    "{cap_bound_stuck_count} cap-bound instance(s) had stuck-class actions \
+                     (noop/read/nav); raising the cap is unlikely to help. \
+                     Cannot recommend a tighter cap: no resolved instances to base P{target_percentile} on."
+                ),
+                None,
+            );
+        };
         let rationale = format!(
             "{cap_bound_stuck_count} cap-bound instance(s) had stuck-class actions \
              (noop/read/nav); raising the cap is unlikely to help. \
