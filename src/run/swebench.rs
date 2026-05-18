@@ -3480,7 +3480,7 @@ fn sum_f64(values: impl Iterator<Item = f64>) -> Option<f64> {
     seen.then_some(total)
 }
 
-fn budget_accounting_cost_usd(row: &InstanceResult, model_name: &str) -> f64 {
+pub(crate) fn budget_accounting_cost_usd(row: &InstanceResult, model_name: &str) -> f64 {
     let tokens = row.token_breakdown();
     if let Some(cost) = row.cost_usd {
         if cost != 0.0

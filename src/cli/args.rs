@@ -384,6 +384,103 @@ pub enum BenchCmd {
     BudgetFit(BudgetFitCmd),
     /// Resolved-rate and cost trend across sweeps in a root directory.
     Ladder(LadderCmd),
+    /// Run sequential model tiers per instance; short-circuit on first resolved tier.
+    Cascade(CascadeCmd),
+}
+
+/// `bench cascade` — cost-optimized model-tier routing per instance.
+#[derive(Debug, Args)]
+pub struct CascadeCmd {
+    /// Path to the TOML cascade manifest with `[[tier]]` entries.
+    #[arg(long)]
+    pub config: std::path::PathBuf,
+
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<std::path::PathBuf>,
+
+    /// Named SWE-bench dataset alias (e.g. `verified`). Alternative to `--dataset-path`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long)]
+    pub dataset_cache_dir: Option<std::path::PathBuf>,
+
+    /// Root output directory (tier results land in `{output}/tier-{name}/`).
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+
+    /// Shared USD ceiling across all tiers.
+    #[arg(long)]
+    pub sweep_cost_limit_usd: Option<f64>,
+
+    /// Resume from a previous run: resolved and fully-exhausted instances are
+    /// skipped; partially-cascaded instances resume on the next unattempted tier.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+
+    /// Dataset subset selector. Either a comma-separated id list
+    /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after filtering and sampling.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances (requires `--seed`).
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
+    /// Worker parallelism per tier sweep (parallelism is across instances, not tiers).
+    #[arg(long, default_value_t = crate::run::swebench::DEFAULT_PARALLEL)]
+    pub parallel: usize,
+
+    /// Evaluation backend for per-tier resolved-rate gating.
+    /// Required: cascade will not start without a configured backend.
+    #[arg(long, default_value = "sb-cli", value_name = "BACKEND")]
+    pub eval_backend: String,
+
+    /// SWE-bench subset for the evaluator (e.g. `swe-bench-m`, `swe-bench_lite`).
+    #[arg(long, default_value = "swe-bench-m")]
+    pub sb_subset: String,
+
+    /// SWE-bench split for the evaluator (e.g. `test`, `dev`).
+    #[arg(long, default_value = "test")]
+    pub sb_split: String,
+
+    /// Skip startup preflight checks before launching tier sweeps.
+    #[arg(long, default_value_t = false)]
+    pub skip_preflight: bool,
+
+    /// Skip model-endpoint probe during preflight.
+    #[arg(long, default_value_t = false)]
+    pub skip_model_probe: bool,
+
+    /// Per-instance timeout in seconds passed to the evaluation backend.
+    #[arg(long, default_value_t = 300)]
+    pub eval_timeout_per_instance_secs: u64,
+
+    /// Seconds each tier sweep waits for in-flight tasks after a cancel signal.
+    #[arg(long, default_value_t = 60)]
+    pub cancel_deadline_secs: u64,
 }
 
 /// `bench cache-stats` — surface prompt-cache hit rate per sweep (zero-cost: reads only on-disk artifacts).

@@ -6,6 +6,7 @@ pub mod budget_fit;
 pub mod bundle;
 pub mod cache_stats;
 pub mod calibrate;
+pub mod cascade;
 pub mod command_stats;
 pub mod compare;
 pub mod dataset;
