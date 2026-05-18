@@ -329,10 +329,28 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 match record {
                     // Already resolved → skip (AC#9).
                     Some(r) if r.resolving_tier.is_some() => false,
-                    // This tier already attempted for this instance.
-                    Some(r) if r.attempts.iter().any(|a| a.tier_name == tier_def.name) => false,
-                    // All tiers already attempted (exhausted).
-                    Some(r) if r.attempts.len() >= manifest.tiers.len() => false,
+                    // This tier already attempted *and completed* (not merely skipped_budget).
+                    // skipped_budget attempts are NOT treated as completed: on resume with a
+                    // higher budget ceiling the instance must still get a real attempt on
+                    // this tier before progressing to later tiers.
+                    Some(r)
+                        if r.attempts.iter().any(|a| {
+                            a.tier_name == tier_def.name
+                                && a.halted_reason.as_deref() != Some("skipped_budget")
+                        }) =>
+                    {
+                        false
+                    }
+                    // All tiers already attempted and completed (exhausted).
+                    Some(r)
+                        if r.attempts
+                            .iter()
+                            .filter(|a| a.halted_reason.as_deref() != Some("skipped_budget"))
+                            .count()
+                            >= manifest.tiers.len() =>
+                    {
+                        false
+                    }
                     _ => true,
                 }
             })
@@ -368,6 +386,7 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                         halted_reason: Some("skipped_budget".into()),
                     });
                 }
+                tier_stats[tier_idx].instances_attempted += pending_ids.len();
                 write_cascade_state(&state_path, &state)?;
                 break;
             }
@@ -566,6 +585,13 @@ async fn run_tier(
     if let Some(budget) = tier.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(budget);
     }
+    if !tier.extra_args.is_empty() {
+        tracing::warn!(
+            tier = %tier.name,
+            extra_args = ?tier.extra_args,
+            "cascade: extra_args are not yet applied to tier runs"
+        );
+    }
 
     let tier_args = crate::run::swebench::SwebenchArgs {
         dataset_source: ctx.dataset_source,
@@ -682,7 +708,7 @@ fn build_summary(tier_stats: &[TierStats], state: &CascadeState) -> CascadeSumma
                 .map_or(0.0, |t| t.total_cost_usd / t.instances_attempted as f64)
         };
         let counterfactual = top_mean * total_instances as f64;
-        (counterfactual - total_cost_usd).max(0.0)
+        counterfactual - total_cost_usd
     } else {
         0.0
     };
