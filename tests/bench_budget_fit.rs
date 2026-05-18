@@ -1507,7 +1507,12 @@ fn stuck_class_ptarget_at_or_above_cap_emits_no_recommendation() {
     write_results(dir.path(), instances, make_manifest(None, Some(60)));
     // All cap-bound instances have noop behavior (stuck)
     let class_map: Vec<(&str, &str)> = (0..8)
-        .map(|i| (Box::leak(format!("wc-{i}").into_boxed_str()) as &str, "noop"))
+        .map(|i| {
+            (
+                Box::leak(format!("wc-{i}").into_boxed_str()) as &str,
+                "noop",
+            )
+        })
         .collect();
     write_behavior_json(dir.path(), &class_map);
 

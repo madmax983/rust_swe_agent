@@ -1192,7 +1192,11 @@ fn estimated_cost_savings(
         .iter()
         .filter_map(|inst| {
             let v = axis_value(inst, axis)?;
-            if v > new_cap { Some(v.min(old_cap) - new_cap) } else { None }
+            if v > new_cap {
+                Some(v.min(old_cap) - new_cap)
+            } else {
+                None
+            }
         })
         .sum();
     round_to_ndp(cpu * saved_units, 6)
