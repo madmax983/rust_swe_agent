@@ -76,6 +76,7 @@ fn default_cascade_args(
         sb_split: "test".into(),
         deterministic_responses: Some(vec!["looking at the problem...".into()]),
         deterministic_usage_per_call: None,
+        eval_timeout_per_instance_secs: 300,
         cancel_deadline_secs: 5,
         install_os_signal_handlers: false,
         // No instances resolved by default (all tiers run).

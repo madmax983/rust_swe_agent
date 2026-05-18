@@ -474,6 +474,10 @@ pub struct CascadeCmd {
     #[arg(long, default_value_t = false)]
     pub skip_model_probe: bool,
 
+    /// Per-instance timeout in seconds passed to the evaluation backend.
+    #[arg(long, default_value_t = 300)]
+    pub eval_timeout_per_instance_secs: u64,
+
     /// Seconds each tier sweep waits for in-flight tasks after a cancel signal.
     #[arg(long, default_value_t = 60)]
     pub cancel_deadline_secs: u64,

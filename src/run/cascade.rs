@@ -87,6 +87,8 @@ pub struct CascadeArgs {
     pub deterministic_responses: Option<Vec<String>>,
     /// Fixed token usage reported by the scripted backend (tests only).
     pub deterministic_usage_per_call: Option<ModelUsage>,
+    /// Per-instance evaluator timeout in seconds (passed to `bench evaluate`).
+    pub eval_timeout_per_instance_secs: u64,
     /// Seconds each tier sweep waits for in-flight tasks after a cancel signal.
     pub cancel_deadline_secs: u64,
     /// Install OS signal handlers (disable in tests to avoid handler conflicts).
@@ -390,11 +392,13 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
             mocks.get(tier_idx).cloned().unwrap_or_default()
         } else {
             // Run actual evaluator on tier's sweep dir.
+            // Wrap the synchronous sb-cli subprocess in spawn_blocking so it
+            // doesn't stall the Tokio executor thread for the minutes it may run.
             let eval_args = EvaluateArgs {
                 sweep_dir: tier_sweep_dir.clone(),
                 dataset_path: None,
                 backend: args.eval_backend,
-                timeout_per_instance_secs: 300,
+                timeout_per_instance_secs: args.eval_timeout_per_instance_secs,
                 parallel: args.parallel,
                 sb_subset: args.sb_subset.clone(),
                 sb_split: args.sb_split.clone(),
@@ -402,7 +406,12 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
                 breakdown: BreakdownSelection::none(),
                 cost_attribution: false,
             };
-            let eval_results = crate::run::evaluate::run(&eval_args)?;
+            let eval_results =
+                tokio::task::spawn_blocking(move || crate::run::evaluate::run(&eval_args))
+                    .await
+                    .map_err(|e| {
+                        Error::Io(std::io::Error::other(format!("eval task panicked: {e}")))
+                    })??;
             eval_results
                 .instances
                 .iter()
@@ -422,7 +431,11 @@ pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
         let mut tier_cost = 0.0_f64;
         for id in &pending_ids {
             let sweep_result = results_map.get(id.as_str());
-            let cost = sweep_result.and_then(|r| r.cost_usd).unwrap_or(0.0);
+            // Use the same cost-accounting helper as the sweep runner so that
+            // zero-recorded-cost rows are re-priced from token usage when available.
+            let cost = sweep_result.map_or(0.0, |r| {
+                crate::run::swebench::budget_accounting_cost_usd(r, &tier_def.model)
+            });
             let steps = sweep_result.and_then(|r| r.steps);
             let outcome = sweep_result.and_then(|r| r.outcome.clone());
             // Map swebench's "budget_halt" exit_reason to cascade's "skipped_budget" label

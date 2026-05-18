@@ -2270,6 +2270,7 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
         sb_split: c.sb_split,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
+        eval_timeout_per_instance_secs: c.eval_timeout_per_instance_secs,
         cancel_deadline_secs: c.cancel_deadline_secs,
         install_os_signal_handlers: true,
         mock_eval_resolved_ids: None,
