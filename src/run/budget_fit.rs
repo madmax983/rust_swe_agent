@@ -306,8 +306,10 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
     // completely different from individual task costs, and sweep-budget halts are
     // recorded as not-started rows rather than CostLimit/BudgetExhausted instances,
     // so using it as a per-instance cap would produce nonsense percentile recommendations.
-    // When --per-task-budget-usd was set via --config rather than as an explicit CLI flag,
-    // fall back to agent.per_task_budget_usd from the resolved config TOML.
+    // Two per-task cost cap config keys exist:
+    //   agent.per_task_budget_usd → runner CLI --per-task-budget-usd, records BudgetExhausted
+    //   agent.cost_limit_usd      → agent-level per-task cap, records CostLimit
+    // Try CLI flag first, then both config keys in priority order.
     let (per_task_budget_usd, per_task_budget_usd_source): (Option<f64>, Option<String>) = {
         if let Some(v) = extract_argv_value(&cli_argv, "--per-task-budget-usd")
             .and_then(|v| v.parse::<f64>().ok())
@@ -320,18 +322,20 @@ pub fn compute_budget_fit(args: &BudgetFitArgs) -> Result<BudgetFitReport, Error
             let from_config = loaded.manifest.as_ref().and_then(|m| {
                 let tv: toml::Value = m.config.resolved.parse().ok()?;
                 let agent = tv.get("agent")?;
-                agent.get("per_task_budget_usd")?.as_float().or_else(|| {
-                    agent
-                        .get("per_task_budget_usd")?
-                        .as_integer()
-                        .map(|n| n as f64)
-                })
+                // per_task_budget_usd takes priority; fall back to cost_limit_usd.
+                agent
+                    .get("per_task_budget_usd")
+                    .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
+                    .map(|v| (v, "manifest.config.resolved[agent.per_task_budget_usd]"))
+                    .or_else(|| {
+                        agent
+                            .get("cost_limit_usd")
+                            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
+                            .map(|v| (v, "manifest.config.resolved[agent.cost_limit_usd]"))
+                    })
             });
             match from_config {
-                Some(v) => (
-                    Some(v),
-                    Some("manifest.config.resolved[agent.per_task_budget_usd]".to_owned()),
-                ),
+                Some((v, source)) => (Some(v), Some(source.to_owned())),
                 None => (None, None),
             }
         }
@@ -1148,6 +1152,10 @@ fn mean_cost_per_unit(instances: &[&InstanceResult], axis: &str) -> f64 {
 }
 
 /// Compute at_cap_count and at_cap_share.
+///
+/// Includes rows with axis values at or above the threshold AND legacy rows that
+/// have the matching cap failure category but no axis value — those definitively
+/// hit the cap and should not be invisible in the at-cap count.
 fn compute_at_cap(
     instances: &[&InstanceResult],
     axis: &str,
@@ -1159,9 +1167,18 @@ fn compute_at_cap(
         return (0, 0.0);
     };
     let threshold = cap * (1.0 - tolerance);
+    let cap_cats = cap_failure_categories(axis);
     let count = instances
         .iter()
-        .filter(|inst| axis_value(inst, axis).is_some_and(|v| v >= threshold))
+        .filter(|inst| {
+            if let Some(v) = axis_value(inst, axis) {
+                v >= threshold
+            } else {
+                // No axis value (legacy row): count as at-cap when the failure
+                // category matches this axis's cap — the cap definitely fired.
+                inst.failure_category.is_some_and(|c| cap_cats.contains(&c))
+            }
+        })
         .count();
     let share = if n_total > 0 {
         count as f64 / n_total as f64
