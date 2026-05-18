@@ -579,6 +579,7 @@ fn summarize_stream(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -613,5 +614,497 @@ mod tests {
     #[test]
     fn summarize_stream_counts_both_streams() {
         assert_eq!(summarize_stream("ab", "cd"), " (4B output)");
+    }
+
+    // ── Dashboard-without-a-terminal tests ──────────────────────────────
+    //
+    // Most renderer behaviour is locked behind `start()`, which enters
+    // alt-screen + raw mode. These tests construct a `RatatuiDashboard`
+    // directly and exercise the `StreamSink` / `ConfirmCallback` paths
+    // plus the pure draw helpers via ratatui's `TestBackend`, so the
+    // interesting logic ships covered even though a real renderer-loop
+    // tick needs a TTY.
+
+    use ratatui::Terminal as RatatuiTerminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use tokio::sync::oneshot;
+
+    fn make_dashboard() -> Arc<RatatuiDashboard> {
+        Arc::new(RatatuiDashboard {
+            state: Mutex::new(DashboardState::default()),
+            notify: Notify::new(),
+        })
+    }
+
+    fn snap(dash: &Arc<RatatuiDashboard>) -> DashboardSnapshot {
+        let s = dash
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        DashboardSnapshot {
+            task: s.task.clone(),
+            model: s.model.clone(),
+            step: s.step,
+            step_limit: s.step_limit,
+            cost_usd: s.cost_usd,
+            finished: s.finished.clone(),
+            log: s.log.iter().cloned().collect(),
+            pending: s.pending.as_ref().map(|p| p.ctx.clone()),
+        }
+    }
+
+    fn render_to_buffer(snap: &DashboardSnapshot, w: u16, h: u16) -> Buffer {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = RatatuiTerminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, snap)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn emit_run_started_populates_header_state() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunStarted {
+            task: "fix the bug".into(),
+            model: "claude-opus-4-7".into(),
+            started_at: "2026-05-18T12:00:00Z".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.task.as_deref(), Some("fix the bug"));
+        assert_eq!(s.model.as_deref(), Some("claude-opus-4-7"));
+        assert_eq!(s.log.len(), 1);
+        assert!(s.log[0].text.contains("run started"));
+    }
+
+    #[test]
+    fn emit_assistant_message_updates_step_and_cost() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::AssistantMessage {
+            step: 4,
+            content: "think think".into(),
+            cost_usd: Some(0.1234),
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.step, 4);
+        assert!((s.cost_usd - 0.1234).abs() < f64::EPSILON);
+        assert!(s.log[0].text.contains("step 4 assistant"));
+    }
+
+    #[test]
+    fn emit_assistant_message_without_cost_keeps_prior_cost() {
+        let d = make_dashboard();
+        // First set a cost.
+        d.emit(StreamEvent::AssistantMessage {
+            step: 1,
+            content: "x".into(),
+            cost_usd: Some(0.5),
+            timestamp: "t".into(),
+        });
+        // Second message without cost shouldn't reset to 0.
+        d.emit(StreamEvent::AssistantMessage {
+            step: 2,
+            content: "y".into(),
+            cost_usd: None,
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.step, 2);
+        assert!((s.cost_usd - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn emit_bash_lifecycle_logs_run_and_result() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::BashStart {
+            step: 2,
+            command: "echo hi".into(),
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::BashResult {
+            step: 2,
+            exit_code: 0,
+            stdout: "hi\n".into(),
+            stderr: String::new(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::BashResult {
+            step: 3,
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "oops".into(),
+            timed_out: false,
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::BashResult {
+            step: 4,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.log.len(), 4);
+        assert!(matches!(s.log[0].kind, LineKind::BashRun));
+        assert!(matches!(s.log[1].kind, LineKind::BashOk));
+        assert!(matches!(s.log[2].kind, LineKind::BashErr));
+        assert!(s.log[3].text.contains("timed_out"));
+    }
+
+    #[test]
+    fn emit_observation_and_format_error_log_with_preview() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::Observation {
+            step: 1,
+            content: "line1\nline2".into(),
+            timestamp: "t".into(),
+        });
+        d.emit(StreamEvent::FormatError {
+            step: 1,
+            content: "bad".into(),
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.log.len(), 2);
+        assert!(matches!(s.log[0].kind, LineKind::Observation));
+        assert!(matches!(s.log[1].kind, LineKind::Warn));
+    }
+
+    #[test]
+    fn emit_run_ended_stamps_finished_and_totals() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunEnded {
+            exit_reason: "submitted".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 7,
+            total_cost_usd: 1.2345,
+            ended_at: "t".into(),
+        });
+        let s = snap(&d);
+        assert_eq!(s.step, 7);
+        assert!((s.cost_usd - 1.2345).abs() < f64::EPSILON);
+        assert_eq!(s.finished.as_deref(), Some("submitted"));
+    }
+
+    #[test]
+    fn append_caps_log_at_max_lines() {
+        let d = make_dashboard();
+        for _ in 0..(MAX_LOG_LINES + 10) {
+            d.append(LineKind::Info, "x");
+        }
+        let s = snap(&d);
+        assert_eq!(s.log.len(), MAX_LOG_LINES);
+    }
+
+    #[tokio::test]
+    async fn confirm_publishes_pending_and_completes_on_decision() {
+        let d = make_dashboard();
+        let d2 = d.clone();
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "echo".into(),
+            step: 1,
+            step_limit: 5,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        let task = tokio::spawn(async move { d2.confirm(&ctx).await });
+        // Spin briefly until the pending slot is populated.
+        for _ in 0..50 {
+            let s = snap(&d);
+            if s.pending.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Simulate the renderer thread receiving a `y` keystroke.
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        handle_key(&d, key);
+        let decision = task.await.unwrap();
+        assert_eq!(decision, ConfirmDecision::Approve);
+    }
+
+    #[tokio::test]
+    async fn confirm_falls_back_to_abort_when_responder_dropped() {
+        let d = make_dashboard();
+        let d2 = d.clone();
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "echo".into(),
+            step: 0,
+            step_limit: 1,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        let task = tokio::spawn(async move { d2.confirm(&ctx).await });
+        for _ in 0..50 {
+            if snap(&d).pending.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Pull the pending prompt out and drop the responder — confirm()
+        // should observe the dropped sender and abort.
+        let pending = {
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.pending.take()
+        };
+        drop(pending);
+        let decision = task.await.unwrap();
+        assert_eq!(decision, ConfirmDecision::Abort);
+    }
+
+    fn make_pending(d: &Arc<RatatuiDashboard>) -> oneshot::Receiver<ConfirmDecision> {
+        let (tx, rx) = oneshot::channel();
+        let mut s = d
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.pending = Some(PendingPrompt {
+            ctx: ConfirmContext {
+                tool_name: "bash".into(),
+                command: "x".into(),
+                step: 0,
+                step_limit: 1,
+                cost_usd: 0.0,
+                cache_marker: "cache:auto-or-none",
+            },
+            responder: tx,
+        });
+        rx
+    }
+
+    #[test]
+    fn handle_key_maps_keystrokes_to_decisions() {
+        let d = make_dashboard();
+        for (key, expected) in [
+            (
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                ConfirmDecision::Approve,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE),
+                ConfirmDecision::Approve,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+                ConfirmDecision::Reject,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+                ConfirmDecision::Abort,
+            ),
+            (
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                ConfirmDecision::Abort,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                ConfirmDecision::Abort,
+            ),
+        ] {
+            let mut rx = make_pending(&d);
+            handle_key(&d, key);
+            assert_eq!(rx.try_recv().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn handle_key_unknown_keystroke_keeps_prompt_open() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        // 'z' is not a documented key; the prompt should stay pending.
+        let key = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        handle_key(&d, key);
+        assert!(snap(&d).pending.is_some());
+    }
+
+    #[test]
+    fn handle_key_ignores_release_events() {
+        let d = make_dashboard();
+        let _rx = make_pending(&d);
+        let mut key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        key.kind = KeyEventKind::Release;
+        handle_key(&d, key);
+        // The release event shouldn't consume the prompt.
+        assert!(snap(&d).pending.is_some());
+    }
+
+    #[test]
+    fn handle_key_with_no_pending_is_noop() {
+        let d = make_dashboard();
+        let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        // Just verify it doesn't panic when state has no pending prompt.
+        handle_key(&d, key);
+        assert!(snap(&d).pending.is_none());
+    }
+
+    #[test]
+    fn draw_renders_header_log_and_footer_against_test_backend() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunStarted {
+            task: "round trip".into(),
+            model: "deterministic".into(),
+            started_at: "t".into(),
+        });
+        d.emit(StreamEvent::BashStart {
+            step: 1,
+            command: "echo hi".into(),
+            timestamp: "t".into(),
+        });
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 12);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("round trip"),
+            "task title should appear in header; got:\n{text}"
+        );
+        assert!(
+            text.contains("deterministic"),
+            "model name should appear; got:\n{text}"
+        );
+        assert!(
+            text.contains("echo hi"),
+            "bash line should appear in log; got:\n{text}"
+        );
+        assert!(
+            text.contains("waiting for next agent step"),
+            "footer hint should appear; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn draw_modal_renders_when_pending_prompt_present() {
+        let d = make_dashboard();
+        // Inject a pending prompt directly.
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: "rm -rf /tmp/dangerous".into(),
+                    step: 2,
+                    step_limit: 5,
+                    cost_usd: 0.0099,
+                    cache_marker: "cache:explicit",
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("rm -rf /tmp/dangerous"),
+            "modal should show command; got:\n{text}"
+        );
+        assert!(
+            text.contains("(y) approve"),
+            "modal should show key hint; got:\n{text}"
+        );
+        assert!(
+            text.contains("step 2/5"),
+            "modal should show step counter; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn draw_modal_marks_long_commands_with_ellipsis() {
+        let d = make_dashboard();
+        let big = (0..20)
+            .map(|i| format!("line_{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        {
+            let (tx, _rx) = oneshot::channel();
+            let mut s = d
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            s.pending = Some(PendingPrompt {
+                ctx: ConfirmContext {
+                    tool_name: "bash".into(),
+                    command: big,
+                    step: 0,
+                    step_limit: 1,
+                    cost_usd: 0.0,
+                    cache_marker: "cache:explicit",
+                },
+                responder: tx,
+            });
+        }
+        let s = snap(&d);
+        // Render tall so the 12-line cap + ellipsis line both fit
+        // inside the modal area (the modal is 50% of the screen height).
+        let buf = render_to_buffer(&s, 100, 50);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("…"),
+            "long commands should be truncated with an ellipsis; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn footer_changes_when_run_finished() {
+        let d = make_dashboard();
+        d.emit(StreamEvent::RunEnded {
+            exit_reason: "submitted".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 3,
+            total_cost_usd: 0.1,
+            ended_at: "t".into(),
+        });
+        let s = snap(&d);
+        let buf = render_to_buffer(&s, 80, 8);
+        let text = buffer_text(&buf);
+        assert!(text.contains("run complete"));
+    }
+
+    #[test]
+    fn centered_rect_is_subset_of_area() {
+        let area = Rect::new(0, 0, 100, 50);
+        let inner = centered_rect(50, 50, area);
+        assert!(inner.x >= area.x);
+        assert!(inner.y >= area.y);
+        assert!(inner.x + inner.width <= area.x + area.width);
+        assert!(inner.y + inner.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn handle_dashboard_handle_constructors_clone_arcs() {
+        // Construct the handle without going through `start()` so we don't
+        // mutate the terminal. Renderer task is fake — `oneshot::channel`
+        // gives us a sender we drop immediately.
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let handle = RatatuiDashboardHandle {
+            inner: make_dashboard(),
+            shutdown_tx: Some(shutdown_tx),
+            renderer_task: None,
+        };
+        let _sink = handle.stream_sink();
+        let _cb = handle.confirm_callback();
     }
 }

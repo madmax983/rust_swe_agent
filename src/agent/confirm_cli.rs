@@ -44,7 +44,22 @@ impl ConfirmCallback for StderrCliConfirmer {
 
 fn prompt_blocking(ctx: &ConfirmContext) -> ConfirmDecision {
     let mut err = std::io::stderr();
-    let banner = format!(
+    let _ = err.write_all(render_banner(ctx).as_bytes());
+    let _ = err.flush();
+
+    match read_single_keystroke() {
+        Some(decision) => {
+            let _ = err.write_all(b"\n");
+            decision
+        }
+        None => read_line_buffered(),
+    }
+}
+
+/// Pure renderer for the stderr prompt banner, factored out so tests can
+/// assert on the bytes without going through stderr.
+fn render_banner(ctx: &ConfirmContext) -> String {
+    format!(
         "\n[interactive] step {}/{}  cost ${:.4}  {}\n\
          [interactive] tool: {}\n\
          [interactive] command:\n{}\n\
@@ -55,17 +70,7 @@ fn prompt_blocking(ctx: &ConfirmContext) -> ConfirmDecision {
         ctx.cache_marker,
         ctx.tool_name,
         indent_command(&ctx.command),
-    );
-    let _ = err.write_all(banner.as_bytes());
-    let _ = err.flush();
-
-    match read_single_keystroke() {
-        Some(decision) => {
-            let _ = err.write_all(b"\n");
-            decision
-        }
-        None => read_line_buffered(),
-    }
+    )
 }
 
 fn indent_command(cmd: &str) -> String {
@@ -84,22 +89,9 @@ fn read_single_keystroke() -> Option<ConfirmDecision> {
     }
     let decision = loop {
         match crossterm::event::read() {
-            Ok(Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind: KeyEventKind::Press,
-                ..
-            })) => {
-                if modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(code, KeyCode::Char('c' | 'C'))
-                {
-                    break ConfirmDecision::Abort;
-                }
-                match code {
-                    KeyCode::Char('y' | 'Y') => break ConfirmDecision::Approve,
-                    KeyCode::Char('n' | 'N') => break ConfirmDecision::Reject,
-                    KeyCode::Char('a' | 'A') | KeyCode::Esc => break ConfirmDecision::Abort,
-                    _ => {}
+            Ok(Event::Key(key)) => {
+                if let Some(d) = key_event_to_decision(key) {
+                    break d;
                 }
             }
             Ok(_) => {}
@@ -108,6 +100,26 @@ fn read_single_keystroke() -> Option<ConfirmDecision> {
     };
     let _ = crossterm::terminal::disable_raw_mode();
     Some(decision)
+}
+
+/// Map a crossterm key event to a `ConfirmDecision`. Returns `None` for
+/// non-press events or keys outside the documented y/n/a set so the
+/// caller can keep polling. Pulled out so tests can exercise the
+/// keystroke mapping without raw mode.
+fn key_event_to_decision(key: KeyEvent) -> Option<ConfirmDecision> {
+    if !matches!(key.kind, KeyEventKind::Press) {
+        return None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
+    {
+        return Some(ConfirmDecision::Abort);
+    }
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(ConfirmDecision::Approve),
+        KeyCode::Char('n' | 'N') => Some(ConfirmDecision::Reject),
+        KeyCode::Char('a' | 'A') | KeyCode::Esc => Some(ConfirmDecision::Abort),
+        _ => None,
+    }
 }
 
 fn read_line_buffered() -> ConfirmDecision {
@@ -154,5 +166,129 @@ mod tests {
     #[test]
     fn forced_constructor_builds_in_non_tty() {
         let _c = StderrCliConfirmer::forced();
+    }
+
+    fn ctx_for(cmd: &str) -> ConfirmContext {
+        ConfirmContext {
+            tool_name: "bash".into(),
+            command: cmd.into(),
+            step: 2,
+            step_limit: 7,
+            cost_usd: 0.0123,
+            cache_marker: "cache:explicit",
+        }
+    }
+
+    #[test]
+    fn render_banner_includes_step_cost_command_and_keys() {
+        let banner = render_banner(&ctx_for("echo hi"));
+        assert!(banner.contains("step 2/7"));
+        assert!(banner.contains("cost $0.0123"));
+        assert!(banner.contains("cache:explicit"));
+        assert!(banner.contains("tool: bash"));
+        assert!(banner.contains("    echo hi"));
+        assert!(banner.contains("(y)approve / (n)reject / (a)abort?"));
+    }
+
+    #[test]
+    fn render_banner_indents_multiline_commands() {
+        let banner = render_banner(&ctx_for("ls -la\necho done"));
+        assert!(banner.contains("    ls -la\n    echo done"));
+    }
+
+    #[test]
+    fn key_event_to_decision_press_keys_map_correctly() {
+        for (code, modifiers, expected) in [
+            (
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Approve),
+            ),
+            (
+                KeyCode::Char('Y'),
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Approve),
+            ),
+            (
+                KeyCode::Char('n'),
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Reject),
+            ),
+            (
+                KeyCode::Char('N'),
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Reject),
+            ),
+            (
+                KeyCode::Char('a'),
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Abort),
+            ),
+            (
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                Some(ConfirmDecision::Abort),
+            ),
+            (
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                Some(ConfirmDecision::Abort),
+            ),
+            (
+                KeyCode::Char('C'),
+                KeyModifiers::CONTROL,
+                Some(ConfirmDecision::Abort),
+            ),
+            // Junk keys keep the prompt alive.
+            (KeyCode::Char('z'), KeyModifiers::NONE, None),
+            (KeyCode::Enter, KeyModifiers::NONE, None),
+            // Plain 'c' (no Ctrl) is junk too — only Ctrl-C is abort.
+            (KeyCode::Char('c'), KeyModifiers::NONE, None),
+        ] {
+            let key = KeyEvent::new(code, modifiers);
+            assert_eq!(key_event_to_decision(key), expected, "code={code:?}");
+        }
+    }
+
+    #[test]
+    fn key_event_to_decision_ignores_release_events() {
+        let mut key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        key.kind = KeyEventKind::Release;
+        assert_eq!(key_event_to_decision(key), None);
+    }
+
+    #[test]
+    fn read_single_keystroke_returns_none_when_stdin_is_not_a_tty() {
+        // `cargo test` redirects stdin away from the TTY, so this is the
+        // production non-interactive path and should bail out cleanly
+        // rather than blocking on raw-mode reads.
+        assert!(read_single_keystroke().is_none());
+    }
+
+    #[test]
+    fn new_if_tty_returns_none_under_cargo_test() {
+        // Under `cargo test` stdin is not a TTY; `new_if_tty` must refuse
+        // to construct the confirmer.
+        assert!(StderrCliConfirmer::new_if_tty().is_none());
+    }
+
+    #[tokio::test]
+    async fn confirm_under_non_tty_stdin_aborts_on_eof() {
+        // `prompt_blocking` writes the banner to stderr, finds no TTY,
+        // falls through to `read_line_buffered`. With cargo-test's
+        // closed/redirected stdin, the read returns EOF, which
+        // `parse_line_decision` maps to Abort. End-to-end: confirm()
+        // returns Abort without hanging.
+        let c = StderrCliConfirmer::forced();
+        let ctx = ConfirmContext {
+            tool_name: "bash".into(),
+            command: "echo x".into(),
+            step: 0,
+            step_limit: 1,
+            cost_usd: 0.0,
+            cache_marker: "cache:auto-or-none",
+        };
+        let d = c.confirm(&ctx).await;
+        assert_eq!(d, ConfirmDecision::Abort);
     }
 }
