@@ -96,3 +96,75 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cost_source_combine() {
+        use CostSource::*;
+
+        // Test Unknown dominates
+        assert_eq!(Unknown.combine(ProviderReported), Unknown);
+        assert_eq!(RateCardEstimate.combine(Unknown), Unknown);
+        assert_eq!(Unknown.combine(Unknown), Unknown);
+
+        // Test RateCardEstimate dominates if no Unknown
+        assert_eq!(RateCardEstimate.combine(ProviderReported), RateCardEstimate);
+        assert_eq!(FreeTierInferred.combine(RateCardEstimate), RateCardEstimate);
+        assert_eq!(RateCardEstimate.combine(RateCardEstimate), RateCardEstimate);
+
+        // Test ProviderReported dominates FreeTierInferred
+        assert_eq!(ProviderReported.combine(FreeTierInferred), ProviderReported);
+        assert_eq!(FreeTierInferred.combine(ProviderReported), ProviderReported);
+        assert_eq!(ProviderReported.combine(ProviderReported), ProviderReported);
+
+        // Test FreeTierInferred only combined with itself
+        assert_eq!(FreeTierInferred.combine(FreeTierInferred), FreeTierInferred);
+    }
+
+    #[test]
+    fn test_cost_source_label_display() {
+        use CostSource::*;
+        assert_eq!(ProviderReported.label(), "provider_reported");
+        assert_eq!(RateCardEstimate.label(), "rate_card_estimate");
+        assert_eq!(FreeTierInferred.label(), "free_tier_inferred");
+        assert_eq!(Unknown.label(), "unknown");
+
+        assert_eq!(ProviderReported.to_string(), "provider_reported");
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_anthropic() {
+        // prompt: 1000, read: 2000, create: 3000, completion: 4000
+        // Input cost: 1000 / 1M * 3.0 = 0.003
+        // Read cost: 2000 / 1M * 3.0 * 0.10 = 0.0006
+        // Create cost: 3000 / 1M * 3.0 * 1.25 = 0.01125
+        // Completion cost: 4000 / 1M * 15.0 = 0.06
+        // Total = 0.003 + 0.0006 + 0.01125 + 0.06 = 0.07485
+        let cost = estimate_cost_usd(1000, 2000, 3000, 4000, "claude-3-5-sonnet");
+        assert!((cost - 0.07485).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_non_anthropic() {
+        // Cache multipliers are 1.0 for non-anthropic
+        // prompt: 1000, read: 2000, create: 3000, completion: 4000
+        // Input cost: 1000 / 1M * 3.0 = 0.003
+        // Read cost: 2000 / 1M * 3.0 * 1.0 = 0.006
+        // Create cost: 3000 / 1M * 3.0 * 1.0 = 0.009
+        // Completion cost: 4000 / 1M * 15.0 = 0.06
+        // Total = 0.003 + 0.006 + 0.009 + 0.06 = 0.078
+        let cost = estimate_cost_usd(1000, 2000, 3000, 4000, "gpt-4o");
+        assert!((cost - 0.078).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        assert!(is_free_tier_model("google/gemini-pro:free"));
+        assert!(is_free_tier_model("gemini-pro:free"));
+        assert!(!is_free_tier_model("google/gemini-pro"));
+        assert!(!is_free_tier_model("claude-3-5-sonnet"));
+    }
+}
