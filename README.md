@@ -137,16 +137,19 @@ seance gets a receipt.
 Keep the paid path separate from the no-key smoke path. Set the credential for
 the model family you choose, keep the task local and tiny, and set both a step
 limit and a per-task budget. Local execution runs model-generated shell commands
-from this checkout, so treat it as trusted-code execution. Use Docker isolation
-when available for untrusted repositories or tasks; see
-[`docs/spec-interactive-mode.md`](docs/spec-interactive-mode.md) for the local
-execution safety rationale.
+from this checkout, so treat it as trusted-code execution. **For any `--env
+local` run, pass `--interactive` (issue #312):** the agent pauses before every
+bash action and asks the operator to approve, reject, or abort — closing the
+"one hallucinated `rm -rf` away from a wiped checkout" gap that Docker isolation
+otherwise covers. See [`docs/spec-interactive-mode.md`](docs/spec-interactive-mode.md)
+for the full contract; use `--interactive --ui ratatui` for a full-screen
+dashboard, or `--yolo` to run unattended with a per-step status line.
 
 PowerShell:
 
 ```powershell
 $env:ANTHROPIC_API_KEY = "<your Anthropic key>"
-cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
+cargo run --quiet -- --log info mini --interactive --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
 
@@ -154,9 +157,16 @@ macOS/Linux:
 
 ```bash
 export ANTHROPIC_API_KEY="<your Anthropic key>"
-cargo run --quiet -- --log info mini --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
+cargo run --quiet -- --log info mini --interactive --task "Create runs/live-task/hello.txt containing hello from maxwells-daemon." --model claude-opus-4-7 --env local --output runs/live-quickstart --trajectory-name live-hello --step-limit 8 --task-timeout-secs 300 --per-task-budget-usd 0.25
 cargo run --quiet -- --log error bench inspect --sweep runs/live-quickstart --instance live-hello
 ```
+
+At each bash action the prompt prints the proposed command, the current step,
+cumulative cost, and the cache marker, then reads one keystroke: `y` approves,
+`n` rejects (the model receives a synthetic `Exit code: 1` observation and may
+revise), `a` (or Esc/Ctrl-C) aborts the run cleanly. Rejections and aborts are
+recorded on the trajectory as structured events so `bench inspect` can show
+exactly which commands the operator vetoed.
 
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your

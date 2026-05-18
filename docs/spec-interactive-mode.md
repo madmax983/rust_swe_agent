@@ -22,4 +22,10 @@ Success = 0 accidental destructive commands executed during a local run when Int
 
 ## 🕳️ Gap Analysis
 - **SWE-agent**: Offers robust interactive modes allowing users to intercede.
-- **maxwells-daemon today**: The codebase has an `InteractiveAgent` struct that prints a status line and catches `Ctrl-C`, but fails to actually pause and ask for confirmation before executing actions. The CLI also lacks the necessary flags to launch a single-task run in interactive mode.
+- **maxwells-daemon today**: shipped in `mini --interactive` (issue #312). `--interactive` enables a stderr y/n/a prompt before every bash/tool action; `--interactive --ui ratatui` swaps it for a full-screen dashboard with a modal prompt and live trajectory feed; `--yolo` alone prints a per-step status line without prompting. Non-TTY stdin without `--yolo` fails fast with "interactive mode requires a TTY; pass --yolo for unattended runs." Hook ordering: PreToolUse hooks fire before the prompt so the operator sees the same command the hook layer evaluated; a denied hook short-circuits the prompt. Rejections write `interactive_decision: "reject"` (+ proposed command, tool name, timestamp) onto the trajectory observation; aborts stamp `interactive_abort` onto trajectory info before `finalize_cancelled` runs.
+
+## Implementation notes
+- Confirmation lives on `DefaultAgent.confirm_callback: Option<Arc<dyn ConfirmCallback>>`. `ConfirmCallback::confirm(ctx) -> ConfirmDecision { Approve, Reject, Abort }` is the only entry point; tests use `ScriptedConfirmer`, the CLI uses `StderrCliConfirmer` (crossterm raw mode with line-buffered fallback), the dashboard uses `RatatuiDashboard` (also a `StreamSink`).
+- `ConfirmContext` carries `tool_name`, redacted `command`, `step`, `step_limit`, `cost_usd`, and the cache marker (`cache:explicit` / `cache:auto-or-none`).
+- Reject returns a synthetic `Exit code: 1\nCommand rejected by operator (interactive mode). …` user observation so the model can revise within the same step budget.
+- Mutually exclusive with `--render-only`; enforced at the clap layer.
