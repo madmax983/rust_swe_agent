@@ -88,42 +88,6 @@ impl PolicyProfile {
     }
 }
 
-// ── Policy config errors ─────────────────────────────────────────────────────
-
-/// Error raised when an operator-supplied policy config cannot be parsed
-/// into a [`PolicyEngine`].
-#[derive(Debug)]
-pub enum PolicyConfigError {
-    /// `[policy] profile = "..."` was not one of `safe`, `ask`, `yolo`.
-    UnknownProfile(String),
-    /// A regex in `extra_allow_patterns` or `extra_deny_patterns` failed
-    /// to compile.
-    InvalidRegex { label: String, source: regex::Error },
-}
-
-impl std::fmt::Display for PolicyConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownProfile(p) => write!(
-                f,
-                "unknown policy profile {p:?} (expected one of: safe, ask, yolo)"
-            ),
-            Self::InvalidRegex { label, source } => {
-                write!(f, "invalid regex in policy rule {label:?}: {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PolicyConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::UnknownProfile(_) => None,
-            Self::InvalidRegex { source, .. } => Some(source),
-        }
-    }
-}
-
 // ── Policy decision ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1030,11 +994,15 @@ impl PolicyEngine {
     /// `"safe"`, `"ask"`, or `"yolo"` (case-insensitive).  Silently falling
     /// back to `Safe` on a typo would downgrade an operator who selected
     /// `ask` for fail-closed behaviour, so it is treated as a hard error.
-    /// Returns [`PolicyConfigError::InvalidRegex`] if any extra
-    /// allow/deny pattern fails to compile.
-    pub fn from_cfg(cfg: &PolicyCfg) -> Result<Self, PolicyConfigError> {
-        let profile = PolicyProfile::from_str(&cfg.profile)
-            .ok_or_else(|| PolicyConfigError::UnknownProfile(cfg.profile.clone()))?;
+    /// Returns [`crate::error::ConfigError`] if any extra
+    /// allow/deny pattern fails to compile or if the profile is unknown.
+    pub fn from_cfg(cfg: &PolicyCfg) -> Result<Self, crate::error::ConfigError> {
+        let profile = PolicyProfile::from_str(&cfg.profile).ok_or_else(|| {
+            crate::error::ConfigError::Invalid(format!(
+                "unknown policy profile {:?} (expected one of: safe, ask, yolo)",
+                cfg.profile
+            ))
+        })?;
         let extra_allow = cfg
             .extra_allow_patterns
             .iter()
@@ -1047,9 +1015,13 @@ impl PolicyEngine {
                         pattern: r,
                         decision: RuleDecision::Allow,
                     })
-                    .map_err(|source| PolicyConfigError::InvalidRegex { label, source })
+                    .map_err(|source| {
+                        crate::error::ConfigError::Invalid(format!(
+                            "invalid regex in policy rule {label:?}: {source}"
+                        ))
+                    })
             })
-            .collect::<Result<Vec<_>, PolicyConfigError>>()?;
+            .collect::<Result<Vec<_>, crate::error::ConfigError>>()?;
         let extra_deny = cfg
             .extra_deny_patterns
             .iter()
@@ -1062,9 +1034,13 @@ impl PolicyEngine {
                         pattern: r,
                         decision: RuleDecision::Deny,
                     })
-                    .map_err(|source| PolicyConfigError::InvalidRegex { label, source })
+                    .map_err(|source| {
+                        crate::error::ConfigError::Invalid(format!(
+                            "invalid regex in policy rule {label:?}: {source}"
+                        ))
+                    })
             })
-            .collect::<Result<Vec<_>, PolicyConfigError>>()?;
+            .collect::<Result<Vec<_>, crate::error::ConfigError>>()?;
         Ok(Self::with_extra_rules(profile, extra_allow, extra_deny))
     }
 

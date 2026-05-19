@@ -515,11 +515,7 @@ impl DefaultAgentBuilder {
                 "invalid agent.test_command_patterns regex: {err}"
             )))
         })?;
-        let policy_engine = PolicyEngine::from_cfg(&self.config.root.policy).map_err(|err| {
-            Error::Config(crate::error::ConfigError::Invalid(format!(
-                "invalid policy config: {err}"
-            )))
-        })?;
+        let policy_engine = PolicyEngine::from_cfg(&self.config.root.policy)?;
         // Validate and build the stagnation detector.
         let agent_cfg = &self.config.root.agent;
         let stagnation_detector = if agent_cfg.detect_stagnation {

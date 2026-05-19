@@ -3,8 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use maxwells_daemon::policy::{
-    PolicyCfg, PolicyConfigError, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile,
-    PolicyRule,
+    PolicyCfg, PolicyCounts, PolicyDecision, PolicyEngine, PolicyProfile, PolicyRule,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -665,15 +664,21 @@ fn unknown_profile_returns_error_instead_of_silently_defaulting() {
     };
     let result = PolicyEngine::from_cfg(&cfg);
     match result {
-        Err(PolicyConfigError::UnknownProfile(p)) => assert_eq!(p, "aks"),
-        Err(other) => panic!("expected UnknownProfile, got {other:?}"),
+        Err(maxwells_daemon::error::ConfigError::Invalid(msg))
+            if msg.contains("unknown policy profile \"aks\"") => {}
+        Err(other) => panic!("expected ConfigError::Invalid with aks, got {other:?}"),
         Ok(_) => panic!("expected error for typo'd profile, got Ok"),
     }
 }
 
 #[test]
 fn unknown_profile_error_message_lists_valid_options() {
-    let err = PolicyConfigError::UnknownProfile("nonsense".into());
+    let cfg = PolicyCfg {
+        profile: "nonsense".into(),
+        extra_deny_patterns: vec![],
+        extra_allow_patterns: vec![],
+    };
+    let err = PolicyEngine::from_cfg(&cfg).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("nonsense"));
     assert!(msg.contains("safe"));
@@ -689,10 +694,10 @@ fn invalid_extra_deny_regex_returns_error() {
         extra_allow_patterns: vec![],
     };
     match PolicyEngine::from_cfg(&cfg) {
-        Err(PolicyConfigError::InvalidRegex { label, .. }) => {
-            assert!(label.starts_with("cfg-deny-"));
+        Err(maxwells_daemon::error::ConfigError::Invalid(msg)) => {
+            assert!(msg.contains("invalid regex in policy rule \"cfg-deny-"));
         }
-        other => panic!("expected InvalidRegex error, got {other:?}"),
+        other => panic!("expected ConfigError::Invalid error, got {other:?}"),
     }
 }
 
