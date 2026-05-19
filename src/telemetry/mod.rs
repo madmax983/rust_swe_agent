@@ -153,15 +153,43 @@ struct TracerInner {
     headers: Vec<(String, String)>,
 }
 
+/// Decode a percent-encoded string (W3C Baggage / OTel header value encoding).
+///
+/// `%XX` sequences are replaced with the corresponding byte value; other
+/// characters are passed through as-is.  Non-UTF-8 sequences are dropped.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                // hi and lo are each 0..=15, so (hi*16)+lo is 0..=255.
+                out.push(u8::try_from(hi * 16 + lo).unwrap_or_default());
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
 /// Parse a comma-separated OTel header env var value into `(name, value)` pairs.
 ///
-/// Format: `"key1=val1,key2=val2"`.  Pairs that do not contain `=` are skipped.
+/// Format: `"key1=val1,key2=val2"`.  Values are percent-decoded per the W3C
+/// Baggage / OTel spec (e.g. `Bearer%20token` → `Bearer token`).
+/// Pairs that do not contain `=` are skipped.
 pub fn parse_otlp_header_env(raw: &str) -> Vec<(String, String)> {
     raw.split(',')
         .filter_map(|pair| {
             let (k, v) = pair.split_once('=')?;
             let k = k.trim().to_owned();
-            let v = v.trim().to_owned();
+            let v = percent_decode(v.trim());
             if k.is_empty() { None } else { Some((k, v)) }
         })
         .collect()
