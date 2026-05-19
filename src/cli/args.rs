@@ -4,6 +4,73 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+// ── Agent subcommands ─────────────────────────────────────────────────────────
+
+/// Validated environment-type selector for `agent env preview`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvTypeArg {
+    Local,
+    Docker,
+}
+
+impl EnvTypeArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Docker => "docker",
+        }
+    }
+}
+
+/// Validated output-format selector for `agent env preview`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PreviewFormatArg {
+    Text,
+    Json,
+}
+
+/// `agent env preview` — print a structured preview of the agent environment.
+#[derive(Debug, Args)]
+pub struct EnvPreviewCmd {
+    /// Environment type: `local` or `docker`.
+    #[arg(long)]
+    pub env: EnvTypeArg,
+
+    /// Task description (used for context; passed through the redactor).
+    #[arg(long)]
+    pub task: String,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: PreviewFormatArg,
+
+    /// Show actual env var values instead of `[REDACTED:…]` markers.
+    #[arg(long, default_value_t = false)]
+    pub show_values: bool,
+}
+
+/// `agent env` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AgentEnvCmd {
+    /// Preview environment configuration for a task without running anything.
+    Preview(EnvPreviewCmd),
+}
+
+/// `agent` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AgentCmd {
+    /// Inspect or preview agent environment settings.
+    Env {
+        #[command(subcommand)]
+        cmd: AgentEnvCmd,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum StratifyByArg {
     Repo,
@@ -1787,4 +1854,19 @@ pub struct BehaviorCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_type_arg_as_str_local() {
+        assert_eq!(EnvTypeArg::Local.as_str(), "local");
+    }
+
+    #[test]
+    fn env_type_arg_as_str_docker() {
+        assert_eq!(EnvTypeArg::Docker.as_str(), "docker");
+    }
 }
