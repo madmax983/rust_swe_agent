@@ -277,7 +277,11 @@ impl Tracer {
                         let rejected = json
                             .get("partialSuccess")
                             .and_then(|ps| ps.get("rejectedSpans"))
-                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|v| {
+                                // OTLP/JSON encodes int64 fields as decimal strings.
+                                v.as_u64()
+                                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                            })
                             .unwrap_or(0);
                         if rejected > 0 {
                             tracing::warn!(
@@ -656,7 +660,7 @@ pub(crate) mod build {
             if let Some(latency_ms) = msg.extra.model_latency_ms {
                 let mc_start = cursor;
                 let mc_end = cursor + latency_ms * 1_000_000;
-                cursor = mc_end;
+                cursor = mc_end + msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
 
                 let (prompt_tokens, completion_tokens, cache_read, cache_creation) =
                     if let Some(resp_val) = &msg.extra.response {
@@ -692,7 +696,7 @@ pub(crate) mod build {
             if let Some(tool_latency_ms) = msg.extra.tool_latency_ms {
                 let tc_start = cursor;
                 let tc_end = cursor + tool_latency_ms * 1_000_000;
-                cursor = tc_end;
+                cursor = tc_end + msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
 
                 // The `actions` list is written on the preceding assistant turn.
                 // Fall back to the current message's actions if prev is missing.

@@ -2384,8 +2384,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             resolved_count: sweep
                 .instances
                 .iter()
-                .map(|r| u64::from(r.resolved_count))
-                .sum(),
+                .filter(|r| r.resolved_count > 0)
+                .count() as u64,
             total_cost_usd: sweep.estimated_cost_usd,
             harness_version: env!("CARGO_PKG_VERSION").into(),
             git_sha: manifest_ref.and_then(|m| m.harness.git_sha.clone()),
