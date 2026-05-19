@@ -127,7 +127,12 @@ fn compute_instance_metrics_partial_example_b() {
     // PASS_TO_PASS=["p1","p2"], no regressions
     let fail_to_pass = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     let pass_to_pass = vec!["p1".to_string(), "p2".to_string()];
-    let tests_passed = vec!["a".to_string(), "b".to_string(), "p1".to_string(), "p2".to_string()];
+    let tests_passed = vec![
+        "a".to_string(),
+        "b".to_string(),
+        "p1".to_string(),
+        "p2".to_string(),
+    ];
     let tests_failed = vec!["c".to_string()];
     let m = compute_instance_metrics(&fail_to_pass, &pass_to_pass, &tests_passed, &tests_failed);
     assert_eq!(m.fail_to_pass_total, 3);
@@ -143,13 +148,18 @@ fn compute_instance_metrics_partial_example_b() {
 #[test]
 fn compute_instance_metrics_regressed_example_c() {
     // AC (c): FAIL_TO_PASS=["a","b","c"], PASS_TO_PASS=["p1".."p5"]
-    let fail_to_pass: Vec<String> = vec!["a", "b", "c"].into_iter().map(str::to_string).collect();
+    let fail_to_pass: Vec<String> = vec!["a", "b", "c"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let pass_to_pass: Vec<String> = vec!["p1", "p2", "p3", "p4", "p5"]
         .into_iter()
         .map(str::to_string)
         .collect();
-    let tests_passed: Vec<String> =
-        vec!["p1", "p2", "p3"].into_iter().map(str::to_string).collect();
+    let tests_passed: Vec<String> = vec!["p1", "p2", "p3"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let tests_failed: Vec<String> = vec!["a", "b", "c", "p4", "p5"]
         .into_iter()
         .map(str::to_string)
@@ -186,7 +196,12 @@ fn ac_a_all_resolved_mean_score_is_one() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_all_resolved", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(
         output.status.success(),
         "test-progress failed:\nstdout: {}\nstderr: {}",
@@ -195,7 +210,9 @@ fn ac_a_all_resolved_mean_score_is_one() {
     );
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let mean = report["totals"]["mean_partial_credit_score"].as_f64().unwrap();
+    let mean = report["totals"]["mean_partial_credit_score"]
+        .as_f64()
+        .unwrap();
     assert!(
         (mean - 1.0).abs() < 1e-9,
         "all-resolved sweep should have mean_partial_credit_score=1.0, got {mean}"
@@ -203,7 +220,10 @@ fn ac_a_all_resolved_mean_score_is_one() {
     let per_instance = report["per_instance"].as_array().unwrap();
     for inst in per_instance {
         let bucket = inst["verdict_bucket"].as_str().unwrap();
-        assert_ne!(bucket, "partial_progress", "no partial_progress in all-resolved sweep");
+        assert_ne!(
+            bucket, "partial_progress",
+            "no partial_progress in all-resolved sweep"
+        );
         assert_ne!(bucket, "regressed", "no regressed in all-resolved sweep");
     }
 }
@@ -214,7 +234,12 @@ fn ac_b_partial_progress_instance() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -233,7 +258,10 @@ fn ac_b_partial_progress_instance() {
     assert_eq!(partial["fail_to_pass"]["passed_count"].as_u64().unwrap(), 2);
     let ratio = partial["fail_to_pass"]["passed_ratio"].as_f64().unwrap();
     assert!((ratio - 2.0 / 3.0).abs() < 1e-6);
-    assert_eq!(partial["pass_to_pass"]["regressed_count"].as_u64().unwrap(), 0);
+    assert_eq!(
+        partial["pass_to_pass"]["regressed_count"].as_u64().unwrap(),
+        0
+    );
 }
 
 // AC (c): 0/3 FAIL_TO_PASS passed, 2/5 regressed → regressed, score = -0.4
@@ -242,7 +270,12 @@ fn ac_c_regressed_instance() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -267,7 +300,12 @@ fn ac_d_evaluator_unavailable_excluded_from_means() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -283,13 +321,20 @@ fn ac_d_evaluator_unavailable_excluded_from_means() {
     let unavail_count = report["totals"]["per_bucket"]["evaluator_unavailable"]
         .as_u64()
         .unwrap_or(0);
-    assert!(unavail_count >= 1, "evaluator_unavailable count should be >=1");
+    assert!(
+        unavail_count >= 1,
+        "evaluator_unavailable count should be >=1"
+    );
 
     // Means should be computed over non-unavailable instances only
     // The evaluator_unavailable_count should be reported separately
     assert!(
-        report["totals"]["evaluator_unavailable_count"].as_u64().is_some()
-            || report["totals"]["per_bucket"]["evaluator_unavailable"].as_u64().is_some(),
+        report["totals"]["evaluator_unavailable_count"]
+            .as_u64()
+            .is_some()
+            || report["totals"]["per_bucket"]["evaluator_unavailable"]
+                .as_u64()
+                .is_some(),
         "evaluator_unavailable count must be reported"
     );
 }
@@ -300,7 +345,12 @@ fn ac_e_hot_failing_tests_ranking() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -370,8 +420,7 @@ fn ac_f_bench_compare_test_progress_delta() {
     let stdout = String::from_utf8_lossy(&compare_out.stdout);
     let stderr = String::from_utf8_lossy(&compare_out.stderr);
     assert!(
-        compare_out.status.success()
-            || compare_out.status.code() == Some(6),
+        compare_out.status.success() || compare_out.status.code() == Some(6),
         "bench compare should succeed or exit 6 (regression gate): {stderr}"
     );
     assert!(
@@ -392,14 +441,12 @@ fn ac_g_determinism() {
     copy_fixture("sweep_mixed", sweep.path());
 
     let first = run_test_progress_json(sweep.path());
-    let first_file =
-        std::fs::read_to_string(sweep.path().join("test-progress.json")).unwrap();
+    let first_file = std::fs::read_to_string(sweep.path().join("test-progress.json")).unwrap();
 
     std::thread::sleep(Duration::from_secs(1));
 
     let second = run_test_progress_json(sweep.path());
-    let second_file =
-        std::fs::read_to_string(sweep.path().join("test-progress.json")).unwrap();
+    let second_file = std::fs::read_to_string(sweep.path().join("test-progress.json")).unwrap();
 
     assert_eq!(
         redact_generated_at(&first),
@@ -442,7 +489,10 @@ fn ac_h_min_tests_drops_from_means_keeps_in_per_instance() {
     assert_eq!(inst["instance_id"].as_str().unwrap(), "small-1");
     // Should be flagged as excluded from means
     let excluded = inst["excluded_from_means"].as_bool().unwrap_or(false);
-    assert!(excluded, "small-1 should be flagged excluded_from_means=true with --min-tests 5");
+    assert!(
+        excluded,
+        "small-1 should be flagged excluded_from_means=true with --min-tests 5"
+    );
 }
 
 // ── Additional CLI integration tests ─────────────────────────────────────────
@@ -460,13 +510,25 @@ fn cli_writes_test_progress_json() {
 
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&artifact).unwrap()).unwrap();
-    assert!(report["schema_version"].is_number(), "schema_version required");
+    assert!(
+        report["schema_version"].is_number(),
+        "schema_version required"
+    );
     assert!(report["generated_at"].is_string(), "generated_at required");
     assert!(report["totals"].is_object(), "totals required");
     assert!(report["per_instance"].is_array(), "per_instance required");
-    assert!(report["hot_failing_tests"].is_array(), "hot_failing_tests required");
-    assert!(report["hot_regressed_tests"].is_array(), "hot_regressed_tests required");
-    assert!(report["redaction_applied"].is_boolean(), "redaction_applied required");
+    assert!(
+        report["hot_failing_tests"].is_array(),
+        "hot_failing_tests required"
+    );
+    assert!(
+        report["hot_regressed_tests"].is_array(),
+        "hot_regressed_tests required"
+    );
+    assert!(
+        report["redaction_applied"].is_boolean(),
+        "redaction_applied required"
+    );
 }
 
 #[test]
@@ -474,7 +536,12 @@ fn cli_schema_version_is_integer() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -489,21 +556,29 @@ fn cli_per_instance_sorted_by_partial_credit_score_asc_then_instance_id() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let per_instance = report["per_instance"].as_array().unwrap();
 
     for i in 1..per_instance.len() {
-        let prev_score = per_instance[i - 1]["partial_credit_score"].as_f64().unwrap_or(0.0);
-        let curr_score = per_instance[i]["partial_credit_score"].as_f64().unwrap_or(0.0);
+        let prev_score = per_instance[i - 1]["partial_credit_score"]
+            .as_f64()
+            .unwrap_or(0.0);
+        let curr_score = per_instance[i]["partial_credit_score"]
+            .as_f64()
+            .unwrap_or(0.0);
         let prev_id = per_instance[i - 1]["instance_id"].as_str().unwrap_or("");
         let curr_id = per_instance[i]["instance_id"].as_str().unwrap_or("");
         let prev_i = i - 1;
         assert!(
-            prev_score < curr_score
-                || (prev_score == curr_score && prev_id <= curr_id),
+            prev_score < curr_score || (prev_score == curr_score && prev_id <= curr_id),
             "per_instance should be sorted by partial_credit_score ASC then instance_id: \
              [{prev_i}]={prev_score},{prev_id} before [{i}]={curr_score},{curr_id}"
         );
@@ -515,21 +590,31 @@ fn cli_totals_bucket_counts_match_per_instance() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let per_instance = report["per_instance"].as_array().unwrap();
 
-    for bucket in ["resolved", "partial_progress", "no_progress", "regressed", "evaluator_unavailable"] {
+    for bucket in [
+        "resolved",
+        "partial_progress",
+        "no_progress",
+        "regressed",
+        "evaluator_unavailable",
+    ] {
         let count_from_instances = per_instance
             .iter()
             .filter(|i| i["verdict_bucket"].as_str() == Some(bucket))
             .count() as u64;
         let count_from_totals = report["totals"]["per_bucket"][bucket].as_u64().unwrap_or(0);
         assert_eq!(
-            count_from_instances,
-            count_from_totals,
+            count_from_instances, count_from_totals,
             "bucket {bucket}: per_instance count {count_from_instances} != totals count {count_from_totals}"
         );
     }
@@ -540,7 +625,12 @@ fn cli_means_exclude_evaluator_unavailable() {
     let sweep = tempfile::tempdir().unwrap();
     copy_fixture("sweep_mixed", sweep.path());
 
-    let output = run_test_progress(&["--sweep", sweep.path().to_str().unwrap(), "--format", "json"]);
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -580,7 +670,10 @@ fn cli_bucket_filter_restricts_text_output() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("regressed"), "text output should mention regressed: {stdout}");
+    assert!(
+        stdout.contains("regressed"),
+        "text output should mention regressed: {stdout}"
+    );
 }
 
 #[test]
@@ -672,8 +765,7 @@ fn cli_bench_compare_omits_section_when_test_progress_absent() {
 
     // Should succeed (no error just because test-progress.json is absent)
     assert!(
-        compare_out.status.success()
-            || compare_out.status.code() == Some(6),
+        compare_out.status.success() || compare_out.status.code() == Some(6),
         "bench compare should not error when test-progress.json is absent: {}",
         String::from_utf8_lossy(&compare_out.stderr)
     );
@@ -695,12 +787,7 @@ fn run_test_progress(args: &[&str]) -> std::process::Output {
 }
 
 fn run_test_progress_json(sweep: &Path) -> serde_json::Value {
-    let output = run_test_progress(&[
-        "--sweep",
-        sweep.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let output = run_test_progress(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
     assert!(
         output.status.success(),
         "bench test-progress failed\nstdout:\n{}\nstderr:\n{}",

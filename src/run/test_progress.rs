@@ -245,14 +245,13 @@ pub fn test_progress_compare_section(baseline: &Path, candidate: &Path) -> Optio
     let c: TestProgressReport = serde_json::from_str(&c_text).ok()?;
 
     #[allow(clippy::similar_names)]
-    let mean_score_delta =
-        c.totals.mean_partial_credit_score - b.totals.mean_partial_credit_score;
+    let mean_score_delta = c.totals.mean_partial_credit_score - b.totals.mean_partial_credit_score;
     #[allow(clippy::similar_names)]
-    let mean_ftp_ratio_delta = c.totals.mean_fail_to_pass_passed_ratio
-        - b.totals.mean_fail_to_pass_passed_ratio;
+    let mean_ftp_ratio_delta =
+        c.totals.mean_fail_to_pass_passed_ratio - b.totals.mean_fail_to_pass_passed_ratio;
     #[allow(clippy::similar_names)]
-    let mean_ptp_ratio_delta = c.totals.mean_pass_to_pass_regressed_ratio
-        - b.totals.mean_pass_to_pass_regressed_ratio;
+    let mean_ptp_ratio_delta =
+        c.totals.mean_pass_to_pass_regressed_ratio - b.totals.mean_pass_to_pass_regressed_ratio;
 
     let mut out = String::from("\n--- Test progress delta ---\n");
     let _ = writeln!(
@@ -512,33 +511,40 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
     let per_bucket_share: BTreeMap<String, f64> = per_bucket
         .iter()
         .map(|(k, &v)| {
-            let share = if total > 0 { v as f64 / total as f64 } else { 0.0 };
+            let share = if total > 0 {
+                v as f64 / total as f64
+            } else {
+                0.0
+            };
             (k.clone(), share)
         })
         .collect();
 
-    let unavailable_count = per_bucket.get("evaluator_unavailable").copied().unwrap_or(0);
+    let unavailable_count = per_bucket
+        .get("evaluator_unavailable")
+        .copied()
+        .unwrap_or(0);
 
     // Compute means over eligible instances
     let eligible: Vec<&PerInstanceRow> = instance_rows
         .iter()
-        .filter(|r| {
-            r.verdict_bucket != "evaluator_unavailable" && !r.excluded_from_means
-        })
+        .filter(|r| r.verdict_bucket != "evaluator_unavailable" && !r.excluded_from_means)
         .collect();
 
     #[allow(clippy::cast_precision_loss)]
     let mean_pcs = if eligible.is_empty() {
         0.0
     } else {
-        eligible.iter().map(|r| r.partial_credit_score).sum::<f64>()
-            / eligible.len() as f64
+        eligible.iter().map(|r| r.partial_credit_score).sum::<f64>() / eligible.len() as f64
     };
     #[allow(clippy::cast_precision_loss)]
     let mean_ftp = if eligible.is_empty() {
         0.0
     } else {
-        eligible.iter().map(|r| r.fail_to_pass.passed_ratio).sum::<f64>()
+        eligible
+            .iter()
+            .map(|r| r.fail_to_pass.passed_ratio)
+            .sum::<f64>()
             / eligible.len() as f64
     };
     #[allow(clippy::cast_precision_loss)]
@@ -827,9 +833,9 @@ fn matches_filter(
             }
             Ok(resolved == Some(value == "true"))
         }
-        "failure_category" => Ok(instance.failure_category.is_some_and(|fc| {
-            crate::run::command_stats::failure_category_label(fc) == value
-        })),
+        "failure_category" => Ok(instance
+            .failure_category
+            .is_some_and(|fc| crate::run::command_stats::failure_category_label(fc) == value)),
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "test-progress: unsupported filter key `{other}`; supported: `resolved`, `failure_category`"
         )))),

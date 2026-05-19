@@ -1074,10 +1074,7 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 print!("{diff}");
             }
             if let Some(tp_diff) =
-                crate::run::test_progress::test_progress_compare_section(
-                    &c.baseline,
-                    &c.candidate,
-                )
+                crate::run::test_progress::test_progress_compare_section(&c.baseline, &c.candidate)
             {
                 print!("{tp_diff}");
             }
