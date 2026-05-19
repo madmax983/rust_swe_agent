@@ -302,3 +302,98 @@ where
     #[serde(flatten)]
     payload: &'a T,
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_classify_json_value_legacy_fallback() {
+        let value = json!({ "some_data": 123 });
+        let result = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap();
+        assert_eq!(result.kind, ArtifactKind::Trajectory);
+        assert_eq!(result.version, None);
+        assert_eq!(result.class, CompatibilityClass::SupportedLegacy);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("supported-legacy artifact: detected pre-versioning"));
+    }
+
+    #[test]
+    fn test_classify_json_value_malformed_header_missing_kind() {
+        let value = json!({
+            "schema_version": {"major": 1, "minor": 9}
+        });
+        let err = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap_err();
+        assert!(matches!(err, ArtifactSchemaError::MalformedHeader { .. }));
+    }
+
+    #[test]
+    fn test_classify_json_value_malformed_header_missing_version() {
+        let value = json!({
+            "artifact_kind": "trajectory"
+        });
+        let err = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap_err();
+        assert!(matches!(err, ArtifactSchemaError::MalformedHeader { .. }));
+    }
+
+    #[test]
+    fn test_classify_json_value_kind_mismatch() {
+        let value = json!({
+            "artifact_kind": "sweep_results",
+            "schema_version": {"major": 1, "minor": 9}
+        });
+        let err = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap_err();
+        assert!(matches!(err, ArtifactSchemaError::KindMismatch { .. }));
+    }
+
+    #[test]
+    fn test_classify_json_value_unsupported_future_major() {
+        let value = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 2, "minor": 0}
+        });
+        let err = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap_err();
+        assert!(matches!(err, ArtifactSchemaError::UnsupportedFuture { .. }));
+    }
+
+    #[test]
+    fn test_classify_json_value_supported_current() {
+        let current = ArtifactSchemaVersion::CURRENT;
+        let value = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": current.major, "minor": current.minor}
+        });
+        let result = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap();
+        assert_eq!(result.class, CompatibilityClass::SupportedCurrent);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_classify_json_value_future_minor_warning() {
+        let current = ArtifactSchemaVersion::CURRENT;
+        let value = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": current.major, "minor": current.minor + 1}
+        });
+        let result = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap();
+        assert_eq!(result.class, CompatibilityClass::SupportedCurrent);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("has a newer additive minor"));
+    }
+
+    #[test]
+    fn test_classify_json_value_legacy_minor_warning() {
+        let current = ArtifactSchemaVersion::CURRENT;
+        assert!(current.minor > 0, "test requires CURRENT minor to be > 0");
+        let value = json!({
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": current.major, "minor": current.minor - 1}
+        });
+        let result = classify_json_value(&value, ArtifactKind::Trajectory, "test").unwrap();
+        assert_eq!(result.class, CompatibilityClass::SupportedLegacy);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("this binary defaults missing fields"));
+    }
+}

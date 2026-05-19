@@ -96,3 +96,51 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cost_source_combine_preserves_priority() {
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::RateCardEstimate),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+    }
+
+    #[test]
+    fn test_is_free_tier_model_identifies_free_tier_suffixes() {
+        // Standard full model names
+        assert!(is_free_tier_model("gemini-1.5-flash:free"));
+        assert!(is_free_tier_model("google/gemini-1.5-flash:free"));
+
+        // Exact match edge case
+        assert!(is_free_tier_model(":free"));
+
+        // Should not match partials or prefixes
+        assert!(!is_free_tier_model("free:gemini-1.5"));
+        assert!(!is_free_tier_model("gemini-1.5-flash:free-tier"));
+        assert!(!is_free_tier_model("gemini-1.5-flash"));
+        assert!(!is_free_tier_model("google/gemini-1.5-flash"));
+
+        // Empty edge case
+        assert!(!is_free_tier_model(""));
+    }
+}
