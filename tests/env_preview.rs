@@ -1456,5 +1456,131 @@ command = "/workspace/bin/local-tool --flag"
     );
 }
 
+// ── Template placeholder detection ───────────────────────────────────────────
+
+#[test]
+fn template_placeholder_in_mcp_command_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "tmpl-mcp"
+command = "{{ tool_executor }} /workspace/bin/mcp"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir") && f.message.contains("{{")),
+        "MCP server with a template placeholder in command must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn template_placeholder_in_tool_command_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.tools]]
+name = "tmpl-tool"
+command = "{{ runner }} /workspace/bin/local-tool"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("tmpl-tool") && f.message.contains("outside workdir")),
+        "Command tool with template placeholder in command must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn shell_param_expansion_in_mcp_exe_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "param-mcp"
+command = "${MCP_BIN} --arg"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir") && f.message.contains("${MCP_BIN}")),
+        "MCP server with shell parameter expansion in exe must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn shell_param_expansion_in_hook_exe_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.hooks.pre_tool_use]]
+name = "param-hook"
+command = "${HOOK_BIN} --flag"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("param-hook") && f.message.contains("outside workdir")),
+        "Hook with shell parameter expansion in exe must be flagged as outside workdir"
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)

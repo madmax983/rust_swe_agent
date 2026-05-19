@@ -294,10 +294,20 @@ fn build_mcp_servers_preview(
 /// normalized before the prefix check so they cannot escape the workdir
 /// boundary test.
 fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
+    // Template placeholders (`{{ tool_input }}` etc.) render at runtime and
+    // cannot be statically analyzed — treat the whole command as risky.
+    if raw_command.contains("{{") {
+        return true;
+    }
     if has_shell_operators(raw_command) {
         return true;
     }
     let exe_raw = extract_exe_path(raw_command);
+    // Shell parameter expansions (`${VAR}`, `$VAR`) in the executable token
+    // make the resolved path statically unanalyzable — flag as risky.
+    if exe_raw.contains('$') {
+        return true;
+    }
     // Resolve the executable path to an absolute form before comparing to the
     // workdir boundary.  Docker starts the MCP process with `-w workdir`, so
     // the process cwd is workdir.  Bash therefore resolves:
@@ -544,7 +554,9 @@ fn collect_binary_findings(
 
     for (i, tool) in cfg.root.agent.tools.iter().enumerate() {
         if mcp_is_outside_workdir(&tool.command, wd) {
-            let name = &tool.name;
+            // Redact the tool name so secret literals embedded in it are not
+            // printed verbatim in findings (mirrors the hook and MCP handling).
+            let name = redact(redactor, &tool.name);
             let cmd = redact(redactor, &tool.command);
             findings.push(PreviewFinding {
                 severity: "warning".into(),
