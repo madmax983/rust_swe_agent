@@ -4,7 +4,7 @@
 //!     task re-runs, producing a fresh, valid trajectory
 //!   * without `--resume`, valid pre-existing files are *not* skipped
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::large_futures, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::Path;

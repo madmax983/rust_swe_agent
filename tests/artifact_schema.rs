@@ -1,6 +1,6 @@
 //! Artifact schema compatibility and producer/reader contract tests.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::large_futures)]
 
 use maxwells_daemon::Config;
 use maxwells_daemon::artifact::{

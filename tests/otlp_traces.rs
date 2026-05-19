@@ -2,7 +2,11 @@
 //!
 //! RED → all tests in this file should fail until the implementation is complete.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::await_holding_lock
+)]
 
 use std::fmt::Write as _;
 use std::net::TcpListener;
@@ -188,8 +192,10 @@ fn instance_result_has_trace_id() {
 
 #[test]
 fn trajectory_info_has_trace_id() {
-    let mut info = TrajectoryInfo::default();
-    info.trace_id = Some("aabbccdd00000000aabbccdd00000000".into());
+    let info = TrajectoryInfo {
+        trace_id: Some("aabbccdd00000000aabbccdd00000000".into()),
+        ..Default::default()
+    };
     assert_eq!(
         info.trace_id.as_deref(),
         Some("aabbccdd00000000aabbccdd00000000")

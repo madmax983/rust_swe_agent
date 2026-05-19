@@ -1,6 +1,6 @@
 //! `bench forecast`: calibration-driven sweep cost forecasts.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines, clippy::large_futures)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
