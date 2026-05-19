@@ -611,6 +611,47 @@ async fn mini_resume_cmd(
     mut cfg: Config,
     resume_path: std::path::PathBuf,
 ) -> Result<(), Error> {
+    // Reject GitHub PR flags — the PR-opening path lives in the non-resume
+    // branch. Silently ignoring them would mislead the operator.
+    let pr_flags: &[(&str, bool)] = &[
+        ("--open-pr", m.github_pr.open_pr),
+        ("--github-pr-dry-run", m.github_pr.github_pr_dry_run),
+        ("--target-repo", m.github_pr.target_repo.is_some()),
+        ("--target-branch", m.github_pr.target_branch.is_some()),
+    ];
+    let set_pr_flags: Vec<&str> = pr_flags
+        .iter()
+        .filter_map(|&(name, set)| set.then_some(name))
+        .collect();
+    if !set_pr_flags.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--resume: GitHub PR flags are not supported on resume invocations: {}",
+                set_pr_flags.join(", ")
+            ),
+        );
+    }
+
+    // Validate extension: the write path is reconstructed as
+    // `parent/{stem}.traj.json`, so if the file doesn't end with `.traj.json`
+    // the read and write targets would differ. Reject early with a clear error.
+    let traj_stem = resume_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".traj.json"))
+        .unwrap_or_else(|| {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                &format!(
+                    "--resume: `{}` must end with `.traj.json`; \
+                     only trajectory files written by this harness are supported",
+                    resume_path.display()
+                ),
+            )
+        })
+        .to_owned();
+
     let traj = load_resume_traj(&resume_path)?;
     validate_resume_or_exit(&traj, &resume_path);
 
@@ -632,14 +673,6 @@ async fn mini_resume_cmd(
         reject_cap_bump_without_flag(&m);
     }
 
-    let trajectory_name = resume_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map_or_else(
-            || "resumed".to_owned(),
-            |s| s.trim_end_matches(".traj").to_owned(),
-        );
-
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -656,12 +689,6 @@ async fn mini_resume_cmd(
         || std::path::PathBuf::from("."),
         std::path::Path::to_path_buf,
     );
-    let traj_stem = resume_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_suffix(".traj.json"))
-        .unwrap_or(&trajectory_name)
-        .to_owned();
 
     let args = crate::run::mini::MiniArgs {
         task,

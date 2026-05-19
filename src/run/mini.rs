@@ -26,6 +26,11 @@ use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
 
+// NOTE: this records the SHA of the repo at the operator's CWD, not
+// necessarily the harness binary's own source repo. This matches the
+// pre-existing behavior of the same function in cli/mod.rs and is a
+// known limitation; a future improvement would resolve it from binary
+// build metadata or a fixed harness repo path.
 fn current_git_sha() -> Option<String> {
     std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
