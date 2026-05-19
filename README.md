@@ -61,20 +61,24 @@ model**. Exit 13 (`env_preview_warning`) signals risky findings; exit 0 means
 a clean preview.
 
 ```bash
-cargo run --quiet -- --log error agent env preview --env local --task "fix the bug in src/lib.rs"
+cargo run --quiet -- --log error agent env preview --env docker --task "fix the bug in src/lib.rs"
 ```
+
+> **Note:** `--env local` always exits 13 because `LocalEnvironment` does not
+> confine bash commands to the configured workdir (full host filesystem access
+> is always a risky finding). Use `--env docker` for a CI gate that can exit 0.
 
 For JSON output suitable for CI snapshot diffing or automated gates:
 
 ```bash
 cargo run --quiet -- --log error agent env preview \
-  --env local --task "fix the bug" --format json
+  --env docker --task "fix the bug" --format json
 ```
 
-Gate CI on a clean preview before launching a sweep:
+Gate CI on a clean preview before launching a docker sweep:
 
 ```bash
-cargo run --quiet -- --log error agent env preview --env local --task "fix the bug"
+cargo run --quiet -- --log error agent env preview --env docker --task "fix the bug"
 preview_exit=$?
 if [ $preview_exit -eq 13 ]; then
   echo "WARNING: risky env findings — review output before proceeding"

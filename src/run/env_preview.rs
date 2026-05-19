@@ -274,13 +274,18 @@ fn build_mcp_servers_preview(
 /// Relative commands (no leading `/` or `./`) resolve through `$PATH` and
 /// almost always land outside the workdir, so they are treated as outside.
 ///
-/// Compound shell commands (`cmd1 && cmd2`, `cmd1 ; cmd2`, pipes) cannot be
-/// safely analyzed statically — we conservatively treat them as outside workdir.
+/// Compound shell commands (`cmd1 && cmd2`, `cmd1 ; cmd2`, pipes, `$(...)`,
+/// backticks) cannot be safely analyzed statically — treated as outside.
+///
+/// Paths with `..` components (e.g. `/workspace/../usr/bin/mcp`) are
+/// normalized before the prefix check so they cannot escape the workdir
+/// boundary test.
 fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     if has_shell_operators(raw_command) {
         return true;
     }
-    let exe = extract_exe_path(raw_command);
+    let exe_raw = extract_exe_path(raw_command);
+    let exe = normalize_path(&exe_raw);
     if !exe.starts_with('/') {
         // Relative or PATH-resolved command: flag as outside workdir.
         return true;
@@ -288,9 +293,32 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     exe != workdir_canonical && !exe.starts_with(&format!("{workdir_canonical}/"))
 }
 
-/// Returns `true` when `command` contains shell list/pipe/background
-/// metacharacters (`;`, `|`, `&`) **outside quoted strings**, making static
-/// executable-path analysis unreliable.
+/// Normalize `..` and `.` components from an absolute path string without
+/// touching the filesystem (no canonicalize syscall).
+///
+/// `/workspace/../usr/local/bin/mcp` → `/usr/local/bin/mcp`
+fn normalize_path(path: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+    let mut result = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other.as_os_str()),
+        }
+    }
+    result.to_string_lossy().into_owned()
+}
+
+/// Returns `true` when `command` contains shell metacharacters that make
+/// static executable-path analysis unreliable, checked **outside quoted
+/// strings**:
+///
+/// - `;`, `|`, `&` — list, pipe, and background operators
+/// - `$(` — command substitution (the `$` is only flagged when followed by `(`)
+/// - `` ` `` — backtick command substitution
 ///
 /// Quote-aware: characters inside `'...'` or `"..."` are skipped, so
 /// `FOO='a;b' /workspace/bin/mcp` is NOT treated as a compound command.
@@ -313,8 +341,14 @@ fn has_shell_operators(command: &str) -> bool {
                     }
                 }
             }
-            // `;`, `|` (pipe / `||`), `&` (background / `&&`)
-            Some(';' | '|' | '&') => return true,
+            // `;`, `|` (pipe / `||`), `&` (background / `&&`), backtick
+            Some(';' | '|' | '&' | '`') => return true,
+            // `$(...)` command substitution — flag only when `$` is followed by `(`
+            Some('$') => {
+                if chars.as_str().starts_with('(') {
+                    return true;
+                }
+            }
             Some(_) => {}
         }
     }

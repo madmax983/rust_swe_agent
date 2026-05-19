@@ -1027,5 +1027,87 @@ command = "/workspace/bin/setup & /usr/local/bin/mcp"
     );
 }
 
+// ── Dotdot path components don't escape workdir boundary ─────────────────────
+
+#[test]
+fn dotdot_in_mcp_path_flagged_as_outside_workdir() {
+    // /workspace/../usr/local/bin/mcp normalizes to /usr/local/bin/mcp — outside.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/../usr/local/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "path with .. that escapes workdir should be flagged; mcp_servers: {:?}",
+        preview.mcp_servers
+    );
+}
+
+// ── Command substitution in MCP command flagged as compound ───────────────────
+
+#[test]
+fn command_substitution_mcp_flagged_as_outside_workdir() {
+    // FOO=$(/usr/local/bin/setup) /workspace/bin/mcp — $(...) runs external cmd.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "FOO=$(/usr/local/bin/setup) /workspace/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "$() command substitution should be flagged as a compound command"
+    );
+}
+
+#[test]
+fn backtick_substitution_mcp_flagged_as_outside_workdir() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "FOO=`/usr/local/bin/setup` /workspace/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "backtick command substitution should be flagged as a compound command"
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)
