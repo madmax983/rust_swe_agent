@@ -1788,3 +1788,33 @@ pub struct BehaviorCmd {
     #[arg(long, default_value = "text")]
     pub format: String,
 }
+
+/// `agent <subcommand>` — harness inspection and preview utilities.
+#[derive(Debug, Subcommand)]
+pub enum AgentCmd {
+    /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
+    SkillsPreview(SkillsPreviewCmd),
+}
+
+/// `agent skills-preview` — static enumeration of skill activation (issue #337).
+///
+/// Exits 0 on a clean preview, 2 on bad flags, 13 when at least one
+/// warning condition is detected (cap hit, missing version, or auto_match).
+#[derive(Debug, Args)]
+pub struct SkillsPreviewCmd {
+    /// Task string to preview. May be repeated for multiple tasks.
+    #[arg(long = "task", value_name = "TASK", action = clap::ArgAction::Append)]
+    pub tasks: Vec<String>,
+
+    /// File with one task per line; `#`-prefixed lines are ignored.
+    #[arg(long, value_name = "FILE")]
+    pub task_file: Option<std::path::PathBuf>,
+
+    /// Optional path to a TOML config (overlays defaults).
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Output format: `text` (default, human-readable) or `json` (schema-versioned).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}

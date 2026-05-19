@@ -40,6 +40,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
+    /// Harness inspection and preview utilities.
+    Agent {
+        #[command(subcommand)]
+        cmd: args::AgentCmd,
+    },
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -60,6 +65,9 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&log);
 
     match cli.command {
+        Command::Agent {
+            cmd: args::AgentCmd::SkillsPreview(s),
+        } => agent_skills_preview_cmd(&s),
         Command::Mini(m) => mini_cmd(m).await,
         Command::HelloWorld(h) => {
             crate::run::hello_world::main(h.output, h.config.as_deref()).await
@@ -292,6 +300,74 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         maybe_publish_mini_github_pr(github_pr).await?;
     }
     run_result?;
+    Ok(())
+}
+
+fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
+    let cfg = match &s.config {
+        Some(p) => crate::config::Config::load(p)?,
+        None => crate::config::Config::defaults()?,
+    };
+
+    // Collect tasks: --task flags + optional --task-file
+    let mut tasks = s.tasks.clone();
+    if let Some(ref task_file) = s.task_file {
+        let file_tasks = crate::run::skills_preview::read_task_file(task_file)?;
+        tasks.extend(file_tasks);
+    }
+
+    if tasks.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "agent skills-preview requires at least one --task or --task-file",
+        );
+    }
+
+    let result = crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
+        tasks,
+        config: cfg.clone(),
+    })?;
+
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+
+    match result {
+        crate::run::skills_preview::PreviewResult::Disabled(msg) => {
+            println!("{msg}");
+        }
+        crate::run::skills_preview::PreviewResult::Report(outcome) => {
+            let (report, warnings) = match outcome {
+                crate::run::skills_preview::PreviewOutcome::Clean(r) => (r, vec![]),
+                crate::run::skills_preview::PreviewOutcome::Warning(r, w) => (r, w),
+            };
+            match s.format.as_str() {
+                "json" => {
+                    let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
+                    let redacted = redactor.redact_text(&json, crate::redaction::surface::TRAJECTORY).text;
+                    println!("{redacted}");
+                }
+                "text" | "" => {
+                    print!("{}", crate::run::skills_preview::format_text(&report, &redactor));
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
+                }
+            }
+            if !warnings.is_empty() {
+                for w in &warnings {
+                    eprintln!("warning: {w}");
+                }
+                exit_with_outcome(
+                    ExitCode::SkillsPreviewWarning,
+                    &format!(
+                        "skills-preview completed with {} warning(s)",
+                        warnings.len()
+                    ),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -531,6 +607,11 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
+    // Non-fatal skills-preview informational section printed first so it
+    // appears even when preflight checks subsequently fail.
+    if cfg.root.skills.enabled && !cfg.root.skills.paths.is_empty() {
+        print_doctor_skills_preview(&cfg);
+    }
     let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
     if output_format != "json" {
         print!("{}", results.summary_table());
@@ -3051,6 +3132,28 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown --env `{other}` (expected `local` or `docker`)"
         )))),
+    }
+}
+
+/// Print a non-fatal skills-preview informational section for `bench doctor`.
+fn print_doctor_skills_preview(cfg: &crate::config::Config) {
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    println!("\n--- skills-preview (informational) ---");
+    // Use a synthetic task representing the sweep intent for the informational preview.
+    let tasks = vec!["<sweep task — run agent skills-preview --task for a specific task>".to_owned()];
+    match crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
+        tasks,
+        config: cfg.clone(),
+    }) {
+        Ok(crate::run::skills_preview::PreviewResult::Disabled(msg)) => println!("{msg}"),
+        Ok(crate::run::skills_preview::PreviewResult::Report(outcome)) => {
+            let report = match outcome {
+                crate::run::skills_preview::PreviewOutcome::Clean(r)
+                | crate::run::skills_preview::PreviewOutcome::Warning(r, _) => r,
+            };
+            print!("{}", crate::run::skills_preview::format_text(&report, &redactor));
+        }
+        Err(e) => eprintln!("skills-preview error (non-fatal): {e}"),
     }
 }
 

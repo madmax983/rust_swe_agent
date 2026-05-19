@@ -121,6 +121,48 @@ impl SkillRegistry {
         &self.manifests
     }
 
+    /// Return all matching manifests in activation order WITHOUT loading file
+    /// bodies or applying `max_active`. Used by `agent skills-preview` to
+    /// compute cap-hit and byte counts without double-loading skill bodies.
+    pub fn resolve_candidates(
+        &self,
+        request: SkillResolveRequest<'_>,
+    ) -> Vec<(SkillActivationReason, &SkillManifest)> {
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        let normalized_task = normalize_search_text(request.task);
+        let task_tokens = tokenize(&normalized_task)
+            .filter(|token| !is_stopword(token))
+            .collect::<BTreeSet<_>>();
+
+        for manifest in &self.manifests {
+            if mentioned_explicitly(&normalized_task, manifest) {
+                candidates.push((SkillActivationReason::ExplicitMention, manifest));
+                seen.insert(manifest.name.clone());
+            }
+        }
+
+        if request.auto_load {
+            let mut scored = self
+                .manifests
+                .iter()
+                .filter(|m| !seen.contains(&m.name))
+                .filter_map(|m| {
+                    let score = match_score(&task_tokens, m);
+                    (score >= 2).then_some((score, m))
+                })
+                .collect::<Vec<_>>();
+            scored.sort_by(|(sa, ma), (sb, mb)| {
+                sb.cmp(sa).then_with(|| ma.name.cmp(&mb.name))
+            });
+            for (_, m) in scored {
+                candidates.push((SkillActivationReason::AutoMatch, m));
+            }
+        }
+
+        candidates
+    }
+
     pub fn resolve(&self, request: SkillResolveRequest<'_>) -> Result<ActiveSkillSet, Error> {
         if request.max_active == 0 {
             return Ok(ActiveSkillSet::default());
@@ -568,6 +610,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// Public re-export used by `agent skills-preview` to expand paths the same
+/// way `resolve_for_task` does.
+pub fn expand_skill_path_pub(path: &String) -> PathBuf {
+    expand_skill_path(path)
 }
 
 fn expand_skill_path(path: &String) -> PathBuf {

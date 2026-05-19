@@ -58,6 +58,7 @@ pub enum ArtifactKind {
     RenderOnly,
     CacheStatsReport,
     LadderReport,
+    SkillsPreview,
 }
 
 impl ArtifactKind {
@@ -76,6 +77,7 @@ impl ArtifactKind {
             Self::RenderOnly => "render_only",
             Self::CacheStatsReport => "cache_stats_report",
             Self::LadderReport => "ladder_report",
+            Self::SkillsPreview => "skills_preview",
         }
     }
 }

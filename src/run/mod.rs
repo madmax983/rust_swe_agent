@@ -26,6 +26,7 @@ pub mod patch_stats;
 pub mod rate_limit;
 pub mod render_only;
 pub mod replay;
+pub mod skills_preview;
 pub mod report;
 pub mod reproduce;
 pub mod retry;
