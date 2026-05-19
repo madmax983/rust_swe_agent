@@ -115,16 +115,26 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
 
     let hooks = build_hooks_preview(cfg, &redactor);
     let mcp_servers = build_mcp_servers_preview(cfg, &redactor, &workdir_raw);
-    // For Docker/Chaos envs the agent container only receives vars explicitly
-    // forwarded in RunRequest.env, not the full host process environment, so
-    // scanning the host env would produce misleading risky findings.
-    let env_vars = if opts.env_type == "local" {
+    // Docker only forwards env vars that are explicitly listed in RunRequest.env,
+    // so the host process environment is not inherited. Chaos wraps its inner
+    // environment (typically Local) which DOES inherit the process env, so treat
+    // chaos like local for the purposes of the env-var scan.
+    let env_vars = if opts.env_type == "local" || opts.env_type == "chaos" {
         build_env_vars_preview(opts)
     } else {
         Vec::new()
     };
     let policy = build_policy_preview(cfg, &redactor);
-    let findings = collect_findings(opts, &workdir, &mcp_servers, &env_vars);
+    let mut findings = collect_findings(opts, &workdir, &mcp_servers, &env_vars);
+
+    // Validate the policy config now so the preview catches configs that will
+    // fail at runtime (invalid profile name, invalid regex pattern).
+    if let Err(e) = crate::policy::PolicyEngine::from_cfg(&cfg.root.policy) {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: format!("Policy config is invalid and will fail at agent startup: {e}"),
+        });
+    }
 
     EnvPreview {
         schema_version: 1,
@@ -207,7 +217,7 @@ fn build_mcp_servers_preview(
 /// Relative commands (no leading `/` or `./`) resolve through `$PATH` and
 /// almost always land outside the workdir, so they are treated as outside.
 fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
-    let exe = first_exe_token(raw_command);
+    let exe = extract_exe_path(raw_command);
     if !exe.starts_with('/') {
         // Relative or PATH-resolved command: flag as outside workdir.
         return true;
@@ -215,43 +225,74 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     exe != workdir_canonical && !exe.starts_with(&format!("{workdir_canonical}/"))
 }
 
-/// Return the first non-assignment token in a shell command string.
+/// Extract the executable path from a shell command string as an owned `String`.
 ///
-/// `KEY=value /path/bin arg` → `/path/bin`
-/// `/path/bin arg` → `/path/bin`
-fn first_exe_token(command: &str) -> &str {
-    for token in command.split_whitespace() {
-        // Shell env assignments look like `IDENTIFIER=anything`.
-        let is_assignment = token.contains('=')
-            && token
-                .split('=')
-                .next()
-                .is_some_and(|k| k.chars().all(|c| c.is_alphanumeric() || c == '_'));
-        if !is_assignment {
-            return token;
+/// Handles:
+/// - Leading `KEY=value` shell-env assignments (`FOO=bar /path/bin` → `/path/bin`)
+/// - Double- and single-quoted paths with spaces (`"/path/with space" arg` → `/path/with space`)
+///
+/// Returns an owned `String` so quotes can be stripped without lifetime issues.
+fn extract_exe_path(command: &str) -> String {
+    let mut rest = command.trim();
+
+    // Skip leading KEY=value shell environment assignments.
+    loop {
+        let token_end = rest
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(rest.len());
+        let token = &rest[..token_end];
+        if is_shell_assignment(token) {
+            rest = rest[token_end..].trim_start();
+        } else {
+            break;
         }
     }
-    command
+
+    // Extract the exe, stripping surrounding quotes if present.
+    if let Some(inner) = rest.strip_prefix('"') {
+        inner
+            .split_once('"')
+            .map_or_else(|| rest.to_owned(), |(path, _)| path.to_owned())
+    } else if let Some(inner) = rest.strip_prefix('\'') {
+        inner
+            .split_once('\'')
+            .map_or_else(|| rest.to_owned(), |(path, _)| path.to_owned())
+    } else {
+        rest.split_whitespace().next().unwrap_or(rest).to_owned()
+    }
+}
+
+fn is_shell_assignment(token: &str) -> bool {
+    token.contains('=')
+        && token
+            .split('=')
+            .next()
+            .is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_'))
 }
 
 fn build_env_vars_preview(opts: &EnvPreviewOpts) -> Vec<EnvVarPreview> {
-    std::env::vars()
-        .filter(|(name, _)| is_sensitive_var_name(name))
-        .map(|(name, value)| {
+    // Use vars_os() + lossy conversion so a single non-UTF-8 environment entry
+    // (valid on Unix) does not cause a panic and abort the entire preview.
+    std::env::vars_os()
+        .filter_map(|(name_os, value_os)| {
+            let name = name_os.to_string_lossy().into_owned();
+            if !is_sensitive_var_name(&name) {
+                return None;
+            }
             // Sensitive env var values are ALWAYS masked when --show-values is
             // not set, regardless of whether the config-level redactor is
             // enabled. This prevents [redaction].enabled = false from leaking
             // API keys and tokens into preview output.
             let value_or_redacted = if opts.show_values {
-                value
+                value_os.to_string_lossy().into_owned()
             } else {
                 "[REDACTED:env_preview]".to_owned()
             };
-            EnvVarPreview {
+            Some(EnvVarPreview {
                 name,
                 value_or_redacted,
                 sensitive: true,
-            }
+            })
         })
         .collect()
 }
