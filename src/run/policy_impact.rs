@@ -1,6 +1,12 @@
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+
+use crate::artifact::{classify_json_value, ArtifactKind};
 use crate::error::Error;
+use crate::redaction::{surface, Redactor};
+use crate::run::retry::load_sweep_results;
+use crate::trajectory::Trajectory;
 
 #[derive(Debug, Clone)]
 pub struct PolicyImpactArgs {
@@ -54,33 +60,269 @@ pub struct PolicyImpactReport {
     pub policy_impact_report: PolicyImpactReportInner,
 }
 
+struct RuleAggregate {
+    block_count: u64,
+    affected_instances: HashSet<String>,
+    blocked_commands: HashMap<String, usize>,
+}
+
+fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
+    let nested = sweep.join(instance_id).join("trajectory.json");
+    if nested.exists() {
+        return vec![nested];
+    }
+
+    let instance_dir = sweep.join(instance_id);
+    if instance_dir.is_dir() {
+        let run_paths: Vec<PathBuf> = std::fs::read_dir(&instance_dir)
+            .map(|entries| {
+                let mut paths: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("run-") && n.ends_with(".traj.json"))
+                    })
+                    .collect();
+                paths.sort();
+                paths
+            })
+            .unwrap_or_default();
+        if !run_paths.is_empty() {
+            return run_paths;
+        }
+    }
+
+    let flat = sweep.join(format!("{instance_id}.traj.json"));
+    if flat.exists() {
+        return vec![flat];
+    }
+
+    let bundled = sweep
+        .join("trajectories")
+        .join(format!("{instance_id}.traj.json"));
+    if bundled.exists() {
+        vec![bundled]
+    } else {
+        vec![]
+    }
+}
+
+fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
+    let text = std::fs::read_to_string(path)?;
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
+        .map_err(|err| Error::Trajectory(err.to_string()))?;
+    serde_json::from_value(value).map_err(Into::into)
+}
+
 pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
-    // Basic stub that returns an empty/zero report
-    let totals = SweepPolicyTotals {
-        allowed: 0,
-        asked: 0,
-        blocked: 0,
-        yolo_bypassed: 0,
-    };
-    let group = GroupCorrelation {
+    if !args.sweep_dir.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "policy-impact: sweep directory does not exist: {}",
+            args.sweep_dir.display()
+        ))));
+    }
+
+    let results_path = args.sweep_dir.join("results.json");
+    if !results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "policy-impact: results.json missing in sweep directory {}",
+            args.sweep_dir.display()
+        ))));
+    }
+
+    let sweep_results = load_sweep_results(&args.sweep_dir)?;
+    let redactor = Redactor::default_enabled();
+
+    let mut allowed_total = 0;
+    let mut asked_total = 0;
+    let mut blocked_total = 0;
+    let mut yolo_bypassed_total = 0;
+
+    let mut rules_map: HashMap<String, RuleAggregate> = HashMap::new();
+    let mut instance_has_block: HashMap<String, bool> = HashMap::new();
+
+    for instance in &sweep_results.instances {
+        let id = &instance.instance_id;
+        let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
+        if traj_paths.is_empty() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "policy-impact: no trajectory file found for instance {}",
+                id
+            ))));
+        }
+
+        let mut instance_blocked = false;
+
+        for path in traj_paths {
+            let traj = load_trajectory(&path).map_err(|e| {
+                Error::Trajectory(format!(
+                    "policy-impact: failed to load trajectory {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+
+            allowed_total += traj.info.policy_counts.allowed;
+            asked_total += traj.info.policy_counts.asked;
+            blocked_total += traj.info.policy_counts.blocked;
+            yolo_bypassed_total += traj.info.policy_counts.yolo_bypassed;
+
+            if traj.info.policy_counts.blocked > 0 {
+                instance_blocked = true;
+            }
+
+            for msg in &traj.messages {
+                let is_blocked = msg
+                    .extra
+                    .other
+                    .get("policy_blocked")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if is_blocked {
+                    instance_blocked = true;
+
+                    let rule_label = msg
+                        .extra
+                        .other
+                        .get("policy_rule")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let blocked_cmd = msg
+                        .extra
+                        .other
+                        .get("blocked_command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let rule_agg = rules_map.entry(rule_label).or_insert_with(|| RuleAggregate {
+                        block_count: 0,
+                        affected_instances: HashSet::new(),
+                        blocked_commands: HashMap::new(),
+                    });
+
+                    rule_agg.block_count += 1;
+                    rule_agg.affected_instances.insert(id.clone());
+                    if !blocked_cmd.is_empty() {
+                        *rule_agg.blocked_commands.entry(blocked_cmd).or_default() += 1;
+                    }
+                }
+            }
+        }
+
+        instance_has_block.insert(id.clone(), instance_blocked);
+    }
+
+    let mut rules = Vec::new();
+    for (rule_label, rule_agg) in rules_map {
+        let mut affected_instance_ids: Vec<String> = rule_agg.affected_instances.into_iter().collect();
+        affected_instance_ids.sort();
+
+        let mut top_raw_cmd = String::new();
+        let mut max_count = 0;
+        for (cmd, &count) in &rule_agg.blocked_commands {
+            if count > max_count {
+                max_count = count;
+                top_raw_cmd = cmd.clone();
+            } else if count == max_count {
+                if cmd < &top_raw_cmd {
+                    top_raw_cmd = cmd.clone();
+                }
+            }
+        }
+
+        let redacted_cmd = if top_raw_cmd.is_empty() {
+            String::new()
+        } else {
+            redactor.redact_text(&top_raw_cmd, surface::INSPECT).text
+        };
+
+        rules.push(RuleImpact {
+            rule_label,
+            block_count: rule_agg.block_count,
+            affected_instances: affected_instance_ids.len() as u64,
+            affected_instance_ids,
+            top_blocked_command: redacted_cmd,
+        });
+    }
+
+    rules.sort_by(|a, b| {
+        b.block_count
+            .cmp(&a.block_count)
+            .then_with(|| a.rule_label.cmp(&b.rule_label))
+    });
+
+    let mut blocked_group = GroupCorrelation {
         total_count: 0,
         resolved_count: 0,
         unresolved_count: 0,
         errored_count: 0,
         resolved_rate: 0.0,
     };
-    let outcome_correlation = OutcomeCorrelation {
-        blocked_group: group.clone(),
-        unblocked_group: group,
-        delta_resolved_rate: 0.0,
+    let mut unblocked_group = GroupCorrelation {
+        total_count: 0,
+        resolved_count: 0,
+        unresolved_count: 0,
+        errored_count: 0,
+        resolved_rate: 0.0,
     };
+
+    for instance in &sweep_results.instances {
+        let id = &instance.instance_id;
+        let is_blocked = instance_has_block.get(id).copied().unwrap_or(false);
+
+        let group = if is_blocked {
+            &mut blocked_group
+        } else {
+            &mut unblocked_group
+        };
+
+        group.total_count += 1;
+        if instance.resolved_count > 0 {
+            group.resolved_count += 1;
+        } else if instance.outcome.as_deref() == Some("error") {
+            group.errored_count += 1;
+        } else {
+            group.unresolved_count += 1;
+        }
+    }
+
+    if blocked_group.total_count > 0 {
+        blocked_group.resolved_rate = blocked_group.resolved_count as f64 / blocked_group.total_count as f64;
+    }
+    if unblocked_group.total_count > 0 {
+        unblocked_group.resolved_rate = unblocked_group.resolved_count as f64 / unblocked_group.total_count as f64;
+    }
+
+    let delta_resolved_rate = blocked_group.resolved_rate - unblocked_group.resolved_rate;
+
+    let totals = SweepPolicyTotals {
+        allowed: allowed_total,
+        asked: asked_total,
+        blocked: blocked_total,
+        yolo_bypassed: yolo_bypassed_total,
+    };
+
+    let outcome_correlation = OutcomeCorrelation {
+        blocked_group,
+        unblocked_group,
+        delta_resolved_rate,
+    };
+
     let inner = PolicyImpactReportInner {
         schema_version: "1.0".to_string(),
-        timestamp: "2026-05-19T18:07:03-05:00".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
         totals,
-        rules: Vec::new(),
+        rules,
         outcome_correlation,
     };
+
     Ok(PolicyImpactReport {
         policy_impact_report: inner,
     })
@@ -89,3 +331,4 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
 pub fn render_text(_report: &PolicyImpactReport) -> String {
     "Sweep Policy Totals\nAllowed: 0\n".to_string()
 }
+
