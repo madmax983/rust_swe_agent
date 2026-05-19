@@ -1637,6 +1637,18 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         },
     )?;
     let total = instances.len();
+    // Build a repo lookup map before the instances are consumed by the worker
+    // loop below.  Used by the OTLP export to prefer the dataset's explicit
+    // `repo` field over parsing it from the instance ID (which fails for
+    // custom datasets whose IDs don't follow the `owner__repo-issue` format).
+    let instance_repo_map: std::collections::HashMap<String, String> = instances
+        .iter()
+        .filter_map(|inst| {
+            inst.repo
+                .as_ref()
+                .map(|r| (inst.instance_id.clone(), r.clone()))
+        })
+        .collect();
     let summary_path = args.output_dir.join("results.json");
     let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
     let initial_manifest = build_manifest(
@@ -2400,16 +2412,16 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         };
         let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_id);
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
-        for ir in &sweep.instances {
+        for ir in &mut sweep.instances {
             // Generate a deterministic trace ID for --resume instances that
             // completed before OTLP was enabled (trace_id is None on those rows).
-            let generated_trace_id;
-            let trace_id: &str = if let Some(tid) = ir.trace_id.as_deref() {
-                tid
-            } else {
-                generated_trace_id = crate::telemetry::new_trace_id(&ir.instance_id, &sweep_id);
-                &generated_trace_id
-            };
+            // Persist the generated ID back into the InstanceResult so the final
+            // results.json and `bench inspect` can correlate to the exported span.
+            let needs_generated_id = ir.trace_id.is_none();
+            if needs_generated_id {
+                ir.trace_id = Some(crate::telemetry::new_trace_id(&ir.instance_id, &sweep_id));
+            }
+            let trace_id = ir.trace_id.as_deref().unwrap_or_default();
             // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
             // Use reruns=1 as the default; if the instance ran multiple times take the last.
             let last_run_index = args.reruns.max(1);
@@ -2419,7 +2431,12 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
                     .metadata()
                     .map_or(0, |m| m.len());
-            let repo = crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id)
+            // Prefer the dataset's explicit repo field; fall back to parsing
+            // the instance ID (which fails for non-standard custom dataset IDs).
+            let repo = instance_repo_map
+                .get(&ir.instance_id)
+                .cloned()
+                .or_else(|| crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id))
                 .unwrap_or_default();
             // Try to read the trajectory for full model/tool call telemetry.
             // Fall back to a minimal instance-only span when the trajectory is
@@ -2427,8 +2444,14 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             let traj_loaded = std::fs::read_to_string(&traj_path)
                 .ok()
                 .and_then(|json| serde_json::from_str::<crate::trajectory::Trajectory>(&json).ok());
-            if let Some(traj) = traj_loaded {
-                instance_spans.push(crate::telemetry::instance_span_data_from_trajectory(
+            if let Some(mut traj) = traj_loaded {
+                // Persist the generated trace ID back to the trajectory file so
+                // bench inspect can find it on resumed pre-OTLP runs.
+                if needs_generated_id && traj.info.trace_id.is_none() {
+                    traj.info.trace_id.clone_from(&ir.trace_id);
+                    let _ = traj.save_pretty(&traj_path); // best-effort
+                }
+                let mut span = crate::telemetry::instance_span_data_from_trajectory(
                     trace_id,
                     &sweep_span_id,
                     &ir.instance_id,
@@ -2436,7 +2459,16 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     &traj,
                     final_patch_bytes,
                     sweep_start_nanos,
-                ));
+                );
+                // The final InstanceResult may differ from the trajectory
+                // outcome (e.g. downgrade_patch_secret_leak_if_needed mutates
+                // the result after the trajectory is written).  Use the
+                // authoritative ir outcome so OTLP dashboards match results.json.
+                ir.outcome
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .clone_into(&mut span.outcome);
+                instance_spans.push(span);
             } else {
                 instance_spans.push(crate::telemetry::instance_span_data_from_result(
                     trace_id,

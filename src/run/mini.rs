@@ -242,8 +242,12 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         .active_skills
         .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
     // Propagate trace_id from the sweep runner so the trajectory and its
-    // OTLP span share the same correlation key.
-    agent.trajectory.info.trace_id = args.trace_id.clone();
+    // OTLP span share the same correlation key.  When no trace_id is provided
+    // (OTLP not configured for this run), preserve whatever the restored
+    // checkpoint already recorded.
+    if args.trace_id.is_some() {
+        agent.trajectory.info.trace_id = args.trace_id.clone();
+    }
 
     let traj_path = args
         .output_dir
