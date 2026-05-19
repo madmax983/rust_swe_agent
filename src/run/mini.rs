@@ -212,19 +212,22 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 Some((name, value))
             })
             .collect();
-        match WebhookSink::new(url.clone(), headers) {
-            Ok(sink) => {
-                let sink_arc = Arc::new(sink);
-                let counter = sink_arc.dropped_counter();
-                let handle = WebhookSinkHandle::new(sink_arc, run_id);
-                tracing::info!(%url, "webhook push enabled");
-                (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to create webhook sink; continuing without it");
-                (None, None)
-            }
-        }
+        let sink = WebhookSink::new(url.clone(), &headers)
+            .map_err(|e| Error::Config(ConfigError::Invalid(format!("webhook sink: {e}"))))?;
+        let sink_arc = Arc::new(sink);
+        let counter = sink_arc.dropped_counter();
+        let handle = WebhookSinkHandle::new(sink_arc, run_id);
+        // Log only the URL origin — the path/query may contain credentials.
+        let safe_url = url
+            .find("://")
+            .map(|i| {
+                let after = &url[i + 3..];
+                let host_end = after.find('/').unwrap_or(after.len());
+                format!("{}://{}", &url[..i], &after[..host_end])
+            })
+            .unwrap_or_else(|| "<url>".to_owned());
+        tracing::info!(url = %safe_url, "webhook push enabled");
+        (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
     } else {
         (None, None)
     };
@@ -234,10 +237,11 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         Option<Arc<std::sync::atomic::AtomicU64>>,
     ) = {
         if args.webhook_url.is_some() {
-            tracing::error!(
+            return Err(Error::Config(ConfigError::Invalid(
                 "--webhook-url requires the `webhook` Cargo feature; \
                  rebuild with --features webhook"
-            );
+                    .into(),
+            )));
         }
         (None, None)
     };

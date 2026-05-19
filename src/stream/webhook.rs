@@ -42,9 +42,13 @@ pub struct WebhookEnvelope {
     pub webhook_events_dropped: Option<u64>,
 }
 
-/// The message sent through the bounded channel to the background sender task.
+/// Raw event carried through the bounded channel to the background sender.
+/// The envelope is built inside the background task so that `RunEnded`'s
+/// `webhook_events_dropped` is read *after* all prior HTTP responses have
+/// been processed — giving an accurate final count.
 struct EnvelopeMsg {
-    envelope: WebhookEnvelope,
+    event: StreamEvent,
+    run_id: String,
 }
 
 /// A `StreamSink` that forwards events to an HTTP webhook endpoint via POST.
@@ -73,23 +77,25 @@ pub enum WebhookSinkError {
     InvalidBufferCapacity,
     #[error("failed to build webhook HTTP client")]
     Client(#[source] reqwest::Error),
+    #[error("invalid webhook header `{name}`: {reason}")]
+    InvalidHeader { name: String, reason: String },
 }
 
 impl WebhookSink {
     /// Creates a `WebhookSink` with the default buffer capacity.
     ///
-    /// `run_id` is embedded in every envelope so log-aggregators can
-    /// correlate events from the same run.
     /// `headers` are injected on every POST (e.g. `Authorization: Bearer …`).
-    /// Headers are not logged.
-    pub fn new(url: String, headers: Vec<(String, String)>) -> Result<Self, WebhookSinkError> {
+    /// Headers are not logged.  Returns `Err(InvalidHeader)` if any header
+    /// name or value is not a valid HTTP header — surface this before the
+    /// agent starts rather than silently omitting auth headers.
+    pub fn new(url: String, headers: &[(String, String)]) -> Result<Self, WebhookSinkError> {
         Self::with_buffer_capacity(url, headers, DEFAULT_WEBHOOK_BUFFER_CAPACITY)
     }
 
     /// Creates a `WebhookSink` with a caller-specified buffer capacity.
     pub fn with_buffer_capacity(
         url: String,
-        headers: Vec<(String, String)>,
+        headers: &[(String, String)],
         buffer_capacity: usize,
     ) -> Result<Self, WebhookSinkError> {
         if buffer_capacity == 0 {
@@ -101,14 +107,24 @@ impl WebhookSink {
         let mut builder =
             reqwest::Client::builder().timeout(Duration::from_secs(WEBHOOK_HTTP_TIMEOUT_SECS));
         // Pre-build the default header map so we don't parse on every request.
+        // Reject invalid headers eagerly so misconfigured auth headers surface
+        // at startup rather than causing every POST to be rejected.
         let mut default_headers = reqwest::header::HeaderMap::new();
-        for (name, value) in &headers {
-            if let (Ok(n), Ok(v)) = (
-                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
-                reqwest::header::HeaderValue::from_str(value),
-            ) {
-                default_headers.insert(n, v);
-            }
+        for (name, value) in headers {
+            let header_name =
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                    WebhookSinkError::InvalidHeader {
+                        name: name.clone(),
+                        reason: e.to_string(),
+                    }
+                })?;
+            let header_value = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                WebhookSinkError::InvalidHeader {
+                    name: name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+            default_headers.insert(header_name, header_value);
         }
         builder = builder.default_headers(default_headers);
         let client = builder.build().map_err(WebhookSinkError::Client)?;
@@ -119,8 +135,20 @@ impl WebhookSink {
         let (tx, mut rx) = mpsc::channel::<EnvelopeMsg>(buffer_capacity);
 
         handle.spawn(async move {
-            while let Some(EnvelopeMsg { envelope }) = rx.recv().await {
-                let event_type = envelope.event.event_name();
+            while let Some(EnvelopeMsg { event, run_id }) = rx.recv().await {
+                let event_type = event.event_name();
+                // Build the envelope here — for RunEnded, the drop count is
+                // read after all prior sends complete, giving an accurate total.
+                let is_run_ended = matches!(event, StreamEvent::RunEnded { .. });
+                let webhook_events_dropped =
+                    is_run_ended.then(|| dropped_bg.load(Ordering::Relaxed));
+                let envelope = WebhookEnvelope {
+                    schema_version: SchemaVersion::default(),
+                    run_id,
+                    event,
+                    emitted_at: Utc::now().to_rfc3339(),
+                    webhook_events_dropped,
+                };
                 match client.post(&url).json(&envelope).send().await {
                     Ok(resp) if !resp.status().is_success() => {
                         warn!(
@@ -131,6 +159,8 @@ impl WebhookSink {
                         dropped_bg.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
+                        // Log only the classified error — reqwest::Error's Display
+                        // includes the request URL, which may contain credentials.
                         let error_class = if e.is_timeout() {
                             "timeout"
                         } else if e.is_connect() {
@@ -140,9 +170,7 @@ impl WebhookSink {
                         };
                         warn!(
                             event_type,
-                            error_class,
-                            error = %e,
-                            "webhook POST failed; counting as dropped"
+                            error_class, "webhook POST failed; counting as dropped"
                         );
                         dropped_bg.fetch_add(1, Ordering::Relaxed);
                     }
@@ -168,30 +196,10 @@ impl WebhookSink {
     pub fn dropped_counter(&self) -> Arc<AtomicU64> {
         self.dropped.clone()
     }
-
-    /// Internal: build the envelope for a given event, reading the current
-    /// drop count for `RunEnded`.
-    fn make_envelope(&self, event: StreamEvent, run_id: &str) -> WebhookEnvelope {
-        let is_run_ended = matches!(event, StreamEvent::RunEnded { .. });
-        let webhook_events_dropped = if is_run_ended {
-            Some(self.dropped.load(Ordering::Relaxed))
-        } else {
-            None
-        };
-        WebhookEnvelope {
-            schema_version: SchemaVersion::default(),
-            run_id: run_id.to_owned(),
-            event,
-            emitted_at: Utc::now().to_rfc3339(),
-            webhook_events_dropped,
-        }
-    }
 }
 
-/// Internal wrapper so `WebhookSinkWithRunId` is what actually implements
+/// Internal wrapper so `WebhookSinkHandle` is what actually implements
 /// `StreamSink` — the `run_id` must travel with the sink.
-///
-/// Constructed by [`WebhookSinkHandle::into_sink`].
 pub struct WebhookSinkHandle {
     inner: Arc<WebhookSink>,
     run_id: String,
@@ -205,8 +213,11 @@ impl WebhookSinkHandle {
 
 impl StreamSink for WebhookSinkHandle {
     fn emit(&self, event: StreamEvent) {
-        let envelope = self.inner.make_envelope(event, &self.run_id);
-        match self.inner.tx.try_send(EnvelopeMsg { envelope }) {
+        let msg = EnvelopeMsg {
+            event,
+            run_id: self.run_id.clone(),
+        };
+        match self.inner.tx.try_send(msg) {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 debug!("dropping webhook event: buffer full");
                 self.inner.dropped.fetch_add(1, Ordering::Relaxed);
@@ -236,7 +247,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        let sink_inner = Arc::new(WebhookSink::new(url, vec![]).unwrap());
+        let sink_inner = Arc::new(WebhookSink::new(url, &[]).unwrap());
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         let event = StreamEvent::RunStarted {
@@ -267,15 +278,25 @@ mod tests {
 
     #[test]
     fn new_reports_missing_tokio_runtime() {
-        let err = WebhookSink::new("http://127.0.0.1:1".to_owned(), vec![]).unwrap_err();
+        let err = WebhookSink::new("http://127.0.0.1:1".to_owned(), &[]).unwrap_err();
         assert!(matches!(err, WebhookSinkError::NoRuntime(_)));
     }
 
     #[test]
     fn with_buffer_capacity_rejects_zero_capacity() {
-        let err = WebhookSink::with_buffer_capacity("http://127.0.0.1:1".to_owned(), vec![], 0)
-            .unwrap_err();
+        let err =
+            WebhookSink::with_buffer_capacity("http://127.0.0.1:1".to_owned(), &[], 0).unwrap_err();
         assert!(matches!(err, WebhookSinkError::InvalidBufferCapacity));
+    }
+
+    #[tokio::test]
+    async fn invalid_header_name_is_rejected() {
+        let headers = vec![("invalid header name".to_owned(), "value".to_owned())];
+        let err = WebhookSink::new("http://127.0.0.1:1".to_owned(), &headers).unwrap_err();
+        assert!(
+            matches!(err, WebhookSinkError::InvalidHeader { ref name, .. } if name == "invalid header name"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -291,7 +312,7 @@ mod tests {
 
         {
             let _guard = rt.enter();
-            let sink_inner = Arc::new(WebhookSink::with_buffer_capacity(url, vec![], 1).unwrap());
+            let sink_inner = Arc::new(WebhookSink::with_buffer_capacity(url, &[], 1).unwrap());
             let sink = WebhookSinkHandle::new(sink_inner.clone(), run_id());
 
             sink.emit(run_started("first"));
@@ -320,7 +341,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        let sink_inner = Arc::new(WebhookSink::new(url, vec![]).unwrap());
+        let sink_inner = Arc::new(WebhookSink::new(url, &[]).unwrap());
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         sink.emit(StreamEvent::RunEnded {
@@ -350,7 +371,7 @@ mod tests {
         let url = format!("http://{addr}");
 
         let headers = vec![("X-Test-Header".to_owned(), "hello-world".to_owned())];
-        let sink_inner = Arc::new(WebhookSink::new(url, headers).unwrap());
+        let sink_inner = Arc::new(WebhookSink::new(url, &headers).unwrap());
         let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         sink.emit(run_started("hdr-test"));
