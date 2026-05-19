@@ -323,6 +323,12 @@ a valid trajectory in hand:
   sweeps in a root directory — the single command for answering "am I making
   progress?" across a week of prompt iteration. Includes `--baseline`, `--last`,
   `--dataset`, and three output formats (text, json, markdown).
+- [`agent skills-preview`](docs/spec-skills-preview.md): zero-cost pre-run
+  enumeration of which skill manifests will activate for one or more tasks —
+  task hash, activation reason (`explicit_mention` vs `auto_match`), content
+  hash, byte cost, cap-hit status, and a per-corpus summary. Run before a
+  paid sweep to audit prompt injection, detect stale manifests, and spot
+  budget surprises.
 
 ## Nightly E2E smoke
 

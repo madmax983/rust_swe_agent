@@ -69,6 +69,8 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentEnvCmd,
     },
+    /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
+    SkillsPreview(SkillsPreviewCmd),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1852,6 +1854,29 @@ pub struct BehaviorCmd {
     pub per_instance: bool,
 
     /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `agent skills-preview` — static enumeration of skill activation (issue #337).
+///
+/// Exits 0 on a clean preview, 2 on bad flags, 14 when at least one
+/// warning condition is detected (cap hit, missing version, or auto_match).
+#[derive(Debug, Args)]
+pub struct SkillsPreviewCmd {
+    /// Task string to preview. May be repeated for multiple tasks.
+    #[arg(long = "task", value_name = "TASK", action = clap::ArgAction::Append)]
+    pub tasks: Vec<String>,
+
+    /// File with one task per line; `#`-prefixed lines are ignored.
+    #[arg(long, value_name = "FILE")]
+    pub task_file: Option<std::path::PathBuf>,
+
+    /// Optional path to a TOML config (overlays defaults).
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Output format: `text` (default, human-readable) or `json` (schema-versioned).
     #[arg(long, default_value = "text")]
     pub format: String,
 }

@@ -40,7 +40,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
-    /// Agent environment inspection and preview utilities.
+    /// Agent inspection and preview utilities.
     Agent {
         #[command(subcommand)]
         cmd: args::AgentCmd,
@@ -65,6 +65,9 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&log);
 
     match cli.command {
+        Command::Agent {
+            cmd: args::AgentCmd::SkillsPreview(s),
+        } => agent_skills_preview_cmd(&s),
         Command::Mini(m) => mini_cmd(m).await,
         Command::HelloWorld(h) => {
             crate::run::hello_world::main(h.output, h.config.as_deref()).await
@@ -342,6 +345,142 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     Ok(())
 }
 
+fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
+    let cfg = match &s.config {
+        Some(p) => crate::config::Config::load(p)?,
+        None => crate::config::Config::defaults()?,
+    };
+
+    // Collect tasks: --task flags + optional --task-file
+    let mut tasks = s.tasks.clone();
+    if let Some(ref task_file) = s.task_file {
+        let file_tasks = crate::run::skills_preview::read_task_file(task_file)?;
+        tasks.extend(file_tasks);
+    }
+
+    if tasks.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "agent skills-preview requires at least one --task or --task-file",
+        );
+    }
+
+    let result =
+        crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
+            tasks,
+            config: cfg.clone(),
+        })?;
+
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+
+    match result {
+        crate::run::skills_preview::PreviewResult::Disabled(msg) => {
+            match s.format.as_str() {
+                "json" => {
+                    // Return a minimal schema-versioned JSON object so callers that
+                    // unconditionally parse stdout as JSON still get valid output.
+                    let disabled_json = serde_json::json!({
+                        "artifact_kind": "skills_preview",
+                        "schema_version": crate::artifact::ArtifactSchemaVersion::CURRENT,
+                        "disabled": true,
+                        "reason": msg,
+                        "tasks": [],
+                        "summary": {
+                            "task_count": 0,
+                            "unique_skills_activated": 0,
+                            "p50_bytes_per_task": 0,
+                            "p95_bytes_per_task": 0,
+                            "tasks_hitting_max_active": 0
+                        }
+                    });
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?
+                    );
+                }
+                "text" | "" => {
+                    println!("{msg}");
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
+                }
+            }
+        }
+        crate::run::skills_preview::PreviewResult::Report(outcome) => {
+            let (report, warnings) = match outcome {
+                crate::run::skills_preview::PreviewOutcome::Clean(r) => (r, vec![]),
+                crate::run::skills_preview::PreviewOutcome::Warning(r, w) => (r, w),
+            };
+            match s.format.as_str() {
+                "json" => {
+                    // Redact structurally (string values only) to avoid corrupting
+                    // numeric/boolean fields or key names via text substitution.
+                    let mut json_val = serde_json::to_value(&report).map_err(Error::Json)?;
+                    redact_json_strings(&mut json_val, &redactor);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json_val).map_err(Error::Json)?
+                    );
+                }
+                "text" | "" => {
+                    print!(
+                        "{}",
+                        crate::run::skills_preview::format_text(&report, &redactor)
+                    );
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
+                }
+            }
+            if !warnings.is_empty() {
+                for w in &warnings {
+                    // Redact each warning string before printing to stderr so
+                    // skill names containing secret literals are never logged verbatim.
+                    let redacted_w = redactor
+                        .redact_text(w, crate::redaction::surface::TRAJECTORY)
+                        .text;
+                    eprintln!("warning: {redacted_w}");
+                }
+                exit_with_outcome(
+                    ExitCode::SkillsPreviewWarning,
+                    &format!(
+                        "skills-preview completed with {} warning(s)",
+                        warnings.len()
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively redact string values in a JSON tree without touching numeric,
+/// boolean, or key text — prevents redaction from corrupting machine output.
+fn redact_json_strings(v: &mut serde_json::Value, redactor: &crate::redaction::Redactor) {
+    match v {
+        serde_json::Value::String(s) => {
+            *s = redactor
+                .redact_text(s, crate::redaction::surface::TRAJECTORY)
+                .text;
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                redact_json_strings(item, redactor);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                redact_json_strings(val, redactor);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<(), Error> {
     crate::run::render_only::reject_incompatible_flags(
         &crate::run::render_only::IncompatibleFlags {
@@ -578,6 +717,12 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
+    // Non-fatal skills-preview informational section printed first so it
+    // appears even when preflight checks subsequently fail. Suppressed in
+    // JSON mode because it would corrupt the structured doctor output.
+    if output_format != "json" && cfg.root.skills.enabled && !cfg.root.skills.paths.is_empty() {
+        print_doctor_skills_preview(&cfg);
+    }
 
     // Non-fatal informational env preview section (issue #313).
     {
@@ -597,7 +742,6 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
             print_env_preview_text(&preview);
         }
     }
-
     let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
     if output_format != "json" {
         print!("{}", results.summary_table());
@@ -3118,6 +3262,32 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
         other => Err(Error::Config(crate::error::ConfigError::Invalid(format!(
             "unknown --env `{other}` (expected `local` or `docker`)"
         )))),
+    }
+}
+
+/// Print a non-fatal skills-preview informational section for `bench doctor`.
+fn print_doctor_skills_preview(cfg: &crate::config::Config) {
+    let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
+    println!("\n--- skills-preview (informational) ---");
+    // Use a synthetic task representing the sweep intent for the informational preview.
+    let tasks =
+        vec!["<sweep task — run agent skills-preview --task for a specific task>".to_owned()];
+    match crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
+        tasks,
+        config: cfg.clone(),
+    }) {
+        Ok(crate::run::skills_preview::PreviewResult::Disabled(msg)) => println!("{msg}"),
+        Ok(crate::run::skills_preview::PreviewResult::Report(outcome)) => {
+            let report = match outcome {
+                crate::run::skills_preview::PreviewOutcome::Clean(r)
+                | crate::run::skills_preview::PreviewOutcome::Warning(r, _) => r,
+            };
+            print!(
+                "{}",
+                crate::run::skills_preview::format_text(&report, &redactor)
+            );
+        }
+        Err(e) => eprintln!("skills-preview error (non-fatal): {e}"),
     }
 }
 
