@@ -84,7 +84,7 @@ pub async fn run() -> Result<(), Error> {
         } => bench_calibrate(c),
         Command::Bench {
             cmd: args::BenchCmd::Doctor(s),
-        } => bench_doctor(s).await,
+        } => Box::pin(bench_doctor(s)).await,
         Command::Bench {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
@@ -114,7 +114,7 @@ pub async fn run() -> Result<(), Error> {
         } => bench_frontier(f),
         Command::Bench {
             cmd: args::BenchCmd::Reproduce(r),
-        } => bench_reproduce(r).await,
+        } => Box::pin(bench_reproduce(r)).await,
         Command::Bench {
             cmd: args::BenchCmd::Bundle(b),
         } => bench_bundle(b),
