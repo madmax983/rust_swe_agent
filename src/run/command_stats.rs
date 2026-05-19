@@ -475,7 +475,7 @@ fn matches_filter(
     }
 }
 
-fn failure_category_label(c: FailureCategory) -> &'static str {
+pub fn failure_category_label(c: FailureCategory) -> &'static str {
     match c {
         FailureCategory::EnvSetup => "env_setup",
         FailureCategory::ModelApi => "model_api",

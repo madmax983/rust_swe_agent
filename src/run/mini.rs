@@ -20,6 +20,8 @@ use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, FallbackModel, Model, ModelUsage};
 use crate::redaction::surface;
 use crate::stream::{BroadcastSink, MultiSink, SseServer, StatusLineStderrSink, StreamSink};
+#[cfg(feature = "webhook")]
+use crate::stream::{WebhookSink, WebhookSinkHandle};
 use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
@@ -127,6 +129,13 @@ pub struct MiniArgs {
     /// save so the trajectory and its span share the same correlation key.
     /// `None` when OTLP is not configured.
     pub trace_id: Option<String>,
+    /// Optional webhook URL for per-step push streaming (issue #324).
+    /// When `Some`, each `StreamEvent` is POSTed as a JSON envelope to this
+    /// URL by a background task.  Absent = no background task spawned.
+    pub webhook_url: Option<String>,
+    /// Extra HTTP headers to inject on every webhook POST, e.g.
+    /// `"Authorization: Bearer <token>"`.  Not echoed in logs.
+    pub webhook_headers: Vec<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -186,6 +195,80 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         None => (None, None),
     };
 
+    // Build the optional webhook sink (issue #324).
+    #[cfg(feature = "webhook")]
+    let (webhook_sink_opt, webhook_dropped_counter): (
+        Option<Arc<dyn StreamSink>>,
+        Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) = if let Some(ref url) = args.webhook_url {
+        let headers: Vec<(String, String)> = args
+            .webhook_headers
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let (name, value) = h.split_once(':').ok_or_else(|| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "--webhook-header at position {} is missing `:` separator \
+                         (use `Name: Value`)",
+                        i + 1
+                    )))
+                })?;
+                Ok((name.trim().to_owned(), value.trim().to_owned()))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let sink = WebhookSink::new(url.clone(), &headers)
+            .map_err(|e| Error::Config(ConfigError::Invalid(format!("webhook sink: {e}"))))?;
+        let sink_arc = Arc::new(sink);
+        let counter = sink_arc.dropped_counter();
+        // Redact the trajectory name so configured secret literals can't leak
+        // through the envelope's run_id field, which bypasses RedactingSink.
+        let run_id = {
+            let redactor =
+                crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+            redactor
+                .redact_text(&args.trajectory_name, surface::TRAJECTORY)
+                .text
+        };
+        let handle = WebhookSinkHandle::new(sink_arc, run_id);
+        // Log only scheme + host — path/query/userinfo may contain credentials.
+        let safe_url = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
+            .unwrap_or_else(|| "<url>".to_owned());
+        tracing::info!(url = %safe_url, "webhook push enabled");
+        (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
+    } else {
+        if !args.webhook_headers.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--webhook-header requires --webhook-url; \
+                 headers have no effect without a webhook URL"
+                    .into(),
+            )));
+        }
+        (None, None)
+    };
+    #[cfg(not(feature = "webhook"))]
+    let (webhook_sink_opt, webhook_dropped_counter): (
+        Option<Arc<dyn StreamSink>>,
+        Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) = {
+        if args.webhook_url.is_some() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--webhook-url requires the `webhook` Cargo feature; \
+                 rebuild with --features webhook"
+                    .into(),
+            )));
+        }
+        if !args.webhook_headers.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--webhook-header requires --webhook-url; \
+                 headers have no effect without a webhook URL"
+                    .into(),
+            )));
+        }
+        (None, None)
+    };
+
     let resume_state = args.resume_from.map(|traj| {
         let history = traj.messages_as_model_history();
         let steps = traj.info.steps.unwrap_or(0);
@@ -212,6 +295,16 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         })
     });
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
+
+    // Redact the webhook sink so secrets are stripped before each POST.
+    let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
+        // We need the redactor before the agent is built, so create a temporary
+        // one from the config. The agent will build its own for trajectory/model
+        // surfaces; this one covers the stream surface only.
+        let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+        Arc::new(crate::redaction::RedactingSink::new(ws, redactor)) as Arc<dyn StreamSink>
+    });
+
     let sink = compose_stream_sinks(
         sse_sink,
         dashboard.as_ref().map(RatatuiDashboardHandle::stream_sink),
@@ -223,6 +316,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         } else {
             None
         },
+        webhook_sink_redacted,
     );
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
@@ -283,6 +377,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
+                    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
                     if let Some(server) = server {
                         server.shutdown().await;
                     }
@@ -318,6 +413,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
+                    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
                     if let Some(server) = server {
                         server.shutdown().await;
                     }
@@ -443,6 +539,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let exit = match run_result {
         Ok(exit) => exit,
         Err(e) => {
+            warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
             if let Some(server) = server {
                 server.shutdown().await;
             }
@@ -458,6 +555,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     }
 
     tracing::info!(?traj_path, patch_written, "trajectory written");
+
+    // Emit stderr warning if any webhook events were dropped (issue #324 AC 5).
+    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
 
     if let Some(server) = server {
         server.shutdown().await;
@@ -512,12 +612,25 @@ fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, 
     }
 }
 
+fn warn_dropped_webhook_events(counter: Option<&std::sync::atomic::AtomicU64>) {
+    if let Some(counter) = counter {
+        let n = counter.load(std::sync::atomic::Ordering::Relaxed);
+        if n >= 1 {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("warn: {n} webhook event(s) were dropped during this run\n").as_bytes(),
+            );
+        }
+    }
+}
+
 fn compose_stream_sinks(
     sse: Option<Arc<dyn StreamSink>>,
     dashboard: Option<Arc<dyn StreamSink>>,
     status_line: Option<Arc<dyn StreamSink>>,
+    webhook: Option<Arc<dyn StreamSink>>,
 ) -> Option<Arc<dyn StreamSink>> {
-    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line]
+    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line, webhook]
         .into_iter()
         .flatten()
         .collect();
@@ -1029,13 +1142,13 @@ mod tests {
 
     #[test]
     fn compose_stream_sinks_returns_none_when_all_absent() {
-        assert!(compose_stream_sinks(None, None, None).is_none());
+        assert!(compose_stream_sinks(None, None, None, None).is_none());
     }
 
     #[test]
     fn compose_stream_sinks_unwraps_single_sink_without_multi_wrap() {
         let sse: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(sse.clone()), None, None).unwrap();
+        let composed = compose_stream_sinks(Some(sse.clone()), None, None, None).unwrap();
         // Single-sink path returns the same Arc, not a MultiSink wrapper.
         assert!(Arc::ptr_eq(&composed, &sse));
     }
@@ -1044,7 +1157,7 @@ mod tests {
     fn compose_stream_sinks_multi_wraps_when_multiple() {
         let a: Arc<dyn StreamSink> = Arc::new(NullSink);
         let b: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(a), Some(b), None).unwrap();
+        let composed = compose_stream_sinks(Some(a), Some(b), None, None).unwrap();
         // Just emit through it to verify it works; if it were a NullSink
         // directly the call would still succeed, but MultiSink::emit
         // exercises the fan-out path.
@@ -1598,6 +1711,8 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
         };
 
         run(args).await.unwrap();
@@ -1685,6 +1800,8 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
         };
 
         run(args).await.unwrap();

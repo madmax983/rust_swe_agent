@@ -227,6 +227,30 @@ revise), `a` (or Esc/Ctrl-C) aborts the run cleanly. Rejections and aborts are
 recorded on the trajectory as structured events so `bench inspect` can show
 exactly which commands the operator vetoed.
 
+### Live Event Streaming
+
+Two transports let you observe per-step events without waiting for the trajectory file:
+
+- **SSE (`--stream <host:port>`)** — the agent binds an HTTP server; clients dial in.
+  Good for an interactive local session where you can `curl` or open a browser.
+- **Webhook (`--webhook-url <url>`)** — the agent POSTs each event to your listener.
+  Good for headless CI, Docker, or any environment that cannot expose an inbound port.
+
+Both can be active at once:
+
+```bash
+max mini --task "…" \
+  --stream 127.0.0.1:7878 \
+  --webhook-url https://hooks.example.com/agent-events \
+  --webhook-header "Authorization: Bearer $TOKEN"
+```
+
+Each webhook POST body is a versioned JSON envelope
+(`{ "schema_version": {"major":1,"minor":0}, "run_id": "…", "event": {…}, "emitted_at": "…" }`).
+Secrets are redacted before POST. HTTP failures are logged and counted; they never
+block or abort the run. See [`docs/spec-streaming.md`](docs/spec-streaming.md) for the
+full transport comparison and envelope schema.
+
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your
 budget, and finally `bench calibrate` against the completed `results.json`.

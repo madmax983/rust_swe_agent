@@ -157,6 +157,9 @@ pub async fn run() -> Result<(), Error> {
                     cmd: args::AgentEnvCmd::Preview(ref p),
                 },
         } => agent_env_preview_cmd(p),
+        Command::Bench {
+            cmd: args::BenchCmd::TestProgress(t),
+        } => bench_test_progress(t),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -322,6 +325,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         resume_from: None,
         interactive_mode,
         trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -346,6 +351,8 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
             has_verify_checks: !m.verify.is_empty(),
             open_pr: m.github_pr.open_pr,
             pr_dry_run: m.github_pr.github_pr_dry_run,
+            webhook_url: m.webhook_url.is_some(),
+            webhook_headers: !m.webhook_headers.is_empty(),
         },
     )?;
 
@@ -382,6 +389,8 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
             has_verify_checks: false,
             open_pr: s.github_pr.open_prs,
             pr_dry_run: s.github_pr.github_pr_dry_run,
+            webhook_url: false,
+            webhook_headers: false,
         },
     )?;
     let format = s.format.clone();
@@ -1136,6 +1145,11 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                 crate::run::behavior::behavior_compare_section(&c.baseline, &c.candidate)
             {
                 print!("{diff}");
+            }
+            if let Some(tp_diff) =
+                crate::run::test_progress::test_progress_compare_section(&c.baseline, &c.candidate)
+            {
+                print!("{tp_diff}");
             }
         }
         crate::run::compare::CompareFormat::Json => {
@@ -1893,6 +1907,35 @@ fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
         CommandStatsFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+    }
+    Ok(())
+}
+
+fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "test-progress: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::test_progress::run(&crate::run::test_progress::TestProgressArgs {
+        sweep_dir: t.sweep,
+        format: t.format,
+        bucket: t.bucket.clone(),
+        hot_tests_n: t.hot_tests_n,
+        filter: t.filter,
+        min_tests: t.min_tests,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            crate::run::test_progress::render_text(&report, t.bucket.as_deref())
+        );
     }
     Ok(())
 }
@@ -3327,6 +3370,8 @@ mod tests {
             interactive: false,
             yolo: false,
             ui: args::UiKind::Stderr,
+            webhook_url: None,
+            webhook_headers: vec![],
         }
     }
 

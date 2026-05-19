@@ -452,6 +452,8 @@ paths = ["{skill_path}"]
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
         trace_id: None,
+        webhook_url: None,
+        webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -523,6 +525,8 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
         trace_id: None,
+        webhook_url: None,
+        webhook_headers: vec![],
     })
     .await
     .unwrap();

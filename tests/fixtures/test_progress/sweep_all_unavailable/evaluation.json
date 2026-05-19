@@ -1,0 +1,24 @@
+{
+  "instances": [
+    {
+      "instance_id": "unavail-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "patch_apply_failed"
+    },
+    {
+      "instance_id": "unavail-2",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "eval_error"
+    }
+  ]
+}
