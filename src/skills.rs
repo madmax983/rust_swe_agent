@@ -549,7 +549,15 @@ fn normalize_search_text(text: &str) -> String {
             out.push(' ');
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Removes intermediate Vec allocations and formatting strings for improved performance.
+    let mut result = String::with_capacity(out.len());
+    for (i, word) in out.split_whitespace().enumerate() {
+        if i > 0 {
+            result.push(' ');
+        }
+        result.push_str(word);
+    }
+    result
 }
 
 fn is_stopword(token: &str) -> bool {
