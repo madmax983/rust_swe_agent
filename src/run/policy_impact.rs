@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 
 use crate::artifact::{classify_json_value, ArtifactKind};
 use crate::error::Error;
@@ -328,7 +329,90 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
     })
 }
 
-pub fn render_text(_report: &PolicyImpactReport) -> String {
-    "Sweep Policy Totals\nAllowed: 0\n".to_string()
+pub fn render_text(report: &PolicyImpactReport) -> String {
+    let mut out = String::new();
+    let r = &report.policy_impact_report;
+
+    out.push_str("=== Sweep Policy Totals ===\n\n");
+    let mut totals_table = Table::new();
+    totals_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Count"]);
+    totals_table.add_row(vec!["Allowed", &r.totals.allowed.to_string()]);
+    totals_table.add_row(vec!["Asked", &r.totals.asked.to_string()]);
+    totals_table.add_row(vec!["Blocked", &r.totals.blocked.to_string()]);
+    totals_table.add_row(vec!["YOLO Bypassed", &r.totals.yolo_bypassed.to_string()]);
+    out.push_str(&totals_table.to_string());
+    out.push_str("\n\n");
+
+    out.push_str("=== Policy Rule Impact ===\n\n");
+    if r.rules.is_empty() {
+        out.push_str("No policy rules were triggered.\n");
+    } else {
+        let mut rules_table = Table::new();
+        rules_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec![
+                "Rule Label",
+                "Block Count",
+                "Affected Instances",
+                "Top Blocked Command",
+            ]);
+        for rule in &r.rules {
+            rules_table.add_row(vec![
+                rule.rule_label.clone(),
+                rule.block_count.to_string(),
+                rule.affected_instances.to_string(),
+                rule.top_blocked_command.clone(),
+            ]);
+        }
+        out.push_str(&rules_table.to_string());
+    }
+    out.push_str("\n\n");
+
+    out.push_str("=== Outcome Correlation ===\n\n");
+    let mut corr_table = Table::new();
+    corr_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Group",
+            "Total",
+            "Resolved",
+            "Unresolved",
+            "Errored",
+            "Resolved Rate",
+        ]);
+
+    let bg = &r.outcome_correlation.blocked_group;
+    corr_table.add_row(vec![
+        "Blocked Group".to_string(),
+        bg.total_count.to_string(),
+        bg.resolved_count.to_string(),
+        bg.unresolved_count.to_string(),
+        bg.errored_count.to_string(),
+        format!("{:.1}%", bg.resolved_rate * 100.0),
+    ]);
+
+    let ug = &r.outcome_correlation.unblocked_group;
+    corr_table.add_row(vec![
+        "Unblocked Group".to_string(),
+        ug.total_count.to_string(),
+        ug.resolved_count.to_string(),
+        ug.unresolved_count.to_string(),
+        ug.errored_count.to_string(),
+        format!("{:.1}%", ug.resolved_rate * 100.0),
+    ]);
+    out.push_str(&corr_table.to_string());
+    out.push_str("\n\n");
+
+    out.push_str(&format!(
+        "Delta Resolved Rate: {:.1}%\n",
+        r.outcome_correlation.delta_resolved_rate * 100.0
+    ));
+
+    out
 }
 

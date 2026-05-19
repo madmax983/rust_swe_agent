@@ -30,10 +30,14 @@ fn test_policy_impact_aggregation() {
 
     // 1. Create a dummy results.json for the sweep
     let results_json = serde_json::json!({
+        "total": 3,
+        "submitted": 2,
+        "skipped": 0,
+        "errored": 1,
         "instances": [
-            { "instance_id": "inst_1", "resolved_count": 1, "outcome": "submitted" },
-            { "instance_id": "inst_2", "resolved_count": 1, "outcome": "submitted" },
-            { "instance_id": "inst_3", "resolved_count": 0, "outcome": "unresolved" }
+            { "instance_id": "inst_1", "resolved_count": 1, "outcome": "submitted", "exit_reason": "submitted" },
+            { "instance_id": "inst_2", "resolved_count": 1, "outcome": "submitted", "exit_reason": "submitted" },
+            { "instance_id": "inst_3", "resolved_count": 0, "outcome": "unresolved", "exit_reason": "stagnation" }
         ],
         "total_fallbacks": 0,
         "model_mix": {}
@@ -66,22 +70,18 @@ fn test_policy_impact_aggregation() {
                 "role": "user",
                 "content": "Rejection",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_a",
-                        "blocked_command": "rm -rf /"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_a",
+                    "blocked_command": "rm -rf /"
                 }
             },
             {
                 "role": "user",
                 "content": "Rejection 2",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_a",
-                        "blocked_command": "rm -rf /"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_a",
+                    "blocked_command": "rm -rf /"
                 }
             }
         ]
@@ -101,44 +101,36 @@ fn test_policy_impact_aggregation() {
                 "role": "user",
                 "content": "Rejection",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_b",
-                        "blocked_command": "cat /etc/shadow"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_b",
+                    "blocked_command": "cat /etc/shadow"
                 }
             },
             {
                 "role": "user",
                 "content": "Rejection 2",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_b",
-                        "blocked_command": "cat /etc/shadow"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_b",
+                    "blocked_command": "cat /etc/shadow"
                 }
             },
             {
                 "role": "user",
                 "content": "Rejection 3",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_b",
-                        "blocked_command": "cat /etc/passwd"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_b",
+                    "blocked_command": "cat /etc/passwd"
                 }
             },
             {
                 "role": "user",
                 "content": "Rejection 4",
                 "extra": {
-                    "other": {
-                        "policy_blocked": true,
-                        "policy_rule": "rule_b",
-                        "blocked_command": "cat /etc/shadow"
-                    }
+                    "policy_blocked": true,
+                    "policy_rule": "rule_b",
+                    "blocked_command": "cat /etc/shadow"
                 }
             }
         ]
@@ -185,3 +177,86 @@ fn test_policy_impact_aggregation() {
 
     assert_eq!(report.policy_impact_report.outcome_correlation.delta_resolved_rate, -0.5);
 }
+
+#[test]
+fn test_render_text_snapshot() {
+    use std::fs;
+    use tempfile::tempdir;
+    use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
+
+    let dir = tempdir().unwrap();
+    let sweep_dir = dir.path();
+
+    let results_json = serde_json::json!({
+        "total": 3,
+        "submitted": 2,
+        "skipped": 0,
+        "errored": 1,
+        "instances": [
+            { "instance_id": "inst_1", "resolved_count": 1, "outcome": "submitted", "exit_reason": "submitted" },
+            { "instance_id": "inst_2", "resolved_count": 1, "outcome": "submitted", "exit_reason": "submitted" },
+            { "instance_id": "inst_3", "resolved_count": 0, "outcome": "unresolved", "exit_reason": "stagnation" }
+        ],
+        "total_fallbacks": 0,
+        "model_mix": {}
+    });
+    fs::write(sweep_dir.join("results.json"), serde_json::to_string(&results_json).unwrap()).unwrap();
+
+    let traj_1 = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "info": {
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "policy_counts": { "allowed": 10, "asked": 1, "blocked": 6, "yolo_bypassed": 1 }
+        },
+        "messages": [
+            {
+                "role": "user",
+                "content": "Rejection",
+                "extra": {
+                    "policy_blocked": true,
+                    "policy_rule": "rule_b",
+                    "blocked_command": "cat /etc/shadow"
+                }
+            },
+            {
+                "role": "user",
+                "content": "Rejection 2",
+                "extra": {
+                    "policy_blocked": true,
+                    "policy_rule": "rule_a",
+                    "blocked_command": "rm -rf /"
+                }
+            }
+        ]
+    });
+    fs::write(sweep_dir.join("inst_2.traj.json"), serde_json::to_string(&traj_1).unwrap()).unwrap();
+    fs::write(sweep_dir.join("inst_1.traj.json"), serde_json::to_string(&serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "info": { "exit_reason": "submitted", "outcome": "submitted", "policy_counts": { "allowed": 0, "asked": 0, "blocked": 0, "yolo_bypassed": 0 } },
+        "messages": []
+    })).unwrap()).unwrap();
+    fs::write(sweep_dir.join("inst_3.traj.json"), serde_json::to_string(&serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.2",
+        "info": { "exit_reason": "stagnation", "outcome": "unresolved", "policy_counts": { "allowed": 0, "asked": 0, "blocked": 0, "yolo_bypassed": 0 } },
+        "messages": []
+    })).unwrap()).unwrap();
+
+    let args = PolicyImpactArgs { sweep_dir: sweep_dir.to_path_buf() };
+    let report = policy_impact::run(&args).unwrap();
+    let text = policy_impact::render_text(&report);
+
+    assert!(text.contains("Sweep Policy Totals"), "Text output was: {}", text);
+    assert!(text.contains("Allowed") && text.contains("10"), "Text output was: {}", text);
+    assert!(text.contains("Asked") && text.contains("1"), "Text output was: {}", text);
+    assert!(text.contains("Blocked") && text.contains("6"), "Text output was: {}", text);
+    assert!(text.contains("Bypassed") && text.contains("1"), "Text output was: {}", text);
+    assert!(text.contains("Policy Rule Impact"), "Text output was: {}", text);
+    assert!(text.contains("rule_b"), "Text output was: {}", text);
+    assert!(text.contains("rule_a"), "Text output was: {}", text);
+    assert!(text.contains("Outcome Correlation"), "Text output was: {}", text);
+    assert!(text.contains("Blocked Group"), "Text output was: {}", text);
+    assert!(text.contains("Unblocked Group"), "Text output was: {}", text);
+    assert!(text.contains("Delta Resolved Rate"), "Text output was: {}", text);
+}
+
