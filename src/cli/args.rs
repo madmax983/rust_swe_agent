@@ -1804,3 +1804,23 @@ pub struct BehaviorCmd {
     #[arg(long, default_value = "text")]
     pub format: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_type_arg_as_str_local() {
+        assert_eq!(EnvTypeArg::Local.as_str(), "local");
+    }
+
+    #[test]
+    fn env_type_arg_as_str_docker() {
+        assert_eq!(EnvTypeArg::Docker.as_str(), "docker");
+    }
+
+    #[test]
+    fn env_type_arg_as_str_chaos() {
+        assert_eq!(EnvTypeArg::Chaos.as_str(), "chaos");
+    }
+}

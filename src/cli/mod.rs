@@ -197,73 +197,7 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
 }
 
 fn print_env_preview_text(preview: &crate::run::env_preview::EnvPreview) {
-    println!("=== Agent Environment Preview ===");
-    println!("env_type:       {}", preview.env_type);
-    println!("host_paths:     {}", preview.host_paths.join(", "));
-    println!("network_egress: {}", preview.network_egress);
-    println!();
-    println!("--- Hooks ---");
-    if preview.hooks.pre_tool_use.is_empty() && preview.hooks.post_tool_use.is_empty() {
-        println!("  (none)");
-    } else {
-        for h in &preview.hooks.pre_tool_use {
-            println!("  PreToolUse  [{}]: {}", h.name, h.command);
-        }
-        for h in &preview.hooks.post_tool_use {
-            println!("  PostToolUse [{}]: {}", h.name, h.command);
-        }
-    }
-    println!();
-    println!("--- MCP Servers ---");
-    if preview.mcp_servers.is_empty() {
-        println!("  (none)");
-    } else {
-        for m in &preview.mcp_servers {
-            let flag = if m.outside_workdir {
-                " [OUTSIDE WORKDIR]"
-            } else {
-                ""
-            };
-            println!("  {}: {}{}", m.name, m.command, flag);
-        }
-    }
-    println!();
-    println!("--- Env Vars (sensitive) ---");
-    if preview.env_vars.is_empty() {
-        println!("  (none)");
-    } else {
-        for ev in &preview.env_vars {
-            println!("  {}: {}", ev.name, ev.value_or_redacted);
-        }
-    }
-    println!();
-    println!("--- Policy ---");
-    println!("  profile:     {}", preview.policy.profile);
-    println!(
-        "  extra_deny:  {}",
-        if preview.policy.extra_deny.is_empty() {
-            "(none)".to_owned()
-        } else {
-            preview.policy.extra_deny.join(", ")
-        }
-    );
-    println!(
-        "  extra_allow: {}",
-        if preview.policy.extra_allow.is_empty() {
-            "(none)".to_owned()
-        } else {
-            preview.policy.extra_allow.join(", ")
-        }
-    );
-    println!();
-    if preview.findings.is_empty() {
-        println!("--- Findings: CLEAN ---");
-    } else {
-        println!("--- Findings ---");
-        for f in &preview.findings {
-            println!("  [{}] {}", f.severity.to_uppercase(), f.message);
-        }
-    }
+    print!("{}", crate::run::env_preview::format_preview_text(preview));
 }
 
 fn effective_log_level(cli_log: Option<&str>) -> String {

@@ -10,7 +10,7 @@ use maxwells_daemon::config::Config;
 use maxwells_daemon::exit_code::ExitCode;
 use maxwells_daemon::run::env_preview::{
     EnvPreview, EnvPreviewOpts, EnvVarPreview, HookEntry, HooksPreview, McpServerPreview,
-    PolicyPreview, PreviewFinding, is_risky, run_env_preview,
+    PolicyPreview, PreviewFinding, format_preview_text, is_risky, run_env_preview,
 };
 
 // ── Exit code ─────────────────────────────────────────────────────────────────
@@ -511,3 +511,191 @@ fn preview_network_egress_is_unrestricted() {
     let preview = run_env_preview(&cfg, &opts);
     assert_eq!(preview.network_egress, "unrestricted");
 }
+
+// ── format_preview_text covers all 7 sections ────────────────────────────────
+
+#[test]
+fn format_preview_text_contains_all_sections() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "local".into(),
+        host_paths: vec!["/workspace".into()],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![HookEntry {
+                name: "pre".into(),
+                command: "echo pre".into(),
+            }],
+            post_tool_use: vec![HookEntry {
+                name: "post".into(),
+                command: "echo post".into(),
+            }],
+        },
+        mcp_servers: vec![McpServerPreview {
+            name: "mcp-0".into(),
+            command: "/usr/bin/mcp".into(),
+            outside_workdir: true,
+        }],
+        env_vars: vec![EnvVarPreview {
+            name: "MY_TOKEN".into(),
+            value_or_redacted: "[REDACTED:env_preview]".into(),
+            sensitive: true,
+        }],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec!["rm -rf".into()],
+            extra_allow: vec![],
+        },
+        findings: vec![PreviewFinding {
+            severity: "warning".into(),
+            message: "MCP outside workdir".into(),
+        }],
+    };
+    let text = format_preview_text(&preview);
+    assert!(text.contains("env_type:       local"));
+    assert!(text.contains("host_paths:     /workspace"));
+    assert!(text.contains("network_egress: unrestricted"));
+    assert!(text.contains("--- Hooks ---"));
+    assert!(text.contains("PreToolUse  [pre]: echo pre"));
+    assert!(text.contains("PostToolUse [post]: echo post"));
+    assert!(text.contains("--- MCP Servers ---"));
+    assert!(text.contains("[OUTSIDE WORKDIR]"));
+    assert!(text.contains("--- Env Vars (sensitive) ---"));
+    assert!(text.contains("MY_TOKEN: [REDACTED:env_preview]"));
+    assert!(text.contains("--- Policy ---"));
+    assert!(text.contains("profile:     safe"));
+    assert!(text.contains("extra_deny:  rm -rf"));
+    assert!(text.contains("extra_allow: (none)"));
+    assert!(text.contains("--- Findings ---"));
+    assert!(text.contains("[WARNING] MCP outside workdir"));
+}
+
+#[test]
+fn format_preview_text_clean_findings_label() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "docker".into(),
+        host_paths: vec![],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec!["safe-cmd".into()],
+        },
+        findings: vec![],
+    };
+    let text = format_preview_text(&preview);
+    assert!(text.contains("--- Findings: CLEAN ---"));
+    assert!(text.contains("(none)"), "empty hooks/mcp/vars show (none)");
+    assert!(text.contains("extra_allow: safe-cmd"));
+}
+
+// ── Docker env skips host-process env scan ────────────────────────────────────
+
+#[test]
+fn docker_env_type_produces_no_env_var_findings() {
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.env_vars.is_empty(),
+        "docker preview should not scan the host process environment"
+    );
+}
+
+// ── Relative MCP command is flagged ──────────────────────────────────────────
+
+#[test]
+fn relative_mcp_command_flagged_as_outside_workdir() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "diagnostic-mcp --port 9000"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "relative MCP command 'diagnostic-mcp' should be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn shell_prefixed_mcp_command_detected_correctly() {
+    // FOO=bar /usr/local/bin/mcp — exe is /usr/local/bin/mcp, which is outside /workspace.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "FOO=bar /usr/local/bin/external-mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "shell-env-prefixed MCP with external binary should be flagged"
+    );
+}
+
+// ── Policy strings are redacted ───────────────────────────────────────────────
+
+#[test]
+fn policy_extra_deny_is_redacted() {
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["sk-deadbeef"]
+
+[policy]
+extra_deny_patterns = ["sk-deadbeef-pattern"]
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    for pattern in &preview.policy.extra_deny {
+        assert!(
+            !pattern.contains("sk-deadbeef"),
+            "secret literal leaked in extra_deny_patterns: {pattern}"
+        );
+    }
+}
+
+// ── is_sensitive_var_name_test_helper covers all branch values ────────────────
+// (already tested above in sensitive_var_detection_covers_password_and_credential)
