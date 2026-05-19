@@ -260,3 +260,65 @@ fn test_render_text_snapshot() {
     assert!(text.contains("Delta Resolved Rate"), "Text output was: {}", text);
 }
 
+#[test]
+fn test_missing_sweep_dir_returns_exit_code_2() {
+    use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
+    use maxwells_daemon::exit_code::ExitCode;
+
+    let err = policy_impact::run(&PolicyImpactArgs {
+        sweep_dir: std::path::PathBuf::from("does_not_exist_at_all_999888"),
+    });
+    assert!(err.is_err());
+    let code = ExitCode::from_error(&err.unwrap_err());
+    assert_eq!(code, ExitCode::UsageError);
+}
+
+#[test]
+fn test_missing_results_json_returns_exit_code_2() {
+    use tempfile::tempdir;
+    use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
+    use maxwells_daemon::exit_code::ExitCode;
+
+    let dir = tempdir().unwrap();
+    let sweep_dir = dir.path();
+
+    let err = policy_impact::run(&PolicyImpactArgs {
+        sweep_dir: sweep_dir.to_path_buf(),
+    });
+    assert!(err.is_err());
+    let code = ExitCode::from_error(&err.unwrap_err());
+    assert_eq!(code, ExitCode::UsageError);
+}
+
+#[test]
+fn test_missing_trajectory_returns_exit_code_2() {
+    use std::fs;
+    use tempfile::tempdir;
+    use maxwells_daemon::run::policy_impact::{self, PolicyImpactArgs};
+    use maxwells_daemon::exit_code::ExitCode;
+
+    let dir = tempdir().unwrap();
+    let sweep_dir = dir.path();
+
+    let results_json = serde_json::json!({
+        "total": 1,
+        "submitted": 1,
+        "skipped": 0,
+        "errored": 0,
+        "instances": [
+            { "instance_id": "inst_1", "resolved_count": 1, "outcome": "submitted", "exit_reason": "submitted" }
+        ],
+        "total_fallbacks": 0,
+        "model_mix": {}
+    });
+    fs::write(sweep_dir.join("results.json"), serde_json::to_string(&results_json).unwrap()).unwrap();
+
+    let err = policy_impact::run(&PolicyImpactArgs {
+        sweep_dir: sweep_dir.to_path_buf(),
+    });
+    assert!(err.is_err());
+    let code = ExitCode::from_error(&err.unwrap_err());
+    assert_eq!(code, ExitCode::UsageError);
+}
+
+
