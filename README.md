@@ -52,7 +52,40 @@ The trajectory at `runs/quickstart/hello-world.traj.json` should parse as
 `mini-swe-agent-1.1`, have `outcome: "submitted"`, and record
 `total_cost_usd: 0.0`.
 
-### 2. Preview Your Prompt Before Any Paid Call
+### 2. Preview Your Agent Environment (Zero Cost)
+
+Use `agent env preview` to inspect the runtime environment that would be used
+for a task — filesystem paths, hooks, MCP servers, sensitive env vars
+(redacted), and policy rules — **without running the agent or calling a
+model**. Exit 13 (`env_preview_warning`) signals risky findings; exit 0 means
+a clean preview.
+
+```bash
+cargo run --quiet -- --log error agent env preview --env local --task "fix the bug in src/lib.rs"
+```
+
+For JSON output suitable for CI snapshot diffing or automated gates:
+
+```bash
+cargo run --quiet -- --log error agent env preview \
+  --env local --task "fix the bug" --format json
+```
+
+Gate CI on a clean preview before launching a sweep:
+
+```bash
+cargo run --quiet -- --log error agent env preview --env local --task "fix the bug"
+preview_exit=$?
+if [ $preview_exit -eq 13 ]; then
+  echo "WARNING: risky env findings — review output before proceeding"
+  exit 1
+fi
+```
+
+See [`docs/spec-env-preview.md`](docs/spec-env-preview.md) for the full JSON
+schema, field descriptions, and risky-finding trigger table.
+
+### 4. Preview Your Prompt Before Any Paid Call
 
 Use `--render-only` to see the exact system message, user message, registered
 tools, and an estimated token count — at $0 with zero network calls. This is
@@ -69,7 +102,7 @@ snapshot diffing:
 cargo run --quiet -- --log error mini --render-only --task "fix the bug" --model claude-opus-4-7 --format json
 ```
 
-### 3. Inspect The Trajectory
+### 5. Inspect The Trajectory
 
 PowerShell:
 
@@ -87,7 +120,7 @@ This is the core operator loop before any sweep: run one task, inspect the
 trajectory, then decide whether the model, prompt, budget, and environment are
 ready for a broader run.
 
-### 3. Optional Preflight Before SWE-bench
+### 6. Optional Preflight Before SWE-bench
 
 Use `doctor` on a local SWE-bench JSONL dataset before launching work. This
 checks the dataset and environment setup; `--skip-model-probe` keeps this
@@ -112,7 +145,7 @@ budget, run `forecast` before a full sweep:
 cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00 --format json > runs/forecast.json
 ```
 
-### 4. Close The Calibration Loop
+### 7. Close The Calibration Loop
 
 For paid sweeps, treat the operator loop as `doctor` -> `forecast` ->
 `swebench` -> `calibrate`. The forecast keeps the first spend bounded; the
