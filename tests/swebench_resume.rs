@@ -4,7 +4,7 @@
 //!     task re-runs, producing a fresh, valid trajectory
 //!   * without `--resume`, valid pre-existing files are *not* skipped
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::large_futures, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -180,6 +180,7 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -288,6 +289,7 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -365,6 +367,7 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -442,6 +445,7 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -546,6 +550,7 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -624,6 +629,7 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -739,6 +745,7 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -842,6 +849,7 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

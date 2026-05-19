@@ -561,6 +561,12 @@ pub struct TrajectoryInfo {
     /// continuously. Each entry corresponds to one `--resume` continuation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resume_history: Vec<ResumeRecord>,
+    /// OpenTelemetry trace ID assigned when `--otlp-endpoint` is active.
+    /// 32 lowercase hex chars (128-bit). Correlates this trajectory with OTLP
+    /// spans in the operator's observability backend.
+    /// `None` for sweeps run without OTLP export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,

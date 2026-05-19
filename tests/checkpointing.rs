@@ -408,6 +408,7 @@ async fn resume_classifies_partial_trajectory_and_reruns_not_skips() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -487,6 +488,7 @@ async fn resume_corrupted_trajectory_reruns_from_step_zero() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -541,6 +543,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
+        trace_id: None,
     };
 
     mini_run(args).await.unwrap();
@@ -871,6 +874,7 @@ async fn sweep_summary_table_shows_partial_count() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

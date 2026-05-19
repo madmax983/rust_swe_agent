@@ -59,6 +59,7 @@ fn submitted(id: &str) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -205,6 +207,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::write(
         dir.join("results.json"),
@@ -1260,6 +1263,7 @@ fn submitted_with_cache(id: &str, input: u64, reads: u64, creation: u64) -> Inst
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 

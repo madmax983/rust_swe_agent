@@ -274,6 +274,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: None,
         interactive_mode,
+        trace_id: None,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -614,6 +615,7 @@ async fn run_forecast_from_cmd(
     }
     let cfg = swebench_config_from_cmd(&s)?;
     let sweep = swebench_args_from_cmd(s, cfg, "forecast")?;
+    #[allow(clippy::large_futures)]
     crate::run::forecast::run(crate::run::forecast::ForecastArgs {
         sweep,
         calibration_n,
@@ -976,6 +978,7 @@ fn swebench_args_from_cmd(
         abort_on_systemic_failure: s.abort_on_systemic_failure,
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
+        otlp_endpoint: s.otlp_endpoint,
     })
 }
 
@@ -1667,6 +1670,7 @@ fn reproduce_swebench_args(
             .circuit_breaker
             .as_ref()
             .map_or(80, |cb| cb.share_pct),
+        otlp_endpoint: None,
     })
 }
 
@@ -2897,6 +2901,7 @@ fn retry_swebench_args(
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
 }
 
@@ -3303,6 +3308,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         }
     }
 

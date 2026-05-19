@@ -74,6 +74,7 @@ fn base_args(dataset_source: DatasetSource, output_dir: PathBuf) -> SwebenchArgs
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     }
 }
 

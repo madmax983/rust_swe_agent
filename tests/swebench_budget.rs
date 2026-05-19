@@ -165,6 +165,7 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -343,6 +344,7 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -429,6 +431,7 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -518,6 +521,7 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -597,6 +601,7 @@ async fn sweep_without_limit_runs_all_tasks() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -671,6 +676,7 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -807,6 +813,7 @@ async fn resume_skipped_costs_count_against_budget() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -922,6 +929,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }],
         rate_limit_events: None,
 
@@ -931,6 +939,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::write(
         output.join("results.json"),
@@ -989,6 +998,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -1100,6 +1110,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }],
         rate_limit_events: None,
 
@@ -1109,6 +1120,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1159,6 +1171,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -1249,6 +1262,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }],
         rate_limit_events: None,
 
@@ -1258,6 +1272,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::write(
         output.join("results.json"),
@@ -1334,6 +1349,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -1430,6 +1446,7 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -1533,6 +1550,7 @@ async fn per_task_budget_absent_means_no_enforcement() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

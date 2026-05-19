@@ -123,6 +123,7 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -183,6 +184,7 @@ async fn retries_on_injected_transient_category_then_recovers() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -250,6 +252,7 @@ async fn max_retries_zero_disables_retry() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -321,6 +324,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -372,6 +376,7 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -439,6 +444,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -510,6 +516,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -557,6 +564,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

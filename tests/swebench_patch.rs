@@ -142,6 +142,7 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -249,6 +250,7 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -349,6 +351,7 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();
@@ -446,6 +449,7 @@ async fn missing_workdir_marks_outcome_as_error() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

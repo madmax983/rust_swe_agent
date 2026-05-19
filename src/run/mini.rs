@@ -122,6 +122,11 @@ pub struct MiniArgs {
     pub resume_from: Option<crate::trajectory::Trajectory>,
     /// Issue #312 — operator interaction mode for this run.
     pub interactive_mode: InteractiveMode,
+    /// OpenTelemetry trace ID assigned by the sweep runner when OTLP export
+    /// is active. Written into `trajectory.info.trace_id` before the first
+    /// save so the trajectory and its span share the same correlation key.
+    /// `None` when OTLP is not configured.
+    pub trace_id: Option<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -236,6 +241,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     resolved_skills
         .active_skills
         .record_redacted_provenance(&mut agent.trajectory.info, &agent.redactor)?;
+    // Propagate trace_id from the sweep runner so the trajectory and its
+    // OTLP span share the same correlation key.  When no trace_id is provided
+    // (OTLP not configured for this run), preserve whatever the restored
+    // checkpoint already recorded.
+    if args.trace_id.is_some() {
+        agent.trajectory.info.trace_id = args.trace_id.clone();
+    }
 
     let traj_path = args
         .output_dir
@@ -1585,6 +1597,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            trace_id: None,
         };
 
         run(args).await.unwrap();
@@ -1671,6 +1684,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
+            trace_id: None,
         };
 
         run(args).await.unwrap();

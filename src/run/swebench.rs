@@ -258,6 +258,11 @@ const fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstanceResult {
@@ -355,6 +360,11 @@ pub struct InstanceResult {
     /// `None` for instances from the original sweep run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_failure_category: Option<FailureCategory>,
+    /// OpenTelemetry trace ID for this instance.
+    /// 32 lowercase hex chars (128-bit). Set when `--otlp-endpoint` is active
+    /// (or `OTEL_EXPORTER_OTLP_ENDPOINT` is set). `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 /// Selection criteria recorded in a retry history entry.
@@ -532,6 +542,12 @@ pub struct SweepResults {
     /// was interrupted and some instances were checkpointed mid-run.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub partial: usize,
+    /// Number of OTLP spans dropped due to export failures (collector down,
+    /// network error, slow consumer).  Zero when OTLP is not configured.
+    /// Non-zero indicates silent observability degradation — check your
+    /// collector.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub span_export_dropped: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -842,6 +858,7 @@ impl Default for SweepResults {
             systemic_halt_category: None,
             retry_history: Vec::new(),
             partial: 0,
+            span_export_dropped: 0,
         }
     }
 }
@@ -1309,6 +1326,11 @@ pub struct SwebenchArgs {
     /// dominant actionable failure category required to trip the breaker.
     /// Default: `80`.
     pub systemic_failure_share_pct: u8,
+    /// OTLP/HTTP base URL for trace export, e.g. `http://localhost:4318`.
+    /// When `None`, the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is
+    /// consulted.  When both are absent, OTLP export is disabled and no
+    /// sockets are opened.
+    pub otlp_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1581,6 +1603,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
@@ -1614,6 +1637,18 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         },
     )?;
     let total = instances.len();
+    // Build a repo lookup map before the instances are consumed by the worker
+    // loop below.  Used by the OTLP export to prefer the dataset's explicit
+    // `repo` field over parsing it from the instance ID (which fails for
+    // custom datasets whose IDs don't follow the `owner__repo-issue` format).
+    let instance_repo_map: std::collections::HashMap<String, String> = instances
+        .iter()
+        .filter_map(|inst| {
+            inst.repo
+                .as_ref()
+                .map(|r| (inst.instance_id.clone(), r.clone()))
+        })
+        .collect();
     let summary_path = args.output_dir.join("results.json");
     let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
     let initial_manifest = build_manifest(
@@ -1670,6 +1705,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     write_sweep_results_atomic(&summary_path, &initial)?;
     #[cfg(test)]
@@ -1713,6 +1749,37 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             u32::try_from(args.parallel.max(1)).unwrap_or(u32::MAX),
         )
         .map(std::sync::Arc::new);
+
+    // OTLP telemetry setup. The drop counter is shared between the tracer
+    // and the final SweepResults so export failures are visible post-hoc.
+    let span_export_dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let otlp_endpoint = crate::telemetry::resolve_endpoint(args.otlp_endpoint.as_deref());
+    let tracer_arc: Option<std::sync::Arc<crate::telemetry::Tracer>> =
+        otlp_endpoint.as_deref().map(|ep| {
+            std::sync::Arc::new(crate::telemetry::Tracer::new(
+                ep,
+                span_export_dropped.clone(),
+            ))
+        });
+    // Stable sweep-level ID derived from the output directory path.
+    let sweep_id = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(args.output_dir.display().to_string().as_bytes());
+        h.update(started_at_utc.as_bytes());
+        let hash = h.finalize();
+        format!(
+            "{:016x}",
+            u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8]))
+        )
+    };
+    let sweep_start_nanos = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX);
 
     let mut in_flight: usize = 0;
     let (force_cancel_tx, force_cancel_rx) = watch::channel(false);
@@ -1875,6 +1942,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         |run: SweepRun,
          set: &mut tokio::task::JoinSet<RunSlotResult>,
          governor: Option<std::sync::Arc<crate::run::rate_limit::RateLimitGovernor>>| {
+            // Generate a trace_id per instance when OTLP is active.
+            let instance_trace_id = tracer_arc
+                .as_ref()
+                .filter(|t| t.is_active())
+                .map(|_| crate::telemetry::new_trace_id(&run.inst.instance_id, &sweep_id));
             let params = RunOneParams {
                 output_dir: args.output_dir.clone(),
                 cfg: args.config.clone(),
@@ -1887,6 +1959,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 cancellation: crate::run::mini::MiniCancellation::new(force_cancel_rx.clone()),
                 github_pr: args.github_pr.clone(),
                 resume_from: run.resume_from.clone(),
+                trace_id: instance_trace_id,
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -2071,6 +2144,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 final_model: None,
                                 retry_id: None,
                                 previous_failure_category: None,
+                                trace_id: None,
                             },
                         ));
                     }
@@ -2307,7 +2381,128 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         systemic_halt_category,
         retry_history: vec![],
         partial: partial_resumed,
+        span_export_dropped: 0, // filled in after OTLP export below
     };
+    // Export OTLP spans now that all instances have completed.
+    if let Some(tracer) = &tracer_arc {
+        let manifest_ref = sweep.manifest.as_ref();
+        let sweep_span = crate::telemetry::SweepSpanData {
+            sweep_id: sweep_id.clone(),
+            dataset: manifest_ref
+                .map(|m| m.dataset.path.clone())
+                .unwrap_or_default(),
+            model: model_name.clone(),
+            instance_count: sweep.total as u64,
+            resolved_count: sweep
+                .instances
+                .iter()
+                .filter(|r| r.resolved_count > 0)
+                .count() as u64,
+            total_cost_usd: sweep.actual_cost_usd.unwrap_or(sweep.estimated_cost_usd),
+            harness_version: env!("CARGO_PKG_VERSION").into(),
+            git_sha: manifest_ref.and_then(|m| m.harness.git_sha.clone()),
+            start_nanos: sweep_start_nanos,
+            end_nanos: u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX),
+        };
+        let sweep_trace_id = crate::telemetry::new_trace_id("sweep", &sweep_id);
+        let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_trace_id);
+        // Capture the export time once so all no-trajectory spans that do have
+        // a real execution share a consistent end time.
+        let export_nanos = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
+        let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
+        for ir in &mut sweep.instances {
+            // Generate a deterministic trace ID for --resume instances that
+            // completed before OTLP was enabled (trace_id is None on those rows).
+            // Persist the generated ID back into the InstanceResult so the final
+            // results.json and `bench inspect` can correlate to the exported span.
+            let needs_generated_id = ir.trace_id.is_none();
+            if needs_generated_id {
+                ir.trace_id = Some(crate::telemetry::new_trace_id(&ir.instance_id, &sweep_id));
+            }
+            let trace_id = ir.trace_id.as_deref().unwrap_or_default();
+            // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
+            // Use reruns=1 as the default; if the instance ran multiple times take the last.
+            let last_run_index = args.reruns.max(1);
+            let traj_path =
+                trajectory_path_for_run(&args.output_dir, &ir.instance_id, last_run_index);
+            let final_patch_bytes =
+                patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
+                    .metadata()
+                    .map_or(0, |m| m.len());
+            // Prefer the dataset's explicit repo field; fall back to parsing
+            // the instance ID (which fails for non-standard custom dataset IDs).
+            let repo = instance_repo_map
+                .get(&ir.instance_id)
+                .cloned()
+                .or_else(|| crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id))
+                .unwrap_or_default();
+            // Try to read the trajectory for full model/tool call telemetry.
+            // Fall back to a minimal instance-only span when the trajectory is
+            // absent (e.g. build-env or MCP discovery failures before agent init).
+            let traj_loaded = std::fs::read_to_string(&traj_path)
+                .ok()
+                .and_then(|json| serde_json::from_str::<crate::trajectory::Trajectory>(&json).ok());
+            if let Some(mut traj) = traj_loaded {
+                // Persist the generated trace ID back to the trajectory file so
+                // bench inspect can find it on resumed pre-OTLP runs.
+                if needs_generated_id && traj.info.trace_id.is_none() {
+                    traj.info.trace_id.clone_from(&ir.trace_id);
+                    let _ = traj.save_pretty(&traj_path); // best-effort
+                }
+                let mut span = crate::telemetry::instance_span_data_from_trajectory(
+                    trace_id,
+                    &sweep_span_id,
+                    &ir.instance_id,
+                    &repo,
+                    &traj,
+                    final_patch_bytes,
+                    sweep_start_nanos,
+                );
+                // The final InstanceResult may differ from the trajectory
+                // outcome (e.g. downgrade_patch_secret_leak_if_needed mutates
+                // the result after the trajectory is written).  Use the
+                // authoritative ir outcome so OTLP dashboards match results.json.
+                ir.outcome
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .clone_into(&mut span.outcome);
+                instance_spans.push(span);
+            } else {
+                // Budget-halted rows never ran: give them an instantaneous span
+                // so they don't appear as long-running failures for the entire
+                // sweep duration in trace backends.
+                let (inst_start, inst_end) = if ir.exit_reason == EXIT_REASON_BUDGET_HALT {
+                    (export_nanos, export_nanos)
+                } else {
+                    (sweep_start_nanos, export_nanos)
+                };
+                instance_spans.push(crate::telemetry::instance_span_data_from_result(
+                    trace_id,
+                    &sweep_span_id,
+                    &ir.instance_id,
+                    &repo,
+                    ir,
+                    final_patch_bytes,
+                    inst_start,
+                    inst_end,
+                ));
+            }
+        }
+        tracer.export_sweep(&sweep_span, &instance_spans).await;
+    }
+    sweep.span_export_dropped = span_export_dropped.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(cancel) = cancellation.as_ref() {
         sweep.sweep_status = SWEEP_STATUS_CANCELLED.into();
         sweep.cancelled_at = Some(cancel.cancelled_at.clone());
@@ -3071,6 +3266,7 @@ fn budget_halt_result(instance_id: &str) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -3083,6 +3279,7 @@ struct CancelledWaitContext<'a> {
     attempts: u32,
     retry_reasons: &'a [FailureCategory],
     current: Option<InstanceResult>,
+    trace_id: Option<String>,
 }
 
 fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
@@ -3092,6 +3289,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         ctx.run_index,
         ctx.task,
         ctx.model_name,
+        ctx.trace_id.as_deref(),
     );
     let mut result = ctx.current.unwrap_or_else(|| InstanceResult {
         instance_id: ctx.instance_id.to_owned(),
@@ -3122,6 +3320,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: ctx.trace_id.clone(),
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -3148,6 +3347,7 @@ fn persist_cancelled_wait_trajectory(
     run_index: u32,
     task: &str,
     model_name: &str,
+    trace_id: Option<&str>,
 ) {
     let traj_path = trajectory_path_for_run(output_dir, instance_id, run_index);
     let mut trajectory = std::fs::read_to_string(&traj_path)
@@ -3175,6 +3375,9 @@ fn persist_cancelled_wait_trajectory(
         .get_or_insert_with(TokenUsage::default);
     trajectory.info.duration_secs.get_or_insert(0.0);
     trajectory.info.steps.get_or_insert(0);
+    if trajectory.info.trace_id.is_none() {
+        trajectory.info.trace_id = trace_id.map(str::to_owned);
+    }
 
     if let Some(parent) = traj_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
@@ -3760,6 +3963,7 @@ fn skipped_result_from_info(
         }),
         retry_id: None,
         previous_failure_category: None,
+        trace_id: info.trace_id.clone(),
     }
 }
 
@@ -3995,6 +4199,9 @@ struct RunOneParams {
     github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
     /// Partial trajectory to resume from, if this run was previously interrupted.
     resume_from: Option<crate::trajectory::Trajectory>,
+    /// OTel trace ID to embed in the trajectory and instance result.
+    /// `None` when OTLP export is not configured.
+    trace_id: Option<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4011,6 +4218,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         cancellation,
         github_pr,
         resume_from,
+        ref trace_id,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -4055,6 +4263,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                     attempts,
                     retry_reasons: &retry_reasons,
                     current: None,
+                    trace_id: trace_id.clone(),
                 });
             }
         }
@@ -4091,6 +4300,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             verification_timeout_secs: 60,
             resume_from: attempt_resume,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
+            trace_id: params.trace_id.clone(),
         };
         let run_err = crate::run::mini::run(args).await.err();
 
@@ -4256,6 +4466,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 }),
             retry_id: None,
             previous_failure_category: None,
+            trace_id: trace_id.clone(),
         };
         let current = publish_github_pr_for_result(
             current,
@@ -4297,6 +4508,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 attempts,
                 retry_reasons: &retry_reasons,
                 current: Some(current),
+                trace_id: trace_id.clone(),
             });
         }
         terminal = Some(current);
@@ -4774,6 +4986,7 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }
     }
 
@@ -4907,6 +5120,7 @@ mod tests {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -5103,6 +5317,8 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+
+            trace_id: None,
         };
         let expected = estimate_cost_usd(100_000, 0, 0, 100_000, "openai/gpt-4o-mini");
         assert!(
@@ -5145,6 +5361,8 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+
+            trace_id: None,
         };
 
         assert_eq!(row.actual_cost_usd(), Some(0.0));
@@ -5213,6 +5431,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let t = s.summary_table();
         assert!(t.contains("Total tasks:        10"));
@@ -5296,6 +5515,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
 
         let t = s.summary_table();
@@ -5356,6 +5576,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
 
         let t = s.summary_table();
@@ -5437,6 +5658,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let t = s.summary_table();
         assert!(
@@ -5505,6 +5727,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
 
         let t = s.summary_table();
@@ -5580,6 +5803,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
 
         let t = s.summary_table();
@@ -5643,6 +5867,7 @@ mod tests {
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let t = s.summary_table();
         assert!(t.contains("Sweep cost limit:   $1.0000"), "got: {t}");
@@ -5780,6 +6005,8 @@ mod tests {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+
+            otlp_endpoint: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5854,6 +6081,8 @@ mod tests {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+
+            otlp_endpoint: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -5938,6 +6167,8 @@ instance = "inst"
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+
+            otlp_endpoint: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6063,6 +6294,8 @@ instance = "inst"
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+
+            otlp_endpoint: None,
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -6209,6 +6442,7 @@ instance = "inst"
             1,
             "cancelled task",
             "cancelled model",
+            None,
         );
 
         let reread: Trajectory =
@@ -6681,6 +6915,7 @@ instance = "inst"
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let json = serde_json::to_string(&s).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6734,6 +6969,8 @@ instance = "inst"
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+
+            otlp_endpoint: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));
@@ -7017,6 +7254,7 @@ instance = "inst"
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let t = s.summary_table();
         assert!(
@@ -7091,6 +7329,7 @@ instance = "inst"
             systemic_halt_category: None,
             retry_history: vec![],
             partial: 0,
+            span_export_dropped: 0,
         };
         let t = s.summary_table();
         assert!(

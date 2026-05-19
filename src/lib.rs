@@ -20,6 +20,7 @@ pub mod run;
 pub mod skills;
 pub mod stagnation;
 pub mod stream;
+pub mod telemetry;
 pub mod template;
 pub mod tool;
 pub mod trajectory;

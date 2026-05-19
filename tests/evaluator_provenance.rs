@@ -49,6 +49,7 @@ fn minimal_instance_result(id: &str) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -126,6 +127,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>) {
         cost_limit_usd: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     let file = std::fs::File::create(dir.join("results.json")).unwrap();
     maxwells_daemon::artifact::to_writer_pretty(

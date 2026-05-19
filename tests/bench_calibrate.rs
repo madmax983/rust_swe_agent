@@ -891,6 +891,7 @@ fn sweep_results(
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     }
 }
 
@@ -926,6 +927,7 @@ fn instance(id: &str, submitted: bool, cost_usd: f64, duration_secs: f64) -> Ins
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
