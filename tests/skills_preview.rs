@@ -1059,7 +1059,7 @@ fn agent_skills_preview_json_format_when_disabled_emits_valid_json() {
         "JSON output must include disabled:true; got: {v}"
     );
     assert!(
-        v["tasks"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+        v["tasks"].as_array().is_some_and(Vec::is_empty),
         "tasks array must be empty when disabled; got: {v}"
     );
 }
