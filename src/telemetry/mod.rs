@@ -380,17 +380,26 @@ fn span_json(
 }
 
 fn infer_gen_ai_system(model: &str) -> &'static str {
-    // Support LiteLLM-style "provider/model" prefixes (e.g. "openai/gpt-4o-mini").
-    let (prefix, bare) = model.split_once('/').map_or(("", model), |(p, b)| (p, b));
-    if prefix == "anthropic" || bare.starts_with("claude") {
+    // Inspect every path component so nested LiteLLM/OpenRouter prefixes like
+    // "openrouter/anthropic/claude-opus-4-7" are handled correctly.
+    for part in model.split('/') {
+        if part == "anthropic" {
+            return "anthropic";
+        }
+        if part == "openai" {
+            return "openai";
+        }
+        if part == "gemini" || part.contains("vertex") {
+            return "google_vertexai";
+        }
+    }
+    // Fall back to model-name heuristics on the leaf segment.
+    let bare = model.split('/').next_back().unwrap_or(model);
+    if bare.starts_with("claude") {
         "anthropic"
-    } else if prefix == "openai"
-        || bare.starts_with("gpt")
-        || bare.starts_with("o1")
-        || bare.starts_with("o3")
-    {
+    } else if bare.starts_with("gpt") || bare.starts_with("o1") || bare.starts_with("o3") {
         "openai"
-    } else if prefix == "gemini" || prefix.contains("vertex") || bare.starts_with("gemini") {
+    } else if bare.starts_with("gemini") {
         "google_vertexai"
     } else {
         "unknown"
@@ -428,7 +437,7 @@ fn build_instance_spans(
         "attributes": [str_attr("relationship", "part_of_sweep")],
         "flags": 1
     });
-    let inst_is_error = matches!(inst.outcome.as_str(), "error" | "cancelled");
+    let inst_is_error = !matches!(inst.outcome.as_str(), "submitted" | "");
     spans.push(span_json(
         &inst.trace_id,
         &inst_span_id,

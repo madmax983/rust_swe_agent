@@ -2410,7 +2410,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             )
             .unwrap_or(u64::MAX),
         };
-        let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_id);
+        let sweep_trace_id = crate::telemetry::new_trace_id("sweep", &sweep_id);
+        let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_trace_id);
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
         for ir in &mut sweep.instances {
             // Generate a deterministic trace ID for --resume instances that
