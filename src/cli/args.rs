@@ -181,9 +181,25 @@ pub struct SwebenchGithubPrArgs {
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MiniCmd {
-    /// The task prompt.
-    #[arg(long)]
-    pub task: String,
+    /// The task prompt. Required unless `--resume` is set; forbidden when `--resume` is set.
+    #[arg(long, required_unless_present = "resume_from", conflicts_with = "resume_from")]
+    pub task: Option<String>,
+
+    /// Resume from a partial (in-progress) trajectory file instead of starting a new run.
+    /// The trajectory is the sole source of truth for task, model, env, and budget settings.
+    /// Mutually exclusive with `--task`, `--render-only`, and `--trajectory-name`.
+    #[arg(
+        long = "resume",
+        value_name = "PATH",
+        conflicts_with_all = ["task", "render_only", "trajectory_name"]
+    )]
+    pub resume_from: Option<PathBuf>,
+
+    /// Allow raising `--step-limit`, `--task-timeout-secs`, or `--per-task-budget-usd` on a
+    /// resume invocation when the original run hit one of those caps. Without this flag,
+    /// supplying any of those flags on resume exits 2.
+    #[arg(long, default_value_t = false, requires = "resume_from")]
+    pub resume_allow_step_bump: bool,
 
     /// Additional context appended to the instance prompt.
     #[arg(long)]

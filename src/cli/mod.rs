@@ -267,6 +267,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
+    // ── Resume path ──────────────────────────────────────────────────────────
+    if let Some(resume_path) = m.resume_from.clone() {
+        return mini_resume_cmd(m, cfg, resume_path).await;
+    }
+
     if m.render_only {
         return mini_render_only_cmd(m, cfg);
     }
@@ -286,10 +291,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.hide_budget_from_agent = true;
     }
 
+    // task is required (via clap) when --resume is absent, so unwrap is safe here.
+    let task = m.task.clone().unwrap_or_default();
     let trajectory_name = m
         .trajectory_name
         .clone()
-        .unwrap_or_else(|| crate::run::mini::slugify(&m.task));
+        .unwrap_or_else(|| crate::run::mini::slugify(&task));
     let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
     let patch_capture = github_pr
         .as_ref()
@@ -312,7 +319,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
-        task: m.task,
+        task,
         extra_context: m.extra_context,
         config: cfg,
         output_dir: m.output,
@@ -496,7 +503,7 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
     )?;
 
     let args = crate::run::render_only::RenderOnlyArgs {
-        task: m.task,
+        task: m.task.unwrap_or_default(),
         extra_context: m.extra_context,
         config: cfg,
     };
@@ -517,6 +524,162 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
         }
     }
     Ok(())
+}
+
+/// Handle `mini --resume <path>`.
+///
+/// Validates the on-disk trajectory, extracts configuration from it (AC #2),
+/// and invokes `mini::run()` with `resume_from` populated so the agent
+/// continues from the last persisted step without replaying the prefix (AC #3).
+async fn mini_resume_cmd(
+    m: args::MiniCmd,
+    mut cfg: Config,
+    resume_path: std::path::PathBuf,
+) -> Result<(), Error> {
+    // Load the trajectory from disk.
+    let traj_text = std::fs::read_to_string(&resume_path).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: cannot read trajectory file `{}`: {e}",
+            resume_path.display()
+        )))
+    })?;
+    let traj: crate::trajectory::Trajectory =
+        serde_json::from_str(&traj_text).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--resume: trajectory file `{}` is not valid JSON: {e}",
+                resume_path.display()
+            )))
+        })?;
+
+    // Validate the trajectory using the shared validation function.
+    match crate::run::mini::validate_resume_trajectory(&traj) {
+        Ok(()) => {}
+        Err(crate::run::mini::ResumeValidationError::AlreadyTerminal) => {
+            exit_with_outcome(
+                ExitCode::ResumeAlreadyTerminal,
+                &format!(
+                    "cannot resume `{}`: trajectory already has a terminal outcome \
+                     (outcome={:?}, exit_reason={:?})",
+                    resume_path.display(),
+                    traj.info.outcome,
+                    traj.info.exit_reason,
+                ),
+            );
+        }
+        Err(crate::run::mini::ResumeValidationError::ManifestMissing) => {
+            exit_with_outcome(
+                ExitCode::ResumeManifestMissing,
+                &format!(
+                    "cannot resume `{}`: trajectory is missing required fields \
+                     (task and/or model_name); the file may pre-date the manifest schema",
+                    resume_path.display()
+                ),
+            );
+        }
+        Err(crate::run::mini::ResumeValidationError::InvalidPrefix(reason)) => {
+            exit_with_outcome(
+                ExitCode::ResumeInvalidPrefix,
+                &format!(
+                    "cannot resume `{}`: {reason}",
+                    resume_path.display()
+                ),
+            );
+        }
+    }
+
+    // AC #2: Extract configuration from the trajectory as the source of truth.
+    let task = traj.info.task.clone().unwrap_or_default();
+    let model_name = traj.info.model_name.clone().unwrap_or_default();
+
+    cfg.root.model.name = model_name;
+
+    // Retain step_limit / timeout / budget from the trajectory where set,
+    // unless --resume-allow-step-bump is specified and the operator overrides.
+    if !m.resume_allow_step_bump {
+        // Reject if the operator tried to raise caps without the bump flag.
+        let bumped_flags: Vec<&str> = [
+            m.step_limit != 50 && m.step_limit != cfg.root.agent.step_limit,
+            m.task_timeout_secs.is_some(),
+            m.per_task_budget_usd.is_some(),
+        ]
+        .iter()
+        .zip([
+            "--step-limit",
+            "--task-timeout-secs",
+            "--per-task-budget-usd",
+        ])
+        .filter_map(|(&changed, name)| changed.then_some(name))
+        .collect();
+        if !bumped_flags.is_empty() {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                &format!(
+                    "--resume: {} cannot be changed on resume without --resume-allow-step-bump",
+                    bumped_flags.join(", ")
+                ),
+            );
+        }
+    } else {
+        if let Some(v) = m.per_task_budget_usd {
+            cfg.root.agent.per_task_budget_usd = Some(v);
+        }
+    }
+
+    let trajectory_name = resume_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim_end_matches(".traj"))
+        .unwrap_or("resumed")
+        .to_owned();
+
+    let stream_addr = match &m.stream {
+        Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid --stream address `{s}`: {e}"
+            )))
+        })?),
+        None => None,
+    };
+
+    let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
+
+    // Use the resume path's parent directory as the output dir so the
+    // in-place update writes back to the same location.
+    let traj_output_dir = resume_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Override trajectory_name to match the original filename so the
+    // atomic write targets the same path.
+    let traj_stem = resume_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".traj.json"))
+        .unwrap_or(&trajectory_name)
+        .to_owned();
+
+    let args = crate::run::mini::MiniArgs {
+        task,
+        extra_context: m.extra_context,
+        config: cfg,
+        output_dir: traj_output_dir,
+        trajectory_name: traj_stem,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        task_timeout_secs: m.task_timeout_secs,
+        cancellation: None,
+        stream_addr,
+        patch_capture: None,
+        verification_checks,
+        verification_timeout_secs: m.verify_timeout_secs,
+        resume_from: Some(traj),
+        interactive_mode,
+        trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
+    };
+    crate::run::mini::run(args).await
 }
 
 fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
@@ -3500,7 +3663,9 @@ mod tests {
 
     fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
         args::MiniCmd {
-            task: "Fix it".into(),
+            task: Some("Fix it".into()),
+            resume_from: None,
+            resume_allow_step_bump: false,
             extra_context: None,
             model: "deterministic".into(),
             step_limit: 1,

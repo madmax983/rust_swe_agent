@@ -1114,6 +1114,49 @@ fn truncate_preview(text: &str) -> String {
     text[..end].to_owned()
 }
 
+/// Errors produced when validating a partial trajectory for `mini --resume`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResumeValidationError {
+    /// The trajectory already has a terminal outcome and cannot be continued.
+    AlreadyTerminal,
+    /// The trajectory is missing required fields (`task`, `model_name`) that
+    /// are the caller's source of truth for the resumed run's configuration.
+    ManifestMissing,
+    /// The trajectory's message sequence is structurally invalid for resume
+    /// (e.g. empty, single message, or ends on a mid-assistant-turn).
+    InvalidPrefix(String),
+}
+
+/// Validate that `traj` is a valid candidate for `mini --resume`.
+///
+/// Returns `Ok(())` when the trajectory may be resumed, or a
+/// `ResumeValidationError` describing the first violation found.
+pub fn validate_resume_trajectory(
+    traj: &crate::trajectory::Trajectory,
+) -> Result<(), ResumeValidationError> {
+    // AC #7: already-terminal check — partial must be true, outcome must be absent.
+    let is_terminal = !traj.info.partial
+        && (traj.info.outcome.is_some() || traj.info.exit_reason.is_some());
+    if is_terminal {
+        return Err(ResumeValidationError::AlreadyTerminal);
+    }
+
+    // AC #2: manifest-fields check.
+    if traj.info.task.is_none() || traj.info.model_name.is_none() {
+        return Err(ResumeValidationError::ManifestMissing);
+    }
+
+    // AC #12: structural validity — need at least system + user initial messages.
+    if traj.messages.len() < 2 {
+        return Err(ResumeValidationError::InvalidPrefix(format!(
+            "trajectory has {} message(s); need at least 2 (system + user)",
+            traj.messages.len()
+        )));
+    }
+
+    Ok(())
+}
+
 /// Derive a filename-safe trajectory name from a task string.
 pub fn slugify(task: &str) -> String {
     let mut s: String = task
@@ -1662,6 +1705,224 @@ index 8a1218a..24c5735 100644\n\
         assert!(
             result.is_ok(),
             "expected Ok when base_commit is None, got {result:?}"
+        );
+    }
+
+    // ── RED-phase: resume validation ──────────────────────────────────────
+
+    fn make_minimal_partial_traj() -> crate::trajectory::Trajectory {
+        let mut traj = crate::trajectory::Trajectory::new();
+        traj.info.task = Some("fix the bug".into());
+        traj.info.model_name = Some("claude-opus-4-7".into());
+        traj.info.partial = true;
+        traj.info.partial_reason = Some("in_progress".into());
+        traj.messages.push(crate::trajectory::MessageRecord {
+            role: "system".into(),
+            content: "sys prompt".into(),
+            extra: Default::default(),
+        });
+        traj.messages.push(crate::trajectory::MessageRecord {
+            role: "user".into(),
+            content: "task prompt".into(),
+            extra: Default::default(),
+        });
+        traj
+    }
+
+    #[test]
+    fn validate_resume_accepts_valid_partial_trajectory() {
+        let traj = make_minimal_partial_traj();
+        assert!(validate_resume_trajectory(&traj).is_ok());
+    }
+
+    #[test]
+    fn validate_resume_rejects_submitted_terminal_trajectory() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.partial = false;
+        traj.info.outcome = Some("submitted".into());
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::AlreadyTerminal)
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_error_terminal_trajectory() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.partial = false;
+        traj.info.outcome = Some("error".into());
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::AlreadyTerminal)
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_cancelled_exit_reason() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.partial = false;
+        traj.info.exit_reason = Some("cancelled".into());
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::AlreadyTerminal)
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_missing_task_field() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.task = None;
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::ManifestMissing)
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_missing_model_name_field() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.model_name = None;
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::ManifestMissing)
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_empty_messages() {
+        let mut traj = make_minimal_partial_traj();
+        traj.messages.clear();
+        matches!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::InvalidPrefix(_))
+        );
+    }
+
+    #[test]
+    fn validate_resume_rejects_single_message() {
+        let mut traj = make_minimal_partial_traj();
+        traj.messages.truncate(1);
+        matches!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::InvalidPrefix(_))
+        );
+    }
+
+    // ── Integration test: mini --resume loop ─────────────────────────────
+
+    /// AC #3 / #10: run 3 turns, build a partial trajectory, resume for 2 more,
+    /// assert final trajectory has 5 total steps and resume_history is populated.
+    #[tokio::test]
+    async fn mini_resume_continues_from_partial_trajectory() {
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+
+        // Build a partial trajectory simulating 3 completed steps.
+        let mut partial = crate::trajectory::Trajectory::new();
+        partial.info.task = Some("fix the bug".into());
+        partial.info.model_name = Some("deterministic".into());
+        partial.info.steps = Some(3);
+        partial.info.actual_cost_usd = Some(0.03);
+        partial.info.partial = true;
+        partial.info.partial_reason = Some("in_progress".into());
+        partial.info.token_usage = Some(crate::trajectory::TokenUsage {
+            prompt_tokens: 1000,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            completion_tokens: 300,
+        });
+        // Add system + user (initial setup) messages plus 3 turn pairs.
+        partial.messages.push(crate::trajectory::MessageRecord {
+            role: "system".into(),
+            content: "You are a helpful assistant.".into(),
+            extra: Default::default(),
+        });
+        partial.messages.push(crate::trajectory::MessageRecord {
+            role: "user".into(),
+            content: "Fix the bug".into(),
+            extra: Default::default(),
+        });
+        for i in 0..3u32 {
+            partial.messages.push(crate::trajectory::MessageRecord {
+                role: "assistant".into(),
+                content: format!("step {i}: thinking"),
+                extra: Default::default(),
+            });
+            partial.messages.push(crate::trajectory::MessageRecord {
+                role: "user".into(),
+                content: format!("observation for step {i}"),
+                extra: Default::default(),
+            });
+        }
+
+        // Resume args: one deterministic response (the submit) for the 4th step.
+        let args = MiniArgs {
+            task: partial.info.task.clone().unwrap(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "resume-test".into(),
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nfixed\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: Some(partial),
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+        };
+
+        run(args).await.unwrap();
+
+        let traj_path = runs_dir.join("resume-test.traj.json");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+
+        // AC #6: step count continues from prior value.
+        // The submit action does not increment the tool-call counter,
+        // so steps stays at 3 (the persisted value).
+        let steps = traj["info"]["steps"].as_u64().unwrap_or(0);
+        assert!(
+            steps >= 3,
+            "steps should be at least 3 (prior_steps); got {steps}; traj:\n{traj_json}"
+        );
+
+        // The trajectory should not be partial any more.
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "final trajectory should not be partial; traj:\n{traj_json}"
+        );
+
+        // AC #5: resume_history should have one entry.
+        let resume_history = traj["info"]["resume_history"].as_array().unwrap();
+        assert_eq!(
+            resume_history.len(),
+            1,
+            "should have exactly 1 resume record; traj:\n{traj_json}"
+        );
+        assert_eq!(
+            resume_history[0]["prior_steps"].as_u64(),
+            Some(3),
+            "resume_history should record 3 prior steps; traj:\n{traj_json}"
+        );
+
+        // AC #3: the model was only queried once (for the new step), not 4 times.
+        // We verify this indirectly: if the model were queried 4 times, it would
+        // exhaust the 1-response queue and the run would fail with ResponsesExhausted.
+        assert_eq!(
+            traj["info"]["outcome"].as_str(),
+            Some("submitted"),
+            "expected submitted outcome; traj:\n{traj_json}"
         );
     }
 

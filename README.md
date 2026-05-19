@@ -277,6 +277,9 @@ instead of dollars to ride out. Tiny mercy.
 Start with the first-run path above, then use these deeper specs once you have
 a valid trajectory in hand:
 
+- [`mini --resume`](docs/spec-mini-resume.md): continue an interrupted
+  single-task run from its persisted checkpoint — no token replay, prefix
+  trusted verbatim, resume history recorded in the trajectory manifest.
 - [`configuration reference`](docs/config-reference.md): every config field,
   default value, valid values, precedence rules, copy-pasteable TOML examples,
   and secret handling guidance. Start here before tuning a sweep.
