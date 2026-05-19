@@ -148,6 +148,46 @@ struct TracerInner {
     endpoint: String,
     client: reqwest::Client,
     dropped: Arc<AtomicU64>,
+    /// Extra HTTP headers to send with every export request (e.g. auth tokens
+    /// from `OTEL_EXPORTER_OTLP_TRACES_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS`).
+    headers: Vec<(String, String)>,
+}
+
+/// Parse a comma-separated OTel header env var value into `(name, value)` pairs.
+///
+/// Format: `"key1=val1,key2=val2"`.  Pairs that do not contain `=` are skipped.
+pub fn parse_otlp_header_env(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            let k = k.trim().to_owned();
+            let v = v.trim().to_owned();
+            if k.is_empty() { None } else { Some((k, v)) }
+        })
+        .collect()
+}
+
+/// Read OTLP export headers from standard OTel env vars.
+///
+/// `OTEL_EXPORTER_OTLP_TRACES_HEADERS` takes precedence; falls back to
+/// `OTEL_EXPORTER_OTLP_HEADERS`.  Returns an empty vec when neither is set.
+pub fn resolve_otlp_headers() -> Vec<(String, String)> {
+    for var in &["OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"] {
+        if let Ok(val) = std::env::var(var) {
+            if !val.is_empty() {
+                return parse_otlp_header_env(&val);
+            }
+        }
+    }
+    vec![]
+}
+
+/// Count total spans in a sweep export (sweep root + per-instance tree).
+fn count_spans(instances: &[InstanceSpanData]) -> u64 {
+    1 + instances
+        .iter()
+        .map(|i| 1 + i.model_calls.len() as u64 + i.tool_calls.len() as u64)
+        .sum::<u64>()
 }
 
 impl Tracer {
@@ -170,6 +210,7 @@ impl Tracer {
             endpoint: endpoint.into(),
             client,
             dropped,
+            headers: resolve_otlp_headers(),
         })))
     }
 
@@ -188,16 +229,36 @@ impl Tracer {
         let url = inner.endpoint.clone();
         let body = build_otlp_json(sweep, instances);
 
-        let result = inner
+        let mut req = inner
             .client
             .post(&url)
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send()
-            .await;
+            .header("Content-Type", "application/json");
+        for (k, v) in &inner.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let result = req.body(body).send().await;
 
         match result {
-            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) if resp.status().is_success() => {
+                // Check for OTLP partial success: HTTP 200 but some spans rejected.
+                if let Ok(text) = resp.text().await {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        let rejected = json
+                            .get("partialSuccess")
+                            .and_then(|ps| ps.get("rejectedSpans"))
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
+                        if rejected > 0 {
+                            tracing::warn!(
+                                endpoint = %url,
+                                rejected_spans = rejected,
+                                "OTLP partial success: collector rejected some spans"
+                            );
+                            inner.dropped.fetch_add(rejected, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
             Ok(resp) => {
                 let status = resp.status();
                 tracing::warn!(
@@ -205,10 +266,7 @@ impl Tracer {
                     http_status = %status,
                     "OTLP export failed: non-2xx response"
                 );
-                inner.dropped.fetch_add(
-                    1 + instances.len() as u64 * 3, // sweep + instances + child spans est.
-                    Ordering::Relaxed,
-                );
+                inner.dropped.fetch_add(count_spans(instances), Ordering::Relaxed);
             }
             Err(e) => {
                 tracing::warn!(
@@ -216,9 +274,7 @@ impl Tracer {
                     error = %e,
                     "OTLP export failed: network error"
                 );
-                inner
-                    .dropped
-                    .fetch_add(1 + instances.len() as u64 * 3, Ordering::Relaxed);
+                inner.dropped.fetch_add(count_spans(instances), Ordering::Relaxed);
             }
         }
     }
@@ -261,7 +317,10 @@ fn span_json(
     end_nanos: u64,
     attributes: &[serde_json::Value],
     links: &[serde_json::Value],
+    is_error: bool,
 ) -> serde_json::Value {
+    // STATUS_CODE_ERROR = 2, STATUS_CODE_OK = 1 (OTel proto).
+    let status_code = if is_error { 2u8 } else { 1u8 };
     let mut span = serde_json::json!({
         "traceId": trace_id,
         "spanId": span_id,
@@ -270,7 +329,7 @@ fn span_json(
         "startTimeUnixNano": start_nanos.to_string(),
         "endTimeUnixNano": end_nanos.to_string(),
         "attributes": attributes,
-        "status": { "code": 1 }  // STATUS_CODE_OK
+        "status": { "code": status_code }
     });
     if let Some(pid) = parent_span_id {
         span["parentSpanId"] = serde_json::json!(pid);
@@ -330,6 +389,7 @@ fn build_instance_spans(
         "attributes": [str_attr("relationship", "part_of_sweep")],
         "flags": 1
     });
+    let inst_is_error = matches!(inst.outcome.as_str(), "error" | "cancelled");
     spans.push(span_json(
         &inst.trace_id,
         &inst_span_id,
@@ -339,6 +399,7 @@ fn build_instance_spans(
         inst.end_nanos,
         &inst_attrs,
         &[sweep_link],
+        inst_is_error,
     ));
 
     for (i, mc) in inst.model_calls.iter().enumerate() {
@@ -371,6 +432,7 @@ fn build_instance_spans(
             mc.end_nanos,
             &mc_attrs,
             &[],
+            false,
         ));
     }
 
@@ -392,6 +454,7 @@ fn build_instance_spans(
             tc.end_nanos,
             &tc_attrs,
             &[],
+            tc.exit_code != 0,
         ));
     }
 
@@ -424,6 +487,7 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
         sweep.end_nanos,
         &sweep_attrs,
         &[],
+        false,
     )];
 
     for inst in instances {

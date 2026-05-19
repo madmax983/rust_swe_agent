@@ -3209,6 +3209,7 @@ struct CancelledWaitContext<'a> {
     attempts: u32,
     retry_reasons: &'a [FailureCategory],
     current: Option<InstanceResult>,
+    trace_id: Option<String>,
 }
 
 fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
@@ -3218,6 +3219,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         ctx.run_index,
         ctx.task,
         ctx.model_name,
+        ctx.trace_id.as_deref(),
     );
     let mut result = ctx.current.unwrap_or_else(|| InstanceResult {
         instance_id: ctx.instance_id.to_owned(),
@@ -3248,7 +3250,7 @@ fn cancelled_wait_result(ctx: CancelledWaitContext<'_>) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
-        trace_id: None,
+        trace_id: ctx.trace_id.clone(),
     });
     ctx.instance_id.clone_into(&mut result.instance_id);
     result.exit_reason = exit_reason::CANCELLED.into();
@@ -3275,6 +3277,7 @@ fn persist_cancelled_wait_trajectory(
     run_index: u32,
     task: &str,
     model_name: &str,
+    trace_id: Option<&str>,
 ) {
     let traj_path = trajectory_path_for_run(output_dir, instance_id, run_index);
     let mut trajectory = std::fs::read_to_string(&traj_path)
@@ -3302,6 +3305,9 @@ fn persist_cancelled_wait_trajectory(
         .get_or_insert_with(TokenUsage::default);
     trajectory.info.duration_secs.get_or_insert(0.0);
     trajectory.info.steps.get_or_insert(0);
+    if trajectory.info.trace_id.is_none() {
+        trajectory.info.trace_id = trace_id.map(str::to_owned);
+    }
 
     if let Some(parent) = traj_path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
@@ -4187,6 +4193,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                     attempts,
                     retry_reasons: &retry_reasons,
                     current: None,
+                    trace_id: trace_id.clone(),
                 });
             }
         }
@@ -4431,6 +4438,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
                 attempts,
                 retry_reasons: &retry_reasons,
                 current: Some(current),
+                trace_id: trace_id.clone(),
             });
         }
         terminal = Some(current);
@@ -6364,6 +6372,7 @@ instance = "inst"
             1,
             "cancelled task",
             "cancelled model",
+            None,
         );
 
         let reread: Trajectory =
