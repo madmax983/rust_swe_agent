@@ -20,6 +20,8 @@ use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, FallbackModel, Model, ModelUsage};
 use crate::redaction::surface;
 use crate::stream::{BroadcastSink, MultiSink, SseServer, StatusLineStderrSink, StreamSink};
+#[cfg(feature = "webhook")]
+use crate::stream::{WebhookSink, WebhookSinkHandle};
 use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
@@ -127,6 +129,13 @@ pub struct MiniArgs {
     /// save so the trajectory and its span share the same correlation key.
     /// `None` when OTLP is not configured.
     pub trace_id: Option<String>,
+    /// Optional webhook URL for per-step push streaming (issue #324).
+    /// When `Some`, each `StreamEvent` is POSTed as a JSON envelope to this
+    /// URL by a background task.  Absent = no background task spawned.
+    pub webhook_url: Option<String>,
+    /// Extra HTTP headers to inject on every webhook POST, e.g.
+    /// `"Authorization: Bearer <token>"`.  Not echoed in logs.
+    pub webhook_headers: Vec<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -186,6 +195,55 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         None => (None, None),
     };
 
+    // Build the optional webhook sink (issue #324).
+    #[cfg(feature = "webhook")]
+    let (webhook_sink_opt, webhook_dropped_counter): (
+        Option<Arc<dyn StreamSink>>,
+        Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) = if let Some(ref url) = args.webhook_url {
+        let run_id = args
+            .trajectory_name
+            .clone();
+        let headers: Vec<(String, String)> = args
+            .webhook_headers
+            .iter()
+            .filter_map(|h| {
+                let mut parts = h.splitn(2, ':');
+                let name = parts.next()?.trim().to_owned();
+                let value = parts.next()?.trim().to_owned();
+                Some((name, value))
+            })
+            .collect();
+        match WebhookSink::new(url.clone(), headers) {
+            Ok(sink) => {
+                let sink_arc = Arc::new(sink);
+                let counter = sink_arc.dropped_counter();
+                let handle = WebhookSinkHandle::new(sink_arc, run_id);
+                tracing::info!(%url, "webhook push enabled");
+                (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create webhook sink; continuing without it");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+    #[cfg(not(feature = "webhook"))]
+    let (webhook_sink_opt, webhook_dropped_counter): (
+        Option<Arc<dyn StreamSink>>,
+        Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) = {
+        if args.webhook_url.is_some() {
+            tracing::error!(
+                "--webhook-url requires the `webhook` Cargo feature; \
+                 rebuild with --features webhook"
+            );
+        }
+        (None, None)
+    };
+
     let resume_state = args.resume_from.map(|traj| {
         let history = traj.messages_as_model_history();
         let steps = traj.info.steps.unwrap_or(0);
@@ -212,6 +270,16 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         })
     });
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
+
+    // Redact the webhook sink so secrets are stripped before each POST.
+    let webhook_sink_redacted: Option<Arc<dyn StreamSink>> = webhook_sink_opt.map(|ws| {
+        // We need the redactor before the agent is built, so create a temporary
+        // one from the config. The agent will build its own for trajectory/model
+        // surfaces; this one covers the stream surface only.
+        let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+        Arc::new(crate::redaction::RedactingSink::new(ws, redactor)) as Arc<dyn StreamSink>
+    });
+
     let sink = compose_stream_sinks(
         sse_sink,
         dashboard.as_ref().map(RatatuiDashboardHandle::stream_sink),
@@ -223,6 +291,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         } else {
             None
         },
+        webhook_sink_redacted,
     );
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
@@ -459,6 +528,17 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
 
     tracing::info!(?traj_path, patch_written, "trajectory written");
 
+    // Emit stderr warning if any webhook events were dropped (issue #324 AC 5).
+    if let Some(ref counter) = webhook_dropped_counter {
+        let n = counter.load(std::sync::atomic::Ordering::Relaxed);
+        if n >= 1 {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("warn: {n} webhook event(s) were dropped during this run\n").as_bytes(),
+            );
+        }
+    }
+
     if let Some(server) = server {
         server.shutdown().await;
     }
@@ -516,8 +596,9 @@ fn compose_stream_sinks(
     sse: Option<Arc<dyn StreamSink>>,
     dashboard: Option<Arc<dyn StreamSink>>,
     status_line: Option<Arc<dyn StreamSink>>,
+    webhook: Option<Arc<dyn StreamSink>>,
 ) -> Option<Arc<dyn StreamSink>> {
-    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line]
+    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line, webhook]
         .into_iter()
         .flatten()
         .collect();
@@ -1029,13 +1110,13 @@ mod tests {
 
     #[test]
     fn compose_stream_sinks_returns_none_when_all_absent() {
-        assert!(compose_stream_sinks(None, None, None).is_none());
+        assert!(compose_stream_sinks(None, None, None, None).is_none());
     }
 
     #[test]
     fn compose_stream_sinks_unwraps_single_sink_without_multi_wrap() {
         let sse: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(sse.clone()), None, None).unwrap();
+        let composed = compose_stream_sinks(Some(sse.clone()), None, None, None).unwrap();
         // Single-sink path returns the same Arc, not a MultiSink wrapper.
         assert!(Arc::ptr_eq(&composed, &sse));
     }
@@ -1044,7 +1125,7 @@ mod tests {
     fn compose_stream_sinks_multi_wraps_when_multiple() {
         let a: Arc<dyn StreamSink> = Arc::new(NullSink);
         let b: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(a), Some(b), None).unwrap();
+        let composed = compose_stream_sinks(Some(a), Some(b), None, None).unwrap();
         // Just emit through it to verify it works; if it were a NullSink
         // directly the call would still succeed, but MultiSink::emit
         // exercises the fan-out path.
@@ -1598,6 +1679,8 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
         };
 
         run(args).await.unwrap();
@@ -1685,6 +1768,8 @@ index 8a1218a..24c5735 100644\n\
             resume_from: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
         };
 
         run(args).await.unwrap();

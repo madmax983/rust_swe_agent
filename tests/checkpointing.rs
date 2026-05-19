@@ -544,6 +544,8 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
         trace_id: None,
+        webhook_url: None,
+        webhook_headers: vec![],
     };
 
     mini_run(args).await.unwrap();

@@ -181,6 +181,19 @@ pub struct MiniCmd {
     #[arg(long)]
     pub stream: Option<String>,
 
+    /// POST each `StreamEvent` to this HTTP URL as a JSON envelope.
+    /// Optional; absent = no background webhook task spawned. Composable
+    /// with `--stream` — both transports see the same event sequence.
+    /// Requires the `webhook` Cargo feature (default-enabled).
+    #[arg(long)]
+    pub webhook_url: Option<String>,
+
+    /// Inject an HTTP request header into every webhook POST.
+    /// Format: `"Name: Value"`. Repeatable. Header bytes are not logged.
+    /// Example: `--webhook-header "Authorization: Bearer $TOKEN"`
+    #[arg(long = "webhook-header", value_name = "NAME: VALUE")]
+    pub webhook_headers: Vec<String>,
+
     /// Skip `git apply --check` and empty-diff validation after patch capture.
     /// Escape hatch for non-git environments; not for normal use.
     #[arg(long, default_value_t = false)]

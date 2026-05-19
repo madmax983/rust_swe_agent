@@ -1,46 +1,98 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+use chrono::Utc;
+use serde::Serialize;
 use tokio::runtime::{Handle, TryCurrentError};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{StreamEvent, StreamSink};
 
 const DEFAULT_WEBHOOK_BUFFER_CAPACITY: usize = 1024;
+const WEBHOOK_HTTP_TIMEOUT_SECS: u64 = 5;
+
+/// Stable schema version sent in every webhook envelope.
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaVersion {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl Default for SchemaVersion {
+    fn default() -> Self {
+        Self { major: 1, minor: 0 }
+    }
+}
+
+/// The envelope wrapper POSTed to the webhook URL for every event.
+///
+/// Schema: `{ "schema_version": {"major":1,"minor":0}, "run_id": "...",
+///            "event": { "type": "...", ...fields }, "emitted_at": "..." }`
+/// For `RunEnded` events an additional `webhook_events_dropped` field is
+/// appended at the envelope level so operators can detect missed events.
+#[derive(Debug, Serialize)]
+pub struct WebhookEnvelope {
+    pub schema_version: SchemaVersion,
+    pub run_id: String,
+    pub event: StreamEvent,
+    pub emitted_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_events_dropped: Option<u64>,
+}
+
+/// The message sent through the bounded channel to the background sender task.
+struct EnvelopeMsg {
+    envelope: WebhookEnvelope,
+}
 
 /// A `StreamSink` that forwards events to an HTTP webhook endpoint via POST.
 ///
-/// It does not block the agent loop. Instead, `emit` tries to enqueue the event
-/// into a bounded channel, and a background task dequeues and POSTs each event
-/// to the specified URL using `reqwest`. Events are dropped when the bounded
-/// buffer is full.
+/// Non-blocking: `emit` enqueues into a bounded channel; a background task
+/// dequeues and POSTs each event wrapped in the schema envelope.  Events are
+/// silently dropped when the buffer is full.  HTTP failures (timeout, 4xx,
+/// 5xx, network errors) are logged at `warn` and counted toward the
+/// `dropped` counter, which appears in the `RunEnded` envelope.
+///
+/// The agent loop is **never** blocked on webhook delivery.
 #[derive(Debug)]
 pub struct WebhookSink {
-    tx: mpsc::Sender<StreamEvent>,
+    tx: mpsc::Sender<EnvelopeMsg>,
+    /// Shared drop counter — incremented both in `emit` (buffer-full) and
+    /// in the background task (HTTP failures).
+    dropped: Arc<AtomicU64>,
 }
 
 /// Failure to create a [`WebhookSink`].
 #[derive(Debug, thiserror::Error)]
 pub enum WebhookSinkError {
-    /// No Tokio runtime is active on the current thread.
     #[error("webhook sink requires an active Tokio runtime")]
     NoRuntime(#[source] TryCurrentError),
-    /// Webhook buffering must be bounded to at least one event.
     #[error("webhook buffer capacity must be greater than zero")]
     InvalidBufferCapacity,
-    /// The HTTP client could not be built.
     #[error("failed to build webhook HTTP client")]
     Client(#[source] reqwest::Error),
 }
 
 impl WebhookSink {
-    /// Creates a new `WebhookSink` with the default bounded buffer capacity.
-    pub fn new(url: String) -> Result<Self, WebhookSinkError> {
-        Self::with_buffer_capacity(url, DEFAULT_WEBHOOK_BUFFER_CAPACITY)
+    /// Creates a `WebhookSink` with the default buffer capacity.
+    ///
+    /// `run_id` is embedded in every envelope so log-aggregators can
+    /// correlate events from the same run.
+    /// `headers` are injected on every POST (e.g. `Authorization: Bearer …`).
+    /// Headers are not logged.
+    pub fn new(
+        url: String,
+        headers: Vec<(String, String)>,
+    ) -> Result<Self, WebhookSinkError> {
+        Self::with_buffer_capacity(url, headers, DEFAULT_WEBHOOK_BUFFER_CAPACITY)
     }
 
-    /// Creates a new `WebhookSink` with a caller-provided bounded buffer capacity.
+    /// Creates a `WebhookSink` with a caller-specified buffer capacity.
     pub fn with_buffer_capacity(
         url: String,
+        headers: Vec<(String, String)>,
         buffer_capacity: usize,
     ) -> Result<Self, WebhookSinkError> {
         if buffer_capacity == 0 {
@@ -48,36 +100,119 @@ impl WebhookSink {
         }
 
         let handle = Handle::try_current().map_err(WebhookSinkError::NoRuntime)?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(WebhookSinkError::Client)?;
-        let (tx, mut rx) = mpsc::channel::<StreamEvent>(buffer_capacity);
+
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(WEBHOOK_HTTP_TIMEOUT_SECS));
+        // Pre-build the default header map so we don't parse on every request.
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        for (name, value) in &headers {
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                default_headers.insert(n, v);
+            }
+        }
+        builder = builder.default_headers(default_headers);
+        let client = builder.build().map_err(WebhookSinkError::Client)?;
+
+        let dropped = Arc::new(AtomicU64::new(0));
+        let dropped_bg = dropped.clone();
+
+        let (tx, mut rx) = mpsc::channel::<EnvelopeMsg>(buffer_capacity);
 
         handle.spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match client.post(&url).json(&event).send().await {
-                    Ok(resp) => {
-                        if !resp.status().is_success() {
-                            debug!("Webhook returned non-success status: {}", resp.status());
-                        }
+            while let Some(EnvelopeMsg { envelope }) = rx.recv().await {
+                let event_type = envelope.event.event_name();
+                match client.post(&url).json(&envelope).send().await {
+                    Ok(resp) if !resp.status().is_success() => {
+                        warn!(
+                            event_type,
+                            status = resp.status().as_u16(),
+                            "webhook POST returned non-success; counting as dropped"
+                        );
+                        dropped_bg.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        debug!("Failed to send webhook event: {}", e);
+                        let error_class = if e.is_timeout() {
+                            "timeout"
+                        } else if e.is_connect() {
+                            "connection_refused"
+                        } else {
+                            "network_error"
+                        };
+                        warn!(
+                            event_type,
+                            error_class,
+                            error = %e,
+                            "webhook POST failed; counting as dropped"
+                        );
+                        dropped_bg.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(_) => {
+                        debug!(event_type, "webhook POST succeeded");
                     }
                 }
             }
         });
 
-        Ok(Self { tx })
+        Ok(Self { tx, dropped })
+    }
+
+    /// Returns the current count of events that were dropped (buffer-full or
+    /// HTTP failure).  Used by `mini::run` to emit the `RunEnded` envelope
+    /// field and the stderr warning.
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Returns a clone of the shared drop counter so the caller can read it
+    /// after this sink has been passed into a `dyn StreamSink` trait object.
+    pub fn dropped_counter(&self) -> Arc<AtomicU64> {
+        self.dropped.clone()
+    }
+
+    /// Internal: build the envelope for a given event, reading the current
+    /// drop count for `RunEnded`.
+    fn make_envelope(&self, event: StreamEvent, run_id: &str) -> WebhookEnvelope {
+        let is_run_ended = matches!(event, StreamEvent::RunEnded { .. });
+        let webhook_events_dropped = if is_run_ended {
+            Some(self.dropped.load(Ordering::Relaxed))
+        } else {
+            None
+        };
+        WebhookEnvelope {
+            schema_version: SchemaVersion::default(),
+            run_id: run_id.to_owned(),
+            event,
+            emitted_at: Utc::now().to_rfc3339(),
+            webhook_events_dropped,
+        }
     }
 }
 
-impl StreamSink for WebhookSink {
+/// Internal wrapper so `WebhookSinkWithRunId` is what actually implements
+/// `StreamSink` — the `run_id` must travel with the sink.
+///
+/// Constructed by [`WebhookSinkHandle::into_sink`].
+pub struct WebhookSinkHandle {
+    inner: Arc<WebhookSink>,
+    run_id: String,
+}
+
+impl WebhookSinkHandle {
+    pub fn new(inner: Arc<WebhookSink>, run_id: String) -> Self {
+        Self { inner, run_id }
+    }
+}
+
+impl StreamSink for WebhookSinkHandle {
     fn emit(&self, event: StreamEvent) {
-        match self.tx.try_send(event) {
+        let envelope = self.inner.make_envelope(event, &self.run_id);
+        match self.inner.tx.try_send(EnvelopeMsg { envelope }) {
             Err(mpsc::error::TrySendError::Full(_)) => {
-                debug!("Dropping webhook event because the buffer is full");
+                debug!("dropping webhook event: buffer full");
+                self.inner.dropped.fetch_add(1, Ordering::Relaxed);
             }
             Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
         }
@@ -92,64 +227,66 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    const WEBHOOK_TEST_IO_TIMEOUT: Duration = Duration::from_secs(1);
+    const TEST_IO_TIMEOUT: Duration = Duration::from_secs(1);
+
+    fn run_id() -> String {
+        "test-run-id".to_owned()
+    }
 
     #[tokio::test]
-    async fn test_webhook_sink_emits_http_post() {
-        // Spin up a local TCP listener to act as our mock HTTP server.
+    async fn test_webhook_sink_emits_http_post_with_envelope() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        // Create the sink and emit an event.
-        let sink = WebhookSink::new(url).unwrap();
+        let sink_inner = Arc::new(WebhookSink::new(url, vec![]).unwrap());
+        let sink = WebhookSinkHandle::new(sink_inner, run_id());
 
         let event = StreamEvent::RunStarted {
             task: "test task".into(),
             model: "test model".into(),
             started_at: "now".into(),
         };
+        sink.emit(event);
 
-        sink.emit(event.clone());
+        let mut socket = accept_connection(&listener).await;
+        let mut buf = vec![0; 4096];
+        let n = read_bytes(&mut socket, &mut buf).await;
+        let req = String::from_utf8_lossy(&buf[..n]);
 
-        // Wait for the incoming connection from reqwest and read the payload.
-        let mut socket = accept_webhook_connection(&listener).await;
+        assert!(req.starts_with("POST / HTTP/1.1"));
 
-        let mut buf = vec![0; 1024];
-        let n = read_webhook_bytes(&mut socket, &mut buf).await;
-        let request_str = String::from_utf8_lossy(&buf[..n]);
+        let body_start = req.find("\r\n\r\n").unwrap() + 4;
+        let body = &req[body_start..];
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
 
-        // Verify it's a POST request
-        assert!(request_str.starts_with("POST / HTTP/1.1"));
-
-        // Find the JSON body
-        let body_start = request_str.find("\r\n\r\n").unwrap() + 4;
-        let body = &request_str[body_start..];
-
-        // Parse it back and assert it matches (rudimentary check).
-        // Since StreamEvent serialization is tested elsewhere, we just check for basic substrings.
-        assert!(body.contains("\"type\":\"run_started\""));
-        assert!(body.contains("\"task\":\"test task\""));
-        assert!(body.contains("\"model\":\"test model\""));
+        // Must have schema envelope.
+        assert_eq!(v["schema_version"]["major"], 1);
+        assert!(v.get("run_id").is_some());
+        assert!(v.get("emitted_at").is_some());
+        assert_eq!(v["event"]["type"], "run_started");
+        assert_eq!(v["event"]["task"], "test task");
     }
 
     #[test]
     fn new_reports_missing_tokio_runtime() {
-        let err = WebhookSink::new("http://127.0.0.1:1".to_owned()).unwrap_err();
-
+        let err = WebhookSink::new("http://127.0.0.1:1".to_owned(), vec![]).unwrap_err();
         assert!(matches!(err, WebhookSinkError::NoRuntime(_)));
     }
 
     #[test]
     fn with_buffer_capacity_rejects_zero_capacity() {
-        let err =
-            WebhookSink::with_buffer_capacity("http://127.0.0.1:1".to_owned(), 0).unwrap_err();
-
+        let err = WebhookSink::with_buffer_capacity(
+            "http://127.0.0.1:1".to_owned(),
+            vec![],
+            0,
+        )
+        .unwrap_err();
         assert!(matches!(err, WebhookSinkError::InvalidBufferCapacity));
     }
 
     #[test]
-    fn emit_drops_events_when_webhook_buffer_is_full() {
+    fn emit_drops_events_when_buffer_is_full() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -161,27 +298,80 @@ mod tests {
 
         {
             let _guard = rt.enter();
-            let sink = WebhookSink::with_buffer_capacity(url, 1).unwrap();
+            let sink_inner = Arc::new(
+                WebhookSink::with_buffer_capacity(url, vec![], 1).unwrap(),
+            );
+            let sink = WebhookSinkHandle::new(sink_inner.clone(), run_id());
 
             sink.emit(run_started("first"));
             sink.emit(run_started("second"));
 
-            assert_eq!(sink.tx.capacity(), 0);
-            assert_eq!(sink.tx.max_capacity(), 1);
+            // Buffer size is 1, so second should be dropped.
+            assert_eq!(sink_inner.dropped_count(), 1);
             drop(sink);
         }
 
         rt.block_on(async move {
             let listener = TcpListener::from_std(std_listener).unwrap();
-            let socket = accept_webhook_connection(&listener).await;
-
-            let request = read_http_request(socket).await;
+            let socket = accept_connection(&listener).await;
+            let request = read_full_http_request(socket).await;
             assert!(request.contains("\"task\":\"first\""));
             assert!(!request.contains("\"task\":\"second\""));
 
-            let second = tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
-            assert!(second.is_err());
+            let second =
+                tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
+            assert!(second.is_err(), "second event must not be delivered");
         });
+    }
+
+    #[tokio::test]
+    async fn run_ended_envelope_includes_drop_count() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+
+        let sink_inner = Arc::new(WebhookSink::new(url, vec![]).unwrap());
+        let sink = WebhookSinkHandle::new(sink_inner, run_id());
+
+        sink.emit(StreamEvent::RunEnded {
+            exit_reason: "submitted".into(),
+            failure_category: None,
+            final_output: None,
+            steps: 1,
+            total_cost_usd: 0.0,
+            ended_at: "now".into(),
+        });
+
+        let socket = accept_connection(&listener).await;
+        let request = read_full_http_request(socket).await;
+        let body_start = request.find("\r\n\r\n").unwrap() + 4;
+        let v: serde_json::Value = serde_json::from_str(&request[body_start..]).unwrap();
+
+        assert!(
+            v.get("webhook_events_dropped").is_some(),
+            "run_ended envelope must have webhook_events_dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_headers_appear_in_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+
+        let headers = vec![("X-Test-Header".to_owned(), "hello-world".to_owned())];
+        let sink_inner = Arc::new(WebhookSink::new(url, headers).unwrap());
+        let sink = WebhookSinkHandle::new(sink_inner, run_id());
+
+        sink.emit(run_started("hdr-test"));
+
+        let socket = accept_connection(&listener).await;
+        let request = read_full_http_request(socket).await;
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            lower.contains("x-test-header: hello-world"),
+            "custom header not found in: {request}"
+        );
     }
 
     fn run_started(task: &str) -> StreamEvent {
@@ -192,62 +382,57 @@ mod tests {
         }
     }
 
-    async fn accept_webhook_connection(listener: &TcpListener) -> tokio::net::TcpStream {
-        match tokio::time::timeout(WEBHOOK_TEST_IO_TIMEOUT, listener.accept()).await {
+    async fn accept_connection(listener: &TcpListener) -> tokio::net::TcpStream {
+        match tokio::time::timeout(TEST_IO_TIMEOUT, listener.accept()).await {
             Ok(Ok((socket, _))) => socket,
-            Ok(Err(e)) => panic!("failed to accept webhook POST connection: {e}"),
-            Err(e) => panic!("timed out waiting for webhook POST connection: {e}"),
+            Ok(Err(e)) => panic!("failed to accept: {e}"),
+            Err(e) => panic!("timed out: {e}"),
         }
     }
 
-    async fn read_webhook_bytes<R>(reader: &mut R, buf: &mut [u8]) -> usize
+    async fn read_bytes<R>(reader: &mut R, buf: &mut [u8]) -> usize
     where
         R: tokio::io::AsyncRead + Unpin,
     {
-        match tokio::time::timeout(WEBHOOK_TEST_IO_TIMEOUT, reader.read(buf)).await {
+        match tokio::time::timeout(TEST_IO_TIMEOUT, reader.read(buf)).await {
             Ok(Ok(n)) => n,
-            Ok(Err(e)) => panic!("failed to read webhook POST request: {e}"),
-            Err(e) => panic!("timed out reading webhook POST request: {e}"),
+            Ok(Err(e)) => panic!("read error: {e}"),
+            Err(e) => panic!("read timeout: {e}"),
         }
     }
 
-    async fn read_http_request(mut socket: tokio::net::TcpStream) -> String {
+    async fn read_full_http_request(mut socket: tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();
-        let mut chunk = [0_u8; 1024];
-
+        let mut chunk = [0u8; 4096];
         loop {
-            let n = read_webhook_bytes(&mut socket, &mut chunk).await;
+            let n = read_bytes(&mut socket, &mut chunk).await;
             if n == 0 {
                 break;
             }
             buf.extend_from_slice(&chunk[..n]);
-            if request_is_complete(&buf) {
+            if is_complete(&buf) {
                 break;
             }
         }
-
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            .await
-            .unwrap();
-
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
         String::from_utf8_lossy(&buf).into_owned()
     }
 
-    fn request_is_complete(buf: &[u8]) -> bool {
-        let request = String::from_utf8_lossy(buf);
-        let Some(header_end) = request.find("\r\n\r\n") else {
+    fn is_complete(buf: &[u8]) -> bool {
+        let req = String::from_utf8_lossy(buf);
+        let Some(end) = req.find("\r\n\r\n") else {
             return false;
         };
-        let content_length = request[..header_end]
+        let cl = req[..end]
             .lines()
-            .find_map(|line| {
-                let line = line.to_ascii_lowercase();
-                line.strip_prefix("content-length:")
-                    .and_then(|value| value.trim().parse::<usize>().ok())
+            .find_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
             })
             .unwrap_or(0);
-
-        buf.len() >= header_end + 4 + content_length
+        buf.len() >= end + 4 + cl
     }
 }

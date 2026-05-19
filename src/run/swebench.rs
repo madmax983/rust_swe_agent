@@ -4301,6 +4301,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             resume_from: attempt_resume,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
             trace_id: params.trace_id.clone(),
+            webhook_url: None,
+            webhook_headers: vec![],
         };
         let run_err = crate::run::mini::run(args).await.err();
 

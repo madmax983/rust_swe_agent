@@ -275,6 +275,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         resume_from: None,
         interactive_mode,
         trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -3260,6 +3262,8 @@ mod tests {
             interactive: false,
             yolo: false,
             ui: args::UiKind::Stderr,
+            webhook_url: None,
+            webhook_headers: vec![],
         }
     }
 
