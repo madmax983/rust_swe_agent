@@ -292,7 +292,9 @@ async fn no_otlp_traffic_when_endpoint_unset() {
     let _guard = env_var_lock();
     // Also ensure the env var is unset.
     // SAFETY: test-only, single-threaded context.
-    unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"); }
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
 
     let _results = run(args).await.unwrap();
 
@@ -400,8 +402,7 @@ async fn trace_id_written_to_instance_result_and_trajectory() {
         "trace_id missing from trajectory"
     );
     assert_eq!(
-        traj.info.trace_id,
-        results.instances[0].trace_id,
+        traj.info.trace_id, results.instances[0].trace_id,
         "trajectory trace_id must match instance_result trace_id"
     );
 }
@@ -483,8 +484,7 @@ async fn export_failure_does_not_fail_sweep_and_increments_counter() {
     );
 
     // results.json on disk must carry the counter.
-    let results_json =
-        std::fs::read_to_string(output.join("results.json")).unwrap();
+    let results_json = std::fs::read_to_string(output.join("results.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&results_json).unwrap();
     let dropped = parsed["span_export_dropped"].as_u64().unwrap_or(0);
     assert!(
@@ -587,7 +587,9 @@ async fn env_var_activates_otlp_tracing() {
     let _guard = env_var_lock();
     // Set env var to a dead endpoint.
     // SAFETY: test-only, single-threaded context.
-    unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1"); }
+    unsafe {
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1");
+    }
 
     let cfg = config_with_workdir(&repo);
     let args = SwebenchArgs {
@@ -641,7 +643,9 @@ async fn env_var_activates_otlp_tracing() {
 
     // Unset for subsequent tests.
     // SAFETY: test-only, single-threaded context.
-    unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"); }
+    unsafe {
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
 
     for inst in &results.instances {
         assert!(

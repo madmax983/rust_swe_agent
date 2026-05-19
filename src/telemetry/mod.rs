@@ -48,7 +48,9 @@ pub fn new_trace_id(instance_id: &str, sweep_id: &str) -> TraceId {
     hasher.update(nanos.to_le_bytes());
     let hash = hasher.finalize();
     // Use the first 16 bytes (128 bits) as the trace ID.
-    format!("{:032x}", u128::from_be_bytes(hash[..16].try_into().expect("16 bytes")))
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    format!("{:032x}", u128::from_be_bytes(bytes))
 }
 
 /// Generates a 64-bit span ID by taking the first 8 bytes of a SHA-256 hash.
@@ -58,7 +60,9 @@ pub fn new_span_id(salt: &str, trace_id: &TraceId) -> SpanId {
     hasher.update(b"\x01");
     hasher.update(trace_id.as_bytes());
     let hash = hasher.finalize();
-    format!("{:016x}", u64::from_be_bytes(hash[..8].try_into().expect("8 bytes")))
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hash[..8]);
+    format!("{:016x}", u64::from_be_bytes(bytes))
 }
 
 fn now_unix_nanos() -> u64 {
@@ -180,11 +184,7 @@ impl Tracer {
     /// Export a complete sweep + all its instances in one OTLP request.
     ///
     /// Errors are caught, logged at WARN, and counted.
-    pub async fn export_sweep(
-        &self,
-        sweep: &SweepSpanData,
-        instances: &[InstanceSpanData],
-    ) {
+    pub async fn export_sweep(&self, sweep: &SweepSpanData, instances: &[InstanceSpanData]) {
         let Some(inner) = &self.0 else { return };
 
         let url = format!("{}/v1/traces", inner.endpoint.trim_end_matches('/'));
@@ -218,10 +218,9 @@ impl Tracer {
                     error = %e,
                     "OTLP export failed: network error"
                 );
-                inner.dropped.fetch_add(
-                    1 + instances.len() as u64 * 3,
-                    Ordering::Relaxed,
-                );
+                inner
+                    .dropped
+                    .fetch_add(1 + instances.len() as u64 * 3, Ordering::Relaxed);
             }
         }
     }
@@ -338,8 +337,14 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
                 str_attr("gen_ai.request.model", &mc.model),
                 int_attr("gen_ai.usage.input_tokens", mc.prompt_tokens as i64),
                 int_attr("gen_ai.usage.output_tokens", mc.completion_tokens as i64),
-                int_attr("gen_ai.usage.cache_read_input_tokens", mc.cache_read_tokens as i64),
-                int_attr("gen_ai.usage.cache_creation_input_tokens", mc.cache_creation_tokens as i64),
+                int_attr(
+                    "gen_ai.usage.cache_read_input_tokens",
+                    mc.cache_read_tokens as i64,
+                ),
+                int_attr(
+                    "gen_ai.usage.cache_creation_input_tokens",
+                    mc.cache_creation_tokens as i64,
+                ),
                 int_attr("latency_ms", mc.latency_ms as i64),
                 str_attr("gen_ai.response.finish_reasons", &mc.finish_reason),
             ];
@@ -406,7 +411,9 @@ pub fn resolve_endpoint(cli_flag: Option<&str>) -> Option<String> {
     if let Some(ep) = cli_flag {
         return Some(ep.to_owned());
     }
-    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok().filter(|s| !s.is_empty())
+    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -433,12 +440,7 @@ pub(crate) mod build {
         final_patch_bytes: u64,
         start_nanos: u64,
     ) -> InstanceSpanData {
-        let outcome = traj
-            .info
-            .outcome
-            .as_deref()
-            .unwrap_or("unknown")
-            .to_owned();
+        let outcome = traj.info.outcome.as_deref().unwrap_or("unknown").to_owned();
         let cost_usd = traj.info.total_cost_usd.unwrap_or(0.0);
         let step_count = traj.info.steps.unwrap_or(0) as u64;
         let end_nanos = now_unix_nanos();
@@ -629,25 +631,35 @@ mod tests {
     #[test]
     fn resolve_endpoint_prefers_cli_flag() {
         // SAFETY: unit test, single-threaded.
-        unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318"); }
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+        }
         let ep = resolve_endpoint(Some("http://cli-host:4318"));
-        unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"); }
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        }
         assert_eq!(ep.as_deref(), Some("http://cli-host:4318"));
     }
 
     #[test]
     fn resolve_endpoint_falls_back_to_env_var() {
         // SAFETY: unit test, single-threaded.
-        unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318"); }
+        unsafe {
+            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+        }
         let ep = resolve_endpoint(None);
-        unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"); }
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        }
         assert_eq!(ep.as_deref(), Some("http://env-host:4318"));
     }
 
     #[test]
     fn resolve_endpoint_returns_none_when_unset() {
         // SAFETY: unit test, single-threaded.
-        unsafe { std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"); }
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        }
         let ep = resolve_endpoint(None);
         assert!(ep.is_none());
     }

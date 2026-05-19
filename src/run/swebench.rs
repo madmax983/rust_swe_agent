@@ -1741,8 +1741,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     // OTLP telemetry setup. The drop counter is shared between the tracer
     // and the final SweepResults so export failures are visible post-hoc.
     let span_export_dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let otlp_endpoint =
-        crate::telemetry::resolve_endpoint(args.otlp_endpoint.as_deref());
+    let otlp_endpoint = crate::telemetry::resolve_endpoint(args.otlp_endpoint.as_deref());
     let tracer_arc: Option<std::sync::Arc<crate::telemetry::Tracer>> =
         otlp_endpoint.as_deref().map(|ep| {
             std::sync::Arc::new(crate::telemetry::Tracer::new(
@@ -1757,7 +1756,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         h.update(args.output_dir.display().to_string().as_bytes());
         h.update(started_at_utc.as_bytes());
         let hash = h.finalize();
-        format!("{:016x}", u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8])))
+        format!(
+            "{:016x}",
+            u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8]))
+        )
     };
     let sweep_start_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2376,7 +2378,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 .unwrap_or_default(),
             model: model_name.clone(),
             instance_count: sweep.total as u64,
-            resolved_count: sweep.instances.iter().map(|r| u64::from(r.resolved_count)).sum(),
+            resolved_count: sweep
+                .instances
+                .iter()
+                .map(|r| u64::from(r.resolved_count))
+                .sum(),
             total_cost_usd: sweep.estimated_cost_usd,
             harness_version: env!("CARGO_PKG_VERSION").into(),
             git_sha: manifest_ref.and_then(|m| m.harness.git_sha.clone()),
@@ -2405,17 +2411,15 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 if let Ok(json) = std::fs::read_to_string(&traj_path) {
                     if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&json) {
                         let span_start = sweep_start_nanos;
-                        instance_spans.push(
-                            crate::telemetry::instance_span_data_from_trajectory(
-                                trace_id,
-                                &sweep_span_id,
-                                &ir.instance_id,
-                                &repo,
-                                &traj,
-                                final_patch_bytes,
-                                span_start,
-                            ),
-                        );
+                        instance_spans.push(crate::telemetry::instance_span_data_from_trajectory(
+                            trace_id,
+                            &sweep_span_id,
+                            &ir.instance_id,
+                            &repo,
+                            &traj,
+                            final_patch_bytes,
+                            span_start,
+                        ));
                     }
                 }
             }
