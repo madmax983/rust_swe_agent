@@ -296,10 +296,11 @@ async fn no_otlp_traffic_when_endpoint_unset() {
 
     // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
     let _guard = env_var_lock();
-    // Also ensure the env var is unset.
+    // Also ensure both OTLP env vars are unset.
     // SAFETY: test-only, single-threaded context.
     unsafe {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
     }
 
     let _results = run(args).await.unwrap();

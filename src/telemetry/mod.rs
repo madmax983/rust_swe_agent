@@ -184,7 +184,8 @@ impl Tracer {
     pub async fn export_sweep(&self, sweep: &SweepSpanData, instances: &[InstanceSpanData]) {
         let Some(inner) = &self.0 else { return };
 
-        let url = format!("{}/v1/traces", inner.endpoint.trim_end_matches('/'));
+        // inner.endpoint is the fully-resolved traces URL (resolve_endpoint normalises it).
+        let url = inner.endpoint.clone();
         let body = build_otlp_json(sweep, instances);
 
         let result = inner
@@ -250,6 +251,7 @@ fn bool_attr(key: &str, val: bool) -> serde_json::Value {
     attr(key, &serde_json::json!({ "boolValue": val }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn span_json(
     trace_id: &str,
     span_id: &str,
@@ -258,6 +260,7 @@ fn span_json(
     start_nanos: u64,
     end_nanos: u64,
     attributes: &[serde_json::Value],
+    links: &[serde_json::Value],
 ) -> serde_json::Value {
     let mut span = serde_json::json!({
         "traceId": trace_id,
@@ -271,6 +274,9 @@ fn span_json(
     });
     if let Some(pid) = parent_span_id {
         span["parentSpanId"] = serde_json::json!(pid);
+    }
+    if !links.is_empty() {
+        span["links"] = serde_json::json!(links);
     }
     span
 }
@@ -297,7 +303,12 @@ fn u64_to_i64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
-fn build_instance_spans(sweep_id: &str, inst: &InstanceSpanData) -> Vec<serde_json::Value> {
+fn build_instance_spans(
+    sweep_id: &str,
+    sweep_trace_id: &str,
+    sweep_span_id: &str,
+    inst: &InstanceSpanData,
+) -> Vec<serde_json::Value> {
     let inst_span_id = new_span_id(&format!("inst_{}", inst.instance_id), &inst.trace_id);
     let mut spans = vec![];
 
@@ -310,18 +321,24 @@ fn build_instance_spans(sweep_id: &str, inst: &InstanceSpanData) -> Vec<serde_js
         int_attr("step_count", u64_to_i64(inst.step_count)),
         int_attr("final_patch_bytes", u64_to_i64(inst.final_patch_bytes)),
     ];
-    // Each instance is its own independent OTel trace (different traceId from the
-    // sweep span). OTel requires all spans in a parent-child relationship to share
-    // the same traceId, so we keep instance spans as independent root spans and
-    // reference the sweep via an attribute rather than a span link.
+    // Each instance is its own independent OTel trace. A span link back to the
+    // sweep span lets Jaeger/Tempo show the sweep→instance relationship without
+    // violating the OTel invariant that parent-child spans share a traceId.
+    let sweep_link = serde_json::json!({
+        "traceId": sweep_trace_id,
+        "spanId": sweep_span_id,
+        "attributes": [str_attr("relationship", "part_of_sweep")],
+        "flags": 1
+    });
     spans.push(span_json(
         &inst.trace_id,
         &inst_span_id,
-        None, // root of its own trace — no cross-trace parent link
+        None, // root of its own trace — linked to sweep via span link
         "instance",
         inst.start_nanos,
         inst.end_nanos,
         &inst_attrs,
+        &[sweep_link],
     ));
 
     for (i, mc) in inst.model_calls.iter().enumerate() {
@@ -353,6 +370,7 @@ fn build_instance_spans(sweep_id: &str, inst: &InstanceSpanData) -> Vec<serde_js
             mc.start_nanos,
             mc.end_nanos,
             &mc_attrs,
+            &[],
         ));
     }
 
@@ -373,6 +391,7 @@ fn build_instance_spans(sweep_id: &str, inst: &InstanceSpanData) -> Vec<serde_js
             tc.start_nanos,
             tc.end_nanos,
             &tc_attrs,
+            &[],
         ));
     }
 
@@ -404,10 +423,16 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
         sweep.start_nanos,
         sweep.end_nanos,
         &sweep_attrs,
+        &[],
     )];
 
     for inst in instances {
-        spans.extend(build_instance_spans(&sweep.sweep_id, inst));
+        spans.extend(build_instance_spans(
+            &sweep.sweep_id,
+            &sweep_trace_id,
+            &sweep_span_id,
+            inst,
+        ));
     }
 
     serde_json::to_string(&serde_json::json!({
@@ -434,15 +459,29 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
 // Resolve effective OTLP endpoint (CLI flag beats env var)
 // ---------------------------------------------------------------------------
 
-/// Returns the active OTLP endpoint, preferring the CLI flag over the
-/// `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable.
+/// Returns the fully-resolved OTLP traces endpoint URL.
+///
+/// Resolution order (first match wins):
+/// 1. CLI `--otlp-endpoint` flag — treated as a base URL; `/v1/traces` is appended.
+/// 2. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — the OTel trace-specific env var.
+///    Already a full URL (e.g. `http://host:4318/v1/traces`); used as-is.
+/// 3. `OTEL_EXPORTER_OTLP_ENDPOINT` — the generic OTel base URL env var;
+///    `/v1/traces` is appended.
 pub fn resolve_endpoint(cli_flag: Option<&str>) -> Option<String> {
+    let with_path = |base: &str| format!("{}/v1/traces", base.trim_end_matches('/'));
+
     if let Some(ep) = cli_flag {
-        return Some(ep.to_owned());
+        return Some(with_path(ep));
+    }
+    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
+        if !ep.is_empty() {
+            return Some(ep); // already a full URL per OTel spec
+        }
     }
     std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .ok()
         .filter(|s| !s.is_empty())
+        .map(|base| with_path(&base))
 }
 
 // ---------------------------------------------------------------------------
@@ -727,12 +766,14 @@ mod tests {
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
         }
         let ep = resolve_endpoint(Some("http://cli-host:4318"));
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         }
-        assert_eq!(ep.as_deref(), Some("http://cli-host:4318"));
+        // CLI flag is a base URL; /v1/traces is appended.
+        assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/traces"));
     }
 
     #[test]
@@ -741,12 +782,33 @@ mod tests {
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
         }
         let ep = resolve_endpoint(None);
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         }
-        assert_eq!(ep.as_deref(), Some("http://env-host:4318"));
+        // Generic env var is a base URL; /v1/traces is appended.
+        assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/traces"));
+    }
+
+    #[test]
+    fn resolve_endpoint_traces_env_var_used_as_full_url() {
+        let _guard = env_lock();
+        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::set_var(
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "http://traces-host:4318/v1/traces",
+            );
+        }
+        let ep = resolve_endpoint(None);
+        unsafe {
+            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+        }
+        // Trace-specific env var is a full URL; used as-is without appending.
+        assert_eq!(ep.as_deref(), Some("http://traces-host:4318/v1/traces"));
     }
 
     #[test]
@@ -755,6 +817,7 @@ mod tests {
         // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
         }
         let ep = resolve_endpoint(None);
         assert!(ep.is_none());
