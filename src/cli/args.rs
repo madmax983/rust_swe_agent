@@ -181,21 +181,21 @@ pub struct SwebenchGithubPrArgs {
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MiniCmd {
-    /// The task prompt. Required unless `--resume` is set; forbidden when `--resume` is set.
-    #[arg(
-        long,
-        required_unless_present = "resume_from",
-        conflicts_with = "resume_from"
-    )]
+    /// The task prompt. Required unless `--resume` or `--task-file` is set; forbidden when `--resume` is set.
+    #[arg(long)]
     pub task: Option<String>,
+
+    /// Path to a file containing the task prompt, or '-' to read from stdin.
+    #[arg(long)]
+    pub task_file: Option<String>,
 
     /// Resume from a partial (in-progress) trajectory file instead of starting a new run.
     /// The trajectory is the sole source of truth for task, model, env, and budget settings.
-    /// Mutually exclusive with `--task`, `--render-only`, and `--trajectory-name`.
+    /// Mutually exclusive with `--task`, `--task-file`, `--render-only`, and `--trajectory-name`.
     #[arg(
         long = "resume",
         value_name = "PATH",
-        conflicts_with_all = ["task", "render_only", "trajectory_name"]
+        conflicts_with_all = ["render_only", "trajectory_name"]
     )]
     pub resume_from: Option<PathBuf>,
 
