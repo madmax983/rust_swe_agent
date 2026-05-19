@@ -699,9 +699,13 @@ pub(crate) mod build {
         let mut prev_msg: Option<&crate::trajectory::MessageRecord> = None;
         for msg in &traj.messages {
             if let Some(latency_ms) = msg.extra.model_latency_ms {
+                // harness_overhead_ms is measured before model.query starts (see
+                // agent/default.rs: assistant_harness_ms captured before model call).
+                // Advance the cursor over that pre-call gap first, then place the span.
+                cursor += msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
                 let mc_start = cursor;
                 let mc_end = cursor + latency_ms * 1_000_000;
-                cursor = mc_end + msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
+                cursor = mc_end;
 
                 let (prompt_tokens, completion_tokens, cache_read, cache_creation) =
                     if let Some(resp_val) = &msg.extra.response {
@@ -735,9 +739,12 @@ pub(crate) mod build {
             }
 
             if let Some(tool_latency_ms) = msg.extra.tool_latency_ms {
+                // Same ordering: harness overhead (pre-tool hooks, policy checks) runs
+                // before the tool, so advance the cursor before placing the span.
+                cursor += msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
                 let tc_start = cursor;
                 let tc_end = cursor + tool_latency_ms * 1_000_000;
-                cursor = tc_end + msg.extra.harness_overhead_ms.unwrap_or(0) * 1_000_000;
+                cursor = tc_end;
 
                 // The `actions` list is written on the preceding assistant turn.
                 // Fall back to the current message's actions if prev is missing.
