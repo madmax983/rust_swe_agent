@@ -223,7 +223,7 @@ pub fn compute_instance_metrics(
 pub fn run(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
     let mut report = build_report(args)?;
     report.generated_at = utc_now_iso8601();
-    if args.filter.is_none() {
+    if args.filter.is_none() && args.min_tests == 0 {
         let output_path = args.sweep_dir.join("test-progress.json");
         let file = std::fs::File::create(&output_path)?;
         serde_json::to_writer_pretty(file, &report)?;

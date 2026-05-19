@@ -1013,6 +1013,31 @@ fn cli_filter_does_not_write_test_progress_json() {
     );
 }
 
+// --min-tests must not write test-progress.json to the sweep directory.
+#[test]
+fn cli_min_tests_does_not_write_test_progress_json() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--min-tests",
+        "5",
+    ]);
+    assert!(
+        output.status.success(),
+        "test-progress --min-tests should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let artifact = sweep.path().join("test-progress.json");
+    assert!(
+        !artifact.exists(),
+        "test-progress.json must not be written when --min-tests is active"
+    );
+}
+
 fn redact_generated_at_text(text: &str) -> String {
     text.lines()
         .map(|line| {
