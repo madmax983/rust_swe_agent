@@ -12,6 +12,22 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// The rendering engine for bash templates and system prompts.
+///
+/// It wraps a `minijinja::Environment` configured specifically for shell
+/// scripting, explicitly disabling HTML auto-escaping which would otherwise
+/// mangle quotes, ampersands, and angle brackets.
+///
+/// ## Examples
+///
+/// ```
+/// use maxwells_daemon::template::Renderer;
+/// use minijinja::context;
+///
+/// let renderer = Renderer::new();
+/// let script = renderer.render_with("echo {{ var }}", context!(var => "hello")).unwrap();
+/// assert_eq!(script, "echo hello");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +39,17 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` instance.
+    ///
+    /// By default, it registers an `env` global that contains a dictionary
+    /// of the host's environment variables.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// let renderer = Renderer::new();
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +70,22 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Renders a template string using a pre-constructed `minijinja::Value`.
+    ///
+    /// This is identical to `render_str` but avoids the cost of serializing
+    /// the context if you've already built a dynamic `Value` using the
+    /// `context!` macro.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let r = Renderer::new();
+    /// let out = r.render_with("{{ a }} + {{ b }}", context!(a => 1, b => 2)).unwrap();
+    /// assert_eq!(out, "1 + 2");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }

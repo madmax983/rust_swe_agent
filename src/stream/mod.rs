@@ -34,52 +34,80 @@ pub enum StreamEvent {
     /// Emitted once at agent start, after the system + instance prompts
     /// are recorded.
     RunStarted {
+        /// The description of the task the agent is solving.
         task: String,
+        /// The primary model identifier being used for inference.
         model: String,
+        /// ISO 8601 formatted timestamp of when the run began.
         started_at: String,
     },
     /// LLM produced a response (before action parsing).
     AssistantMessage {
+        /// The current step number in the trajectory.
         step: u32,
+        /// The raw textual response returned by the language model.
         content: String,
+        /// Estimated cost of this response in USD, if the telemetry supports it.
         cost_usd: Option<f64>,
+        /// ISO 8601 formatted timestamp of the response.
         timestamp: String,
     },
     /// About to execute a bash command.
     BashStart {
+        /// The current step number in the trajectory.
         step: u32,
+        /// The raw bash command about to be executed.
         command: String,
+        /// ISO 8601 formatted timestamp before execution starts.
         timestamp: String,
     },
     /// Bash command finished.
     BashResult {
+        /// The current step number in the trajectory.
         step: u32,
+        /// The numeric exit code returned by the bash process.
         exit_code: i32,
+        /// Captured standard output.
         stdout: String,
+        /// Captured standard error output.
         stderr: String,
+        /// True if the process exceeded its deadline and was killed.
         timed_out: bool,
+        /// ISO 8601 formatted timestamp after execution finishes.
         timestamp: String,
     },
     /// Observation message recorded into the trajectory after a bash run.
     Observation {
+        /// The current step number in the trajectory.
         step: u32,
+        /// The formatted observation string sent back to the model.
         content: String,
+        /// ISO 8601 formatted timestamp of the observation.
         timestamp: String,
     },
     /// Model output was malformed; format-error template was sent back.
     FormatError {
+        /// The current step number in the trajectory.
         step: u32,
+        /// The error message indicating why the model output failed parsing.
         content: String,
+        /// ISO 8601 formatted timestamp of the parsing failure.
         timestamp: String,
     },
     /// Agent loop ended.
     RunEnded {
+        /// Human-readable description of why the run terminated (e.g. "submitted").
         exit_reason: String,
+        /// Machine-readable category if the run ended in a known failure state.
         #[serde(skip_serializing_if = "Option::is_none")]
         failure_category: Option<crate::trajectory::FailureCategory>,
+        /// The final answer string provided by the model, if it submitted one.
         final_output: Option<String>,
+        /// The total number of steps taken during the run.
         steps: u32,
+        /// Estimated total cumulative cost of all inference calls.
         total_cost_usd: f64,
+        /// ISO 8601 formatted timestamp when the run ended.
         ended_at: String,
     },
 }
@@ -103,6 +131,10 @@ impl StreamEvent {
 /// MUST NOT fail visibly to the agent — disconnect handling is the
 /// sink's job.
 pub trait StreamSink: Send + Sync {
+    /// Dispatch an event to this sink.
+    ///
+    /// This method is called synchronously by the agent loop on the hot path
+    /// and MUST NOT block or panic.
     fn emit(&self, event: StreamEvent);
 }
 
@@ -123,6 +155,20 @@ pub struct MultiSink {
 }
 
 impl MultiSink {
+    /// Compose a single sink that broadcasts identical events to many sinks.
+    ///
+    /// Useful for driving multiple UI layers (e.g. standard error, log files,
+    /// and SSE servers) simultaneously without tangling them in the core agent.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use maxwells_daemon::stream::{MultiSink, NullSink, StreamSink};
+    ///
+    /// let null = Arc::new(NullSink::default());
+    /// let multi = MultiSink::new(vec![null as Arc<dyn StreamSink>]);
+    /// ```
     #[must_use]
     pub fn new(sinks: Vec<std::sync::Arc<dyn StreamSink>>) -> Self {
         Self { sinks }
@@ -146,6 +192,14 @@ pub struct StatusLineStderrSink {
 }
 
 impl StatusLineStderrSink {
+    /// Create a new status-line sink that will print progress up to `step_limit`.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::stream::{StatusLineStderrSink, StreamSink};
+    /// let sink = StatusLineStderrSink::new(10);
+    /// ```
     #[must_use]
     pub fn new(step_limit: u32) -> Self {
         Self { step_limit }
