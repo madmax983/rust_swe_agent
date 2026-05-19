@@ -2567,6 +2567,7 @@ fn bench_report(r: args::ReportCmd) -> Result<(), Error> {
     let format = match r.format.as_str() {
         "markdown" | "md" => crate::run::report::ReportFormat::Markdown,
         "html" => crate::run::report::ReportFormat::Html,
+        "jupyter" | "ipynb" => crate::run::report::ReportFormat::Jupyter,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "unknown --format `{other}` (expected `markdown` or `html`)"

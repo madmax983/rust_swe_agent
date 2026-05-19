@@ -1520,7 +1520,7 @@ pub struct ReportCmd {
     #[arg(long, default_value_t = 10)]
     pub top_failures: usize,
 
-    /// Output format: `markdown` (default) or `html` (single-file, inline CSS, no JS).
+    /// Output format: `markdown` (default), `html` (single-file, inline CSS, no JS), or `jupyter` (Jupyter Notebook).
     #[arg(long, default_value = "markdown")]
     pub format: String,
 }
