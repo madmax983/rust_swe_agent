@@ -4,6 +4,49 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+// ── Agent subcommands ─────────────────────────────────────────────────────────
+
+/// `agent env preview` — print a structured preview of the agent environment.
+#[derive(Debug, Args)]
+pub struct EnvPreviewCmd {
+    /// Environment type: `local`, `docker`, or `chaos`.
+    #[arg(long)]
+    pub env: String,
+
+    /// Task description (used for context; passed through the redactor).
+    #[arg(long)]
+    pub task: String,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Show actual env var values instead of `[REDACTED:…]` markers.
+    #[arg(long, default_value_t = false)]
+    pub show_values: bool,
+}
+
+/// `agent env` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AgentEnvCmd {
+    /// Preview environment configuration for a task without running anything.
+    Preview(EnvPreviewCmd),
+}
+
+/// `agent` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AgentCmd {
+    /// Inspect or preview agent environment settings.
+    Env {
+        #[command(subcommand)]
+        cmd: AgentEnvCmd,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum StratifyByArg {
     Repo,

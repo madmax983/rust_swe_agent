@@ -40,6 +40,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
+    /// Agent environment inspection and preview utilities.
+    Agent {
+        #[command(subcommand)]
+        cmd: args::AgentCmd,
+    },
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -146,10 +151,94 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Cascade(c),
         } => Box::pin(bench_cascade(c)).await,
+        Command::Agent {
+            cmd: args::AgentCmd::Env {
+                cmd: args::AgentEnvCmd::Preview(ref p),
+            },
+        } => agent_env_preview_cmd(p),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
+    }
+}
+
+fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
+    let cfg = match &p.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+    let opts = crate::run::env_preview::EnvPreviewOpts {
+        env_type: p.env.clone(),
+        task: p.task.clone(),
+        config_path: p.config.clone(),
+        format: p.format.clone(),
+        show_values: p.show_values,
+    };
+    let preview = crate::run::env_preview::run_env_preview(&cfg, &opts);
+    if p.format == "json" {
+        let wrapped = serde_json::json!({ "env_preview": &preview });
+        println!("{}", serde_json::to_string_pretty(&wrapped).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(e.to_string()))
+        })?);
+    } else {
+        print_env_preview_text(&preview);
+    }
+    if crate::run::env_preview::is_risky(&preview) {
+        exit_with_outcome(ExitCode::EnvPreviewWarning, "env preview has risky findings");
+    }
+    Ok(())
+}
+
+fn print_env_preview_text(preview: &crate::run::env_preview::EnvPreview) {
+    println!("=== Agent Environment Preview ===");
+    println!("env_type:       {}", preview.env_type);
+    println!("host_paths:     {}", preview.host_paths.join(", "));
+    println!("network_egress: {}", preview.network_egress);
+    println!();
+    println!("--- Hooks ---");
+    if preview.hooks.pre_tool_use.is_empty() && preview.hooks.post_tool_use.is_empty() {
+        println!("  (none)");
+    } else {
+        for h in &preview.hooks.pre_tool_use {
+            println!("  PreToolUse  [{}]: {}", h.name, h.command);
+        }
+        for h in &preview.hooks.post_tool_use {
+            println!("  PostToolUse [{}]: {}", h.name, h.command);
+        }
+    }
+    println!();
+    println!("--- MCP Servers ---");
+    if preview.mcp_servers.is_empty() {
+        println!("  (none)");
+    } else {
+        for m in &preview.mcp_servers {
+            let flag = if m.outside_workdir { " [OUTSIDE WORKDIR]" } else { "" };
+            println!("  {}: {}{}", m.name, m.command, flag);
+        }
+    }
+    println!();
+    println!("--- Env Vars (sensitive) ---");
+    if preview.env_vars.is_empty() {
+        println!("  (none)");
+    } else {
+        for ev in &preview.env_vars {
+            println!("  {}: {}", ev.name, ev.value_or_redacted);
+        }
+    }
+    println!();
+    println!("--- Policy ---");
+    println!("  profile:     {}", preview.policy.profile);
+    println!("  extra_deny:  {}", if preview.policy.extra_deny.is_empty() { "(none)".to_owned() } else { preview.policy.extra_deny.join(", ") });
+    println!("  extra_allow: {}", if preview.policy.extra_allow.is_empty() { "(none)".to_owned() } else { preview.policy.extra_allow.join(", ") });
+    println!();
+    if preview.findings.is_empty() {
+        println!("--- Findings: CLEAN ---");
+    } else {
+        println!("--- Findings ---");
+        for f in &preview.findings {
+            println!("  [{}] {}", f.severity.to_uppercase(), f.message);
+        }
     }
 }
 
@@ -522,6 +611,27 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     s.dry_run = true;
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
+
+    // Non-fatal informational env preview section (issue #313).
+    {
+        let env_type_label = match cfg.root.environment.kind {
+            crate::config::EnvKind::Local => "local",
+            crate::config::EnvKind::Docker => "docker",
+        };
+        let opts = crate::run::env_preview::EnvPreviewOpts {
+            env_type: env_type_label.to_owned(),
+            task: "(doctor preflight)".into(),
+            config_path: s.config.clone(),
+            format: output_format.clone(),
+            show_values: false,
+        };
+        let preview = crate::run::env_preview::run_env_preview(&cfg, &opts);
+        if output_format != "json" {
+            println!("[bench doctor] env preview:");
+            print_env_preview_text(&preview);
+        }
+    }
+
     let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
     if output_format != "json" {
         print!("{}", results.summary_table());

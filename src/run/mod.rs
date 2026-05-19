@@ -5,6 +5,7 @@ pub mod behavior;
 pub mod budget_fit;
 pub mod bundle;
 pub mod cache_stats;
+pub mod env_preview;
 pub mod calibrate;
 pub mod cascade;
 pub mod command_stats;
