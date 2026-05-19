@@ -236,12 +236,13 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     // caught even when --render-only is set, rather than blessing a config
     // that would fail on a real run.
     cfg.root.model.name.clone_from(&m.model);
-    // For resume runs, step_limit is owned by mini_resume_cmd: it reads the
-    // original limit from the trajectory (or config file default) so the CLI
-    // default of 50 does not silently cap a run that was created with a higher
-    // limit. For all other subcommands, apply the CLI value as usual.
-    if m.resume_from.is_none() {
-        cfg.root.agent.step_limit = m.step_limit;
+    // step_limit: apply CLI value only when explicitly set; otherwise the
+    // config-file default is preserved. For resume runs, this is intentionally
+    // skipped here — mini_resume_cmd owns cap application for that path.
+    if let Some(v) = m.step_limit {
+        if m.resume_from.is_none() {
+            cfg.root.agent.step_limit = v;
+        }
     }
     if let Some(v) = m.observation_max_bytes {
         cfg.root.agent.observation_max_bytes = v;
@@ -532,13 +533,7 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
     Ok(())
 }
 
-/// Handle `mini --resume <path>`.
-///
-/// Validates the on-disk trajectory, extracts configuration from it (AC #2),
-/// and invokes `mini::run()` with `resume_from` populated so the agent
-/// continues from the last persisted step without replaying the prefix (AC #3).
-/// Load and JSON-parse a trajectory file, mapping I/O and parse errors to
-/// `Error::Config` so the caller can propagate them with `?`.
+/// Load and JSON-parse a trajectory file, mapping errors to `Error::Config`.
 fn load_resume_traj(path: &std::path::Path) -> Result<crate::trajectory::Trajectory, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -554,7 +549,7 @@ fn load_resume_traj(path: &std::path::Path) -> Result<crate::trajectory::Traject
     })
 }
 
-/// Validate `traj` for resume and exit the process on failure.
+/// Validate `traj` for resume and exit the process on the first violation.
 fn validate_resume_or_exit(traj: &crate::trajectory::Trajectory, path: &std::path::Path) {
     use crate::run::mini::ResumeValidationError;
     match crate::run::mini::validate_resume_trajectory(traj) {
@@ -584,20 +579,16 @@ fn validate_resume_or_exit(traj: &crate::trajectory::Trajectory, path: &std::pat
     }
 }
 
-/// Check whether the operator raised cap flags without `--resume-allow-step-bump`
-/// and exit the process if so. Exits on the first violation found.
+/// Enforce that no cap flags were raised without `--resume-allow-step-bump`.
+/// Exits if any disallowed flag is present.
 fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
-    // 50 matches `MiniCmd.step_limit` `default_value_t`. We compare against
-    // it (rather than the config value) because the config has already been
-    // overwritten by the CLI arg at this point.
-    const DEFAULT_STEP_LIMIT: u32 = 50;
     let bumped: Vec<&str> = [
-        (m.step_limit != DEFAULT_STEP_LIMIT, "--step-limit"),
+        (m.step_limit.is_some(), "--step-limit"),
         (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
         (m.per_task_budget_usd.is_some(), "--per-task-budget-usd"),
     ]
     .into_iter()
-    .filter_map(|(changed, name)| changed.then_some(name))
+    .filter_map(|(set, name)| set.then_some(name))
     .collect();
     if !bumped.is_empty() {
         exit_with_outcome(
@@ -610,6 +601,11 @@ fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
     }
 }
 
+/// Handle `mini --resume <path>`.
+///
+/// Validates the on-disk trajectory, extracts configuration from it (AC #2),
+/// and invokes `mini::run()` with `resume_from` populated so the agent
+/// continues from the last persisted step without replaying the prefix (AC #3).
 async fn mini_resume_cmd(
     m: args::MiniCmd,
     mut cfg: Config,
@@ -622,11 +618,12 @@ async fn mini_resume_cmd(
     let task = traj.info.task.clone().unwrap_or_default();
 
     if m.resume_allow_step_bump {
-        // Apply only explicitly-bumped caps; step_limit is applied from CLI
-        // value when set, otherwise config-file default is preserved.
-        const DEFAULT_STEP_LIMIT: u32 = 50;
-        if m.step_limit != DEFAULT_STEP_LIMIT {
-            cfg.root.agent.step_limit = m.step_limit;
+        // Apply only caps the operator explicitly set on the resume invocation.
+        // Note: task_timeout_secs and per_task_budget_usd are not stored in the
+        // trajectory schema today, so they cannot be auto-restored from the
+        // checkpoint; the operator must re-supply them with --resume-allow-step-bump.
+        if let Some(v) = m.step_limit {
+            cfg.root.agent.step_limit = v;
         }
         if let Some(v) = m.per_task_budget_usd {
             cfg.root.agent.per_task_budget_usd = Some(v);
@@ -3675,7 +3672,7 @@ mod tests {
             resume_allow_step_bump: false,
             extra_context: None,
             model: "deterministic".into(),
-            step_limit: 1,
+            step_limit: Some(1),
             observation_max_bytes: None,
             observation_head_ratio: None,
             task_timeout_secs: None,

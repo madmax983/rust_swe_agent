@@ -213,9 +213,9 @@ pub struct MiniCmd {
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,
 
-    /// Max agent steps.
-    #[arg(long, default_value_t = 50)]
-    pub step_limit: u32,
+    /// Max agent steps. Defaults to 50 when not set via flag or config.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
     #[arg(long)]
     pub observation_max_bytes: Option<usize>,
     #[arg(long)]

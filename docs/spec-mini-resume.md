@@ -122,3 +122,24 @@ See `docs/exit-codes.md` for the full exit-code contract.
 - Auto-resume on next launch; explicit `--resume` only.
 - Resuming a trajectory that pre-dates the per-step WAL (no `partial: true`
   field recorded).
+
+## Known Limitations
+
+**Redacted prefix drift.** The trajectory on disk stores messages after
+redaction rules were applied.  When the harness reloads the history on
+resume, the model receives the redacted versions of prior turns rather than
+the original plaintext.  This is an inherent consequence of the per-step WAL
+design: secrets are stripped before writing, and they cannot be recovered from
+disk.  In practice the effect is negligible for most runs because redacted
+tokens are a small fraction of the conversation, but operators running highly
+sensitive tasks should be aware that the resumed model context is not
+bit-for-bit identical to the original context.
+
+**Original CLI caps not automatically restored.** The trajectory schema does
+not yet store the `--task-timeout-secs` or `--per-task-budget-usd` values that
+were used on the original invocation.  If those caps were set on the original
+run, they must be re-supplied on the resume invocation (combined with
+`--resume-allow-step-bump`).  Without them, the resumed run uses the
+config-file default (typically: no per-task timeout, no per-task budget limit).
+Storing caps in the trajectory manifest is planned as a follow-up schema
+extension.

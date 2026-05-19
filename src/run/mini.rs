@@ -1146,8 +1146,8 @@ pub fn validate_resume_trajectory(
     traj: &crate::trajectory::Trajectory,
 ) -> Result<(), ResumeValidationError> {
     // A resumable trajectory must be explicitly marked partial AND carry no
-    // terminal outcome or exit_reason. Any of these being false/set means the
-    // run already reached a terminal state (or predates the #326 WAL).
+    // terminal outcome or exit_reason. Any of these conditions being violated
+    // means the run reached a terminal state or predates the #326 WAL.
     if !traj.info.partial || traj.info.outcome.is_some() || traj.info.exit_reason.is_some() {
         return Err(ResumeValidationError::AlreadyTerminal);
     }
@@ -1166,7 +1166,7 @@ pub fn validate_resume_trajectory(
     }
 
     // Reject a trajectory that ends on an assistant turn with no following
-    // user/tool observation: resuming it would produce two consecutive
+    // user/tool observation. Resuming it would produce two consecutive
     // assistant messages, which model APIs reject with a 400.
     if traj.messages.last().is_some_and(|m| m.role == "assistant") {
         return Err(ResumeValidationError::InvalidPrefix(
@@ -1810,8 +1810,8 @@ index 8a1218a..24c5735 100644\n\
 
     #[test]
     fn validate_resume_rejects_partial_false_without_outcome() {
-        // A trajectory with partial:false and no outcome (e.g. a legacy or
-        // corrupted file) must be rejected — it predates the #326 WAL.
+        // A trajectory with partial:false and no outcome (e.g. legacy or corrupted)
+        // must be rejected — it predates the #326 WAL.
         let mut traj = make_minimal_partial_traj();
         traj.info.partial = false;
         assert_eq!(
