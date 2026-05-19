@@ -368,8 +368,6 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.hide_budget_from_agent = true;
     }
 
-    // task is required (via clap) when --resume is absent, so unwrap is safe here.
-    let task = m.task.clone().unwrap_or_default();
     let trajectory_name = m
         .trajectory_name
         .clone()
