@@ -23,6 +23,9 @@ parsing human-oriented output.
 | 12   | `agent_stagnation`       | The agent repeated the same action at least K times within a trailing window of W steps. |
 | 13   | `env_preview_warning`    | `agent env preview` found at least one risky finding (wide host path, sensitive env var forwarded to agent, MCP server outside workdir, etc.). The preview itself was printed; the non-zero exit signals the operator should review findings before running a sweep. |
 | 14   | `skills_preview_warning` | `agent skills-preview` completed but found at least one warning: a task hit `max_active`, an activated manifest has no `version` field, or `auto_load = true` resolved an implicitly-matched skill. See `docs/spec-skills-preview.md`. |
+| 15   | `resume_already_terminal` | `mini --resume` target trajectory already has a terminal outcome (`submitted`, `error`, `step_limit_reached`, `budget_exhausted`, `cancelled`, `wallclock_timeout`). Cannot continue a run that already completed. |
+| 16   | `resume_manifest_missing` | `mini --resume` target trajectory is missing required fields (`task` and/or `model_name`). The file may pre-date the run-manifest schema; create a fresh run instead. |
+| 17   | `resume_invalid_prefix` | `mini --resume` target trajectory is structurally invalid for resume: message sequence is empty, too short (fewer than 2 messages), or ends in a partial assistant turn. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -57,7 +60,7 @@ coarse sweep-level result.
 
 | Command                         | Possible outcome classes |
 |---------------------------------|--------------------------|
-| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `internal_error` |
+| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `resume_already_terminal`, `resume_manifest_missing`, `resume_invalid_prefix`, `internal_error` |
 | `replay`                        | `success`, `usage_error`, `replay_prompt_drift`, `replay_response_exhausted`, `task_unsuccessful`, `internal_error` |
 | `bench swebench`                | `success`, `usage_error`, `preflight_failure`, `budget_halt`, `internal_error`, `interrupted`, `killed` |
 | `bench forecast`                | `success`, `usage_error`, `budget_halt`, `internal_error`, `interrupted` |

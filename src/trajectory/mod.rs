@@ -65,6 +65,10 @@ pub struct ResumeRecord {
     pub prior_steps: u32,
     /// Accumulated cost (USD) already spent before this resume.
     pub prior_cost_usd: f64,
+    /// Git SHA of the harness binary at resume time (may differ from the
+    /// original run's SHA after a harness upgrade).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_git_sha_at_resume: Option<String>,
 }
 
 /// Operator-supplied verification check run after the agent finishes.

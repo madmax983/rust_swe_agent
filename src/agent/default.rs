@@ -372,6 +372,8 @@ pub struct ResumeState {
     pub completion_tokens: u64,
     /// ISO 8601 timestamp when this resume was initiated.
     pub resumed_at: String,
+    /// Git SHA of the harness at resume time, for the `ResumeRecord` audit entry.
+    pub harness_git_sha: Option<String>,
 }
 
 pub struct DefaultAgent {
@@ -573,6 +575,7 @@ impl DefaultAgentBuilder {
                     resumed_at: resume.resumed_at.clone(),
                     prior_steps: resume.steps,
                     prior_cost_usd: resume.total_cost_usd,
+                    harness_git_sha_at_resume: resume.harness_git_sha.clone(),
                 });
             traj.info.partial = false;
             traj.info.partial_reason = None;

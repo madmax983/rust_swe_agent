@@ -236,7 +236,14 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     // caught even when --render-only is set, rather than blessing a config
     // that would fail on a real run.
     cfg.root.model.name.clone_from(&m.model);
-    cfg.root.agent.step_limit = m.step_limit;
+    // step_limit: apply CLI value only when explicitly set; otherwise the
+    // config-file default is preserved. For resume runs, this is intentionally
+    // skipped here — mini_resume_cmd owns cap application for that path.
+    if let Some(v) = m.step_limit {
+        if m.resume_from.is_none() {
+            cfg.root.agent.step_limit = v;
+        }
+    }
     if let Some(v) = m.observation_max_bytes {
         cfg.root.agent.observation_max_bytes = v;
     }
@@ -267,6 +274,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
 
+    // ── Resume path ──────────────────────────────────────────────────────────
+    if let Some(resume_path) = m.resume_from.clone() {
+        return mini_resume_cmd(m, cfg, resume_path).await;
+    }
+
     if m.render_only {
         return mini_render_only_cmd(m, cfg);
     }
@@ -286,10 +298,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.agent.hide_budget_from_agent = true;
     }
 
+    // task is required (via clap) when --resume is absent, so unwrap is safe here.
+    let task = m.task.clone().unwrap_or_default();
     let trajectory_name = m
         .trajectory_name
         .clone()
-        .unwrap_or_else(|| crate::run::mini::slugify(&m.task));
+        .unwrap_or_else(|| crate::run::mini::slugify(&task));
     let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
     let patch_capture = github_pr
         .as_ref()
@@ -312,7 +326,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
-        task: m.task,
+        task,
         extra_context: m.extra_context,
         config: cfg,
         output_dir: m.output,
@@ -496,7 +510,7 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
     )?;
 
     let args = crate::run::render_only::RenderOnlyArgs {
-        task: m.task,
+        task: m.task.unwrap_or_default(),
         extra_context: m.extra_context,
         config: cfg,
     };
@@ -517,6 +531,197 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
         }
     }
     Ok(())
+}
+
+/// Load and JSON-parse a trajectory file, mapping errors to `Error::Config`.
+fn load_resume_traj(path: &std::path::Path) -> Result<crate::trajectory::Trajectory, Error> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: cannot read trajectory file `{}`: {e}",
+            path.display()
+        )))
+    })?;
+    serde_json::from_str(&text).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: trajectory file `{}` is not valid JSON: {e}",
+            path.display()
+        )))
+    })
+}
+
+/// Validate `traj` for resume and exit the process on the first violation.
+fn validate_resume_or_exit(traj: &crate::trajectory::Trajectory, path: &std::path::Path) {
+    use crate::run::mini::ResumeValidationError;
+    match crate::run::mini::validate_resume_trajectory(traj) {
+        Ok(()) => {}
+        Err(ResumeValidationError::AlreadyTerminal) => exit_with_outcome(
+            ExitCode::ResumeAlreadyTerminal,
+            &format!(
+                "cannot resume `{}`: trajectory already has a terminal outcome \
+                 (outcome={:?}, exit_reason={:?})",
+                path.display(),
+                traj.info.outcome,
+                traj.info.exit_reason,
+            ),
+        ),
+        Err(ResumeValidationError::ManifestMissing) => exit_with_outcome(
+            ExitCode::ResumeManifestMissing,
+            &format!(
+                "cannot resume `{}`: trajectory is missing required fields \
+                 (task and/or model_name); the file may pre-date the manifest schema",
+                path.display()
+            ),
+        ),
+        Err(ResumeValidationError::InvalidPrefix(reason)) => exit_with_outcome(
+            ExitCode::ResumeInvalidPrefix,
+            &format!("cannot resume `{}`: {reason}", path.display()),
+        ),
+    }
+}
+
+/// Enforce that no cap flags were raised without `--resume-allow-step-bump`.
+/// Exits if any disallowed flag is present.
+fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
+    let bumped: Vec<&str> = [
+        (m.step_limit.is_some(), "--step-limit"),
+        (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
+        (m.per_task_budget_usd.is_some(), "--per-task-budget-usd"),
+    ]
+    .into_iter()
+    .filter_map(|(set, name)| set.then_some(name))
+    .collect();
+    if !bumped.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--resume: {} cannot be changed on resume without --resume-allow-step-bump",
+                bumped.join(", ")
+            ),
+        );
+    }
+}
+
+/// Handle `mini --resume <path>`.
+///
+/// Validates the on-disk trajectory, extracts configuration from it (AC #2),
+/// and invokes `mini::run()` with `resume_from` populated so the agent
+/// continues from the last persisted step without replaying the prefix (AC #3).
+async fn mini_resume_cmd(
+    m: args::MiniCmd,
+    mut cfg: Config,
+    resume_path: std::path::PathBuf,
+) -> Result<(), Error> {
+    // Reject GitHub PR flags — the PR-opening path lives in the non-resume
+    // branch. Silently ignoring them would mislead the operator.
+    let pr_flags: &[(&str, bool)] = &[
+        ("--open-pr", m.github_pr.open_pr),
+        ("--github-pr-dry-run", m.github_pr.github_pr_dry_run),
+        ("--target-repo", m.github_pr.target_repo.is_some()),
+        ("--target-branch", m.github_pr.target_branch.is_some()),
+    ];
+    let set_pr_flags: Vec<&str> = pr_flags
+        .iter()
+        .filter_map(|&(name, set)| set.then_some(name))
+        .collect();
+    if !set_pr_flags.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--resume: GitHub PR flags are not supported on resume invocations: {}",
+                set_pr_flags.join(", ")
+            ),
+        );
+    }
+
+    // Reject MCP server overrides: the trajectory doesn't store the original
+    // MCP configuration, so we cannot validate compatibility. A different tool
+    // registry on resume would cause tool-not-found failures or behavior drift.
+    if !m.mcp_servers.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "--resume: --mcp-server overrides are not supported on resume invocations; \
+             the original tool registry cannot be restored from the trajectory",
+        );
+    }
+
+    // Validate extension: the write path is reconstructed as
+    // `parent/{stem}.traj.json`, so if the file doesn't end with `.traj.json`
+    // the read and write targets would differ. Reject early with a clear error.
+    let traj_stem = resume_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".traj.json"))
+        .unwrap_or_else(|| {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                &format!(
+                    "--resume: `{}` must end with `.traj.json`; \
+                     only trajectory files written by this harness are supported",
+                    resume_path.display()
+                ),
+            )
+        })
+        .to_owned();
+
+    let traj = load_resume_traj(&resume_path)?;
+    validate_resume_or_exit(&traj, &resume_path);
+
+    cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
+    let task = traj.info.task.clone().unwrap_or_default();
+
+    if m.resume_allow_step_bump {
+        // Apply only caps the operator explicitly set on the resume invocation.
+        // Note: task_timeout_secs and per_task_budget_usd are not stored in the
+        // trajectory schema today, so they cannot be auto-restored from the
+        // checkpoint; the operator must re-supply them with --resume-allow-step-bump.
+        if let Some(v) = m.step_limit {
+            cfg.root.agent.step_limit = v;
+        }
+        if let Some(v) = m.per_task_budget_usd {
+            cfg.root.agent.per_task_budget_usd = Some(v);
+        }
+    } else {
+        reject_cap_bump_without_flag(&m);
+    }
+
+    let stream_addr = match &m.stream {
+        Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid --stream address `{s}`: {e}"
+            )))
+        })?),
+        None => None,
+    };
+
+    let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
+
+    let traj_output_dir = resume_path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
+
+    let args = crate::run::mini::MiniArgs {
+        task,
+        extra_context: m.extra_context,
+        config: cfg,
+        output_dir: traj_output_dir,
+        trajectory_name: traj_stem,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        task_timeout_secs: m.task_timeout_secs,
+        cancellation: None,
+        stream_addr,
+        patch_capture: None,
+        verification_checks,
+        verification_timeout_secs: m.verify_timeout_secs,
+        resume_from: Some(traj),
+        interactive_mode,
+        trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
+    };
+    crate::run::mini::run(args).await
 }
 
 fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
@@ -3500,10 +3705,12 @@ mod tests {
 
     fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
         args::MiniCmd {
-            task: "Fix it".into(),
+            task: Some("Fix it".into()),
+            resume_from: None,
+            resume_allow_step_bump: false,
             extra_context: None,
             model: "deterministic".into(),
-            step_limit: 1,
+            step_limit: Some(1),
             observation_max_bytes: None,
             observation_head_ratio: None,
             task_timeout_secs: None,

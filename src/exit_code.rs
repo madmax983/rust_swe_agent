@@ -72,6 +72,16 @@ pub enum ExitCode {
     /// `version` field, or `auto_load` resolved an implicitly-matched skill.
     /// See `docs/spec-skills-preview.md` for the full contract.
     SkillsPreviewWarning = 14,
+    /// 15 — `mini --resume` target trajectory already has a terminal outcome;
+    /// cannot continue a run that already completed, was cancelled, or hit a cap.
+    ResumeAlreadyTerminal = 15,
+    /// 16 — `mini --resume` target trajectory pre-dates the required manifest schema;
+    /// `task` or `model_name` fields are missing so the run configuration cannot be
+    /// reconstructed.
+    ResumeManifestMissing = 16,
+    /// 17 — `mini --resume` target trajectory is structurally invalid for resume;
+    /// the message sequence is empty, too short, or ends in a partial assistant turn.
+    ResumeInvalidPrefix = 17,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -107,6 +117,9 @@ impl ExitCode {
             Self::AgentStagnation => "agent_stagnation",
             Self::EnvPreviewWarning => "env_preview_warning",
             Self::SkillsPreviewWarning => "skills_preview_warning",
+            Self::ResumeAlreadyTerminal => "resume_already_terminal",
+            Self::ResumeManifestMissing => "resume_manifest_missing",
+            Self::ResumeInvalidPrefix => "resume_invalid_prefix",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -289,6 +302,35 @@ mod tests {
         assert_eq!(
             ExitCode::AgentStagnation.outcome_class(),
             "agent_stagnation"
+        );
+    }
+
+    // ── RED-phase: resume exit codes ─────────────────────────────────────
+
+    #[test]
+    fn resume_already_terminal_exit_code_is_15() {
+        assert_eq!(ExitCode::ResumeAlreadyTerminal.as_i32(), 15);
+        assert_eq!(
+            ExitCode::ResumeAlreadyTerminal.outcome_class(),
+            "resume_already_terminal"
+        );
+    }
+
+    #[test]
+    fn resume_manifest_missing_exit_code_is_16() {
+        assert_eq!(ExitCode::ResumeManifestMissing.as_i32(), 16);
+        assert_eq!(
+            ExitCode::ResumeManifestMissing.outcome_class(),
+            "resume_manifest_missing"
+        );
+    }
+
+    #[test]
+    fn resume_invalid_prefix_exit_code_is_17() {
+        assert_eq!(ExitCode::ResumeInvalidPrefix.as_i32(), 17);
+        assert_eq!(
+            ExitCode::ResumeInvalidPrefix.outcome_class(),
+            "resume_invalid_prefix"
         );
     }
 }
