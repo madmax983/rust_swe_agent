@@ -36,16 +36,10 @@ pub type SpanId = String;
 /// Generates a deterministic but collision-resistant 128-bit trace ID by
 /// hashing `instance_id + sweep_id + monotonic_nanos`.
 pub fn new_trace_id(instance_id: &str, sweep_id: &str) -> TraceId {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
     let mut hasher = Sha256::new();
     hasher.update(instance_id.as_bytes());
     hasher.update(b"\x00");
     hasher.update(sweep_id.as_bytes());
-    hasher.update(b"\x00");
-    hasher.update(nanos.to_le_bytes());
     let hash = hasher.finalize();
     // Use the first 16 bytes (128 bits) as the trace ID.
     let mut bytes = [0u8; 16];
@@ -278,6 +272,18 @@ fn span_json(
     span
 }
 
+fn infer_gen_ai_system(model: &str) -> &'static str {
+    if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+        "openai"
+    } else if model.starts_with("gemini") {
+        "google_vertexai"
+    } else {
+        "unknown"
+    }
+}
+
 fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> String {
     let sweep_trace_id = new_trace_id("sweep", &sweep.sweep_id);
     let sweep_span_id = new_span_id("sweep_span", &sweep_trace_id);
@@ -307,11 +313,15 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
         sweep_attrs,
     ));
 
-    // Instance spans + their children.
+    // Each instance is its own independent OTel trace (different traceId from the
+    // sweep span). OTel requires all spans in a parent-child relationship to share
+    // the same traceId, so we keep instance spans as independent root spans and
+    // reference the sweep via an attribute rather than a span link.
     for inst in instances {
         let inst_span_id = new_span_id(&format!("inst_{}", inst.instance_id), &inst.trace_id);
 
         let inst_attrs = vec![
+            str_attr("sweep_id", &sweep.sweep_id),
             str_attr("instance_id", &inst.instance_id),
             str_attr("repo", &inst.repo),
             str_attr("outcome", &inst.outcome),
@@ -322,7 +332,7 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
         spans.push(span_json(
             &inst.trace_id,
             &inst_span_id,
-            Some(&inst.sweep_span_id),
+            None, // root of its own trace — no cross-trace parent link
             "instance",
             inst.start_nanos,
             inst.end_nanos,
@@ -333,7 +343,7 @@ fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> Str
         for (i, mc) in inst.model_calls.iter().enumerate() {
             let mc_span_id = new_span_id(&format!("mc_{}_{i}", inst.instance_id), &inst.trace_id);
             let mc_attrs = vec![
-                str_attr("gen_ai.system", "anthropic"),
+                str_attr("gen_ai.system", infer_gen_ai_system(&mc.model)),
                 str_attr("gen_ai.request.model", &mc.model),
                 int_attr("gen_ai.usage.input_tokens", mc.prompt_tokens as i64),
                 int_attr("gen_ai.usage.output_tokens", mc.completion_tokens as i64),
@@ -448,13 +458,15 @@ pub(crate) mod build {
         let mut model_calls = vec![];
         let mut tool_calls = vec![];
 
-        // Walk messages to collect per-turn telemetry.
-        // We never read message.content (sensitive); only numeric metadata in extra.
+        // Walk messages in order, assigning sequential non-overlapping time windows
+        // starting from start_nanos. Absolute timestamps aren't stored in the
+        // trajectory, so we reconstruct a plausible ordering from latency data.
+        let mut cursor = start_nanos;
         for msg in &traj.messages {
             if let Some(latency_ms) = msg.extra.model_latency_ms {
-                // This is an assistant turn with model latency data.
-                let mc_start = end_nanos.saturating_sub(latency_ms * 1_000_000);
-                let mc_end = mc_start + latency_ms * 1_000_000;
+                let mc_start = cursor;
+                let mc_end = cursor + latency_ms * 1_000_000;
+                cursor = mc_end;
 
                 let (prompt_tokens, completion_tokens, cache_read, cache_creation) =
                     if let Some(resp_val) = &msg.extra.response {
@@ -480,9 +492,9 @@ pub(crate) mod build {
             }
 
             if let Some(tool_latency_ms) = msg.extra.tool_latency_ms {
-                // User/observation turn with tool latency data.
-                let tc_start = end_nanos.saturating_sub(tool_latency_ms * 1_000_000);
-                let tc_end = tc_start + tool_latency_ms * 1_000_000;
+                let tc_start = cursor;
+                let tc_end = cursor + tool_latency_ms * 1_000_000;
+                cursor = tc_end;
 
                 // Extract tool name from actions list (first action = command type).
                 let tool_name = msg

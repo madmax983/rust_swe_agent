@@ -2396,12 +2396,17 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
         for ir in &sweep.instances {
             if let Some(trace_id) = &ir.trace_id {
-                let traj_path = trajectory_path_for_run(&args.output_dir, &ir.instance_id, 0);
+                // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
+                // Use reruns=1 as the default; if the instance ran multiple times take the last.
+                let last_run_index = args.reruns.max(1);
+                let traj_path =
+                    trajectory_path_for_run(&args.output_dir, &ir.instance_id, last_run_index);
                 // Read the trajectory to extract model/tool call telemetry.
-                let final_patch_bytes = patch_path_for_run(&args.output_dir, &ir.instance_id, 0)
-                    .metadata()
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let final_patch_bytes =
+                    patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
                 let repo = ir
                     .instance_id
                     .split("__")
