@@ -1145,24 +1145,33 @@ pub enum ResumeValidationError {
 pub fn validate_resume_trajectory(
     traj: &crate::trajectory::Trajectory,
 ) -> Result<(), ResumeValidationError> {
-    // AC #7: already-terminal check — partial must be true, outcome must be absent.
-    let is_terminal =
-        !traj.info.partial && (traj.info.outcome.is_some() || traj.info.exit_reason.is_some());
-    if is_terminal {
+    // A resumable trajectory must be explicitly marked partial AND carry no
+    // terminal outcome or exit_reason. Any of these being false/set means the
+    // run already reached a terminal state (or predates the #326 WAL).
+    if !traj.info.partial || traj.info.outcome.is_some() || traj.info.exit_reason.is_some() {
         return Err(ResumeValidationError::AlreadyTerminal);
     }
 
-    // AC #2: manifest-fields check.
+    // Manifest-fields check.
     if traj.info.task.is_none() || traj.info.model_name.is_none() {
         return Err(ResumeValidationError::ManifestMissing);
     }
 
-    // AC #12: structural validity — need at least system + user initial messages.
+    // Structural validity — need at least system + user initial messages.
     if traj.messages.len() < 2 {
         return Err(ResumeValidationError::InvalidPrefix(format!(
             "trajectory has {} message(s); need at least 2 (system + user)",
             traj.messages.len()
         )));
+    }
+
+    // Reject a trajectory that ends on an assistant turn with no following
+    // user/tool observation: resuming it would produce two consecutive
+    // assistant messages, which model APIs reject with a 400.
+    if traj.messages.last().is_some_and(|m| m.role == "assistant") {
+        return Err(ResumeValidationError::InvalidPrefix(
+            "trajectory ends in a partial assistant turn with no observation".into(),
+        ));
     }
 
     Ok(())
@@ -1800,22 +1809,50 @@ index 8a1218a..24c5735 100644\n\
     }
 
     #[test]
+    fn validate_resume_rejects_partial_false_without_outcome() {
+        // A trajectory with partial:false and no outcome (e.g. a legacy or
+        // corrupted file) must be rejected — it predates the #326 WAL.
+        let mut traj = make_minimal_partial_traj();
+        traj.info.partial = false;
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::AlreadyTerminal)
+        );
+    }
+
+    #[test]
     fn validate_resume_rejects_empty_messages() {
         let mut traj = make_minimal_partial_traj();
         traj.messages.clear();
-        matches!(
+        assert!(matches!(
             validate_resume_trajectory(&traj),
             Err(ResumeValidationError::InvalidPrefix(_))
-        );
+        ));
     }
 
     #[test]
     fn validate_resume_rejects_single_message() {
         let mut traj = make_minimal_partial_traj();
         traj.messages.truncate(1);
-        matches!(
+        assert!(matches!(
             validate_resume_trajectory(&traj),
             Err(ResumeValidationError::InvalidPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn validate_resume_rejects_trailing_assistant_message() {
+        let mut traj = make_minimal_partial_traj();
+        traj.messages.push(crate::trajectory::MessageRecord {
+            role: "assistant".into(),
+            content: "partial turn with no observation".into(),
+            extra: Default::default(),
+        });
+        assert_eq!(
+            validate_resume_trajectory(&traj),
+            Err(ResumeValidationError::InvalidPrefix(
+                "trajectory ends in a partial assistant turn with no observation".into()
+            ))
         );
     }
 

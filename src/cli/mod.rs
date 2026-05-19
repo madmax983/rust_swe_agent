@@ -236,7 +236,13 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     // caught even when --render-only is set, rather than blessing a config
     // that would fail on a real run.
     cfg.root.model.name.clone_from(&m.model);
-    cfg.root.agent.step_limit = m.step_limit;
+    // For resume runs, step_limit is owned by mini_resume_cmd: it reads the
+    // original limit from the trajectory (or config file default) so the CLI
+    // default of 50 does not silently cap a run that was created with a higher
+    // limit. For all other subcommands, apply the CLI value as usual.
+    if m.resume_from.is_none() {
+        cfg.root.agent.step_limit = m.step_limit;
+    }
     if let Some(v) = m.observation_max_bytes {
         cfg.root.agent.observation_max_bytes = v;
     }
@@ -531,102 +537,111 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
 /// Validates the on-disk trajectory, extracts configuration from it (AC #2),
 /// and invokes `mini::run()` with `resume_from` populated so the agent
 /// continues from the last persisted step without replaying the prefix (AC #3).
+/// Load and JSON-parse a trajectory file, mapping I/O and parse errors to
+/// `Error::Config` so the caller can propagate them with `?`.
+fn load_resume_traj(path: &std::path::Path) -> Result<crate::trajectory::Trajectory, Error> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: cannot read trajectory file `{}`: {e}",
+            path.display()
+        )))
+    })?;
+    serde_json::from_str(&text).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: trajectory file `{}` is not valid JSON: {e}",
+            path.display()
+        )))
+    })
+}
+
+/// Validate `traj` for resume and exit the process on failure.
+fn validate_resume_or_exit(traj: &crate::trajectory::Trajectory, path: &std::path::Path) {
+    use crate::run::mini::ResumeValidationError;
+    match crate::run::mini::validate_resume_trajectory(traj) {
+        Ok(()) => {}
+        Err(ResumeValidationError::AlreadyTerminal) => exit_with_outcome(
+            ExitCode::ResumeAlreadyTerminal,
+            &format!(
+                "cannot resume `{}`: trajectory already has a terminal outcome \
+                 (outcome={:?}, exit_reason={:?})",
+                path.display(),
+                traj.info.outcome,
+                traj.info.exit_reason,
+            ),
+        ),
+        Err(ResumeValidationError::ManifestMissing) => exit_with_outcome(
+            ExitCode::ResumeManifestMissing,
+            &format!(
+                "cannot resume `{}`: trajectory is missing required fields \
+                 (task and/or model_name); the file may pre-date the manifest schema",
+                path.display()
+            ),
+        ),
+        Err(ResumeValidationError::InvalidPrefix(reason)) => exit_with_outcome(
+            ExitCode::ResumeInvalidPrefix,
+            &format!("cannot resume `{}`: {reason}", path.display()),
+        ),
+    }
+}
+
+/// Check whether the operator raised cap flags without `--resume-allow-step-bump`
+/// and exit the process if so. Exits on the first violation found.
+fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
+    // 50 matches `MiniCmd.step_limit` `default_value_t`. We compare against
+    // it (rather than the config value) because the config has already been
+    // overwritten by the CLI arg at this point.
+    const DEFAULT_STEP_LIMIT: u32 = 50;
+    let bumped: Vec<&str> = [
+        (m.step_limit != DEFAULT_STEP_LIMIT, "--step-limit"),
+        (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
+        (m.per_task_budget_usd.is_some(), "--per-task-budget-usd"),
+    ]
+    .into_iter()
+    .filter_map(|(changed, name)| changed.then_some(name))
+    .collect();
+    if !bumped.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--resume: {} cannot be changed on resume without --resume-allow-step-bump",
+                bumped.join(", ")
+            ),
+        );
+    }
+}
+
 async fn mini_resume_cmd(
     m: args::MiniCmd,
     mut cfg: Config,
     resume_path: std::path::PathBuf,
 ) -> Result<(), Error> {
-    // Load the trajectory from disk.
-    let traj_text = std::fs::read_to_string(&resume_path).map_err(|e| {
-        Error::Config(crate::error::ConfigError::Invalid(format!(
-            "--resume: cannot read trajectory file `{}`: {e}",
-            resume_path.display()
-        )))
-    })?;
-    let traj: crate::trajectory::Trajectory = serde_json::from_str(&traj_text).map_err(|e| {
-        Error::Config(crate::error::ConfigError::Invalid(format!(
-            "--resume: trajectory file `{}` is not valid JSON: {e}",
-            resume_path.display()
-        )))
-    })?;
+    let traj = load_resume_traj(&resume_path)?;
+    validate_resume_or_exit(&traj, &resume_path);
 
-    // Validate the trajectory using the shared validation function.
-    match crate::run::mini::validate_resume_trajectory(&traj) {
-        Ok(()) => {}
-        Err(crate::run::mini::ResumeValidationError::AlreadyTerminal) => {
-            exit_with_outcome(
-                ExitCode::ResumeAlreadyTerminal,
-                &format!(
-                    "cannot resume `{}`: trajectory already has a terminal outcome \
-                     (outcome={:?}, exit_reason={:?})",
-                    resume_path.display(),
-                    traj.info.outcome,
-                    traj.info.exit_reason,
-                ),
-            );
-        }
-        Err(crate::run::mini::ResumeValidationError::ManifestMissing) => {
-            exit_with_outcome(
-                ExitCode::ResumeManifestMissing,
-                &format!(
-                    "cannot resume `{}`: trajectory is missing required fields \
-                     (task and/or model_name); the file may pre-date the manifest schema",
-                    resume_path.display()
-                ),
-            );
-        }
-        Err(crate::run::mini::ResumeValidationError::InvalidPrefix(reason)) => {
-            exit_with_outcome(
-                ExitCode::ResumeInvalidPrefix,
-                &format!("cannot resume `{}`: {reason}", resume_path.display()),
-            );
-        }
-    }
-
-    // AC #2: Extract configuration from the trajectory as the source of truth.
+    cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
     let task = traj.info.task.clone().unwrap_or_default();
-    let model_name = traj.info.model_name.clone().unwrap_or_default();
 
-    cfg.root.model.name = model_name;
-
-    // Retain step_limit / timeout / budget from the trajectory where set,
-    // unless --resume-allow-step-bump is specified and the operator overrides.
-    if !m.resume_allow_step_bump {
-        // Reject if the operator tried to raise caps without the bump flag.
-        let bumped_flags: Vec<&str> = [
-            m.step_limit != 50 && m.step_limit != cfg.root.agent.step_limit,
-            m.task_timeout_secs.is_some(),
-            m.per_task_budget_usd.is_some(),
-        ]
-        .iter()
-        .zip([
-            "--step-limit",
-            "--task-timeout-secs",
-            "--per-task-budget-usd",
-        ])
-        .filter_map(|(&changed, name)| changed.then_some(name))
-        .collect();
-        if !bumped_flags.is_empty() {
-            exit_with_outcome(
-                ExitCode::UsageError,
-                &format!(
-                    "--resume: {} cannot be changed on resume without --resume-allow-step-bump",
-                    bumped_flags.join(", ")
-                ),
-            );
+    if m.resume_allow_step_bump {
+        // Apply only explicitly-bumped caps; step_limit is applied from CLI
+        // value when set, otherwise config-file default is preserved.
+        const DEFAULT_STEP_LIMIT: u32 = 50;
+        if m.step_limit != DEFAULT_STEP_LIMIT {
+            cfg.root.agent.step_limit = m.step_limit;
         }
-    } else {
         if let Some(v) = m.per_task_budget_usd {
             cfg.root.agent.per_task_budget_usd = Some(v);
         }
+    } else {
+        reject_cap_bump_without_flag(&m);
     }
 
     let trajectory_name = resume_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .map(|s| s.trim_end_matches(".traj"))
-        .unwrap_or("resumed")
-        .to_owned();
+        .map_or_else(
+            || "resumed".to_owned(),
+            |s| s.trim_end_matches(".traj").to_owned(),
+        );
 
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
@@ -640,14 +655,10 @@ async fn mini_resume_cmd(
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
 
-    // Use the resume path's parent directory as the output dir so the
-    // in-place update writes back to the same location.
-    let traj_output_dir = resume_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    // Override trajectory_name to match the original filename so the
-    // atomic write targets the same path.
+    let traj_output_dir = resume_path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
     let traj_stem = resume_path
         .file_name()
         .and_then(|n| n.to_str())
