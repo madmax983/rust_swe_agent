@@ -2386,7 +2386,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 .iter()
                 .filter(|r| r.resolved_count > 0)
                 .count() as u64,
-            total_cost_usd: sweep.estimated_cost_usd,
+            total_cost_usd: sweep.actual_cost_usd.unwrap_or(sweep.estimated_cost_usd),
             harness_version: env!("CARGO_PKG_VERSION").into(),
             git_sha: manifest_ref.and_then(|m| m.harness.git_sha.clone()),
             start_nanos: sweep_start_nanos,
@@ -2401,33 +2401,52 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_id);
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
         for ir in &sweep.instances {
-            if let Some(trace_id) = &ir.trace_id {
-                // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
-                // Use reruns=1 as the default; if the instance ran multiple times take the last.
-                let last_run_index = args.reruns.max(1);
-                let traj_path =
-                    trajectory_path_for_run(&args.output_dir, &ir.instance_id, last_run_index);
-                // Read the trajectory to extract model/tool call telemetry.
-                let final_patch_bytes =
-                    patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
-                        .metadata()
-                        .map_or(0, |m| m.len());
-                let repo = crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id)
-                    .unwrap_or_default();
-                if let Ok(json) = std::fs::read_to_string(&traj_path) {
-                    if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&json) {
-                        let span_start = sweep_start_nanos;
-                        instance_spans.push(crate::telemetry::instance_span_data_from_trajectory(
-                            trace_id,
-                            &sweep_span_id,
-                            &ir.instance_id,
-                            &repo,
-                            &traj,
-                            final_patch_bytes,
-                            span_start,
-                        ));
-                    }
-                }
+            // Generate a deterministic trace ID for --resume instances that
+            // completed before OTLP was enabled (trace_id is None on those rows).
+            let generated_trace_id;
+            let trace_id: &str = if let Some(tid) = ir.trace_id.as_deref() {
+                tid
+            } else {
+                generated_trace_id = crate::telemetry::new_trace_id(&ir.instance_id, &sweep_id);
+                &generated_trace_id
+            };
+            // Run indices are 1-based (the sweep loop runs `for run_index in 1..=reruns`).
+            // Use reruns=1 as the default; if the instance ran multiple times take the last.
+            let last_run_index = args.reruns.max(1);
+            let traj_path =
+                trajectory_path_for_run(&args.output_dir, &ir.instance_id, last_run_index);
+            let final_patch_bytes =
+                patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
+                    .metadata()
+                    .map_or(0, |m| m.len());
+            let repo = crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id)
+                .unwrap_or_default();
+            // Try to read the trajectory for full model/tool call telemetry.
+            // Fall back to a minimal instance-only span when the trajectory is
+            // absent (e.g. build-env or MCP discovery failures before agent init).
+            let traj_loaded = std::fs::read_to_string(&traj_path)
+                .ok()
+                .and_then(|json| serde_json::from_str::<crate::trajectory::Trajectory>(&json).ok());
+            if let Some(traj) = traj_loaded {
+                instance_spans.push(crate::telemetry::instance_span_data_from_trajectory(
+                    trace_id,
+                    &sweep_span_id,
+                    &ir.instance_id,
+                    &repo,
+                    &traj,
+                    final_patch_bytes,
+                    sweep_start_nanos,
+                ));
+            } else {
+                instance_spans.push(crate::telemetry::instance_span_data_from_result(
+                    trace_id,
+                    &sweep_span_id,
+                    &ir.instance_id,
+                    &repo,
+                    ir,
+                    final_patch_bytes,
+                    sweep_start_nanos,
+                ));
             }
         }
         tracer.export_sweep(&sweep_span, &instance_spans).await;

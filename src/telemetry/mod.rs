@@ -591,6 +591,7 @@ pub fn resolve_endpoint(cli_flag: Option<&str>) -> Option<String> {
 // Build instance span data from a completed trajectory
 // ---------------------------------------------------------------------------
 
+pub use build::instance_span_data_from_result;
 pub use build::instance_span_data_from_trajectory;
 
 pub(crate) mod build {
@@ -608,6 +609,37 @@ pub(crate) mod build {
                 .ok()
                 .map(|s| s * 1_000_000_000 + u64::from(dt.timestamp_subsec_nanos()))
         })
+    }
+
+    /// Construct a minimal `InstanceSpanData` from an `InstanceResult` alone.
+    ///
+    /// Used when an instance failed before writing a trajectory file (e.g.
+    /// build-env or MCP discovery errors).  The span carries no model/tool
+    /// child spans; callers should prefer `instance_span_data_from_trajectory`
+    /// when a trajectory is available.
+    pub fn instance_span_data_from_result(
+        trace_id: &str,
+        sweep_span_id: &str,
+        instance_id: &str,
+        repo: &str,
+        result: &crate::run::swebench::InstanceResult,
+        final_patch_bytes: u64,
+        start_nanos: u64,
+    ) -> InstanceSpanData {
+        InstanceSpanData {
+            trace_id: trace_id.to_owned(),
+            sweep_span_id: sweep_span_id.to_owned(),
+            instance_id: instance_id.to_owned(),
+            repo: repo.to_owned(),
+            outcome: result.outcome.as_deref().unwrap_or("unknown").to_owned(),
+            cost_usd: result.cost_usd.unwrap_or(0.0),
+            step_count: u64::from(result.steps.unwrap_or(0)),
+            final_patch_bytes,
+            start_nanos,
+            end_nanos: now_unix_nanos(),
+            model_calls: vec![],
+            tool_calls: vec![],
+        }
     }
 
     /// Construct `InstanceSpanData` from a completed trajectory.
