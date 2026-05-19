@@ -1,0 +1,56 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1091 security advisories (from /home/jules/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (338 crate dependencies)
+Crate:     paste
+Version:   1.0.15
+Warning:   unmaintained
+Title:     paste - no longer maintained
+Date:      2024-10-07
+ID:        RUSTSEC-2024-0436
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0436
+Dependency tree:
+paste 1.0.15
+├── ratatui 0.29.0
+│   └── maxwells-daemon 0.1.0
+└── litellm-rs 0.4.16
+    └── maxwells-daemon 0.1.0
+
+Crate:     libyml
+Version:   0.0.5
+Warning:   unsound
+Title:     `libyml::string::yaml_string_extend` is unsound and unmaintained
+Date:      2025-09-11
+ID:        RUSTSEC-2025-0067
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0067
+Dependency tree:
+libyml 0.0.5
+└── serde_yml 0.0.12
+    └── litellm-rs 0.4.16
+        └── maxwells-daemon 0.1.0
+
+Crate:     lru
+Version:   0.12.5
+Warning:   unsound
+Title:     `IterMut` violates Stacked Borrows by invalidating internal pointer
+Date:      2026-01-07
+ID:        RUSTSEC-2026-0002
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0002
+Dependency tree:
+lru 0.12.5
+└── ratatui 0.29.0
+    └── maxwells-daemon 0.1.0
+
+Crate:     serde_yml
+Version:   0.0.12
+Warning:   unsound
+Title:     serde_yml crate is unsound and unmaintained
+Date:      2025-09-11
+ID:        RUSTSEC-2025-0068
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0068
+Dependency tree:
+serde_yml 0.0.12
+└── litellm-rs 0.4.16
+    └── maxwells-daemon 0.1.0
+
+warning: 4 allowed warnings found
