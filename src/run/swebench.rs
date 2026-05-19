@@ -2412,6 +2412,15 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         };
         let sweep_trace_id = crate::telemetry::new_trace_id("sweep", &sweep_id);
         let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_trace_id);
+        // Capture the export time once so all no-trajectory spans that do have
+        // a real execution share a consistent end time.
+        let export_nanos = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();
         for ir in &mut sweep.instances {
             // Generate a deterministic trace ID for --resume instances that
@@ -2471,6 +2480,14 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     .clone_into(&mut span.outcome);
                 instance_spans.push(span);
             } else {
+                // Budget-halted rows never ran: give them an instantaneous span
+                // so they don't appear as long-running failures for the entire
+                // sweep duration in trace backends.
+                let (inst_start, inst_end) = if ir.exit_reason == EXIT_REASON_BUDGET_HALT {
+                    (export_nanos, export_nanos)
+                } else {
+                    (sweep_start_nanos, export_nanos)
+                };
                 instance_spans.push(crate::telemetry::instance_span_data_from_result(
                     trace_id,
                     &sweep_span_id,
@@ -2478,7 +2495,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     &repo,
                     ir,
                     final_patch_bytes,
-                    sweep_start_nanos,
+                    inst_start,
+                    inst_end,
                 ));
             }
         }

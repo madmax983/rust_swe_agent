@@ -401,6 +401,11 @@ fn infer_gen_ai_system(model: &str) -> &'static str {
         "openai"
     } else if bare.starts_with("gemini") {
         "google_vertexai"
+    } else if !model.contains('/') {
+        // Bare model names with no provider prefix route to OpenAI in the
+        // model layer (parse_provider in model/litellm.rs); mirror that here
+        // so `o4-mini`, `o3-mini`, etc. get the correct gen_ai.system.
+        "openai"
     } else {
         "unknown"
     }
@@ -626,6 +631,7 @@ pub(crate) mod build {
     /// build-env or MCP discovery errors).  The span carries no model/tool
     /// child spans; callers should prefer `instance_span_data_from_trajectory`
     /// when a trajectory is available.
+    #[allow(clippy::too_many_arguments)]
     pub fn instance_span_data_from_result(
         trace_id: &str,
         sweep_span_id: &str,
@@ -634,6 +640,7 @@ pub(crate) mod build {
         result: &crate::run::swebench::InstanceResult,
         final_patch_bytes: u64,
         start_nanos: u64,
+        end_nanos: u64,
     ) -> InstanceSpanData {
         InstanceSpanData {
             trace_id: trace_id.to_owned(),
@@ -645,7 +652,7 @@ pub(crate) mod build {
             step_count: u64::from(result.steps.unwrap_or(0)),
             final_patch_bytes,
             start_nanos,
-            end_nanos: now_unix_nanos(),
+            end_nanos,
             model_calls: vec![],
             tool_calls: vec![],
         }
