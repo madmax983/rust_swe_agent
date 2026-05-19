@@ -1,0 +1,24 @@
+{
+  "instances": [
+    {
+      "instance_id": "resolved-1",
+      "resolved": true,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_passed": ["test_a", "test_b", "test_c", "test_p1", "test_p2"],
+      "tests_failed": [],
+      "eval_exit_reason": "resolved"
+    },
+    {
+      "instance_id": "resolved-2",
+      "resolved": true,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_passed": ["test_x", "test_y", "test_q1"],
+      "tests_failed": [],
+      "eval_exit_reason": "resolved"
+    }
+  ]
+}

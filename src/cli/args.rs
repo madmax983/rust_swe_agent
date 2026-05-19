@@ -386,6 +386,46 @@ pub enum BenchCmd {
     Ladder(LadderCmd),
     /// Run sequential model tiers per instance; short-circuit on first resolved tier.
     Cascade(CascadeCmd),
+    /// Compute per-test partial-credit scores across a completed sweep.
+    TestProgress(TestProgressCmd),
+}
+
+/// `bench test-progress` — per-test partial-credit scoring across a sweep.
+///
+/// Reads existing evaluator output (`evaluation.json`) and dataset JSONL
+/// (`dataset.jsonl`) to compute `partial_credit_score`, verdict buckets, and
+/// hot-failing-test aggregations. Never re-runs instances or calls a model.
+#[derive(Debug, Args)]
+pub struct TestProgressCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Restrict the per-instance text table to one verdict bucket.
+    /// Valid values: resolved, partial_progress, no_progress, regressed,
+    /// evaluator_unavailable.
+    #[arg(long)]
+    pub bucket: Option<String>,
+
+    /// Number of entries in `hot_failing_tests` and `hot_regressed_tests`
+    /// (default: 20).
+    #[arg(long, default_value_t = 20)]
+    pub hot_tests_n: usize,
+
+    /// Filter instances using the same syntax as `bench inspect --filter`.
+    /// Example: `resolved=true`.
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    /// Exclude instances with fewer than N total tests from sweep-wide means.
+    /// Excluded instances still appear in `per_instance` with
+    /// `excluded_from_means: true`. Default: 0 (no exclusion).
+    #[arg(long, default_value_t = 0)]
+    pub min_tests: usize,
 }
 
 /// `bench cascade` — cost-optimized model-tier routing per instance.

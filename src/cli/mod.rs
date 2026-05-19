@@ -146,6 +146,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Cascade(c),
         } => Box::pin(bench_cascade(c)).await,
+        Command::Bench {
+            cmd: args::BenchCmd::TestProgress(t),
+        } => bench_test_progress(t),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -1070,6 +1073,14 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             {
                 print!("{diff}");
             }
+            if let Some(tp_diff) =
+                crate::run::test_progress::test_progress_compare_section(
+                    &c.baseline,
+                    &c.candidate,
+                )
+            {
+                print!("{tp_diff}");
+            }
         }
         crate::run::compare::CompareFormat::Json => {
             println!("{}", report.to_json_pretty()?);
@@ -1826,6 +1837,35 @@ fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {
         CommandStatsFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+    }
+    Ok(())
+}
+
+fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "test-progress: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::test_progress::run(&crate::run::test_progress::TestProgressArgs {
+        sweep_dir: t.sweep,
+        format: t.format,
+        bucket: t.bucket.clone(),
+        hot_tests_n: t.hot_tests_n,
+        filter: t.filter,
+        min_tests: t.min_tests,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            crate::run::test_progress::render_text(&report, t.bucket.as_deref())
+        );
     }
     Ok(())
 }

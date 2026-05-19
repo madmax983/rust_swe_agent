@@ -1,0 +1,2 @@
+{"instance_id": "resolved-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_a\", \"test_b\", \"test_c\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\"]"}
+{"instance_id": "resolved-2", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_x\", \"test_y\"]", "PASS_TO_PASS": "[\"test_q1\"]"}
