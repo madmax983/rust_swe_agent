@@ -455,6 +455,19 @@ pub(crate) mod build {
     use super::{InstanceSpanData, ModelCallSpanData, ToolCallSpanData, now_unix_nanos};
     use crate::trajectory::Trajectory;
 
+    /// Parse an ISO 8601 / RFC 3339 timestamp string into Unix nanoseconds.
+    fn iso8601_to_nanos(s: &str) -> Option<u64> {
+        chrono::DateTime::parse_from_rfc3339(s).ok().and_then(|dt| {
+            let secs = dt.timestamp();
+            if secs < 0 {
+                return None;
+            }
+            u64::try_from(secs)
+                .ok()
+                .map(|s| s * 1_000_000_000 + u64::from(dt.timestamp_subsec_nanos()))
+        })
+    }
+
     /// Construct `InstanceSpanData` from a completed trajectory.
     ///
     /// Sensitive content (raw tool output, patch bodies, task strings) is
@@ -472,7 +485,21 @@ pub(crate) mod build {
         let outcome = traj.info.outcome.as_deref().unwrap_or("unknown").to_owned();
         let cost_usd = traj.info.total_cost_usd.unwrap_or(0.0);
         let step_count = u64::from(traj.info.steps.unwrap_or(0));
-        let end_nanos = now_unix_nanos();
+
+        // Use actual trajectory wall-clock timestamps when available so that
+        // instance spans reflect the real execution window, not the sweep start.
+        let start_nanos = traj
+            .info
+            .started_at
+            .as_deref()
+            .and_then(iso8601_to_nanos)
+            .unwrap_or(start_nanos);
+        let end_nanos = traj
+            .info
+            .ended_at
+            .as_deref()
+            .and_then(iso8601_to_nanos)
+            .unwrap_or_else(now_unix_nanos);
 
         let mut model_calls = vec![];
         let mut tool_calls = vec![];
@@ -581,9 +608,15 @@ pub(crate) mod build {
             .or_else(|| usage.get("completion_tokens"))
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        // Anthropic: cache_read_input_tokens; OpenAI: prompt_tokens_details.cached_tokens
         let cache_read = usage
             .get("cache_read_tokens")
             .or_else(|| usage.get("cache_read_input_tokens"))
+            .or_else(|| {
+                usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+            })
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let cache_creation = usage
@@ -648,6 +681,16 @@ pub(crate) mod build {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn trace_id_is_32_hex_chars() {
@@ -680,7 +723,8 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_prefers_cli_flag() {
-        // SAFETY: unit test, single-threaded.
+        let _guard = env_lock();
+        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
         }
@@ -693,7 +737,8 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_falls_back_to_env_var() {
-        // SAFETY: unit test, single-threaded.
+        let _guard = env_lock();
+        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
         }
@@ -706,7 +751,8 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_returns_none_when_unset() {
-        // SAFETY: unit test, single-threaded.
+        let _guard = env_lock();
+        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
         unsafe {
             std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         }
