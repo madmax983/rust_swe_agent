@@ -55,7 +55,7 @@ pub const DEFAULT_PARALLEL: usize = 4;
 /// category dominates at or above the configured share threshold and the minimum
 /// sample count has been reached, the check returns `Some(category)` and the
 /// sweep halts gracefully.
-pub mod circuit_breaker {
+pub(crate) mod circuit_breaker {
     use crate::trajectory::FailureCategory;
 
     /// An entry in the completion log fed to the circuit breaker.
@@ -7619,5 +7619,169 @@ instance = "inst"
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid instance_id"));
+    }
+}
+
+#[cfg(test)]
+mod circuit_breaker_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::circuit_breaker::CircuitBreaker;
+    use crate::trajectory::FailureCategory;
+
+    #[test]
+    fn circuit_breaker_does_not_trip_when_disabled() {
+        let cb = CircuitBreaker::new(false, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+        ];
+        assert!(cb.check(&completions).is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_trip_below_min_samples() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+        ];
+        // Only 4 completed, min is 5.
+        assert!(cb.check(&completions).is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_trip_without_dominant_actionable_category() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        // 3 ModelApi + 2 EnvSetup = neither reaches 80%.
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::EnvSetup), true),
+            (Some(FailureCategory::EnvSetup), true),
+        ];
+        assert!(cb.check(&completions).is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_trip_on_non_actionable_dominant_category() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        // StepLimit is not actionable — should never trip even at 100%.
+        let completions = vec![
+            (Some(FailureCategory::StepLimit), true),
+            (Some(FailureCategory::StepLimit), true),
+            (Some(FailureCategory::StepLimit), true),
+            (Some(FailureCategory::StepLimit), true),
+            (Some(FailureCategory::StepLimit), true),
+        ];
+        assert!(cb.check(&completions).is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_trips_on_actionable_dominant_category_at_exact_threshold() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        // 4 out of 5 = 80% ModelApi (exactly at threshold).
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::StepLimit), true),
+        ];
+        let result = cb.check(&completions);
+        assert_eq!(result, Some(FailureCategory::ModelApi));
+    }
+
+    #[test]
+    fn circuit_breaker_trips_on_env_setup_dominant() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::EnvSetup), true),
+            (Some(FailureCategory::EnvSetup), true),
+            (Some(FailureCategory::EnvSetup), true),
+            (Some(FailureCategory::EnvSetup), true),
+            (Some(FailureCategory::EnvSetup), true),
+        ];
+        let result = cb.check(&completions);
+        assert_eq!(result, Some(FailureCategory::EnvSetup));
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_trip_when_successes_dilute_share_below_threshold() {
+        // 5 ModelApi failures + 5 successes (None) = 10 completed, 50% share.
+        // 50% < 80% threshold — must NOT trip even though min_samples is met.
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (None, true), // success
+            (None, true),
+            (None, true),
+            (None, true),
+            (None, true),
+        ];
+        assert!(
+            cb.check(&completions).is_none(),
+            "5/10 = 50% should not trip the 80% threshold"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_trips_when_failures_dominate_mixed_completions() {
+        // 8 ModelApi failures + 2 successes = 10 completed, 80% share — exactly at threshold.
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (None, true), // success
+            (None, true),
+        ];
+        assert_eq!(
+            cb.check(&completions),
+            Some(FailureCategory::ModelApi),
+            "8/10 = 80% should trip the 80% threshold"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_does_not_trip_when_prior_successes_dilute_share_on_resume() {
+        // Simulates a resumed sweep: 100 prior successful completions (None) +
+        // 5 new ModelApi failures.  5/105 ≈ 4.8% << 80% — must not trip.
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let mut completions: Vec<_> = vec![(None, true); 100];
+        completions.extend(vec![(Some(FailureCategory::ModelApi), true); 5]);
+        assert!(
+            cb.check(&completions).is_none(),
+            "5/105 ≈ 4.8% should not trip the 80% threshold on resume"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_is_deterministic() {
+        let cb = CircuitBreaker::new(true, 5, 80);
+        let completions = vec![
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+            (Some(FailureCategory::ModelApi), true),
+        ];
+        let first = cb.check(&completions);
+        let second = cb.check(&completions);
+        assert_eq!(first, second);
     }
 }
