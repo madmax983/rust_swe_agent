@@ -139,7 +139,7 @@ fn agent_skills_preview_task_file_reads_tasks() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Two tasks from the file should produce two task hashes in output.
-    // May exit 13 (warning) if auto_match fires; that's fine for this test.
+    // May exit 14 (warning) if auto_match fires; that's fine for this test.
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("--format json output must be valid JSON; got {stdout}\nerr: {e}\nstderr: {stderr}"));
     let tasks = json["tasks"].as_array().expect("tasks array must exist");
@@ -714,7 +714,7 @@ fn agent_skills_preview_exit_2_on_missing_task() {
     );
 }
 
-// ── AC6: skills_preview_warning exit code (13) ───────────────────────────────
+// ── AC6: skills_preview_warning exit code (14) ───────────────────────────────
 
 #[test]
 fn agent_skills_preview_exit_13_when_max_active_cap_hit() {
@@ -754,8 +754,8 @@ fn agent_skills_preview_exit_13_when_max_active_cap_hit() {
         .unwrap();
     let exit_code = out.status.code().unwrap_or(-1);
     assert_eq!(
-        exit_code, 13,
-        "must exit 13 (skills_preview_warning) when max_active cap is hit; got {exit_code}"
+        exit_code, 14,
+        "must exit 14 (skills_preview_warning) when max_active cap is hit; got {exit_code}"
     );
 }
 
@@ -785,8 +785,8 @@ fn agent_skills_preview_exit_13_when_manifest_missing_version() {
         .unwrap();
     let exit_code = out.status.code().unwrap_or(-1);
     assert_eq!(
-        exit_code, 13,
-        "must exit 13 (skills_preview_warning) when an activated manifest has no version field; got {exit_code}"
+        exit_code, 14,
+        "must exit 14 (skills_preview_warning) when an activated manifest has no version field; got {exit_code}"
     );
 }
 
@@ -944,8 +944,8 @@ fn exit_codes_doc_has_skills_preview_warning() {
         "docs/exit-codes.md must document the skills_preview_warning exit code"
     );
     assert!(
-        doc.contains("13"),
-        "docs/exit-codes.md must document code 13"
+        doc.contains("14"),
+        "docs/exit-codes.md must document code 14 (skills_preview_warning)"
     );
 }
 

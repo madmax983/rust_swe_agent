@@ -37,9 +37,9 @@ For each task, in order:
 
 1. **task_hash** — SHA-256 of the task string (12-char hex prefix)
 2. Per activated skill: `name | reason | sha256[:12] | bytes | path`
-3. **total_bytes_injected** — sum of skill file sizes for the task
+3. **total_bytes_injected** — sum of raw SKILL.md file sizes for the task (includes YAML frontmatter; a conservative upper bound on injected bytes)
 4. **max_active_cap_hit: true/false** — with count of manifests dropped due to `max_active`
-5. **merged_extra_context_bytes** — byte cost added by the skills on top of base context
+5. **merged_extra_context_bytes** — same as `total_bytes_injected` (raw manifest bytes; excludes any render-context wrapper added at sweep time)
 
 A summary section follows listing task count, unique skills activated, p50/p95 bytes/task, and tasks hitting the cap.
 
@@ -140,7 +140,7 @@ Task: `"please perform a security review of the authentication module"`
 |------|-------|-----------|
 | `0` | `success` | Clean preview with no warnings |
 | `2` | `usage_error` | Missing `--task` / `--task-file`, or invalid `--format` |
-| `13` | `skills_preview_warning` | At least one of: task hit `max_active`, an activated manifest has no `version` field, or `auto_load = true` resolved a skill via `auto_match` |
+| `14` | `skills_preview_warning` | At least one of: task hit `max_active`, an activated manifest has no `version` field, or `auto_load = true` resolved a skill via `auto_match` |
 
 ## `bench doctor` integration
 

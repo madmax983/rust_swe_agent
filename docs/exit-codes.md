@@ -19,9 +19,10 @@ parsing human-oriented output.
 | 8    | `calibration_optimistic`     | `bench calibrate --fail-on-optimistic` found actual sweep metrics above the forecast interval. |
 | 9    | `replay_prompt_drift`        | `bench replay` detected that at least one input fingerprint does not match the cassette. |
 | 10   | `replay_response_exhausted`  | `bench replay` ran out of scripted responses before the agent finished (structural drift). |
-| 11   | `systemic_halt`          | Sweep halted by the systemic-failure circuit breaker. See `docs/spec-systemic-halt.md`. |
-| 12   | `agent_stagnation`       | Agent repeated the same action K times within a trailing window of W steps. See `docs/spec-stagnation.md`. |
-| 13   | `skills_preview_warning` | `agent skills-preview` completed but found at least one warning: a task hit `max_active`, an activated manifest has no `version` field, or `auto_load = true` resolved an implicitly-matched skill. See `docs/spec-skills-preview.md`. |
+| 11   | `systemic_halt`          | `bench swebench` mid-sweep circuit breaker tripped: at least N completed instances share the same actionable failure category at or above the configured share threshold. |
+| 12   | `agent_stagnation`       | The agent repeated the same action at least K times within a trailing window of W steps. |
+| 13   | `env_preview_warning`    | `agent env preview` found at least one risky finding (wide host path, sensitive env var forwarded to agent, MCP server outside workdir, etc.). The preview itself was printed; the non-zero exit signals the operator should review findings before running a sweep. |
+| 14   | `skills_preview_warning` | `agent skills-preview` completed but found at least one warning: a task hit `max_active`, an activated manifest has no `version` field, or `auto_load = true` resolved an implicitly-matched skill. See `docs/spec-skills-preview.md`. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -69,6 +70,7 @@ coarse sweep-level result.
 | `bench triage`                  | `success`, `usage_error`, `internal_error` |
 | `bench frontier`                | `success`, `usage_error`, `internal_error` |
 | `bench bundle`                  | `success`, `usage_error`, `verification_failure`, `internal_error` |
+| `agent env preview`             | `success`, `usage_error`, `env_preview_warning`, `internal_error` |
 | `agent skills-preview`          | `success`, `usage_error`, `skills_preview_warning`, `internal_error` |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond

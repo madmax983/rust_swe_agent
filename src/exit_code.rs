@@ -62,11 +62,16 @@ pub enum ExitCode {
     /// least K times within a trailing window of W steps. See
     /// `docs/spec-stagnation.md` for the full contract.
     AgentStagnation = 12,
-    /// 13 — `agent skills-preview` completed but found at least one warning
+    /// 13 — `agent env preview` found at least one risky finding (wide host
+    /// path, sensitive env var, MCP server outside workdir, etc.). The preview
+    /// itself was printed successfully; the non-zero exit signals that the
+    /// operator should review the findings before running a sweep.
+    EnvPreviewWarning = 13,
+    /// 14 — `agent skills-preview` completed but found at least one warning
     /// condition: a task hit `max_active`, an activated manifest has no
     /// `version` field, or `auto_load` resolved an implicitly-matched skill.
     /// See `docs/spec-skills-preview.md` for the full contract.
-    SkillsPreviewWarning = 13,
+    SkillsPreviewWarning = 14,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -100,6 +105,7 @@ impl ExitCode {
             Self::ReplayResponseExhausted => "replay_response_exhausted",
             Self::SystemicHalt => "systemic_halt",
             Self::AgentStagnation => "agent_stagnation",
+            Self::EnvPreviewWarning => "env_preview_warning",
             Self::SkillsPreviewWarning => "skills_preview_warning",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",

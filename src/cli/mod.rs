@@ -40,7 +40,7 @@ pub enum Command {
         #[command(subcommand)]
         cmd: args::BenchCmd,
     },
-    /// Harness inspection and preview utilities.
+    /// Agent inspection and preview utilities.
     Agent {
         #[command(subcommand)]
         cmd: args::AgentCmd,
@@ -154,6 +154,12 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Cascade(c),
         } => Box::pin(bench_cascade(c)).await,
+        Command::Agent {
+            cmd:
+                args::AgentCmd::Env {
+                    cmd: args::AgentEnvCmd::Preview(ref p),
+                },
+        } => agent_env_preview_cmd(p),
         Command::Bench {
             cmd: args::BenchCmd::TestProgress(t),
         } => bench_test_progress(t),
@@ -162,6 +168,42 @@ pub async fn run() -> Result<(), Error> {
         #[cfg(not(feature = "docker"))]
         Command::Cleanup => cleanup_cmd(),
     }
+}
+
+fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
+    let cfg = match &p.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+    let opts = crate::run::env_preview::EnvPreviewOpts {
+        env_type: p.env.as_str().to_owned(),
+        task: p.task.clone(),
+        config_path: p.config.clone(),
+        show_values: p.show_values,
+    };
+    let preview = crate::run::env_preview::run_env_preview(&cfg, &opts);
+    if p.format == args::PreviewFormatArg::Json {
+        let wrapped = serde_json::json!({ "env_preview": &preview });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&wrapped).map_err(|e| {
+                Error::Config(crate::error::ConfigError::Invalid(e.to_string()))
+            })?
+        );
+    } else {
+        print_env_preview_text(&preview);
+    }
+    if crate::run::env_preview::is_risky(&preview) {
+        exit_with_outcome(
+            ExitCode::EnvPreviewWarning,
+            "env preview has risky findings",
+        );
+    }
+    Ok(())
+}
+
+fn print_env_preview_text(preview: &crate::run::env_preview::EnvPreview) {
+    print!("{}", crate::run::env_preview::format_preview_text(preview));
 }
 
 fn effective_log_level(cli_log: Option<&str>) -> String {
@@ -332,7 +374,27 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
 
     match result {
         crate::run::skills_preview::PreviewResult::Disabled(msg) => {
-            println!("{msg}");
+            if s.format.as_str() == "json" {
+                // Return a minimal schema-versioned JSON object so callers that
+                // unconditionally parse stdout as JSON still get valid output.
+                let disabled_json = serde_json::json!({
+                    "artifact_kind": "skills_preview",
+                    "schema_version": crate::artifact::ArtifactSchemaVersion::CURRENT,
+                    "disabled": true,
+                    "reason": msg,
+                    "tasks": [],
+                    "summary": {
+                        "task_count": 0,
+                        "unique_skills_activated": 0,
+                        "p50_bytes_per_task": 0,
+                        "p95_bytes_per_task": 0,
+                        "tasks_hitting_max_active": 0
+                    }
+                });
+                println!("{}", serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?);
+            } else {
+                println!("{msg}");
+            }
         }
         crate::run::skills_preview::PreviewResult::Report(outcome) => {
             let (report, warnings) = match outcome {
@@ -356,7 +418,10 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
             }
             if !warnings.is_empty() {
                 for w in &warnings {
-                    eprintln!("warning: {w}");
+                    // Redact each warning string before printing to stderr so
+                    // skill names containing secret literals are never logged verbatim.
+                    let redacted_w = redactor.redact_text(w, crate::redaction::surface::TRAJECTORY).text;
+                    eprintln!("warning: {redacted_w}");
                 }
                 exit_with_outcome(
                     ExitCode::SkillsPreviewWarning,
@@ -608,9 +673,29 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     let output_format = s.format.clone();
     let cfg = swebench_config_from_cmd(&s)?;
     // Non-fatal skills-preview informational section printed first so it
-    // appears even when preflight checks subsequently fail.
-    if cfg.root.skills.enabled && !cfg.root.skills.paths.is_empty() {
+    // appears even when preflight checks subsequently fail. Suppressed in
+    // JSON mode because it would corrupt the structured doctor output.
+    if output_format != "json" && cfg.root.skills.enabled && !cfg.root.skills.paths.is_empty() {
         print_doctor_skills_preview(&cfg);
+    }
+
+    // Non-fatal informational env preview section (issue #313).
+    {
+        let env_type_label = match cfg.root.environment.kind {
+            crate::config::EnvKind::Local => "local",
+            crate::config::EnvKind::Docker => "docker",
+        };
+        let opts = crate::run::env_preview::EnvPreviewOpts {
+            env_type: env_type_label.to_owned(),
+            task: "(doctor preflight)".into(),
+            config_path: s.config.clone(),
+            show_values: false,
+        };
+        let preview = crate::run::env_preview::run_env_preview(&cfg, &opts);
+        if output_format != "json" {
+            println!("[bench doctor] env preview:");
+            print_env_preview_text(&preview);
+        }
     }
     let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
     if output_format != "json" {
