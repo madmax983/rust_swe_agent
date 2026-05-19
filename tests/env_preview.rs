@@ -1109,6 +1109,150 @@ command = "FOO=`/usr/local/bin/setup` /workspace/bin/mcp"
     );
 }
 
+// ── Codex P2 round 9: slash-relative paths, hooks, process-sub, workdir norm ─
+
+#[test]
+fn slash_relative_bin_mcp_inside_workdir_not_flagged() {
+    // bin/mcp-server contains a slash but no leading /: Docker's -w sets cwd
+    // to workdir so bash resolves it as {workdir}/bin/mcp-server — inside.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "bin/mcp-server --port 9000"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "bin/mcp-server should resolve to workdir/bin/mcp-server and NOT be flagged"
+    );
+}
+
+#[test]
+fn hook_command_outside_workdir_triggers_finding() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.hooks.pre_tool_use]]
+name = "precheck"
+command = "/usr/local/bin/precheck --verbose"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("precheck")),
+        "hook with binary outside workdir should produce a finding; got: {:?}",
+        preview.findings
+    );
+}
+
+#[test]
+fn hook_command_inside_workdir_not_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.hooks.pre_tool_use]]
+name = "local-hook"
+command = "/workspace/hooks/precheck.sh"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("local-hook") && f.message.contains("outside workdir")),
+        "hook with binary inside workdir must not produce an outside-workdir finding"
+    );
+}
+
+#[test]
+fn process_substitution_input_mcp_flagged() {
+    // /workspace/bin/mcp < <(/usr/local/bin/setup) — bash process substitution
+    // runs an outside-workdir command; must be flagged as unanalyzable compound.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/bin/mcp < <(/usr/local/bin/setup)"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "process substitution <(...) should be flagged as compound command"
+    );
+}
+
+#[test]
+fn normalized_workdir_with_dotdot_checks_correctly() {
+    // workdir "/real/../workspace" normalizes to "/workspace".  An MCP command
+    // at /workspace/bin/mcp-server should be INSIDE the effective workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/real/../workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/bin/mcp-server"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "normalized workdir /workspace must contain /workspace/bin/mcp-server"
+    );
+}
+
 // ── Fix 1: $() inside double-quoted strings flagged ──────────────────────────
 
 #[test]

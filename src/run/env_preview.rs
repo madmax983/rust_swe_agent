@@ -108,7 +108,10 @@ pub struct EnvPreview {
 /// trajectory redactor before being stored in the returned struct.
 pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     let redactor = Redactor::from_config_lossy(&cfg.root.redaction);
-    let workdir_raw = cfg.root.environment.workdir.clone();
+    // Normalize the workdir so that paths like /workspace/../tmp are resolved
+    // to their canonical form (/tmp) before any prefix comparisons. Docker's
+    // runtime does the same normalization when setting cwd via -w.
+    let workdir_raw = normalize_path(&cfg.root.environment.workdir);
     // Redact the workdir itself — a path containing a configured secret literal
     // (e.g. a temp-mount name) must not appear verbatim in host_paths.
     let workdir = redact(&redactor, &workdir_raw);
@@ -118,31 +121,22 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     // Docker only forwards env vars that are explicitly listed in RunRequest.env,
     // so the host process environment is not inherited.
     let env_vars = if opts.env_type == "local" {
-        build_env_vars_preview(opts)
+        build_env_vars_preview(opts, &redactor)
     } else {
         Vec::new()
     };
     let policy = build_policy_preview(cfg, &redactor);
     let mut findings = collect_findings(opts, &workdir, &mcp_servers, &env_vars);
 
-    // Scan command-adapter tools for binaries outside the workdir.
-    // Mirrors the MCP-server check so operators see both kinds of external
-    // executable in one preview pass.
-    {
-        let wd_canonical = workdir_raw.trim_end_matches('/');
-        for (i, tool) in cfg.root.agent.tools.iter().enumerate() {
-            if mcp_is_outside_workdir(&tool.command, wd_canonical) {
-                let display_cmd = redact(&redactor, &tool.command);
-                findings.push(PreviewFinding {
-                    severity: "warning".into(),
-                    message: format!(
-                        "Command tool '{}' (tool-{i}) binary is outside workdir ({}): {}",
-                        tool.name, workdir, display_cmd
-                    ),
-                });
-            }
-        }
-    }
+    // Scan command-adapter tools and pre/post hooks for binaries outside the
+    // workdir, applying the same outside-workdir/compound-command analysis used
+    // for MCP servers.
+    findings.extend(collect_binary_findings(
+        cfg,
+        &redactor,
+        &workdir,
+        &workdir_raw,
+    ));
 
     // Validate the policy config now so the preview catches configs that will
     // fail at runtime (invalid profile name, invalid regex pattern). Run the
@@ -304,21 +298,26 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
         return true;
     }
     let exe_raw = extract_exe_path(raw_command);
-    // Resolve workdir-relative paths: Docker sets cwd to workdir via `-w`, so
-    // `./bin/mcp` inside a Docker MCP command is equivalent to
-    // `{workdir}/bin/mcp` and should not be flagged as outside the workdir.
-    let exe_abs = if let Some(rel) = exe_raw.strip_prefix("./") {
-        format!("{workdir_canonical}/{rel}")
+    // Resolve the executable path to an absolute form before comparing to the
+    // workdir boundary.  Docker starts the MCP process with `-w workdir`, so
+    // the process cwd is workdir.  Bash therefore resolves:
+    //   - `./bin/mcp`  → {workdir}/bin/mcp  (leading ./)
+    //   - `bin/mcp`    → {workdir}/bin/mcp  (slash present, no leading /)
+    //   - `mcp`        → $PATH lookup        (no slash, flag as outside)
+    //   - `/usr/…`     → absolute, check directly
+    let exe_abs: String = if exe_raw.starts_with('/') {
+        exe_raw
     } else if exe_raw == "." {
         workdir_canonical.to_owned()
+    } else if exe_raw.contains('/') {
+        // Slash-relative path: resolve against workdir (strip leading ./ if present).
+        let rel = exe_raw.strip_prefix("./").unwrap_or(&exe_raw);
+        format!("{workdir_canonical}/{rel}")
     } else {
-        exe_raw
+        // No slash → $PATH-resolved → almost always outside workdir.
+        return true;
     };
     let exe = normalize_path(&exe_abs);
-    if !exe.starts_with('/') {
-        // Relative or PATH-resolved command: flag as outside workdir.
-        return true;
-    }
     exe != workdir_canonical && !exe.starts_with(&format!("{workdir_canonical}/"))
 }
 
@@ -358,18 +357,22 @@ fn has_shell_operators(command: &str) -> bool {
         match chars.next() {
             None => return false,
             Some('"') => {
-                // Double-quoted: bash still expands $() and backticks inside.
-                loop {
-                    match chars.next() {
-                        None | Some('"') => break,
-                        Some('`') => return true,
-                        Some('$') => {
-                            if chars.as_str().starts_with('(') {
-                                return true;
-                            }
-                        }
-                        _ => {}
+                // Inside double-quoted strings bash still expands `$(...)` and
+                // backticks.  Track whether the previous character was `$` to
+                // detect the two-character sequence `$(` without needing a
+                // look-ahead (which would conflict with the `by_ref` borrow).
+                let mut prev_dollar = false;
+                for c in chars.by_ref() {
+                    if c == '"' {
+                        break;
                     }
+                    if c == '`' {
+                        return true;
+                    }
+                    if c == '(' && prev_dollar {
+                        return true;
+                    }
+                    prev_dollar = c == '$';
                 }
             }
             Some('\'') => {
@@ -381,8 +384,9 @@ fn has_shell_operators(command: &str) -> bool {
             }
             // `;`, `|` (pipe / `||`), `&` (background / `&&`), backtick
             Some(';' | '|' | '&' | '`') => return true,
-            // `$(...)` command substitution — flag only when `$` is followed by `(`
-            Some('$') => {
+            // `$(...)` — command substitution; `<(...)` / `>(...)` — process
+            // substitution.  All three are flagged only when the next char is `(`.
+            Some('$' | '<' | '>') => {
                 if chars.as_str().starts_with('(') {
                     return true;
                 }
@@ -471,15 +475,19 @@ fn shell_token_end(s: &str) -> usize {
     }
 }
 
-fn build_env_vars_preview(opts: &EnvPreviewOpts) -> Vec<EnvVarPreview> {
+fn build_env_vars_preview(opts: &EnvPreviewOpts, redactor: &Redactor) -> Vec<EnvVarPreview> {
     // Use vars_os() + lossy conversion so a single non-UTF-8 environment entry
     // (valid on Unix) does not cause a panic and abort the entire preview.
     std::env::vars_os()
         .filter_map(|(name_os, value_os)| {
-            let name = name_os.to_string_lossy().into_owned();
-            if !is_sensitive_var_name(&name) {
+            let name_raw = name_os.to_string_lossy().into_owned();
+            if !is_sensitive_var_name(&name_raw) {
                 return None;
             }
+            // Pass the env var name through the redactor so that a configured
+            // secret literal embedded in the name (e.g. `sk-deadbeef_TOKEN`)
+            // is not printed verbatim in findings or the env-vars section.
+            let name = redact(redactor, &name_raw);
             // Sensitive env var values are ALWAYS masked when --show-values is
             // not set, regardless of whether the config-level redactor is
             // enabled. This prevents [redaction].enabled = false from leaking
@@ -518,6 +526,54 @@ fn build_policy_preview(cfg: &Config, redactor: &Redactor) -> PolicyPreview {
             .map(|p| redact(redactor, p))
             .collect(),
     }
+}
+
+/// Scan command-adapter tools and pre/post hooks for binaries outside workdir.
+///
+/// Mirrors the MCP-server analysis so operators see all three categories in one
+/// preview pass. `workdir` is the redacted display value; `workdir_raw` is the
+/// unredacted normalized path used for prefix comparisons.
+fn collect_binary_findings(
+    cfg: &Config,
+    redactor: &Redactor,
+    workdir: &str,
+    workdir_raw: &str,
+) -> Vec<PreviewFinding> {
+    let wd = workdir_raw.trim_end_matches('/');
+    let mut findings = Vec::new();
+
+    for (i, tool) in cfg.root.agent.tools.iter().enumerate() {
+        if mcp_is_outside_workdir(&tool.command, wd) {
+            let name = &tool.name;
+            let cmd = redact(redactor, &tool.command);
+            findings.push(PreviewFinding {
+                severity: "warning".into(),
+                message: format!(
+                    "Command tool '{name}' (tool-{i}) binary is outside workdir ({workdir}): {cmd}"
+                ),
+            });
+        }
+    }
+
+    for hook in cfg
+        .root
+        .agent
+        .hooks
+        .pre_tool_use
+        .iter()
+        .chain(cfg.root.agent.hooks.post_tool_use.iter())
+    {
+        if mcp_is_outside_workdir(&hook.command, wd) {
+            let name = redact(redactor, &hook.name);
+            let cmd = redact(redactor, &hook.command);
+            findings.push(PreviewFinding {
+                severity: "warning".into(),
+                message: format!("Hook '{name}' command is outside workdir ({workdir}): {cmd}"),
+            });
+        }
+    }
+
+    findings
 }
 
 fn collect_findings(
