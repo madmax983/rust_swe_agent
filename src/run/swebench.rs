@@ -1761,10 +1761,13 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             u64::from_be_bytes(hash[..8].try_into().unwrap_or([0u8; 8]))
         )
     };
-    let sweep_start_nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
+    let sweep_start_nanos = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX);
 
     let mut in_flight: usize = 0;
     let (force_cancel_tx, force_cancel_rx) = watch::channel(false);
@@ -2387,10 +2390,13 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             harness_version: env!("CARGO_PKG_VERSION").into(),
             git_sha: manifest_ref.and_then(|m| m.harness.git_sha.clone()),
             start_nanos: sweep_start_nanos,
-            end_nanos: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            end_nanos: u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX),
         };
         let sweep_span_id = crate::telemetry::new_span_id("sweep_span", &sweep_id);
         let mut instance_spans: Vec<crate::telemetry::InstanceSpanData> = Vec::new();

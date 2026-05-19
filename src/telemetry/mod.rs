@@ -60,10 +60,13 @@ pub fn new_span_id(salt: &str, trace_id: &TraceId) -> SpanId {
 }
 
 fn now_unix_nanos() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -227,24 +230,24 @@ impl Tracer {
 // https://opentelemetry.io/docs/specs/otlp/#otlphttp
 // ---------------------------------------------------------------------------
 
-fn attr(key: &str, value: serde_json::Value) -> serde_json::Value {
+fn attr(key: &str, value: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "key": key, "value": value })
 }
 
 fn str_attr(key: &str, val: &str) -> serde_json::Value {
-    attr(key, serde_json::json!({ "stringValue": val }))
+    attr(key, &serde_json::json!({ "stringValue": val }))
 }
 
 fn int_attr(key: &str, val: i64) -> serde_json::Value {
-    attr(key, serde_json::json!({ "intValue": val.to_string() }))
+    attr(key, &serde_json::json!({ "intValue": val.to_string() }))
 }
 
 fn double_attr(key: &str, val: f64) -> serde_json::Value {
-    attr(key, serde_json::json!({ "doubleValue": val }))
+    attr(key, &serde_json::json!({ "doubleValue": val }))
 }
 
 fn bool_attr(key: &str, val: bool) -> serde_json::Value {
-    attr(key, serde_json::json!({ "boolValue": val }))
+    attr(key, &serde_json::json!({ "boolValue": val }))
 }
 
 fn span_json(
@@ -254,7 +257,7 @@ fn span_json(
     name: &str,
     start_nanos: u64,
     end_nanos: u64,
-    attributes: Vec<serde_json::Value>,
+    attributes: &[serde_json::Value],
 ) -> serde_json::Value {
     let mut span = serde_json::json!({
         "traceId": trace_id,
@@ -284,111 +287,121 @@ fn infer_gen_ai_system(model: &str) -> &'static str {
     }
 }
 
+fn u64_to_i64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+fn build_instance_spans(sweep_id: &str, inst: &InstanceSpanData) -> Vec<serde_json::Value> {
+    let inst_span_id = new_span_id(&format!("inst_{}", inst.instance_id), &inst.trace_id);
+    let mut spans = vec![];
+
+    let inst_attrs = vec![
+        str_attr("sweep_id", sweep_id),
+        str_attr("instance_id", &inst.instance_id),
+        str_attr("repo", &inst.repo),
+        str_attr("outcome", &inst.outcome),
+        double_attr("cost_usd", inst.cost_usd),
+        int_attr("step_count", u64_to_i64(inst.step_count)),
+        int_attr("final_patch_bytes", u64_to_i64(inst.final_patch_bytes)),
+    ];
+    // Each instance is its own independent OTel trace (different traceId from the
+    // sweep span). OTel requires all spans in a parent-child relationship to share
+    // the same traceId, so we keep instance spans as independent root spans and
+    // reference the sweep via an attribute rather than a span link.
+    spans.push(span_json(
+        &inst.trace_id,
+        &inst_span_id,
+        None, // root of its own trace — no cross-trace parent link
+        "instance",
+        inst.start_nanos,
+        inst.end_nanos,
+        &inst_attrs,
+    ));
+
+    for (i, mc) in inst.model_calls.iter().enumerate() {
+        let mc_span_id = new_span_id(&format!("mc_{}_{i}", inst.instance_id), &inst.trace_id);
+        let mc_attrs = vec![
+            str_attr("gen_ai.system", infer_gen_ai_system(&mc.model)),
+            str_attr("gen_ai.request.model", &mc.model),
+            int_attr("gen_ai.usage.input_tokens", u64_to_i64(mc.prompt_tokens)),
+            int_attr(
+                "gen_ai.usage.output_tokens",
+                u64_to_i64(mc.completion_tokens),
+            ),
+            int_attr(
+                "gen_ai.usage.cache_read_input_tokens",
+                u64_to_i64(mc.cache_read_tokens),
+            ),
+            int_attr(
+                "gen_ai.usage.cache_creation_input_tokens",
+                u64_to_i64(mc.cache_creation_tokens),
+            ),
+            int_attr("latency_ms", u64_to_i64(mc.latency_ms)),
+            str_attr("gen_ai.response.finish_reasons", &mc.finish_reason),
+        ];
+        spans.push(span_json(
+            &inst.trace_id,
+            &mc_span_id,
+            Some(&inst_span_id),
+            "model_call",
+            mc.start_nanos,
+            mc.end_nanos,
+            &mc_attrs,
+        ));
+    }
+
+    for (i, tc) in inst.tool_calls.iter().enumerate() {
+        let tc_span_id = new_span_id(&format!("tc_{}_{i}", inst.instance_id), &inst.trace_id);
+        let tc_attrs = vec![
+            str_attr("tool_name", &tc.tool_name),
+            int_attr("exit_code", i64::from(tc.exit_code)),
+            int_attr("observation_bytes", u64_to_i64(tc.observation_bytes)),
+            int_attr("duration_ms", u64_to_i64(tc.duration_ms)),
+            bool_attr("truncated", tc.truncated),
+        ];
+        spans.push(span_json(
+            &inst.trace_id,
+            &tc_span_id,
+            Some(&inst_span_id),
+            "tool_call",
+            tc.start_nanos,
+            tc.end_nanos,
+            &tc_attrs,
+        ));
+    }
+
+    spans
+}
+
 fn build_otlp_json(sweep: &SweepSpanData, instances: &[InstanceSpanData]) -> String {
     let sweep_trace_id = new_trace_id("sweep", &sweep.sweep_id);
     let sweep_span_id = new_span_id("sweep_span", &sweep_trace_id);
 
-    let mut spans: Vec<serde_json::Value> = vec![];
-
-    // Root sweep span.
     let mut sweep_attrs = vec![
         str_attr("sweep_id", &sweep.sweep_id),
         str_attr("dataset", &sweep.dataset),
         str_attr("model", &sweep.model),
-        int_attr("instance_count", sweep.instance_count as i64),
-        int_attr("resolved_count", sweep.resolved_count as i64),
+        int_attr("instance_count", u64_to_i64(sweep.instance_count)),
+        int_attr("resolved_count", u64_to_i64(sweep.resolved_count)),
         double_attr("total_cost_usd", sweep.total_cost_usd),
         str_attr("harness_version", &sweep.harness_version),
     ];
     if let Some(sha) = &sweep.git_sha {
         sweep_attrs.push(str_attr("git_sha", sha));
     }
-    spans.push(span_json(
+
+    let mut spans: Vec<serde_json::Value> = vec![span_json(
         &sweep_trace_id,
         &sweep_span_id,
         None,
         "sweep",
         sweep.start_nanos,
         sweep.end_nanos,
-        sweep_attrs,
-    ));
+        &sweep_attrs,
+    )];
 
-    // Each instance is its own independent OTel trace (different traceId from the
-    // sweep span). OTel requires all spans in a parent-child relationship to share
-    // the same traceId, so we keep instance spans as independent root spans and
-    // reference the sweep via an attribute rather than a span link.
     for inst in instances {
-        let inst_span_id = new_span_id(&format!("inst_{}", inst.instance_id), &inst.trace_id);
-
-        let inst_attrs = vec![
-            str_attr("sweep_id", &sweep.sweep_id),
-            str_attr("instance_id", &inst.instance_id),
-            str_attr("repo", &inst.repo),
-            str_attr("outcome", &inst.outcome),
-            double_attr("cost_usd", inst.cost_usd),
-            int_attr("step_count", inst.step_count as i64),
-            int_attr("final_patch_bytes", inst.final_patch_bytes as i64),
-        ];
-        spans.push(span_json(
-            &inst.trace_id,
-            &inst_span_id,
-            None, // root of its own trace — no cross-trace parent link
-            "instance",
-            inst.start_nanos,
-            inst.end_nanos,
-            inst_attrs,
-        ));
-
-        // model_call child spans — use gen_ai.* OTel semantic conventions.
-        for (i, mc) in inst.model_calls.iter().enumerate() {
-            let mc_span_id = new_span_id(&format!("mc_{}_{i}", inst.instance_id), &inst.trace_id);
-            let mc_attrs = vec![
-                str_attr("gen_ai.system", infer_gen_ai_system(&mc.model)),
-                str_attr("gen_ai.request.model", &mc.model),
-                int_attr("gen_ai.usage.input_tokens", mc.prompt_tokens as i64),
-                int_attr("gen_ai.usage.output_tokens", mc.completion_tokens as i64),
-                int_attr(
-                    "gen_ai.usage.cache_read_input_tokens",
-                    mc.cache_read_tokens as i64,
-                ),
-                int_attr(
-                    "gen_ai.usage.cache_creation_input_tokens",
-                    mc.cache_creation_tokens as i64,
-                ),
-                int_attr("latency_ms", mc.latency_ms as i64),
-                str_attr("gen_ai.response.finish_reasons", &mc.finish_reason),
-            ];
-            spans.push(span_json(
-                &inst.trace_id,
-                &mc_span_id,
-                Some(&inst_span_id),
-                "model_call",
-                mc.start_nanos,
-                mc.end_nanos,
-                mc_attrs,
-            ));
-        }
-
-        // tool_call child spans.
-        for (i, tc) in inst.tool_calls.iter().enumerate() {
-            let tc_span_id = new_span_id(&format!("tc_{}_{i}", inst.instance_id), &inst.trace_id);
-            let tc_attrs = vec![
-                str_attr("tool_name", &tc.tool_name),
-                int_attr("exit_code", tc.exit_code as i64),
-                int_attr("observation_bytes", tc.observation_bytes as i64),
-                int_attr("duration_ms", tc.duration_ms as i64),
-                bool_attr("truncated", tc.truncated),
-            ];
-            spans.push(span_json(
-                &inst.trace_id,
-                &tc_span_id,
-                Some(&inst_span_id),
-                "tool_call",
-                tc.start_nanos,
-                tc.end_nanos,
-                tc_attrs,
-            ));
-        }
+        spans.extend(build_instance_spans(&sweep.sweep_id, inst));
     }
 
     serde_json::to_string(&serde_json::json!({
@@ -452,7 +465,7 @@ pub(crate) mod build {
     ) -> InstanceSpanData {
         let outcome = traj.info.outcome.as_deref().unwrap_or("unknown").to_owned();
         let cost_usd = traj.info.total_cost_usd.unwrap_or(0.0);
-        let step_count = traj.info.steps.unwrap_or(0) as u64;
+        let step_count = u64::from(traj.info.steps.unwrap_or(0));
         let end_nanos = now_unix_nanos();
 
         let mut model_calls = vec![];
@@ -502,8 +515,7 @@ pub(crate) mod build {
                     .actions
                     .as_ref()
                     .and_then(|a| a.first())
-                    .map(|s| extract_tool_name(s))
-                    .unwrap_or_else(|| "bash".into());
+                    .map_or_else(|| "bash".into(), |s| extract_tool_name(s));
 
                 let (exit_code, obs_bytes, truncated) = extract_run_result(&msg.extra);
 
@@ -583,20 +595,21 @@ pub(crate) mod build {
 
     fn extract_run_result(extra: &crate::model::MessageExtra) -> (i32, u64, bool) {
         if let Some(run_result) = extra.other.get("run_result") {
-            let exit_code = run_result
-                .get("exit_code")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0) as i32;
+            let exit_code = i32::try_from(
+                run_result
+                    .get("exit_code")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(0);
             let stdout_bytes = run_result
                 .get("stdout")
                 .and_then(serde_json::Value::as_str)
-                .map(str::len)
-                .unwrap_or(0) as u64;
+                .map_or(0, str::len) as u64;
             let stderr_bytes = run_result
                 .get("stderr")
                 .and_then(serde_json::Value::as_str)
-                .map(str::len)
-                .unwrap_or(0) as u64;
+                .map_or(0, str::len) as u64;
             let truncated = run_result
                 .get("truncated")
                 .and_then(serde_json::Value::as_bool)

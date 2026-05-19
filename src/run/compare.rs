@@ -1300,7 +1300,7 @@ fn instance_result_from_trajectory(
         }),
         retry_id: None,
         previous_failure_category: None,
-        trace_id: info.trace_id.clone(),
+        trace_id: info.trace_id,
     }))
 }
 

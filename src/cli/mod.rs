@@ -615,6 +615,7 @@ async fn run_forecast_from_cmd(
     }
     let cfg = swebench_config_from_cmd(&s)?;
     let sweep = swebench_args_from_cmd(s, cfg, "forecast")?;
+    #[allow(clippy::large_futures)]
     crate::run::forecast::run(crate::run::forecast::ForecastArgs {
         sweep,
         calibration_n,
