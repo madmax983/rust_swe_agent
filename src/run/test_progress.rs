@@ -223,9 +223,11 @@ pub fn compute_instance_metrics(
 pub fn run(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
     let mut report = build_report(args)?;
     report.generated_at = utc_now_iso8601();
-    let output_path = args.sweep_dir.join("test-progress.json");
-    let file = std::fs::File::create(&output_path)?;
-    serde_json::to_writer_pretty(file, &report)?;
+    if args.filter.is_none() {
+        let output_path = args.sweep_dir.join("test-progress.json");
+        let file = std::fs::File::create(&output_path)?;
+        serde_json::to_writer_pretty(file, &report)?;
+    }
     Ok(report)
 }
 
@@ -565,7 +567,7 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
     // present in tests_passed are correctly counted here.
     let mut failing_test_counts: BTreeMap<String, usize> = BTreeMap::new();
     for row in &instance_rows {
-        if row.verdict_bucket == "evaluator_unavailable" {
+        if row.verdict_bucket == "evaluator_unavailable" || row.verdict_bucket == "resolved" {
             continue;
         }
         if let Some(eval) = eval_map.get(&row.instance_id) {

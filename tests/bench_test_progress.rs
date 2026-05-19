@@ -932,6 +932,65 @@ fn redact_generated_at(value: &serde_json::Value) -> serde_json::Value {
     redacted
 }
 
+// Resolved instances must not contribute FTP tests to hot_failing_tests.
+// resolved-1 in sweep_mixed has FTP=["test_a","test_b","test_c"] all in tests_passed.
+// None of those names should appear in hot_failing_tests.
+#[test]
+fn hot_failing_tests_excludes_resolved_instances() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(output.status.success());
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let inst = find_instance(&report, "resolved-1");
+    assert_eq!(
+        inst["verdict_bucket"].as_str().unwrap(),
+        "resolved",
+        "resolved-1 must have verdict_bucket=resolved"
+    );
+
+    let hot = report["hot_failing_tests"].as_array().unwrap();
+    for resolved_ftp in ["test_a", "test_b", "test_c"] {
+        assert!(
+            !hot.iter()
+                .any(|e| e["test_name"].as_str() == Some(resolved_ftp)),
+            "resolved FTP test {resolved_ftp} must not appear in hot_failing_tests"
+        );
+    }
+}
+
+// --filter must not write test-progress.json to the sweep directory.
+#[test]
+fn cli_filter_does_not_write_test_progress_json() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--filter",
+        "resolved=false",
+    ]);
+    assert!(
+        output.status.success(),
+        "test-progress --filter should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let artifact = sweep.path().join("test-progress.json");
+    assert!(
+        !artifact.exists(),
+        "test-progress.json must not be written when --filter is active"
+    );
+}
+
 fn redact_generated_at_text(text: &str) -> String {
     text.lines()
         .map(|line| {
