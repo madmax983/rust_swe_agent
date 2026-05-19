@@ -182,7 +182,11 @@ pub struct SwebenchGithubPrArgs {
 #[allow(clippy::struct_excessive_bools)]
 pub struct MiniCmd {
     /// The task prompt. Required unless `--resume` is set; forbidden when `--resume` is set.
-    #[arg(long, required_unless_present = "resume_from", conflicts_with = "resume_from")]
+    #[arg(
+        long,
+        required_unless_present = "resume_from",
+        conflicts_with = "resume_from"
+    )]
     pub task: Option<String>,
 
     /// Resume from a partial (in-progress) trajectory file instead of starting a new run.

@@ -1146,8 +1146,8 @@ pub fn validate_resume_trajectory(
     traj: &crate::trajectory::Trajectory,
 ) -> Result<(), ResumeValidationError> {
     // AC #7: already-terminal check — partial must be true, outcome must be absent.
-    let is_terminal = !traj.info.partial
-        && (traj.info.outcome.is_some() || traj.info.exit_reason.is_some());
+    let is_terminal =
+        !traj.info.partial && (traj.info.outcome.is_some() || traj.info.exit_reason.is_some());
     if is_terminal {
         return Err(ResumeValidationError::AlreadyTerminal);
     }

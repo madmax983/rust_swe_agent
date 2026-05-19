@@ -543,13 +543,12 @@ async fn mini_resume_cmd(
             resume_path.display()
         )))
     })?;
-    let traj: crate::trajectory::Trajectory =
-        serde_json::from_str(&traj_text).map_err(|e| {
-            Error::Config(crate::error::ConfigError::Invalid(format!(
-                "--resume: trajectory file `{}` is not valid JSON: {e}",
-                resume_path.display()
-            )))
-        })?;
+    let traj: crate::trajectory::Trajectory = serde_json::from_str(&traj_text).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "--resume: trajectory file `{}` is not valid JSON: {e}",
+            resume_path.display()
+        )))
+    })?;
 
     // Validate the trajectory using the shared validation function.
     match crate::run::mini::validate_resume_trajectory(&traj) {
@@ -579,10 +578,7 @@ async fn mini_resume_cmd(
         Err(crate::run::mini::ResumeValidationError::InvalidPrefix(reason)) => {
             exit_with_outcome(
                 ExitCode::ResumeInvalidPrefix,
-                &format!(
-                    "cannot resume `{}`: {reason}",
-                    resume_path.display()
-                ),
+                &format!("cannot resume `{}`: {reason}", resume_path.display()),
             );
         }
     }
