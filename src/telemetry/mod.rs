@@ -172,7 +172,10 @@ pub fn parse_otlp_header_env(raw: &str) -> Vec<(String, String)> {
 /// `OTEL_EXPORTER_OTLP_TRACES_HEADERS` takes precedence; falls back to
 /// `OTEL_EXPORTER_OTLP_HEADERS`.  Returns an empty vec when neither is set.
 pub fn resolve_otlp_headers() -> Vec<(String, String)> {
-    for var in &["OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"] {
+    for var in &[
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+    ] {
         if let Ok(val) = std::env::var(var) {
             if !val.is_empty() {
                 return parse_otlp_header_env(&val);
@@ -266,7 +269,9 @@ impl Tracer {
                     http_status = %status,
                     "OTLP export failed: non-2xx response"
                 );
-                inner.dropped.fetch_add(count_spans(instances), Ordering::Relaxed);
+                inner
+                    .dropped
+                    .fetch_add(count_spans(instances), Ordering::Relaxed);
             }
             Err(e) => {
                 tracing::warn!(
@@ -274,7 +279,9 @@ impl Tracer {
                     error = %e,
                     "OTLP export failed: network error"
                 );
-                inner.dropped.fetch_add(count_spans(instances), Ordering::Relaxed);
+                inner
+                    .dropped
+                    .fetch_add(count_spans(instances), Ordering::Relaxed);
             }
         }
     }
