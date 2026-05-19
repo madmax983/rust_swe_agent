@@ -7,6 +7,7 @@
 //!  4. `webhook_events_dropped` counter in `RunEnded` envelope.
 //!  5. Redaction applied before POST (`sk-deadbeef` never leaves the process).
 
+#![cfg(feature = "webhook")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::VecDeque;
