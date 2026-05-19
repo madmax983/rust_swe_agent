@@ -140,8 +140,9 @@ fn agent_skills_preview_task_file_reads_tasks() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Two tasks from the file should produce two task hashes in output.
     // May exit 14 (warning) if auto_match fires; that's fine for this test.
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("--format json output must be valid JSON; got {stdout}\nerr: {e}\nstderr: {stderr}"));
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("--format json output must be valid JSON; got {stdout}\nerr: {e}\nstderr: {stderr}")
+    });
     let tasks = json["tasks"].as_array().expect("tasks array must exist");
     assert_eq!(
         tasks.len(),
@@ -296,8 +297,8 @@ fn agent_skills_preview_json_is_valid() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stderr:\n{stderr}");
-    let v: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("must produce valid JSON; got: {stdout}"));
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("must produce valid JSON; got: {stdout}"));
     assert!(v.is_object(), "JSON must be an object");
 }
 
@@ -481,7 +482,10 @@ fn agent_skills_preview_json_skill_entry_has_required_fields() {
     let tasks = v["tasks"].as_array().unwrap();
     let task = &tasks[0];
     let skills = task["active_skills"].as_array().unwrap();
-    assert!(!skills.is_empty(), "rust-router should activate for this task");
+    assert!(
+        !skills.is_empty(),
+        "rust-router should activate for this task"
+    );
     let skill = &skills[0];
     for field in ["name", "reason", "sha256_prefix", "bytes", "path"] {
         assert!(
@@ -937,8 +941,8 @@ fn readme_links_to_spec_skills_preview() {
 
 #[test]
 fn exit_codes_doc_has_skills_preview_warning() {
-    let doc = std::fs::read_to_string("docs/exit-codes.md")
-        .expect("docs/exit-codes.md must be readable");
+    let doc =
+        std::fs::read_to_string("docs/exit-codes.md").expect("docs/exit-codes.md must be readable");
     assert!(
         doc.contains("skills_preview_warning"),
         "docs/exit-codes.md must document the skills_preview_warning exit code"

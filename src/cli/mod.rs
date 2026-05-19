@@ -365,10 +365,11 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
         );
     }
 
-    let result = crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
-        tasks,
-        config: cfg.clone(),
-    })?;
+    let result =
+        crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
+            tasks,
+            config: cfg.clone(),
+        })?;
 
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
 
@@ -391,7 +392,10 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
                         "tasks_hitting_max_active": 0
                     }
                 });
-                println!("{}", serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?
+                );
             } else {
                 println!("{msg}");
             }
@@ -404,11 +408,16 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
             match s.format.as_str() {
                 "json" => {
                     let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
-                    let redacted = redactor.redact_text(&json, crate::redaction::surface::TRAJECTORY).text;
+                    let redacted = redactor
+                        .redact_text(&json, crate::redaction::surface::TRAJECTORY)
+                        .text;
                     println!("{redacted}");
                 }
                 "text" | "" => {
-                    print!("{}", crate::run::skills_preview::format_text(&report, &redactor));
+                    print!(
+                        "{}",
+                        crate::run::skills_preview::format_text(&report, &redactor)
+                    );
                 }
                 other => {
                     return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -420,7 +429,9 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
                 for w in &warnings {
                     // Redact each warning string before printing to stderr so
                     // skill names containing secret literals are never logged verbatim.
-                    let redacted_w = redactor.redact_text(w, crate::redaction::surface::TRAJECTORY).text;
+                    let redacted_w = redactor
+                        .redact_text(w, crate::redaction::surface::TRAJECTORY)
+                        .text;
                     eprintln!("warning: {redacted_w}");
                 }
                 exit_with_outcome(
@@ -3225,7 +3236,8 @@ fn print_doctor_skills_preview(cfg: &crate::config::Config) {
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     println!("\n--- skills-preview (informational) ---");
     // Use a synthetic task representing the sweep intent for the informational preview.
-    let tasks = vec!["<sweep task — run agent skills-preview --task for a specific task>".to_owned()];
+    let tasks =
+        vec!["<sweep task — run agent skills-preview --task for a specific task>".to_owned()];
     match crate::run::skills_preview::preview(&crate::run::skills_preview::SkillsPreviewArgs {
         tasks,
         config: cfg.clone(),
@@ -3236,7 +3248,10 @@ fn print_doctor_skills_preview(cfg: &crate::config::Config) {
                 crate::run::skills_preview::PreviewOutcome::Clean(r)
                 | crate::run::skills_preview::PreviewOutcome::Warning(r, _) => r,
             };
-            print!("{}", crate::run::skills_preview::format_text(&report, &redactor));
+            print!(
+                "{}",
+                crate::run::skills_preview::format_text(&report, &redactor)
+            );
         }
         Err(e) => eprintln!("skills-preview error (non-fatal): {e}"),
     }

@@ -84,9 +84,7 @@ pub fn preview(args: &SkillsPreviewArgs) -> Result<PreviewResult, Error> {
         return Ok(PreviewResult::Disabled("skills disabled".into()));
     }
     if cfg.paths.is_empty() {
-        return Ok(PreviewResult::Disabled(
-            "no skill paths configured".into(),
-        ));
+        return Ok(PreviewResult::Disabled("no skill paths configured".into()));
     }
 
     let redactor = Redactor::from_config_lossy(&args.config.root.redaction);
@@ -162,10 +160,7 @@ fn build_task_preview(
         let sha256_prefix = sha256_prefix_12(file_bytes.as_bytes());
 
         if manifest.version.is_none() {
-            warnings.push(format!(
-                "skill '{}' has no version field",
-                manifest.name
-            ));
+            warnings.push(format!("skill '{}' has no version field", manifest.name));
         }
 
         if reason == SkillActivationReason::AutoMatch && cfg.auto_load {
@@ -177,7 +172,9 @@ fn build_task_preview(
 
         let raw_path = manifest.path.display().to_string();
         let redacted_path = redactor.redact_text(&raw_path, surface::TRAJECTORY).text;
-        let redacted_name = redactor.redact_text(&manifest.name, surface::TRAJECTORY).text;
+        let redacted_name = redactor
+            .redact_text(&manifest.name, surface::TRAJECTORY)
+            .text;
 
         active_skills.push(SkillEntryPreview {
             name: redacted_name,
@@ -350,8 +347,7 @@ mod tests {
 
     #[test]
     fn preview_no_paths_returns_disabled() {
-        let cfg =
-            Config::from_toml_str("[skills]\nenabled = true\npaths = []\n").unwrap();
+        let cfg = Config::from_toml_str("[skills]\nenabled = true\npaths = []\n").unwrap();
         let result = preview(&SkillsPreviewArgs {
             tasks: vec!["fix bug".into()],
             config: cfg,

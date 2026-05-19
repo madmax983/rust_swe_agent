@@ -152,9 +152,7 @@ impl SkillRegistry {
                     (score >= 2).then_some((score, m))
                 })
                 .collect::<Vec<_>>();
-            scored.sort_by(|(sa, ma), (sb, mb)| {
-                sb.cmp(sa).then_with(|| ma.name.cmp(&mb.name))
-            });
+            scored.sort_by(|(sa, ma), (sb, mb)| sb.cmp(sa).then_with(|| ma.name.cmp(&mb.name)));
             for (_, m) in scored {
                 candidates.push((SkillActivationReason::AutoMatch, m));
             }
