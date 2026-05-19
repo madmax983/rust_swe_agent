@@ -26,6 +26,16 @@ use crate::trajectory::FailureCategory;
 
 pub use crate::env::CancellationToken as MiniCancellation;
 
+fn current_git_sha() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
+
 const PATCH_BASE_ENV: &str = "MAXWELL_PATCH_BASE";
 const LEGACY_PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 const VERIFICATION_PREVIEW_MAX_BYTES: usize = 2 * 1024;
@@ -292,6 +302,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             cache_creation_tokens,
             completion_tokens,
             resumed_at: chrono::Utc::now().to_rfc3339(),
+            harness_git_sha: current_git_sha(),
         })
     });
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;

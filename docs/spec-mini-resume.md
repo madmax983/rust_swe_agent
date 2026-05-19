@@ -74,9 +74,14 @@ On resume, the trajectory's `info.resume_history` array is extended with a
   "original_started_at": "2026-01-15T10:00:00Z",
   "resumed_at": "2026-01-15T10:14:00Z",
   "prior_steps": 14,
-  "prior_cost_usd": 2.87
+  "prior_cost_usd": 2.87,
+  "harness_git_sha_at_resume": "a1b2c3d4e5f6..."
 }
 ```
+
+`harness_git_sha_at_resume` is the `git rev-parse HEAD` of the harness binary at
+resume time. It may differ from the original run's `harness.git_sha` after a
+harness upgrade and is `null` when the checkout is not a git repository.
 
 This provides a full audit trail for trajectories that were resumed one or
 more times.
