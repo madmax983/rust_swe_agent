@@ -2411,8 +2411,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 let final_patch_bytes =
                     patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
                         .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                        .map_or(0, |m| m.len());
                 let repo = ir
                     .instance_id
                     .split("__")

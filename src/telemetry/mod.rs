@@ -276,11 +276,17 @@ fn span_json(
 }
 
 fn infer_gen_ai_system(model: &str) -> &'static str {
-    if model.starts_with("claude") {
+    // Support LiteLLM-style "provider/model" prefixes (e.g. "openai/gpt-4o-mini").
+    let (prefix, bare) = model.split_once('/').map_or(("", model), |(p, b)| (p, b));
+    if prefix == "anthropic" || bare.starts_with("claude") {
         "anthropic"
-    } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+    } else if prefix == "openai"
+        || bare.starts_with("gpt")
+        || bare.starts_with("o1")
+        || bare.starts_with("o3")
+    {
         "openai"
-    } else if model.starts_with("gemini") {
+    } else if prefix == "gemini" || prefix.contains("vertex") || bare.starts_with("gemini") {
         "google_vertexai"
     } else {
         "unknown"
@@ -474,7 +480,13 @@ pub(crate) mod build {
         // Walk messages in order, assigning sequential non-overlapping time windows
         // starting from start_nanos. Absolute timestamps aren't stored in the
         // trajectory, so we reconstruct a plausible ordering from latency data.
+        //
+        // Message layout: assistant turns carry model_latency_ms + actions;
+        // the following user/observation turn carries tool_latency_ms.
+        // We keep a reference to the prior message to read actions from the
+        // correct turn when building tool_call spans.
         let mut cursor = start_nanos;
+        let mut prev_msg: Option<&crate::trajectory::MessageRecord> = None;
         for msg in &traj.messages {
             if let Some(latency_ms) = msg.extra.model_latency_ms {
                 let mc_start = cursor;
@@ -488,7 +500,15 @@ pub(crate) mod build {
                         (0, 0, 0, 0)
                     };
 
-                let model = traj.info.model_name.clone().unwrap_or_default();
+                // Use the per-turn responding model (e.g. after a fallback) when
+                // available; fall back to the configured primary model from info.
+                let model = msg
+                    .extra
+                    .sampling
+                    .as_ref()
+                    .map(|s| s.model.clone())
+                    .or_else(|| traj.info.model_name.clone())
+                    .unwrap_or_default();
                 let finish_reason = extract_finish_reason(msg.extra.response.as_ref());
 
                 model_calls.push(ModelCallSpanData {
@@ -509,11 +529,11 @@ pub(crate) mod build {
                 let tc_end = cursor + tool_latency_ms * 1_000_000;
                 cursor = tc_end;
 
-                // Extract tool name from actions list (first action = command type).
-                let tool_name = msg
-                    .extra
-                    .actions
-                    .as_ref()
+                // The `actions` list is written on the preceding assistant turn.
+                // Fall back to the current message's actions if prev is missing.
+                let tool_name = prev_msg
+                    .and_then(|pm| pm.extra.actions.as_ref())
+                    .or(msg.extra.actions.as_ref())
                     .and_then(|a| a.first())
                     .map_or_else(|| "bash".into(), |s| extract_tool_name(s));
 
@@ -529,6 +549,8 @@ pub(crate) mod build {
                     end_nanos: tc_end,
                 });
             }
+
+            prev_msg = Some(msg);
         }
 
         InstanceSpanData {
@@ -610,8 +632,11 @@ pub(crate) mod build {
                 .get("stderr")
                 .and_then(serde_json::Value::as_str)
                 .map_or(0, str::len) as u64;
-            let truncated = run_result
-                .get("truncated")
+            // Truncation is stored as "observation_truncated" on the MessageExtra,
+            // not inside run_result.
+            let truncated = extra
+                .other
+                .get("observation_truncated")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             return (exit_code, stdout_bytes + stderr_bytes, truncated);
