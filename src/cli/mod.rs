@@ -2317,6 +2317,28 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
                 }
             }
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if let (Ok(out_meta), Ok(traj_meta)) = (
+                std::fs::metadata(&output_path),
+                std::fs::metadata(&traj_path),
+            ) {
+                if let (Some(out_idx), Some(traj_idx)) =
+                    (out_meta.file_index(), traj_meta.file_index())
+                {
+                    if out_idx == traj_idx
+                        && out_meta.volume_serial_number() == traj_meta.volume_serial_number()
+                    {
+                        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "inspect: --output `{}` is a hard link to the source trajectory \
+                             file; writing would corrupt the sweep artifact",
+                            output_path.display()
+                        ))));
+                    }
+                }
+            }
+        }
         std::fs::write(&output_path, &content)?;
     } else {
         print!("{content}");
