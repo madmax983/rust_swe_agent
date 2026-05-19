@@ -6,12 +6,38 @@ use clap::{Args, Subcommand, ValueEnum};
 
 // ── Agent subcommands ─────────────────────────────────────────────────────────
 
+/// Validated environment-type selector for `agent env preview`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvTypeArg {
+    Local,
+    Docker,
+    Chaos,
+}
+
+impl EnvTypeArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Docker => "docker",
+            Self::Chaos => "chaos",
+        }
+    }
+}
+
+/// Validated output-format selector for `agent env preview`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PreviewFormatArg {
+    Text,
+    Json,
+}
+
 /// `agent env preview` — print a structured preview of the agent environment.
 #[derive(Debug, Args)]
 pub struct EnvPreviewCmd {
     /// Environment type: `local`, `docker`, or `chaos`.
     #[arg(long)]
-    pub env: String,
+    pub env: EnvTypeArg,
 
     /// Task description (used for context; passed through the redactor).
     #[arg(long)]
@@ -23,7 +49,7 @@ pub struct EnvPreviewCmd {
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
-    pub format: String,
+    pub format: PreviewFormatArg,
 
     /// Show actual env var values instead of `[REDACTED:…]` markers.
     #[arg(long, default_value_t = false)]

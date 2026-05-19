@@ -6,12 +6,12 @@
 
 #![allow(clippy::unwrap_used)]
 
+use maxwells_daemon::config::Config;
 use maxwells_daemon::exit_code::ExitCode;
 use maxwells_daemon::run::env_preview::{
-    EnvPreview, EnvPreviewOpts, HooksPreview, HookEntry, McpServerPreview, EnvVarPreview,
+    EnvPreview, EnvPreviewOpts, EnvVarPreview, HookEntry, HooksPreview, McpServerPreview,
     PolicyPreview, PreviewFinding, is_risky, run_env_preview,
 };
-use maxwells_daemon::config::Config;
 
 // ── Exit code ─────────────────────────────────────────────────────────────────
 
@@ -102,7 +102,6 @@ fn run_env_preview_returns_preview_with_correct_env_type() {
         env_type: "local".into(),
         task: "fix the bug".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
@@ -117,7 +116,6 @@ fn run_env_preview_schema_version_is_one() {
         env_type: "docker".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
@@ -191,7 +189,6 @@ workdir = "/"
         env_type: "local".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
@@ -200,10 +197,7 @@ workdir = "/"
         "local env with root workdir should trigger a risky finding"
     );
     assert!(
-        preview
-            .findings
-            .iter()
-            .any(|f| f.severity == "warning"),
+        preview.findings.iter().any(|f| f.severity == "warning"),
         "expected at least one warning finding"
     );
 }
@@ -212,18 +206,14 @@ workdir = "/"
 
 #[test]
 fn sensitive_env_var_name_is_flagged() {
-    // A config with a known-sensitive env var pattern injected via the preview
     let cfg = Config::defaults().unwrap();
     let opts = EnvPreviewOpts {
         env_type: "local".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
-    // If FAKE_API_KEY is set in the process env, it should appear redacted in env_vars
-    // For this test we check that if a sensitive var is detected, it's marked sensitive
     for ev in &preview.env_vars {
         if ev.sensitive {
             assert!(
@@ -235,12 +225,10 @@ fn sensitive_env_var_name_is_flagged() {
     }
 }
 
-// ── Redaction: FAKE_API_KEY must not appear verbatim ─────────────────────────
+// ── Redaction: sensitive values always masked when show_values=false ──────────
 
 #[test]
 fn redaction_sk_deadbeef_does_not_appear_in_text_output() {
-    // Build a config that has sk-deadbeef as a secret literal so the redactor
-    // will definitely fire on it.
     let cfg = Config::from_toml_str(
         r#"
 [redaction]
@@ -253,14 +241,10 @@ secret_literals = ["sk-deadbeef"]
         env_type: "local".into(),
         task: "task referencing sk-deadbeef".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
-    // Render to text and verify the literal doesn't appear
     let text_output = format!("{preview:?}");
-    // The task string went through redaction so sk-deadbeef should be gone
-    // (or if not in the debug output, at minimum env_vars don't leak it)
     for ev in &preview.env_vars {
         assert!(
             !ev.value_or_redacted.contains("sk-deadbeef"),
@@ -268,12 +252,41 @@ secret_literals = ["sk-deadbeef"]
             ev.value_or_redacted
         );
     }
-    // The task field itself, if stored, must not contain the literal
     assert!(
         !text_output.contains("sk-deadbeef")
-            || preview.findings.iter().all(|f| !f.message.contains("sk-deadbeef")),
+            || preview
+                .findings
+                .iter()
+                .all(|f| !f.message.contains("sk-deadbeef")),
         "sk-deadbeef should not appear verbatim in findings"
     );
+}
+
+#[test]
+fn redaction_disabled_config_still_masks_env_vars_without_show_values() {
+    // P1 fix: redaction disabled in config must NOT leak sensitive env var values
+    // when --show-values was not passed.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = false
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    for ev in &preview.env_vars {
+        assert_eq!(
+            ev.value_or_redacted, "[REDACTED:env_preview]",
+            "sensitive var '{}' should be masked even when redaction config is disabled",
+            ev.name
+        );
+    }
 }
 
 // ── JSON serialization ────────────────────────────────────────────────────────
@@ -306,7 +319,6 @@ fn env_preview_serializes_to_json_with_schema_version() {
 
 #[test]
 fn env_preview_json_has_env_preview_wrapper_key() {
-    // The JSON output wraps the preview in an `env_preview` key
     let preview = EnvPreview {
         schema_version: 1,
         env_type: "docker".into(),
@@ -350,19 +362,65 @@ command = "/usr/local/bin/external-mcp"
         env_type: "local".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
-    // MCP server with absolute path outside workdir should be flagged
-    let outside: Vec<&McpServerPreview> = preview
-        .mcp_servers
-        .iter()
-        .filter(|m| m.outside_workdir)
-        .collect();
     assert!(
-        !outside.is_empty(),
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
         "expected MCP server outside workdir to be detected"
+    );
+}
+
+#[test]
+fn mcp_server_path_boundary_not_confused_by_prefix_match() {
+    // P2 fix: /workspace-tools should NOT count as inside /workspace.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace-tools/mcp-server"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "/workspace-tools should be detected as outside /workspace"
+    );
+}
+
+#[test]
+fn mcp_server_inside_workdir_not_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/bin/mcp-server"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "/workspace/bin/mcp-server should NOT be flagged as outside /workspace"
     );
 }
 
@@ -381,7 +439,6 @@ profile = "yolo"
         env_type: "local".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
@@ -408,7 +465,6 @@ command = "echo post"
         env_type: "local".into(),
         task: "task".into(),
         config_path: None,
-        format: "text".into(),
         show_values: false,
     };
     let preview = run_env_preview(&cfg, &opts);
@@ -416,4 +472,42 @@ command = "echo post"
     assert_eq!(preview.hooks.post_tool_use.len(), 1);
     assert_eq!(preview.hooks.pre_tool_use[0].name, "pre-check");
     assert_eq!(preview.hooks.post_tool_use[0].name, "post-log");
+}
+
+// ── Broad sensitive-name detection ────────────────────────────────────────────
+
+#[test]
+fn sensitive_var_detection_covers_password_and_credential() {
+    // P2 fix: PASSWORD and CREDENTIAL names must be detected, not just TOKEN/SECRET/API_KEY.
+    // We can't easily inject env vars in unit tests, but we can test is_sensitive_var_name
+    // indirectly by verifying the preview produced with a config that has a secret literal
+    // matching those patterns doesn't fail to flag vars (if they are set).
+    // Direct unit test via the public `run_env_preview` path is done by checking
+    // that env vars with broader names are caught when present in the process env.
+    // Since we can't guarantee those are set in CI, we test the logic explicitly here.
+    use maxwells_daemon::run::env_preview::is_sensitive_var_name_test_helper;
+    assert!(is_sensitive_var_name_test_helper("DB_PASSWORD"));
+    assert!(is_sensitive_var_name_test_helper("AWS_SECRET_ACCESS_KEY"));
+    assert!(is_sensitive_var_name_test_helper("GOOGLE_CREDENTIALS"));
+    assert!(is_sensitive_var_name_test_helper("USER_CREDENTIAL"));
+    assert!(is_sensitive_var_name_test_helper("ANTHROPIC_API_KEY"));
+    assert!(is_sensitive_var_name_test_helper("GITHUB_TOKEN"));
+    assert!(!is_sensitive_var_name_test_helper("HOME"));
+    assert!(!is_sensitive_var_name_test_helper("PATH"));
+    assert!(!is_sensitive_var_name_test_helper("USER"));
+}
+
+// ── Network egress always shows unrestricted ──────────────────────────────────
+
+#[test]
+fn preview_network_egress_is_unrestricted() {
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.network_egress, "unrestricted");
 }

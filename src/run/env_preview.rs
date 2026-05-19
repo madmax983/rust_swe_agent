@@ -20,9 +20,7 @@ pub struct EnvPreviewOpts {
     pub task: String,
     /// Optional path to a config file (already loaded into `cfg` by callers).
     pub config_path: Option<std::path::PathBuf>,
-    /// Output format: `"text"` or `"json"`.
-    pub format: String,
-    /// When true, show actual env var values instead of `[REDACTED:…]`.
+    /// When true, show actual env var values instead of `[REDACTED:env_preview]`.
     pub show_values: bool,
 }
 
@@ -167,6 +165,7 @@ fn build_mcp_servers_preview(
     redactor: &Redactor,
     workdir: &str,
 ) -> Vec<McpServerPreview> {
+    let workdir_canonical = workdir.trim_end_matches('/');
     cfg.root
         .agent
         .mcp_servers
@@ -174,10 +173,13 @@ fn build_mcp_servers_preview(
         .enumerate()
         .map(|(i, s)| {
             let command = redact(redactor, &s.command);
-            // Check whether the binary path lies outside the workdir.
+            // Check whether the binary path lies outside the workdir using a
+            // path-boundary-aware prefix: the exe must equal the workdir exactly
+            // or start with `workdir/` to be considered inside it.
             let exe = command.split_whitespace().next().unwrap_or(&command);
-            let outside_workdir =
-                exe.starts_with('/') && !exe.starts_with(workdir.trim_end_matches('/'));
+            let outside_workdir = exe.starts_with('/')
+                && exe != workdir_canonical
+                && !exe.starts_with(&format!("{workdir_canonical}/"));
             McpServerPreview {
                 name: format!("mcp-{i}"),
                 command,
@@ -187,14 +189,18 @@ fn build_mcp_servers_preview(
         .collect()
 }
 
-fn build_env_vars_preview(opts: &EnvPreviewOpts, redactor: &Redactor) -> Vec<EnvVarPreview> {
+fn build_env_vars_preview(opts: &EnvPreviewOpts, _redactor: &Redactor) -> Vec<EnvVarPreview> {
     std::env::vars()
         .filter(|(name, _)| is_sensitive_var_name(name))
         .map(|(name, value)| {
+            // Sensitive env var values are ALWAYS masked when --show-values is
+            // not set, regardless of whether the config-level redactor is
+            // enabled. This prevents [redaction].enabled = false from leaking
+            // API keys and tokens into preview output.
             let value_or_redacted = if opts.show_values {
                 value
             } else {
-                redact(redactor, &value)
+                "[REDACTED:env_preview]".to_owned()
             };
             EnvVarPreview {
                 name,
@@ -222,9 +228,7 @@ fn collect_findings(
     let mut findings: Vec<PreviewFinding> = Vec::new();
 
     // Wide path: local env with root or empty workdir.
-    if opts.env_type == "local"
-        && (workdir == "/" || workdir.trim_end_matches('/').is_empty())
-    {
+    if opts.env_type == "local" && (workdir == "/" || workdir.trim_end_matches('/').is_empty()) {
         findings.push(PreviewFinding {
             severity: "warning".into(),
             message: format!("Local env with wide host path: {workdir}"),
@@ -266,6 +270,14 @@ pub fn is_risky(preview: &EnvPreview) -> bool {
     !preview.findings.is_empty()
 }
 
+/// Exposed for integration tests: verifies the sensitive-name detection logic
+/// without requiring the specific var to be set in the process environment.
+#[doc(hidden)]
+#[must_use]
+pub fn is_sensitive_var_name_test_helper(name: &str) -> bool {
+    is_sensitive_var_name(name)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Run `value` through the redactor on the `env_preview` surface.
@@ -273,14 +285,19 @@ fn redact(redactor: &Redactor, value: &str) -> String {
     redactor.redact_text(value, "env_preview").text
 }
 
-/// Returns `true` for env var names that match sensitive patterns:
-/// `*_API_KEY`, `*_TOKEN`, `*_SECRET` (case-insensitive suffix match).
+/// Returns `true` for env var names the harness treats as sensitive.
+///
+/// Logic mirrors `env_name_is_sensitive` in `src/redaction.rs` so that
+/// `agent env preview` and the runtime redactor agree on which vars are secret.
+/// Matches: any name containing `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL`,
+/// plus names where a `_`/`-` delimited segment is exactly `KEY`.
 fn is_sensitive_var_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    upper.ends_with("_API_KEY")
-        || upper.ends_with("_TOKEN")
-        || upper.ends_with("_SECRET")
-        || upper == "API_KEY"
-        || upper == "TOKEN"
-        || upper == "SECRET"
+    if ["TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"]
+        .iter()
+        .any(|needle| upper.contains(needle))
+    {
+        return true;
+    }
+    upper.split(['_', '-']).any(|segment| segment == "KEY")
 }
