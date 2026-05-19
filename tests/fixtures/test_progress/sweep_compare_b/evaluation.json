@@ -1,0 +1,34 @@
+{
+  "instances": [
+    {
+      "instance_id": "inst-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_a", "test_b", "test_p1", "test_p2"],
+      "tests_failed": ["test_c"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "inst-2",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_x", "test_p1"],
+      "tests_failed": ["test_y"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "inst-3",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_m", "test_p1"],
+      "tests_failed": ["test_n"],
+      "eval_exit_reason": "unresolved"
+    }
+  ]
+}

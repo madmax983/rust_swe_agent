@@ -1,0 +1,36 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "total": 2,
+  "submitted": 2,
+  "skipped": 0,
+  "errored": 0,
+  "total_cost_usd": 0.10,
+  "instances": [
+    {
+      "instance_id": "resolved-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.05,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_run_before_submit": true
+    },
+    {
+      "instance_id": "resolved-2",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.05,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_run_before_submit": true
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "instances": [
+    {
+      "instance_id": "resolved-1",
+      "resolved": true,
+      "runs": 1,
+      "resolved_count": 1,
+      "pass_at_1": true,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "resolved"
+    },
+    {
+      "instance_id": "partial-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_x", "test_y", "test_p1", "test_p2"],
+      "tests_failed": ["test_z"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "regressed-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_p1", "test_p2", "test_p3"],
+      "tests_failed": ["test_x", "test_y", "test_z", "test_p4", "test_p5"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "no-progress-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_p1", "test_p2"],
+      "tests_failed": ["test_a", "test_b"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "unavail-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "patch_apply_failed"
+    },
+    {
+      "instance_id": "small-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_p1", "test_p2"],
+      "tests_failed": ["test_f1"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "no-eval-data-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "no-dataset-entry-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_q1"],
+      "tests_failed": ["test_q2"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "implied-fail-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_ip1"],
+      "tests_failed": [],
+      "eval_exit_reason": "unresolved"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "total": 2,
+  "submitted": 0,
+  "skipped": 0,
+  "errored": 2,
+  "total_cost_usd": 0.00,
+  "instances": [
+    {
+      "instance_id": "unavail-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "patch_apply_invalid",
+      "cost_usd": 0.00,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "unavail-2",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "env_setup",
+      "cost_usd": 0.00,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}

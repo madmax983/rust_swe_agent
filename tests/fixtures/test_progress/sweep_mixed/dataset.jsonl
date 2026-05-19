@@ -1,0 +1,8 @@
+{"instance_id": "resolved-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_a\", \"test_b\", \"test_c\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\"]"}
+{"instance_id": "partial-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_x\", \"test_y\", \"test_z\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\"]"}
+{"instance_id": "regressed-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_x\", \"test_y\", \"test_z\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\", \"test_p3\", \"test_p4\", \"test_p5\"]"}
+{"instance_id": "no-progress-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_a\", \"test_b\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\"]"}
+{"instance_id": "unavail-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_u1\"]", "PASS_TO_PASS": "[\"test_up1\"]"}
+{"instance_id": "small-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_f1\"]", "PASS_TO_PASS": "[\"test_p1\", \"test_p2\"]"}
+{"instance_id": "no-eval-data-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_e1\", \"test_e2\"]", "PASS_TO_PASS": "[\"test_ep1\"]"}
+{"instance_id": "implied-fail-1", "repo": "example/repo", "FAIL_TO_PASS": "[\"test_impl1\", \"test_impl2\"]", "PASS_TO_PASS": "[\"test_ip1\"]"}
