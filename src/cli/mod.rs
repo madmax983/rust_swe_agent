@@ -633,6 +633,17 @@ async fn mini_resume_cmd(
         );
     }
 
+    // Reject MCP server overrides: the trajectory doesn't store the original
+    // MCP configuration, so we cannot validate compatibility. A different tool
+    // registry on resume would cause tool-not-found failures or behavior drift.
+    if !m.mcp_servers.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "--resume: --mcp-server overrides are not supported on resume invocations; \
+             the original tool registry cannot be restored from the trajectory",
+        );
+    }
+
     // Validate extension: the write path is reconstructed as
     // `parent/{stem}.traj.json`, so if the file doesn't end with `.traj.json`
     // the read and write targets would differ. Reject early with a clear error.
