@@ -1,6 +1,6 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
 
-use std::io::{IsTerminal as _, Write as _};
+use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -225,6 +225,76 @@ fn init_logging(level: &str) {
 
 #[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
+    let task = if m.resume_from.is_some() {
+        if m.task.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "both --task and --resume were provided".into(),
+            )));
+        }
+        if m.task_file.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "both --task-file and --resume were provided".into(),
+            )));
+        }
+        String::new()
+    } else {
+        match (&m.task, &m.task_file) {
+            (Some(_), Some(_)) => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "both --task and --task-file were provided".into(),
+                )));
+            }
+            (None, None) => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "either --task or --task-file must be provided".into(),
+                )));
+            }
+            (Some(t), None) => {
+                if t.trim().is_empty() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(
+                        "empty --task source".into(),
+                    )));
+                }
+                t.clone()
+            }
+            (None, Some(tf)) => {
+                let mut raw_content = if tf == "-" {
+                    let mut buffer = String::new();
+                    std::io::stdin().read_to_string(&mut buffer).map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "failed to read task from stdin: {e}"
+                        )))
+                    })?;
+                    buffer
+                } else {
+                    let path = std::path::Path::new(tf);
+                    if !path.exists() {
+                        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "--task-file does not exist: {tf}"
+                        ))));
+                    }
+                    std::fs::read_to_string(path).map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "failed to read --task-file `{tf}`: {e}"
+                        )))
+                    })?
+                };
+
+                if raw_content.starts_with('\u{FEFF}') {
+                    raw_content.remove(0);
+                }
+
+                if raw_content.trim().is_empty() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "empty task source from `{tf}`"
+                    ))));
+                }
+
+                raw_content
+            }
+        }
+    };
+
     let mut cfg = match &m.config {
         Some(p) => Config::load(p)?,
         None => Config::defaults()?,
@@ -280,7 +350,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     }
 
     if m.render_only {
-        return mini_render_only_cmd(m, cfg);
+        return mini_render_only_cmd(m, task, cfg);
     }
 
     if m.format != "text" {
@@ -495,7 +565,11 @@ fn redact_json_strings(v: &mut serde_json::Value, redactor: &crate::redaction::R
     }
 }
 
-fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<(), Error> {
+fn mini_render_only_cmd(
+    m: args::MiniCmd,
+    task: String,
+    cfg: crate::config::Config,
+) -> Result<(), Error> {
     crate::run::render_only::reject_incompatible_flags(
         &crate::run::render_only::IncompatibleFlags {
             per_task_budget_usd: m.per_task_budget_usd,
@@ -510,7 +584,7 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
     )?;
 
     let args = crate::run::render_only::RenderOnlyArgs {
-        task: m.task.unwrap_or_default(),
+        task,
         extra_context: m.extra_context,
         config: cfg,
     };
@@ -3706,6 +3780,7 @@ mod tests {
     fn mini_cmd(open_pr: bool, dry_run: bool) -> args::MiniCmd {
         args::MiniCmd {
             task: Some("Fix it".into()),
+            task_file: None,
             resume_from: None,
             resume_allow_step_bump: false,
             extra_context: None,
