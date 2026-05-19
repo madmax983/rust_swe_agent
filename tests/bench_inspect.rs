@@ -2141,7 +2141,7 @@ fn format_markdown_redacts_secrets_in_export() {
     let mut t = maxwells_daemon::trajectory::Trajectory::new();
     t.info.model_name = Some("test".into());
     t.info.outcome = Some(maxwells_daemon::trajectory::outcome::SUBMITTED.into());
-    t.record_message(&maxwells_daemon::model::Message::user(&format!(
+    t.record_message(&maxwells_daemon::model::Message::user(format!(
         "token={secret}"
     )));
     std::fs::write(

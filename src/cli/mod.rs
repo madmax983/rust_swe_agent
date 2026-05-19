@@ -2187,6 +2187,11 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
                 "inspect: --diff expects exactly two trajectory paths".into(),
             )));
         }
+        if i.output.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
+            )));
+        }
         let format = parse_trajectory_diff_format(&i.format)?;
         let report = crate::run::trajectory_diff::diff_paths(
             &crate::run::trajectory_diff::TrajectoryDiffArgs {
@@ -2201,6 +2206,13 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
 
     if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
         return bench_inspect_export(i);
+    }
+
+    if i.output.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            i.format
+        ))));
     }
 
     let format = match i.format.as_str() {
@@ -2252,8 +2264,8 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
             "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
         ))
     })?;
-    let traj_path = crate::run::inspect::resolve_trajectory_path(&sweep, instance_id)
-        .ok_or_else(|| {
+    let traj_path =
+        crate::run::inspect::resolve_trajectory_path(&sweep, instance_id).ok_or_else(|| {
             Error::Trajectory(format!(
                 "inspect: trajectory not found for instance `{instance_id}` in {}",
                 sweep.display()
@@ -2263,9 +2275,11 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)
         .map_err(|e| Error::Trajectory(format!("inspect: failed to parse trajectory: {e}")))?;
 
-    use crate::trajectory::export::TrajectoryExporter;
     let content = match i.format.as_str() {
-        "markdown" => crate::trajectory::export::MarkdownExporter::export(&traj),
+        "markdown" => {
+            use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
+            MarkdownExporter::export(&traj)
+        }
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
@@ -2273,6 +2287,20 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     };
 
     if let Some(output_path) = i.output {
+        let out_canon = std::fs::canonicalize(&output_path).unwrap_or_else(|_| output_path.clone());
+        let traj_canon = std::fs::canonicalize(&traj_path).unwrap_or_else(|_| traj_path.clone());
+        if out_canon == traj_canon {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "inspect: --output `{}` resolves to the source trajectory file; \
+                 writing would corrupt the sweep artifact",
+                output_path.display()
+            ))));
+        }
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         std::fs::write(&output_path, &content)?;
     } else {
         print!("{content}");
