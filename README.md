@@ -75,10 +75,21 @@ cargo run --quiet -- --log error agent env preview \
   --env docker --task "fix the bug" --format json
 ```
 
-Gate CI on a clean preview before launching a docker sweep:
+Gate CI on a clean preview before launching a docker sweep (the config must
+set `environment.kind = "docker"` and supply a `docker_image` so the preview
+exits 0 instead of 13):
+
+```toml
+# config.toml — minimal docker config for a clean env preview
+[environment]
+kind   = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+```
 
 ```bash
-cargo run --quiet -- --log error agent env preview --env docker --task "fix the bug"
+cargo run --quiet -- --log error agent env preview \
+  --env docker --task "fix the bug" --config config.toml
 preview_exit=$?
 if [ $preview_exit -eq 13 ]; then
   echo "WARNING: risky env findings — review output before proceeding"

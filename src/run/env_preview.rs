@@ -125,6 +125,25 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     let policy = build_policy_preview(cfg, &redactor);
     let mut findings = collect_findings(opts, &workdir, &mcp_servers, &env_vars);
 
+    // Scan command-adapter tools for binaries outside the workdir.
+    // Mirrors the MCP-server check so operators see both kinds of external
+    // executable in one preview pass.
+    {
+        let wd_canonical = workdir_raw.trim_end_matches('/');
+        for (i, tool) in cfg.root.agent.tools.iter().enumerate() {
+            if mcp_is_outside_workdir(&tool.command, wd_canonical) {
+                let display_cmd = redact(&redactor, &tool.command);
+                findings.push(PreviewFinding {
+                    severity: "warning".into(),
+                    message: format!(
+                        "Command tool '{}' (tool-{i}) binary is outside workdir ({}): {}",
+                        tool.name, workdir, display_cmd
+                    ),
+                });
+            }
+        }
+    }
+
     // Validate the policy config now so the preview catches configs that will
     // fail at runtime (invalid profile name, invalid regex pattern). Run the
     // error text through the redactor — an invalid regex containing a secret
@@ -285,7 +304,17 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
         return true;
     }
     let exe_raw = extract_exe_path(raw_command);
-    let exe = normalize_path(&exe_raw);
+    // Resolve workdir-relative paths: Docker sets cwd to workdir via `-w`, so
+    // `./bin/mcp` inside a Docker MCP command is equivalent to
+    // `{workdir}/bin/mcp` and should not be flagged as outside the workdir.
+    let exe_abs = if let Some(rel) = exe_raw.strip_prefix("./") {
+        format!("{workdir_canonical}/{rel}")
+    } else if exe_raw == "." {
+        workdir_canonical.to_owned()
+    } else {
+        exe_raw
+    };
+    let exe = normalize_path(&exe_abs);
     if !exe.starts_with('/') {
         // Relative or PATH-resolved command: flag as outside workdir.
         return true;
@@ -320,17 +349,26 @@ fn normalize_path(path: &str) -> String {
 /// - `$(` — command substitution (the `$` is only flagged when followed by `(`)
 /// - `` ` `` — backtick command substitution
 ///
-/// Quote-aware: characters inside `'...'` or `"..."` are skipped, so
-/// `FOO='a;b' /workspace/bin/mcp` is NOT treated as a compound command.
+/// Quote-aware: characters inside `'...'` are skipped entirely (POSIX single-
+/// quote semantics — no escapes or expansions).  Inside `"..."`, bash still
+/// expands `$(...)` and backticks, so those are scanned rather than skipped.
 fn has_shell_operators(command: &str) -> bool {
     let mut chars = command.chars();
     loop {
         match chars.next() {
             None => return false,
             Some('"') => {
-                for c in chars.by_ref() {
-                    if c == '"' {
-                        break;
+                // Double-quoted: bash still expands $() and backticks inside.
+                loop {
+                    match chars.next() {
+                        None | Some('"') => break,
+                        Some('`') => return true,
+                        Some('$') => {
+                            if chars.as_str().starts_with('(') {
+                                return true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -378,6 +416,14 @@ fn extract_exe_path(command: &str) -> String {
         let after_eq = &rest[eq_pos + 1..];
         let val_end = shell_token_end(after_eq);
         rest = rest[eq_pos + 1 + val_end..].trim_start();
+    }
+
+    // Skip `exec` and `command` shell builtins: they forward to the next word
+    // as the real executable, so `exec /workspace/bin/mcp` resolves to
+    // `/workspace/bin/mcp` rather than the non-existent `exec` binary.
+    let first_word = rest.split_whitespace().next().unwrap_or("");
+    if matches!(first_word, "exec" | "command") {
+        rest = rest[first_word.len()..].trim_start();
     }
 
     // Extract the exe, stripping surrounding quotes if present.

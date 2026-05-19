@@ -1109,5 +1109,208 @@ command = "FOO=`/usr/local/bin/setup` /workspace/bin/mcp"
     );
 }
 
+// ── Fix 1: $() inside double-quoted strings flagged ──────────────────────────
+
+#[test]
+fn double_quoted_dollar_paren_in_mcp_flagged() {
+    // FOO="$(/usr/local/bin/setup)" /workspace/bin/mcp — bash expands $()
+    // inside double-quoted strings, so this must be treated as compound.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = 'FOO="$(/usr/local/bin/setup)" /workspace/bin/mcp'
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "$() inside double-quoted string should be flagged as compound command"
+    );
+}
+
+#[test]
+fn double_quoted_backtick_in_mcp_flagged() {
+    // FOO="`/usr/local/bin/setup`" /workspace/bin/mcp — backtick inside
+    // double-quoted string is still expanded by bash.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = 'FOO="`/usr/local/bin/setup`" /workspace/bin/mcp'
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "backtick inside double-quoted string should be flagged as compound command"
+    );
+}
+
+// ── Fix 2: ./relative path resolved against workdir ──────────────────────────
+
+#[test]
+fn dot_slash_mcp_inside_workdir_not_flagged() {
+    // ./bin/mcp-server — Docker sets cwd to workdir via -w, so this resolves
+    // to {workdir}/bin/mcp-server which is inside the workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "./bin/mcp-server --port 9000"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "./bin/mcp-server should resolve to workdir/bin/mcp-server and NOT be flagged"
+    );
+}
+
+// ── Fix 5: exec/command builtins skipped before exe extraction ───────────────
+
+#[test]
+fn exec_builtin_mcp_inside_workdir_not_flagged() {
+    // exec /workspace/bin/mcp — exec is a builtin that delegates to the next
+    // word; the real binary is /workspace/bin/mcp, which is inside workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "exec /workspace/bin/mcp --port 9000"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "exec /workspace/bin/mcp should not be flagged; exec is a builtin"
+    );
+}
+
+#[test]
+fn command_builtin_mcp_inside_workdir_not_flagged() {
+    // command /workspace/bin/mcp — same pattern as exec.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "command /workspace/bin/mcp --port 9000"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "command /workspace/bin/mcp should not be flagged; command is a builtin"
+    );
+}
+
+// ── Fix 4: cfg.root.agent.tools scanned for outside-workdir binaries ─────────
+
+#[test]
+fn command_tool_outside_workdir_triggers_finding() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.tools]]
+name = "my-tool"
+command = "/usr/bin/external-tool --flag"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("my-tool")),
+        "command tool with binary outside workdir should produce a finding; got: {:?}",
+        preview.findings
+    );
+}
+
+#[test]
+fn command_tool_inside_workdir_not_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.tools]]
+name = "local-tool"
+command = "/workspace/bin/local-tool --flag"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("local-tool") && f.message.contains("outside workdir")),
+        "command tool with binary inside workdir must not produce an outside-workdir finding"
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)
