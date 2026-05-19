@@ -523,8 +523,12 @@ fn hot_failing_tests_counts_implied_failures() {
     );
 
     let hot = report["hot_failing_tests"].as_array().unwrap();
-    let impl1_present = hot.iter().any(|e| e["test_name"].as_str() == Some("test_impl1"));
-    let impl2_present = hot.iter().any(|e| e["test_name"].as_str() == Some("test_impl2"));
+    let impl1_present = hot
+        .iter()
+        .any(|e| e["test_name"].as_str() == Some("test_impl1"));
+    let impl2_present = hot
+        .iter()
+        .any(|e| e["test_name"].as_str() == Some("test_impl2"));
     assert!(
         impl1_present,
         "test_impl1 absent from tests_passed must appear in hot_failing_tests: {hot:?}"
