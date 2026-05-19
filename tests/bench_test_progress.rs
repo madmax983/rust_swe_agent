@@ -495,6 +495,60 @@ fn ac_h_min_tests_drops_from_means_keeps_in_per_instance() {
     );
 }
 
+// Unresolved instance where evaluator returned empty tests_passed/tests_failed
+// → must be evaluator_unavailable, not no_progress
+#[test]
+fn unresolved_with_empty_eval_tests_is_evaluator_unavailable() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(output.status.success());
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let inst = find_instance(&report, "no-eval-data-1");
+    assert_eq!(
+        inst["verdict_bucket"].as_str().unwrap(),
+        "evaluator_unavailable",
+        "unresolved instance with empty eval test lists must be evaluator_unavailable, not no_progress"
+    );
+    assert_eq!(
+        inst["partial_credit_score"].as_f64().unwrap(),
+        0.0,
+        "evaluator_unavailable score is 0.0"
+    );
+}
+
+// Unresolved instance absent from dataset.jsonl
+// → must be evaluator_unavailable, not vacuously resolved/partial_progress
+#[test]
+fn unresolved_with_no_dataset_entry_is_evaluator_unavailable() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(output.status.success());
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let inst = find_instance(&report, "no-dataset-entry-1");
+    assert_eq!(
+        inst["verdict_bucket"].as_str().unwrap(),
+        "evaluator_unavailable",
+        "unresolved instance absent from dataset.jsonl must be evaluator_unavailable, \
+         not vacuously scored due to empty FAIL_TO_PASS/PASS_TO_PASS"
+    );
+}
+
 // ── Additional CLI integration tests ─────────────────────────────────────────
 
 #[test]

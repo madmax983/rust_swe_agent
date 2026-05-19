@@ -59,6 +59,26 @@
       "tests_passed": ["test_p1", "test_p2"],
       "tests_failed": ["test_f1"],
       "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "no-eval-data-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": [],
+      "tests_failed": [],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "no-dataset-entry-1",
+      "resolved": false,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_passed": ["test_q1"],
+      "tests_failed": ["test_q2"],
+      "eval_exit_reason": "unresolved"
     }
   ]
 }

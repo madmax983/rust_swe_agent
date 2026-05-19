@@ -4,11 +4,11 @@
     "major": 1,
     "minor": 4
   },
-  "total": 6,
-  "submitted": 4,
+  "total": 8,
+  "submitted": 6,
   "skipped": 0,
   "errored": 1,
-  "total_cost_usd": 0.30,
+  "total_cost_usd": 0.40,
   "instances": [
     {
       "instance_id": "resolved-1",
@@ -68,6 +68,28 @@
     },
     {
       "instance_id": "small-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.05,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": true
+    },
+    {
+      "instance_id": "no-eval-data-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.05,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": true
+    },
+    {
+      "instance_id": "no-dataset-entry-1",
       "exit_reason": "submitted",
       "outcome": "submitted",
       "cost_usd": 0.05,

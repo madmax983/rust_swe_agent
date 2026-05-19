@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+use crate::redaction::{Redactor, surface};
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
 use crate::run::evaluate::{EvalExitReason, InstanceEvaluation};
 use crate::run::swebench::SweBenchInstance;
@@ -629,6 +630,24 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
         .and_then(|m| serde_json::to_string(m).ok())
         .map(|s| format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(s.as_bytes())));
 
+    // Redact test names in hot lists before persisting
+    let redactor = Redactor::default_enabled();
+    let mut redaction_applied = false;
+    for entry in &mut hot_failing_tests {
+        let outcome = redactor.redact_text(&entry.test_name, surface::INSPECT);
+        if outcome.redacted {
+            entry.test_name = outcome.text;
+            redaction_applied = true;
+        }
+    }
+    for entry in &mut hot_regressed_tests {
+        let outcome = redactor.redact_text(&entry.test_name, surface::INSPECT);
+        if outcome.redacted {
+            entry.test_name = outcome.text;
+            redaction_applied = true;
+        }
+    }
+
     let totals = TestProgressTotals {
         instance_count: total,
         per_bucket,
@@ -648,10 +667,11 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
         per_instance: instance_rows,
         hot_failing_tests,
         hot_regressed_tests,
-        redaction_applied: false,
+        redaction_applied,
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_instance_row(
     instance_id: &str,
     instance: &crate::run::swebench::InstanceResult,
@@ -725,6 +745,27 @@ fn build_instance_row(
         (vec![], vec![])
     };
 
+    // Unresolved instance with no dataset entry: cannot compute meaningful score
+    if !eval.resolved && fail_to_pass.is_empty() && pass_to_pass.is_empty() {
+        return PerInstanceRow {
+            instance_id: instance_id.to_owned(),
+            verdict_bucket: VerdictBucket::EvaluatorUnavailable.as_str().to_owned(),
+            partial_credit_score: 0.0,
+            fail_to_pass: FailToPassDetail {
+                total: 0,
+                passed_count: 0,
+                passed_ratio: 0.0,
+            },
+            pass_to_pass: PassToPassDetail {
+                total: 0,
+                regressed_count: 0,
+                regressed_ratio: 0.0,
+            },
+            outcome,
+            excluded_from_means: false,
+        };
+    }
+
     // For resolved instances, all FAIL_TO_PASS passed and nothing regressed
     let (tests_passed, tests_failed) = if eval.resolved {
         // Use evaluator data if non-empty, otherwise synthesize from dataset lists
@@ -739,6 +780,27 @@ fn build_instance_row(
     } else {
         (eval.tests_passed.clone(), eval.tests_failed.clone())
     };
+
+    // Unresolved instance with no per-test data from evaluator: cannot score
+    if !eval.resolved && tests_passed.is_empty() && tests_failed.is_empty() {
+        return PerInstanceRow {
+            instance_id: instance_id.to_owned(),
+            verdict_bucket: VerdictBucket::EvaluatorUnavailable.as_str().to_owned(),
+            partial_credit_score: 0.0,
+            fail_to_pass: FailToPassDetail {
+                total: 0,
+                passed_count: 0,
+                passed_ratio: 0.0,
+            },
+            pass_to_pass: PassToPassDetail {
+                total: 0,
+                regressed_count: 0,
+                regressed_ratio: 0.0,
+            },
+            outcome,
+            excluded_from_means: false,
+        };
+    }
 
     let metrics =
         compute_instance_metrics(&fail_to_pass, &pass_to_pass, &tests_passed, &tests_failed);
