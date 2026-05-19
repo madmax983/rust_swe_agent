@@ -553,3 +553,52 @@ async fn no_webhook_url_adds_zero_overhead() {
     // Should complete without error and without any webhook traffic.
     maxwells_daemon::run::mini::run(args).await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Test 8: unsupported URL scheme is rejected before the run starts
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn webhook_rejects_non_http_url_scheme() {
+    let out = tempfile::tempdir().unwrap();
+    let responses = vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into()];
+    let args = make_mini_args(
+        responses,
+        out.path(),
+        Some("file:///tmp/not-a-webhook".to_owned()),
+        vec![],
+        None,
+    );
+    let result = maxwells_daemon::run::mini::run(args).await;
+    assert!(result.is_err(), "expected Err for file:// URL, got Ok");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("unsupported scheme") || msg.contains("webhook"),
+        "error message should mention scheme or webhook: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: malformed --webhook-header flag (missing ':') is rejected
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn webhook_rejects_malformed_header_flag() {
+    let out = tempfile::tempdir().unwrap();
+    let responses = vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into()];
+    let server = MockWebhookServer::bind().await;
+    let args = make_mini_args(
+        responses,
+        out.path(),
+        Some(server.url()),
+        vec!["X-No-Colon-Here".to_owned()],
+        None,
+    );
+    let result = maxwells_daemon::run::mini::run(args).await;
+    assert!(result.is_err(), "expected Err for malformed header, got Ok");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("missing") || msg.contains("separator") || msg.contains("webhook header"),
+        "error should mention missing separator: {msg}"
+    );
+}

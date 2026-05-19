@@ -204,13 +204,15 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         let headers: Vec<(String, String)> = args
             .webhook_headers
             .iter()
-            .filter_map(|h| {
-                let mut parts = h.splitn(2, ':');
-                let name = parts.next()?.trim().to_owned();
-                let value = parts.next()?.trim().to_owned();
-                Some((name, value))
+            .map(|h| {
+                let (name, value) = h.split_once(':').ok_or_else(|| {
+                    Error::Config(ConfigError::Invalid(format!(
+                        "webhook header `{h}` is missing `:` separator (use `Name: Value`)"
+                    )))
+                })?;
+                Ok((name.trim().to_owned(), value.trim().to_owned()))
             })
-            .collect();
+            .collect::<Result<Vec<_>, Error>>()?;
         let sink = WebhookSink::new(url.clone(), &headers)
             .map_err(|e| Error::Config(ConfigError::Invalid(format!("webhook sink: {e}"))))?;
         let sink_arc = Arc::new(sink);
@@ -226,19 +228,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         };
         let handle = WebhookSinkHandle::new(sink_arc, run_id);
         // Log only scheme + host — path/query/userinfo may contain credentials.
-        let safe_url = url
-            .find("://")
-            .map(|i| {
-                let after = &url[i + 3..];
-                // Strip userinfo (user:pass@).
-                let host_start = after.rfind('@').map_or(0, |j| j + 1);
-                // Stop at first /, ?, or # (path / query / fragment).
-                let host_end = after[host_start..]
-                    .find(['/', '?', '#'])
-                    .map_or(after.len() - host_start, |j| j)
-                    + host_start;
-                format!("{}://{}", &url[..i], &after[host_start..host_end])
-            })
+        let safe_url = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
             .unwrap_or_else(|| "<url>".to_owned());
         tracing::info!(url = %safe_url, "webhook push enabled");
         (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
@@ -368,6 +360,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
+                    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
                     if let Some(server) = server {
                         server.shutdown().await;
                     }
@@ -403,6 +396,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
+                    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
                     if let Some(server) = server {
                         server.shutdown().await;
                     }
@@ -528,6 +522,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let exit = match run_result {
         Ok(exit) => exit,
         Err(e) => {
+            warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
             if let Some(server) = server {
                 server.shutdown().await;
             }
@@ -545,15 +540,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     tracing::info!(?traj_path, patch_written, "trajectory written");
 
     // Emit stderr warning if any webhook events were dropped (issue #324 AC 5).
-    if let Some(ref counter) = webhook_dropped_counter {
-        let n = counter.load(std::sync::atomic::Ordering::Relaxed);
-        if n >= 1 {
-            let _ = std::io::Write::write_all(
-                &mut std::io::stderr(),
-                format!("warn: {n} webhook event(s) were dropped during this run\n").as_bytes(),
-            );
-        }
-    }
+    warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
 
     if let Some(server) = server {
         server.shutdown().await;
@@ -604,6 +591,18 @@ fn build_interactive_pieces(mode: InteractiveMode) -> Result<InteractivePieces, 
             })?;
             let cb = handle.confirm_callback();
             Ok((Some(cb), Some(handle)))
+        }
+    }
+}
+
+fn warn_dropped_webhook_events(counter: Option<&std::sync::atomic::AtomicU64>) {
+    if let Some(counter) = counter {
+        let n = counter.load(std::sync::atomic::Ordering::Relaxed);
+        if n >= 1 {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("warn: {n} webhook event(s) were dropped during this run\n").as_bytes(),
+            );
         }
     }
 }

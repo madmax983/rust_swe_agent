@@ -106,7 +106,14 @@ impl WebhookSink {
 
         // Validate the URL eagerly so a typo surfaces before the run starts
         // rather than silently dropping every event from the background task.
-        reqwest::Url::parse(&url).map_err(|e| WebhookSinkError::InvalidUrl(e.to_string()))?;
+        let parsed_url =
+            reqwest::Url::parse(&url).map_err(|e| WebhookSinkError::InvalidUrl(e.to_string()))?;
+        if !matches!(parsed_url.scheme(), "http" | "https") {
+            return Err(WebhookSinkError::InvalidUrl(format!(
+                "unsupported scheme `{}`; webhook URL must use http or https",
+                parsed_url.scheme()
+            )));
+        }
 
         let handle = Handle::try_current().map_err(WebhookSinkError::NoRuntime)?;
 
