@@ -641,11 +641,12 @@ fn cli_means_exclude_evaluator_unavailable() {
         .iter()
         .filter(|i| {
             i["verdict_bucket"].as_str() != Some("evaluator_unavailable")
-                && i["excluded_from_means"].as_bool().unwrap_or(false) == false
+                && !i["excluded_from_means"].as_bool().unwrap_or(false)
         })
         .map(|i| i["partial_credit_score"].as_f64().unwrap_or(0.0))
         .collect();
 
+    #[allow(clippy::cast_precision_loss)]
     let computed_mean = eligible.iter().sum::<f64>() / eligible.len() as f64;
     let reported_mean = report["totals"]["mean_partial_credit_score"]
         .as_f64()
