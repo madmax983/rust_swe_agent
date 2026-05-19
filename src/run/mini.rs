@@ -201,7 +201,6 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         Option<Arc<dyn StreamSink>>,
         Option<Arc<std::sync::atomic::AtomicU64>>,
     ) = if let Some(ref url) = args.webhook_url {
-        let run_id = args.trajectory_name.clone();
         let headers: Vec<(String, String)> = args
             .webhook_headers
             .iter()
@@ -216,14 +215,29 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             .map_err(|e| Error::Config(ConfigError::Invalid(format!("webhook sink: {e}"))))?;
         let sink_arc = Arc::new(sink);
         let counter = sink_arc.dropped_counter();
+        // Redact the trajectory name so configured secret literals can't leak
+        // through the envelope's run_id field, which bypasses RedactingSink.
+        let run_id = {
+            let redactor =
+                crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+            redactor
+                .redact_text(&args.trajectory_name, surface::TRAJECTORY)
+                .text
+        };
         let handle = WebhookSinkHandle::new(sink_arc, run_id);
-        // Log only the URL origin — the path/query may contain credentials.
+        // Log only scheme + host — path/query/userinfo may contain credentials.
         let safe_url = url
             .find("://")
             .map(|i| {
                 let after = &url[i + 3..];
-                let host_end = after.find('/').unwrap_or(after.len());
-                format!("{}://{}", &url[..i], &after[..host_end])
+                // Strip userinfo (user:pass@).
+                let host_start = after.rfind('@').map_or(0, |j| j + 1);
+                // Stop at first /, ?, or # (path / query / fragment).
+                let host_end = after[host_start..]
+                    .find(['/', '?', '#'])
+                    .map_or(after.len() - host_start, |j| j)
+                    + host_start;
+                format!("{}://{}", &url[..i], &after[host_start..host_end])
             })
             .unwrap_or_else(|| "<url>".to_owned());
         tracing::info!(url = %safe_url, "webhook push enabled");

@@ -75,6 +75,8 @@ pub enum WebhookSinkError {
     NoRuntime(#[source] TryCurrentError),
     #[error("webhook buffer capacity must be greater than zero")]
     InvalidBufferCapacity,
+    #[error("invalid webhook URL: {0}")]
+    InvalidUrl(String),
     #[error("failed to build webhook HTTP client")]
     Client(#[source] reqwest::Error),
     #[error("invalid webhook header `{name}`: {reason}")]
@@ -101,6 +103,10 @@ impl WebhookSink {
         if buffer_capacity == 0 {
             return Err(WebhookSinkError::InvalidBufferCapacity);
         }
+
+        // Validate the URL eagerly so a typo surfaces before the run starts
+        // rather than silently dropping every event from the background task.
+        reqwest::Url::parse(&url).map_err(|e| WebhookSinkError::InvalidUrl(e.to_string()))?;
 
         let handle = Handle::try_current().map_err(WebhookSinkError::NoRuntime)?;
 
