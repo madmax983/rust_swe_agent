@@ -137,6 +137,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::ToolCoverage(t),
         } => bench_tool_coverage(t),
         Command::Bench {
+            cmd: args::BenchCmd::PolicyImpact(p),
+        } => bench_policy_impact(p),
+        Command::Bench {
             cmd: args::BenchCmd::InstanceHistory(h),
         } => bench_instance_history(h),
         Command::Bench {
@@ -2840,6 +2843,27 @@ fn bench_tool_coverage(t: args::ToolCoverageCmd) -> Result<(), Error> {
             "{}",
             crate::run::tool_coverage::render_text(&report, bucket.as_deref(), t.min_invocations,)
         );
+    }
+    Ok(())
+}
+
+fn bench_policy_impact(t: args::PolicyImpactCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "policy-impact: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::policy_impact::run(&crate::run::policy_impact::PolicyImpactArgs {
+        sweep_dir: t.sweep,
+    })?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", crate::run::policy_impact::render_text(&report));
     }
     Ok(())
 }

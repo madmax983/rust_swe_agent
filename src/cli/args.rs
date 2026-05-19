@@ -475,6 +475,8 @@ pub enum BenchCmd {
     Behavior(BehaviorCmd),
     /// Measure MCP tool usage and correlate with outcome across a sweep.
     ToolCoverage(ToolCoverageCmd),
+    /// Measure sweep policy impact on outcomes.
+    PolicyImpact(PolicyImpactCmd),
     /// Systematic per-tool removal ablation: baseline plus one arm per removed tool.
     ToolAblation(ToolAblationCmd),
     /// Join historical sweeps on instance_id and report resolution history,
@@ -1841,6 +1843,18 @@ pub struct ToolCoverageCmd {
     /// Emit per-instance tool call counts in the JSON output and artifact.
     #[arg(long, default_value_t = false)]
     pub per_instance: bool,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `bench policy-impact` — measure sweep policy impact on outcomes.
+#[derive(Debug, Args)]
+pub struct PolicyImpactCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long, short)]
+    pub sweep: PathBuf,
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
