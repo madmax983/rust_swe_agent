@@ -967,5 +967,65 @@ docker_image = "ubuntu:22.04"
     );
 }
 
+// ── Quoted shell operator in assignment value not flagged ─────────────────────
+
+#[test]
+fn quoted_shell_operator_in_assignment_value_not_flagged() {
+    // FOO='a;b' /workspace/bin/mcp — the ';' is inside quotes; the exe is
+    // /workspace/bin/mcp which is inside the workdir. Should NOT be flagged.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "FOO='a;b' /workspace/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "quoted ';' in assignment must not trigger the compound-command check; \
+         mcp_servers: {:?}",
+        preview.mcp_servers
+    );
+}
+
+// ── Background-operator MCP command flagged as outside workdir ────────────────
+
+#[test]
+fn background_operator_mcp_command_flagged_as_outside_workdir() {
+    // /workspace/bin/setup & /usr/local/bin/mcp — single & backgrounds the
+    // first command; the shell then starts the external MCP process.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/bin/setup & /usr/local/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "background-operator '&' should flag the command as a compound command"
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)

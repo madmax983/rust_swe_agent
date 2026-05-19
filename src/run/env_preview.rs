@@ -288,18 +288,35 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     exe != workdir_canonical && !exe.starts_with(&format!("{workdir_canonical}/"))
 }
 
-/// Returns `true` when `command` contains shell list/pipe metacharacters that
-/// make static executable-path analysis unreliable.
+/// Returns `true` when `command` contains shell list/pipe/background
+/// metacharacters (`;`, `|`, `&`) **outside quoted strings**, making static
+/// executable-path analysis unreliable.
+///
+/// Quote-aware: characters inside `'...'` or `"..."` are skipped, so
+/// `FOO='a;b' /workspace/bin/mcp` is NOT treated as a compound command.
 fn has_shell_operators(command: &str) -> bool {
-    command.contains("&&") || command.contains("||") || command.contains(';') || {
-        // Pipe must be outside `||` to avoid double-counting; `||` already caught above.
-        // We use a simple byte scan: if we see `|` not preceded or followed by `|`.
-        let bytes = command.as_bytes();
-        bytes.windows(1).enumerate().any(|(i, w)| {
-            w[0] == b'|'
-                && bytes.get(i.wrapping_sub(1)).copied() != Some(b'|')
-                && bytes.get(i + 1).copied() != Some(b'|')
-        })
+    let mut chars = command.chars();
+    loop {
+        match chars.next() {
+            None => return false,
+            Some('"') => {
+                for c in chars.by_ref() {
+                    if c == '"' {
+                        break;
+                    }
+                }
+            }
+            Some('\'') => {
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                }
+            }
+            // `;`, `|` (pipe / `||`), `&` (background / `&&`)
+            Some(';' | '|' | '&') => return true,
+            Some(_) => {}
+        }
     }
 }
 

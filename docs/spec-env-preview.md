@@ -41,22 +41,22 @@ max agent env preview \
 
 ---
 
-## Text Output Example
+## Text Output Example (docker — clean)
 
 ```
 === Agent Environment Preview ===
-env_type:       local
-host_paths:     /workspace
+env_type:       docker
+host_paths:     (none)
 network_egress: unrestricted
 
 --- Hooks ---
   (none)
 
 --- MCP Servers ---
-  (none)
+  mcp-0: /workspace/bin/my-server --port 9000
 
 --- Env Vars (sensitive) ---
-  ANTHROPIC_API_KEY: [REDACTED:env_key:short:a1b2c3d4e5f6]
+  (none)
 
 --- Policy ---
   profile:     safe
@@ -66,10 +66,16 @@ network_egress: unrestricted
 --- Findings: CLEAN ---
 ```
 
-When findings are present:
+> **Note:** Local environment previews (`--env local`) always produce at least
+> one finding (`Local environment: bash commands are not confined to workdir`)
+> and exit 13, because `LocalEnvironment` does not confine bash commands to the
+> configured workdir.
+
+When findings are present (local with a wide path and a sensitive env var):
 
 ```
 --- Findings ---
+  [WARNING] Local environment: bash commands are not confined to workdir (full host filesystem access)
   [WARNING] Local env with wide host path: /
   [WARNING] Sensitive env var 'ANTHROPIC_API_KEY' is set and will be forwarded to the agent
 ```
