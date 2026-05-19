@@ -14,7 +14,7 @@ use crate::redaction::Redactor;
 /// Options passed to [`run_env_preview`].
 #[derive(Debug, Clone)]
 pub struct EnvPreviewOpts {
-    /// Environment type string: `"local"`, `"docker"`, or `"chaos"`.
+    /// Environment type string: `"local"` or `"docker"`.
     pub env_type: String,
     /// The task description (used for context, also run through the redactor).
     pub task: String,
@@ -82,7 +82,7 @@ pub struct PreviewFinding {
 pub struct EnvPreview {
     /// Schema version; always `1` in this release.
     pub schema_version: u32,
-    /// Env type string: `"local"`, `"docker"`, or `"chaos"`.
+    /// Env type string: `"local"` or `"docker"`.
     pub env_type: String,
     /// Host filesystem paths the agent has access to.
     pub host_paths: Vec<String>,
@@ -116,10 +116,8 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     let hooks = build_hooks_preview(cfg, &redactor);
     let mcp_servers = build_mcp_servers_preview(cfg, &redactor, &workdir_raw);
     // Docker only forwards env vars that are explicitly listed in RunRequest.env,
-    // so the host process environment is not inherited. Chaos wraps its inner
-    // environment (typically Local) which DOES inherit the process env, so treat
-    // chaos like local for the purposes of the env-var scan.
-    let env_vars = if opts.env_type == "local" || opts.env_type == "chaos" {
+    // so the host process environment is not inherited.
+    let env_vars = if opts.env_type == "local" {
         build_env_vars_preview(opts)
     } else {
         Vec::new()
@@ -128,11 +126,34 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
     let mut findings = collect_findings(opts, &workdir, &mcp_servers, &env_vars);
 
     // Validate the policy config now so the preview catches configs that will
-    // fail at runtime (invalid profile name, invalid regex pattern).
+    // fail at runtime (invalid profile name, invalid regex pattern). Run the
+    // error text through the redactor — an invalid regex containing a secret
+    // literal would otherwise leak verbatim into the findings.
     if let Err(e) = crate::policy::PolicyEngine::from_cfg(&cfg.root.policy) {
         findings.push(PreviewFinding {
             severity: "warning".into(),
-            message: format!("Policy config is invalid and will fail at agent startup: {e}"),
+            message: redact(
+                &redactor,
+                &format!("Policy config is invalid and will fail at agent startup: {e}"),
+            ),
+        });
+    }
+
+    // Docker requires a configured image; warn early so CI gates catch this
+    // before a live run fails in build_docker_env.
+    if opts.env_type == "docker"
+        && cfg
+            .root
+            .environment
+            .docker_image
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+    {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: "Docker environment has no docker_image configured; agent startup will fail"
+                .into(),
         });
     }
 
@@ -228,24 +249,27 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
 /// Extract the executable path from a shell command string as an owned `String`.
 ///
 /// Handles:
-/// - Leading `KEY=value` shell-env assignments (`FOO=bar /path/bin` → `/path/bin`)
-/// - Double- and single-quoted paths with spaces (`"/path/with space" arg` → `/path/with space`)
+/// - Leading `KEY=value` shell-env assignments, including quoted values
+///   (`FOO='bar baz' /path/bin` → `/path/bin`)
+/// - Double- and single-quoted exe paths with spaces
+///   (`"/path/with space" arg` → `/path/with space`)
 ///
 /// Returns an owned `String` so quotes can be stripped without lifetime issues.
 fn extract_exe_path(command: &str) -> String {
     let mut rest = command.trim();
 
-    // Skip leading KEY=value shell environment assignments.
-    loop {
-        let token_end = rest
-            .find(|c: char| c.is_ascii_whitespace())
-            .unwrap_or(rest.len());
-        let token = &rest[..token_end];
-        if is_shell_assignment(token) {
-            rest = rest[token_end..].trim_start();
-        } else {
+    // Skip leading shell env assignments: KEY=value, KEY='q val', KEY="q val".
+    // We scan for '=' to find the key, then consume the value token with
+    // shell_token_end (respecting quotes), so `FOO='bar baz'` is consumed as a
+    // single unit rather than splitting on the space inside the quotes.
+    while let Some(eq_pos) = rest.find('=') {
+        let key = &rest[..eq_pos];
+        if !is_valid_shell_key(key) {
             break;
         }
+        let after_eq = &rest[eq_pos + 1..];
+        let val_end = shell_token_end(after_eq);
+        rest = rest[eq_pos + 1 + val_end..].trim_start();
     }
 
     // Extract the exe, stripping surrounding quotes if present.
@@ -262,12 +286,35 @@ fn extract_exe_path(command: &str) -> String {
     }
 }
 
-fn is_shell_assignment(token: &str) -> bool {
-    token.contains('=')
-        && token
-            .split('=')
-            .next()
-            .is_some_and(|k| !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_'))
+/// Returns `true` when `key` is a valid POSIX shell variable name (non-empty,
+/// alphanumeric + `_` only, no `/` or other path characters).
+fn is_valid_shell_key(key: &str) -> bool {
+    !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Returns the byte length of one shell token starting at `s`, respecting
+/// single- and double-quoted strings so that `'bar baz'` counts as one token.
+fn shell_token_end(s: &str) -> usize {
+    let mut chars = s.char_indices();
+    match chars.next() {
+        Some((_, '"')) => {
+            for (i, c) in chars {
+                if c == '"' {
+                    return i + 1;
+                }
+            }
+            s.len()
+        }
+        Some((_, '\'')) => {
+            for (i, c) in chars {
+                if c == '\'' {
+                    return i + 1;
+                }
+            }
+            s.len()
+        }
+        _ => s.find(|c: char| c.is_ascii_whitespace()).unwrap_or(s.len()),
+    }
 }
 
 fn build_env_vars_preview(opts: &EnvPreviewOpts) -> Vec<EnvVarPreview> {
@@ -299,7 +346,7 @@ fn build_env_vars_preview(opts: &EnvPreviewOpts) -> Vec<EnvVarPreview> {
 
 fn build_policy_preview(cfg: &Config, redactor: &Redactor) -> PolicyPreview {
     PolicyPreview {
-        profile: cfg.root.policy.profile.clone(),
+        profile: redact(redactor, &cfg.root.policy.profile),
         // Policy pattern strings go through the redactor so secret literals
         // embedded in operator-supplied regexes are not printed verbatim.
         extra_deny: cfg
@@ -326,6 +373,18 @@ fn collect_findings(
     env_vars: &[EnvVarPreview],
 ) -> Vec<PreviewFinding> {
     let mut findings: Vec<PreviewFinding> = Vec::new();
+
+    // Local environment: bash commands are not confined to the reported workdir.
+    // LocalEnvironment only chdir(req.cwd) when cwd is explicitly set on the
+    // RunRequest; DefaultAgent leaves cwd unset, so the process may read paths
+    // anywhere on the host.
+    if opts.env_type == "local" {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message:
+                "Local environment: bash commands are not confined to workdir (full host filesystem access)".into(),
+        });
+    }
 
     // Wide path: local env with root or empty workdir.
     if opts.env_type == "local" && (workdir == "/" || workdir.trim_end_matches('/').is_empty()) {

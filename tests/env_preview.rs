@@ -697,5 +697,158 @@ extra_deny_patterns = ["sk-deadbeef-pattern"]
     }
 }
 
+// ── Policy profile is redacted ────────────────────────────────────────────────
+
+#[test]
+fn policy_profile_is_redacted_when_it_contains_a_secret_literal() {
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["sk-secret"]
+
+[policy]
+profile = "custom-sk-secret-profile"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.policy.profile.contains("sk-secret"),
+        "secret literal leaked verbatim in policy.profile: {}",
+        preview.policy.profile
+    );
+}
+
+// ── Docker without docker_image triggers warning ──────────────────────────────
+
+#[test]
+fn docker_env_without_docker_image_triggers_warning() {
+    // Config::defaults() sets docker_image = None, so docker preview should warn.
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        is_risky(&preview),
+        "docker preview with no docker_image should be risky"
+    );
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("docker_image")),
+        "expected a finding mentioning docker_image; got: {:?}",
+        preview.findings
+    );
+}
+
+// ── Local env always warns about full host filesystem access ──────────────────
+
+#[test]
+fn local_env_has_full_host_access_warning() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        is_risky(&preview),
+        "local env should always have at least one risky finding"
+    );
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("not confined to workdir")),
+        "expected a finding about unconfined workdir access; got: {:?}",
+        preview.findings
+    );
+}
+
+// ── Quoted shell assignment in MCP command not flagged as outside workdir ─────
+
+#[test]
+fn quoted_shell_assignment_in_mcp_command_not_flagged_as_outside() {
+    // FOO='bar baz' /workspace/bin/mcp — the quoted value has a space; the exe
+    // is /workspace/bin/mcp which is INSIDE the workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "FOO='bar baz' /workspace/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        !preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "quoted shell assignment should not confuse the exe-path parser; mcp_servers: {:?}",
+        preview.mcp_servers
+    );
+}
+
+// ── Policy validation error is redacted ──────────────────────────────────────
+
+#[test]
+fn policy_validation_error_does_not_leak_secret_literal() {
+    // extra_deny_patterns contains both a secret literal and an invalid regex
+    // character, so PolicyEngine::from_cfg returns an error whose display text
+    // includes the raw pattern. The finding must not expose the literal.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["sk-secret"]
+
+[policy]
+extra_deny_patterns = ["sk-secret("]
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    for finding in &preview.findings {
+        assert!(
+            !finding.message.contains("sk-secret"),
+            "secret literal leaked in policy validation finding: {}",
+            finding.message
+        );
+    }
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)

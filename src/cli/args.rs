@@ -11,7 +11,6 @@ use clap::{Args, Subcommand, ValueEnum};
 pub enum EnvTypeArg {
     Local,
     Docker,
-    Chaos,
 }
 
 impl EnvTypeArg {
@@ -20,7 +19,6 @@ impl EnvTypeArg {
         match self {
             Self::Local => "local",
             Self::Docker => "docker",
-            Self::Chaos => "chaos",
         }
     }
 }
@@ -35,7 +33,7 @@ pub enum PreviewFormatArg {
 /// `agent env preview` — print a structured preview of the agent environment.
 #[derive(Debug, Args)]
 pub struct EnvPreviewCmd {
-    /// Environment type: `local`, `docker`, or `chaos`.
+    /// Environment type: `local` or `docker`.
     #[arg(long)]
     pub env: EnvTypeArg,
 
@@ -1817,10 +1815,5 @@ mod tests {
     #[test]
     fn env_type_arg_as_str_docker() {
         assert_eq!(EnvTypeArg::Docker.as_str(), "docker");
-    }
-
-    #[test]
-    fn env_type_arg_as_str_chaos() {
-        assert_eq!(EnvTypeArg::Chaos.as_str(), "chaos");
     }
 }
