@@ -96,6 +96,7 @@ impl TrajectoryExporter for MarkdownExporter {
         }
 
         if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
             let _ = write!(md, "**Outcome:** {outcome}\n\n");
         }
 
@@ -236,6 +237,7 @@ impl TrajectoryExporter for MermaidExporter {
         }
 
         if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
             let _ = writeln!(mermaid, "\n    Note over S,T: Outcome: {outcome}");
         }
 

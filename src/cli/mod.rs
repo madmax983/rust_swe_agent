@@ -2287,6 +2287,11 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     };
 
     if let Some(output_path) = i.output {
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let out_canon = std::fs::canonicalize(&output_path).unwrap_or_else(|_| output_path.clone());
         let traj_canon = std::fs::canonicalize(&traj_path).unwrap_or_else(|_| traj_path.clone());
         if out_canon == traj_canon {
@@ -2296,9 +2301,20 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
                 output_path.display()
             ))));
         }
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let (Ok(out_meta), Ok(traj_meta)) = (
+                std::fs::metadata(&output_path),
+                std::fs::metadata(&traj_path),
+            ) {
+                if out_meta.dev() == traj_meta.dev() && out_meta.ino() == traj_meta.ino() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "inspect: --output `{}` is a hard link to the source trajectory file; \
+                         writing would corrupt the sweep artifact",
+                        output_path.display()
+                    ))));
+                }
             }
         }
         std::fs::write(&output_path, &content)?;
