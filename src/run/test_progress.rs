@@ -559,7 +559,10 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
             / eligible.len() as f64
     };
 
-    // hot_failing_tests: FAIL_TO_PASS tests that remained failing, ranked by instance count
+    // hot_failing_tests: FAIL_TO_PASS tests that remained failing, ranked by instance count.
+    // A test is "still failing" when it is absent from tests_passed — matching the definition
+    // used by compute_instance_metrics — so tests not mentioned in tests_failed but also not
+    // present in tests_passed are correctly counted here.
     let mut failing_test_counts: BTreeMap<String, usize> = BTreeMap::new();
     for row in &instance_rows {
         if row.verdict_bucket == "evaluator_unavailable" {
@@ -568,10 +571,11 @@ fn build_report(args: &TestProgressArgs) -> Result<TestProgressReport, Error> {
         if let Some(eval) = eval_map.get(&row.instance_id) {
             if let Some(inst) = dataset_map.get(&row.instance_id) {
                 let ftp_list = get_test_list(inst, "FAIL_TO_PASS");
-                let ftp_set: HashSet<&str> = ftp_list.iter().map(String::as_str).collect();
-                for failed in &eval.tests_failed {
-                    if ftp_set.contains(failed.as_str()) {
-                        *failing_test_counts.entry(failed.clone()).or_default() += 1;
+                let passed_set: HashSet<&str> =
+                    eval.tests_passed.iter().map(String::as_str).collect();
+                for ftp_test in &ftp_list {
+                    if !passed_set.contains(ftp_test.as_str()) {
+                        *failing_test_counts.entry(ftp_test.clone()).or_default() += 1;
                     }
                 }
             }

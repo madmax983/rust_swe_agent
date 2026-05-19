@@ -495,6 +495,46 @@ fn ac_h_min_tests_drops_from_means_keeps_in_per_instance() {
     );
 }
 
+// FTP tests absent from tests_passed (but not explicitly in tests_failed) must appear in
+// hot_failing_tests — the hot-test list uses the same "absent from tests_passed" definition
+// as the per-instance scoring, not just "present in tests_failed".
+#[test]
+fn hot_failing_tests_counts_implied_failures() {
+    let sweep = tempfile::tempdir().unwrap();
+    copy_fixture("sweep_mixed", sweep.path());
+
+    let output = run_test_progress(&[
+        "--sweep",
+        sweep.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(output.status.success());
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    // implied-fail-1: FTP=["test_impl1","test_impl2"], tests_passed=["test_ip1"], tests_failed=[]
+    // Both FTP tests are absent from tests_passed → should appear in hot_failing_tests
+    let inst = find_instance(&report, "implied-fail-1");
+    assert_eq!(
+        inst["verdict_bucket"].as_str().unwrap(),
+        "no_progress",
+        "implied-fail-1 should score as no_progress (0/2 FTP passed, 0 regressed)"
+    );
+
+    let hot = report["hot_failing_tests"].as_array().unwrap();
+    let impl1_present = hot.iter().any(|e| e["test_name"].as_str() == Some("test_impl1"));
+    let impl2_present = hot.iter().any(|e| e["test_name"].as_str() == Some("test_impl2"));
+    assert!(
+        impl1_present,
+        "test_impl1 absent from tests_passed must appear in hot_failing_tests: {hot:?}"
+    );
+    assert!(
+        impl2_present,
+        "test_impl2 absent from tests_passed must appear in hot_failing_tests: {hot:?}"
+    );
+}
+
 // Unresolved instance where evaluator returned empty tests_passed/tests_failed
 // → must be evaluator_unavailable, not no_progress
 #[test]

@@ -4,11 +4,11 @@
     "major": 1,
     "minor": 4
   },
-  "total": 8,
-  "submitted": 6,
+  "total": 9,
+  "submitted": 7,
   "skipped": 0,
   "errored": 1,
-  "total_cost_usd": 0.40,
+  "total_cost_usd": 0.45,
   "instances": [
     {
       "instance_id": "resolved-1",
@@ -90,6 +90,17 @@
     },
     {
       "instance_id": "no-dataset-entry-1",
+      "exit_reason": "submitted",
+      "outcome": "submitted",
+      "cost_usd": 0.05,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": true
+    },
+    {
+      "instance_id": "implied-fail-1",
       "exit_reason": "submitted",
       "outcome": "submitted",
       "cost_usd": 0.05,
