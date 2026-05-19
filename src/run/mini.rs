@@ -201,9 +201,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         Option<Arc<dyn StreamSink>>,
         Option<Arc<std::sync::atomic::AtomicU64>>,
     ) = if let Some(ref url) = args.webhook_url {
-        let run_id = args
-            .trajectory_name
-            .clone();
+        let run_id = args.trajectory_name.clone();
         let headers: Vec<(String, String)> = args
             .webhook_headers
             .iter()

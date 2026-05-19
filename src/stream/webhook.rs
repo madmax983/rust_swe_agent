@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -82,10 +82,7 @@ impl WebhookSink {
     /// correlate events from the same run.
     /// `headers` are injected on every POST (e.g. `Authorization: Bearer …`).
     /// Headers are not logged.
-    pub fn new(
-        url: String,
-        headers: Vec<(String, String)>,
-    ) -> Result<Self, WebhookSinkError> {
+    pub fn new(url: String, headers: Vec<(String, String)>) -> Result<Self, WebhookSinkError> {
         Self::with_buffer_capacity(url, headers, DEFAULT_WEBHOOK_BUFFER_CAPACITY)
     }
 
@@ -101,8 +98,8 @@ impl WebhookSink {
 
         let handle = Handle::try_current().map_err(WebhookSinkError::NoRuntime)?;
 
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(WEBHOOK_HTTP_TIMEOUT_SECS));
+        let mut builder =
+            reqwest::Client::builder().timeout(Duration::from_secs(WEBHOOK_HTTP_TIMEOUT_SECS));
         // Pre-build the default header map so we don't parse on every request.
         let mut default_headers = reqwest::header::HeaderMap::new();
         for (name, value) in &headers {
@@ -276,12 +273,8 @@ mod tests {
 
     #[test]
     fn with_buffer_capacity_rejects_zero_capacity() {
-        let err = WebhookSink::with_buffer_capacity(
-            "http://127.0.0.1:1".to_owned(),
-            vec![],
-            0,
-        )
-        .unwrap_err();
+        let err = WebhookSink::with_buffer_capacity("http://127.0.0.1:1".to_owned(), vec![], 0)
+            .unwrap_err();
         assert!(matches!(err, WebhookSinkError::InvalidBufferCapacity));
     }
 
@@ -298,9 +291,7 @@ mod tests {
 
         {
             let _guard = rt.enter();
-            let sink_inner = Arc::new(
-                WebhookSink::with_buffer_capacity(url, vec![], 1).unwrap(),
-            );
+            let sink_inner = Arc::new(WebhookSink::with_buffer_capacity(url, vec![], 1).unwrap());
             let sink = WebhookSinkHandle::new(sink_inner.clone(), run_id());
 
             sink.emit(run_started("first"));
@@ -318,8 +309,7 @@ mod tests {
             assert!(request.contains("\"task\":\"first\""));
             assert!(!request.contains("\"task\":\"second\""));
 
-            let second =
-                tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
+            let second = tokio::time::timeout(Duration::from_millis(150), listener.accept()).await;
             assert!(second.is_err(), "second event must not be delivered");
         });
     }

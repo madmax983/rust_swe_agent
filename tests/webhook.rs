@@ -7,7 +7,7 @@
 //!  4. `webhook_events_dropped` counter in `RunEnded` envelope.
 //!  5. Redaction applied before POST (`sk-deadbeef` never leaves the process).
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -46,13 +46,10 @@ impl MockWebhookServer {
     /// Accept one incoming connection, read the full HTTP request, reply 200 OK,
     /// and return the JSON body as `Value`.
     async fn accept_one(&self) -> Value {
-        let (mut stream, _) = tokio::time::timeout(
-            Duration::from_secs(5),
-            self.listener.accept(),
-        )
-        .await
-        .expect("timed out waiting for webhook POST")
-        .unwrap();
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), self.listener.accept())
+            .await
+            .expect("timed out waiting for webhook POST")
+            .unwrap();
 
         let body = read_http_request_body(&mut stream).await;
         write_200_ok(&mut stream).await;
@@ -164,10 +161,8 @@ async fn webhook_delivers_full_event_sequence_with_schema_envelope() {
 
     // We expect at minimum: RunStarted, AssistantMessage×2, BashStart, BashResult,
     // Observation, RunEnded — so ≥ 7 payloads.
-    let (run_result, bodies) = tokio::join!(
-        maxwells_daemon::run::mini::run(args),
-        server.accept_n(7),
-    );
+    let (run_result, bodies) =
+        tokio::join!(maxwells_daemon::run::mini::run(args), server.accept_n(7),);
     run_result.unwrap();
 
     // Every body must have the schema envelope fields.
@@ -315,19 +310,17 @@ async fn sse_and_webhook_composition_delivers_same_events() {
     let sse_events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sse_events2 = sse_events.clone();
 
-    let (run_result, webhook_bodies, _) = tokio::join!(
+    let (run_result, webhook_bodies, ()) = tokio::join!(
         maxwells_daemon::run::mini::run(args),
         webhook_server.accept_n(7),
         async move {
             // Small delay so the SSE server can start.
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let mut client = tokio::time::timeout(
-                Duration::from_secs(5),
-                TcpStream::connect(sse_addr),
-            )
-            .await
-            .ok()
-            .and_then(|r| r.ok());
+            let mut client =
+                tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(sse_addr))
+                    .await
+                    .ok()
+                    .and_then(Result::ok);
             if let Some(ref mut c) = client {
                 let _ = c.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await;
                 let mut acc = Vec::new();
@@ -338,21 +331,19 @@ async fn sse_and_webhook_composition_delivers_same_events() {
                         break;
                     }
                     match tokio::time::timeout(Duration::from_secs(2), c.read(&mut chunk)).await {
-                        Ok(Ok(0)) | Err(_) => break,
+                        Ok(Ok(0) | Err(_)) | Err(_) => break,
                         Ok(Ok(n)) => acc.extend_from_slice(&chunk[..n]),
-                        Ok(Err(_)) => break,
                     }
                     let text = String::from_utf8_lossy(&acc);
                     if text.contains("event: run_ended") {
                         break;
                     }
                 }
-                *sse_events2.lock().unwrap() =
-                    String::from_utf8_lossy(&acc)
-                        .lines()
-                        .filter(|l| l.starts_with("event: "))
-                        .map(|l| l.trim_start_matches("event: ").to_owned())
-                        .collect();
+                *sse_events2.lock().unwrap() = String::from_utf8_lossy(&acc)
+                    .lines()
+                    .filter(|l| l.starts_with("event: "))
+                    .map(|l| l.trim_start_matches("event: ").to_owned())
+                    .collect();
             }
         },
     );
@@ -374,7 +365,7 @@ async fn sse_and_webhook_composition_delivers_same_events() {
         "webhook missing run_ended"
     );
 
-    let sse = sse_events.lock().unwrap();
+    let sse: Vec<String> = sse_events.lock().unwrap().clone();
     if !sse.is_empty() {
         assert!(
             sse.contains(&"run_started".to_owned()),
@@ -427,7 +418,7 @@ async fn webhook_run_ended_envelope_includes_drop_count() {
     // Wait for all outstanding HTTP responses.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let bodies = collected.lock().unwrap();
+    let bodies: VecDeque<Value> = collected.lock().unwrap().clone();
     let run_ended_body = bodies
         .iter()
         .find(|b| b["event"]["type"] == "run_ended")
@@ -455,37 +446,32 @@ async fn webhook_header_flag_injects_custom_headers() {
     let args = make_mini_args(responses, out.path(), Some(url), headers, None);
 
     // Accept one POST and inspect the raw request to find the custom header.
-    let (run_result, raw_request) = tokio::join!(
-        maxwells_daemon::run::mini::run(args),
-        async {
-            let (mut stream, _) = tokio::time::timeout(
-                Duration::from_secs(10),
-                server.listener.accept(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                if is_http_complete(&buf) {
-                    break;
-                }
+    let (run_result, raw_request) = tokio::join!(maxwells_daemon::run::mini::run(args), async {
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(10), server.listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
+                .await
+                .unwrap()
+                .unwrap();
+            if n == 0 {
+                break;
             }
-            let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .await;
-            String::from_utf8_lossy(&buf).into_owned()
-        },
-    );
+            buf.extend_from_slice(&chunk[..n]);
+            if is_http_complete(&buf) {
+                break;
+            }
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+        String::from_utf8_lossy(&buf).into_owned()
+    },);
     run_result.unwrap();
 
     let lower = raw_request.to_ascii_lowercase();
@@ -540,10 +526,8 @@ async fn webhook_redacts_secrets_before_post() {
         webhook_headers: vec![],
     };
 
-    let (run_result, bodies) = tokio::join!(
-        maxwells_daemon::run::mini::run(args),
-        server.accept_n(7),
-    );
+    let (run_result, bodies) =
+        tokio::join!(maxwells_daemon::run::mini::run(args), server.accept_n(7),);
     run_result.unwrap();
 
     // The secret must never appear in any POSTed body.
