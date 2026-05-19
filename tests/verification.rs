@@ -38,6 +38,8 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         interactive_mode: InteractiveMode::Off,
         resume_from: None,
         trace_id: None,
+        webhook_url: None,
+        webhook_headers: vec![],
     }
 }
 

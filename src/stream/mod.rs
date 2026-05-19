@@ -21,7 +21,9 @@ pub mod webhook;
 pub use broadcast::BroadcastSink;
 pub use sse::SseServer;
 #[cfg(feature = "webhook")]
-pub use webhook::{WebhookSink, WebhookSinkError};
+pub use webhook::{
+    SchemaVersion, WebhookEnvelope, WebhookSink, WebhookSinkError, WebhookSinkHandle,
+};
 
 /// One step-level event in the agent trajectory.
 ///

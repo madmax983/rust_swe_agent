@@ -278,6 +278,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         resume_from: None,
         interactive_mode,
         trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -302,6 +304,8 @@ fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<
             has_verify_checks: !m.verify.is_empty(),
             open_pr: m.github_pr.open_pr,
             pr_dry_run: m.github_pr.github_pr_dry_run,
+            webhook_url: m.webhook_url.is_some(),
+            webhook_headers: !m.webhook_headers.is_empty(),
         },
     )?;
 
@@ -338,6 +342,8 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
             has_verify_checks: false,
             open_pr: s.github_pr.open_prs,
             pr_dry_run: s.github_pr.github_pr_dry_run,
+            webhook_url: false,
+            webhook_headers: false,
         },
     )?;
     let format = s.format.clone();
@@ -3297,6 +3303,8 @@ mod tests {
             interactive: false,
             yolo: false,
             ui: args::UiKind::Stderr,
+            webhook_url: None,
+            webhook_headers: vec![],
         }
     }
 

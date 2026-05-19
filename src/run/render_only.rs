@@ -212,6 +212,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
 ///
 /// Each entry is `(flag_name, is_set)`. The function returns the first
 /// conflict found, which is enough for a clear error message.
+#[allow(clippy::struct_excessive_bools)]
 pub struct IncompatibleFlags<'a> {
     pub per_task_budget_usd: Option<f64>,
     pub task_timeout_secs: Option<u64>,
@@ -223,6 +224,10 @@ pub struct IncompatibleFlags<'a> {
     pub open_pr: bool,
     /// `--github-pr-dry-run` is a PR-publishing mode that requires a completed trajectory.
     pub pr_dry_run: bool,
+    /// `--webhook-url` pushes streaming events during a run; meaningless without one.
+    pub webhook_url: bool,
+    /// `--webhook-header` configures headers for webhook push; meaningless without a run.
+    pub webhook_headers: bool,
 }
 
 /// Validate that `--render-only` is not combined with execution-time flags
@@ -235,6 +240,8 @@ pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Er
         ("--verify", flags.has_verify_checks),
         ("--open-pr / --open-prs", flags.open_pr),
         ("--github-pr-dry-run", flags.pr_dry_run),
+        ("--webhook-url", flags.webhook_url),
+        ("--webhook-header", flags.webhook_headers),
     ];
     for (name, set) in conflicts {
         if *set {
@@ -408,6 +415,8 @@ mod tests {
             has_verify_checks: false,
             open_pr: false,
             pr_dry_run: false,
+            webhook_url: false,
+            webhook_headers: false,
         }
     }
 
@@ -460,6 +469,24 @@ mod tests {
     fn reject_incompatible_flags_pr_dry_run_err() {
         let flags = IncompatibleFlags {
             pr_dry_run: true,
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_webhook_url_err() {
+        let flags = IncompatibleFlags {
+            webhook_url: true,
+            ..clean_flags()
+        };
+        assert!(reject_incompatible_flags(&flags).is_err());
+    }
+
+    #[test]
+    fn reject_incompatible_flags_webhook_headers_err() {
+        let flags = IncompatibleFlags {
+            webhook_headers: true,
             ..clean_flags()
         };
         assert!(reject_incompatible_flags(&flags).is_err());
