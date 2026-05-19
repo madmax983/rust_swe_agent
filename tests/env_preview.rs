@@ -1582,5 +1582,228 @@ command = "${HOOK_BIN} --flag"
     );
 }
 
+// ── Shell group commands / newlines / dot-source / tilde / brace / empty-wd ──
+
+#[test]
+fn group_command_mcp_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "group-mcp"
+command = "(/usr/local/bin/mcp)"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Subshell group command must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn newline_separator_mcp_flagged() {
+    let cfg = Config::from_toml_str(
+        "[environment]\nkind = \"docker\"\nworkdir = \"/workspace\"\ndocker_image = \"ubuntu:22.04\"\n\
+         [[agent.mcp_servers]]\nname = \"nl-mcp\"\ncommand = \"/workspace/bin/setup\\n/usr/local/bin/mcp\"\nargs = []",
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Multiline command with newline separator must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn dot_source_builtin_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "dot-mcp"
+command = ". /usr/local/bin/mcp"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Dot-source builtin must be flagged (. is not a workdir path)"
+    );
+}
+
+#[test]
+fn tilde_exe_path_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "tilde-mcp"
+command = "~/bin/mcp --arg"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Tilde-expanded exe path must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn brace_expanded_exe_flagged() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "brace-mcp"
+command = "/workspace/{../usr/local/bin/mcp,bin/mcp}"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Brace-expanded exe path must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn digit_prefix_env_assignment_not_treated_as_valid() {
+    // `1=foo` is not a valid bash assignment (starts with digit).
+    // extract_exe_path must not skip it; the command starts with a non-exe
+    // token so the whole command should be flagged as outside workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "digit-mcp"
+command = "1=foo /workspace/bin/mcp"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Command with digit-prefixed pseudo-assignment must be flagged as outside workdir"
+    );
+}
+
+#[test]
+fn empty_workdir_flags_any_exe() {
+    // An empty workdir string makes every absolute path appear "inside" via the
+    // prefix check (`exe.starts_with("/")` is always true). The preview must
+    // still flag the MCP server as outside workdir.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = ""
+docker_image = "ubuntu:22.04"
+
+[[agent.mcp_servers]]
+name = "empty-wd-mcp"
+command = "/usr/local/bin/mcp"
+args = []
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("outside workdir")),
+        "Empty workdir must cause any executable path to be flagged as outside workdir"
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)

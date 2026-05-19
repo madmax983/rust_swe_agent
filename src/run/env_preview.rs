@@ -294,6 +294,11 @@ fn build_mcp_servers_preview(
 /// normalized before the prefix check so they cannot escape the workdir
 /// boundary test.
 fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
+    // An empty workdir cannot represent a real directory; every path would
+    // appear "inside" it via the prefix check, so treat it as risky.
+    if workdir_canonical.is_empty() {
+        return true;
+    }
     // Template placeholders (`{{ tool_input }}` etc.) render at runtime and
     // cannot be statically analyzed — treat the whole command as risky.
     if raw_command.contains("{{") {
@@ -308,6 +313,16 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     if exe_raw.contains('$') {
         return true;
     }
+    // Bash brace expansion (`{a,b}`) expands before path lookup; a literal
+    // brace in the token makes the resolved path unanalyzable.
+    if exe_raw.contains('{') {
+        return true;
+    }
+    // Tilde `~` is expanded by bash to `$HOME` before path lookup; the result
+    // is almost always outside the configured workdir.
+    if exe_raw.starts_with('~') {
+        return true;
+    }
     // Resolve the executable path to an absolute form before comparing to the
     // workdir boundary.  Docker starts the MCP process with `-w workdir`, so
     // the process cwd is workdir.  Bash therefore resolves:
@@ -317,14 +332,13 @@ fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
     //   - `/usr/…`     → absolute, check directly
     let exe_abs: String = if exe_raw.starts_with('/') {
         exe_raw
-    } else if exe_raw == "." {
-        workdir_canonical.to_owned()
     } else if exe_raw.contains('/') {
         // Slash-relative path: resolve against workdir (strip leading ./ if present).
         let rel = exe_raw.strip_prefix("./").unwrap_or(&exe_raw);
         format!("{workdir_canonical}/{rel}")
     } else {
-        // No slash → $PATH-resolved → almost always outside workdir.
+        // No slash (bare name, or lone `.` source builtin) → $PATH-resolved or
+        // shell builtin → cannot verify as inside workdir.
         return true;
     };
     let exe = normalize_path(&exe_abs);
@@ -392,8 +406,10 @@ fn has_shell_operators(command: &str) -> bool {
                     }
                 }
             }
-            // `;`, `|` (pipe / `||`), `&` (background / `&&`), backtick
-            Some(';' | '|' | '&' | '`') => return true,
+            // `;`, `|`, `&`, backtick — list/pipe/background operators
+            // `\n`/`\r` — command separators outside quotes
+            // `(` — bare subshell / compound group command
+            Some(';' | '|' | '&' | '`' | '\n' | '\r' | '(') => return true,
             // `$(...)` — command substitution; `<(...)` / `>(...)` — process
             // substitution.  All three are flagged only when the next char is `(`.
             Some('$' | '<' | '>') => {
@@ -454,10 +470,15 @@ fn extract_exe_path(command: &str) -> String {
     }
 }
 
-/// Returns `true` when `key` is a valid POSIX shell variable name (non-empty,
-/// alphanumeric + `_` only, no `/` or other path characters).
+/// Returns `true` when `key` is a valid POSIX shell variable name:
+/// must start with `[A-Za-z_]` and contain only `[A-Za-z0-9_]`.
+/// Bash rejects names that start with digits, so `1=foo` is not an assignment.
 fn is_valid_shell_key(key: &str) -> bool {
-    !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => chars.all(|c| c.is_alphanumeric() || c == '_'),
+        _ => false,
+    }
 }
 
 /// Returns the byte length of one shell token starting at `s`, respecting
