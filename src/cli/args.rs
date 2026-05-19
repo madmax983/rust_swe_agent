@@ -103,7 +103,11 @@ pub struct SwebenchGithubPrArgs {
 pub struct MiniCmd {
     /// The task prompt.
     #[arg(long)]
-    pub task: String,
+    pub task: Option<String>,
+
+    /// Path to a file containing the task prompt, or '-' to read from stdin.
+    #[arg(long)]
+    pub task_file: Option<String>,
 
     /// Additional context appended to the instance prompt.
     #[arg(long)]

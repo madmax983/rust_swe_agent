@@ -69,6 +69,17 @@ snapshot diffing:
 cargo run --quiet -- --log error mini --render-only --task "fix the bug" --model claude-opus-4-7 --format json
 ```
 
+To avoid complex shell escaping when passing multi-line prompt markdown or special characters, you can load the task from a file or standard input using `--task-file`:
+
+```bash
+# Load from a file
+cargo run --quiet -- --log error mini --render-only --task-file prompts/my-complex-task.md --model claude-opus-4-7
+
+# Read from stdin
+echo "Fix the bug in src/lib.rs
+Make sure all quotes like \"this\" and backticks like \`this\` are preserved." | cargo run --quiet -- --log error mini --render-only --task-file - --model claude-opus-4-7
+```
+
 ### 3. Inspect The Trajectory
 
 PowerShell:
@@ -187,6 +198,7 @@ a valid trajectory in hand:
 - [`configuration reference`](docs/config-reference.md): every config field,
   default value, valid values, precedence rules, copy-pasteable TOML examples,
   and secret handling guidance. Start here before tuning a sweep.
+- [`cli task file input`](docs/spec-mini-task-file.md): specification for `--task-file` flag semantics, mutual exclusion, exit codes, and standard input streaming.
 - [`bench tail`](docs/spec-tail.md): live aggregate progress, cost burn, ETA,
   and failure mix for running SWE-bench sweeps.
 - [`bench watch`](docs/spec-watch.md): attach to a single in-flight instance
