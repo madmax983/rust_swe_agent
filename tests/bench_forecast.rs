@@ -139,6 +139,7 @@ fn instance(
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -237,6 +238,7 @@ fn fixture_results_with_model(model_name: Option<&str>) -> SweepResults {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     }
 }
 
@@ -355,6 +357,7 @@ fn forecast_uses_manifest_model_for_fallback_cost_repricing() {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }];
     results.total = 1;
     results.submitted = 1;
@@ -759,6 +762,7 @@ async fn calibration_writes_only_inside_forecast_subdirectory_and_marks_manifest
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 2,
         seed: 7,
@@ -890,6 +894,7 @@ async fn cancelled_calibration_returns_cancelled_outcome_instead_of_forecast_rep
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 1,
         seed: 7,
@@ -973,6 +978,7 @@ async fn default_target_n_honors_planned_sample_and_seed() {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 1,
         seed: 7,
@@ -1042,6 +1048,7 @@ async fn calibration_sampling_stays_within_planned_limit() {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 1,
         seed: 7,
@@ -1113,6 +1120,7 @@ async fn missing_planned_sample_seed_fails_before_calibration_writes() {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 1,
         seed: 7,
@@ -1188,6 +1196,7 @@ async fn forecast_with_stratified_planning_runs_calibration_subset() {
             abort_on_systemic_failure: true,
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
         },
         calibration_n: 2,
         seed: 7,

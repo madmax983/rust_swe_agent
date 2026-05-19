@@ -171,6 +171,11 @@ pub struct InspectReport {
     /// Human-readable reason this trajectory is partial.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_reason: Option<String>,
+    /// OpenTelemetry trace ID for this instance.
+    /// 32 lowercase hex chars. Deep-link to the operator's observability backend
+    /// via their dashboard's trace search. `None` when OTLP was not enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -369,6 +374,7 @@ fn build_instance_report(
                 steps: vec![],
                 partial: false,
                 partial_reason: None,
+                trace_id: None,
             });
         }
     };
@@ -454,6 +460,7 @@ fn build_instance_report(
         steps,
         partial: traj.info.partial,
         partial_reason: traj.info.partial_reason,
+        trace_id: traj.info.trace_id,
     })
 }
 
@@ -851,6 +858,9 @@ fn render_instance_text(report: &InspectReport) -> String {
         // Legacy trajectory pre-1.5: no stage attribution recorded.
         // Surface explicitly so operators don't misread silence as zero.
         let _ = writeln!(s, "latency:          unknown (pre-1.5 trajectory)");
+    }
+    if let Some(tid) = &report.trace_id {
+        let _ = writeln!(s, "trace_id:         {tid}");
     }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");

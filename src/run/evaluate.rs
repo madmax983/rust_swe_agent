@@ -2067,6 +2067,7 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }
     }
 
@@ -2100,6 +2101,8 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+
+            trace_id: None,
         }
     }
 
@@ -3041,6 +3044,8 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+
+            trace_id: None,
         };
         let run_slots = vec![
             crate::run::compare::LoadedRunSlot {

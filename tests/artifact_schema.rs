@@ -800,6 +800,7 @@ fn base_args(dataset: std::path::PathBuf, output: std::path::PathBuf, cfg: Confi
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     }
 }
 
@@ -833,6 +834,7 @@ fn instance(id: &str, input_tokens: u64, output_tokens: u64, cost_usd: f64) -> I
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -882,6 +884,7 @@ fn fixture_results() -> SweepResults {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     }
 }
 

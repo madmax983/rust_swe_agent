@@ -33,6 +33,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         verification_timeout_secs: 60,
         resume_from: None,
         interactive_mode: InteractiveMode::Off,
+        trace_id: None,
     };
     run(args).await?;
     println!("hello-world smoke complete");

@@ -64,6 +64,7 @@ fn resolved_instance(id: &str, steps: u32, cost_usd: f64, duration_secs: f64) ->
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -101,6 +102,7 @@ fn cap_bound_instance(
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -132,6 +134,7 @@ fn unresolved_other_instance(id: &str, steps: u32, cost_usd: f64) -> InstanceRes
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -257,6 +260,7 @@ fn write_results(dir: &Path, instances: Vec<InstanceResult>, manifest: Provenanc
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

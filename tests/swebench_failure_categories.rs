@@ -142,6 +142,7 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         abort_on_systemic_failure: true,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     })
     .await
     .unwrap();

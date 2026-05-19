@@ -451,6 +451,7 @@ paths = ["{skill_path}"]
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
+        trace_id: None,
     })
     .await
     .unwrap();
@@ -521,6 +522,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         verification_timeout_secs: 60,
         interactive_mode: maxwells_daemon::run::mini::InteractiveMode::Off,
         resume_from: None,
+        trace_id: None,
     })
     .await
     .unwrap();

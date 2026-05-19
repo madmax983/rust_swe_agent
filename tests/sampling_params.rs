@@ -112,6 +112,7 @@ fn write_sweep_results(dir: &Path, instances: &[&str], passed: bool) {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         })
         .collect();
     let submitted_count = instance_results.iter().filter(|r| r.pass_at_1).count();

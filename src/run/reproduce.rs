@@ -647,6 +647,7 @@ mod tests {
             final_model: None,
             retry_id: None,
             previous_failure_category: None,
+            trace_id: None,
         }
     }
 }

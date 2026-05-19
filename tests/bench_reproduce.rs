@@ -118,6 +118,7 @@ fn instance_result(id: &str, resolved: bool) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -164,6 +165,7 @@ fn minimal_sweep_results(manifest: Option<ProvenanceManifest>) -> SweepResults {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     }
 }
 

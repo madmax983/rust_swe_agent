@@ -48,6 +48,7 @@ fn submitted(id: &str) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -79,6 +80,7 @@ fn errored(id: &str) -> InstanceResult {
         final_model: None,
         retry_id: None,
         previous_failure_category: None,
+        trace_id: None,
     }
 }
 
@@ -175,6 +177,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
         systemic_halt_category: None,
         retry_history: vec![],
         partial: 0,
+        span_export_dropped: 0,
     };
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(

@@ -537,6 +537,7 @@ async fn run_arm(
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
+        otlp_endpoint: None,
     };
 
     crate::run::swebench::run(arm_args).await

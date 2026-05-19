@@ -37,6 +37,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         verification_timeout_secs: 10,
         interactive_mode: InteractiveMode::Off,
         resume_from: None,
+        trace_id: None,
     }
 }
 
