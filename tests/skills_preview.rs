@@ -1163,3 +1163,72 @@ fn agent_skills_preview_warnings_on_stderr_are_redacted() {
         "warning must appear on stderr; got:\n{stderr}"
     );
 }
+
+#[test]
+fn agent_skills_preview_invalid_format_exits_2_when_skills_disabled() {
+    // --format validation must fire even when skills are disabled/unconfigured.
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("disabled.toml");
+    fs::write(&config_path, "[skills]\nenabled = false\n").unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "any task",
+            "--config",
+            &config_path.display().to_string(),
+            "--format",
+            "xml",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code().unwrap_or(-1),
+        2,
+        "invalid --format must exit 2 even when skills are disabled"
+    );
+}
+
+#[test]
+fn agent_skills_preview_json_output_is_structurally_valid_after_redaction() {
+    // Confirm that JSON output remains parseable even when a skill name
+    // contains characters that naive text-redaction might corrupt.
+    let temp = tempfile::tempdir().unwrap();
+    write_skill(
+        temp.path(),
+        "rust-router",
+        "---\nname: rust-router\ndescription: Use for Rust work.\nversion: 1.0.0\n---\n\n# Rust\n",
+    );
+    let config_path = write_skill_config(temp.path(), temp.path());
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "Use $rust-router to fix this",
+            "--config",
+            &config_path.display().to_string(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "must exit 0; stderr:\n{stderr}");
+    // Structural check: must parse as JSON and have integer byte counts.
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON output must remain valid; err: {e}\ngot: {stdout}"));
+    assert!(
+        v["tasks"][0]["total_bytes_injected"].is_u64(),
+        "total_bytes_injected must be a numeric field, not a string; got: {}",
+        v["tasks"][0]["total_bytes_injected"]
+    );
+}

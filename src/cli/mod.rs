@@ -375,29 +375,37 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
 
     match result {
         crate::run::skills_preview::PreviewResult::Disabled(msg) => {
-            if s.format.as_str() == "json" {
-                // Return a minimal schema-versioned JSON object so callers that
-                // unconditionally parse stdout as JSON still get valid output.
-                let disabled_json = serde_json::json!({
-                    "artifact_kind": "skills_preview",
-                    "schema_version": crate::artifact::ArtifactSchemaVersion::CURRENT,
-                    "disabled": true,
-                    "reason": msg,
-                    "tasks": [],
-                    "summary": {
-                        "task_count": 0,
-                        "unique_skills_activated": 0,
-                        "p50_bytes_per_task": 0,
-                        "p95_bytes_per_task": 0,
-                        "tasks_hitting_max_active": 0
-                    }
-                });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?
-                );
-            } else {
-                println!("{msg}");
+            match s.format.as_str() {
+                "json" => {
+                    // Return a minimal schema-versioned JSON object so callers that
+                    // unconditionally parse stdout as JSON still get valid output.
+                    let disabled_json = serde_json::json!({
+                        "artifact_kind": "skills_preview",
+                        "schema_version": crate::artifact::ArtifactSchemaVersion::CURRENT,
+                        "disabled": true,
+                        "reason": msg,
+                        "tasks": [],
+                        "summary": {
+                            "task_count": 0,
+                            "unique_skills_activated": 0,
+                            "p50_bytes_per_task": 0,
+                            "p95_bytes_per_task": 0,
+                            "tasks_hitting_max_active": 0
+                        }
+                    });
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&disabled_json).map_err(Error::Json)?
+                    );
+                }
+                "text" | "" => {
+                    println!("{msg}");
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
+                }
             }
         }
         crate::run::skills_preview::PreviewResult::Report(outcome) => {
@@ -407,11 +415,14 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
             };
             match s.format.as_str() {
                 "json" => {
-                    let json = serde_json::to_string_pretty(&report).map_err(Error::Json)?;
-                    let redacted = redactor
-                        .redact_text(&json, crate::redaction::surface::TRAJECTORY)
-                        .text;
-                    println!("{redacted}");
+                    // Redact structurally (string values only) to avoid corrupting
+                    // numeric/boolean fields or key names via text substitution.
+                    let mut json_val = serde_json::to_value(&report).map_err(Error::Json)?;
+                    redact_json_strings(&mut json_val, &redactor);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json_val).map_err(Error::Json)?
+                    );
                 }
                 "text" | "" => {
                     print!(
@@ -445,6 +456,29 @@ fn agent_skills_preview_cmd(s: &args::SkillsPreviewCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Recursively redact string values in a JSON tree without touching numeric,
+/// boolean, or key text — prevents redaction from corrupting machine output.
+fn redact_json_strings(v: &mut serde_json::Value, redactor: &crate::redaction::Redactor) {
+    match v {
+        serde_json::Value::String(s) => {
+            *s = redactor
+                .redact_text(s, crate::redaction::surface::TRAJECTORY)
+                .text;
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                redact_json_strings(item, redactor);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                redact_json_strings(val, redactor);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn mini_render_only_cmd(m: args::MiniCmd, cfg: crate::config::Config) -> Result<(), Error> {
