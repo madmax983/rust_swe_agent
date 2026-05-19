@@ -597,8 +597,40 @@ async fn webhook_rejects_malformed_header_flag() {
     let result = maxwells_daemon::run::mini::run(args).await;
     assert!(result.is_err(), "expected Err for malformed header, got Ok");
     let msg = result.unwrap_err().to_string();
+    // Message must not echo the raw header value (could contain bearer tokens).
     assert!(
-        msg.contains("missing") || msg.contains("separator") || msg.contains("webhook header"),
-        "error should mention missing separator: {msg}"
+        !msg.contains("X-No-Colon-Here"),
+        "error must not echo the raw header value: {msg}"
+    );
+    assert!(
+        msg.contains("missing") || msg.contains("separator") || msg.contains("position"),
+        "error should mention missing separator or position: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: --webhook-header without --webhook-url is rejected
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn webhook_header_without_url_is_rejected() {
+    let out = tempfile::tempdir().unwrap();
+    let responses = vec!["COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into()];
+    let args = make_mini_args(
+        responses,
+        out.path(),
+        None, // no URL
+        vec!["Authorization: Bearer token".to_owned()],
+        None,
+    );
+    let result = maxwells_daemon::run::mini::run(args).await;
+    assert!(
+        result.is_err(),
+        "expected Err when header given without URL, got Ok"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("--webhook-url") || msg.contains("webhook"),
+        "error should mention --webhook-url: {msg}"
     );
 }

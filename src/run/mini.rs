@@ -204,10 +204,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         let headers: Vec<(String, String)> = args
             .webhook_headers
             .iter()
-            .map(|h| {
+            .enumerate()
+            .map(|(i, h)| {
                 let (name, value) = h.split_once(':').ok_or_else(|| {
                     Error::Config(ConfigError::Invalid(format!(
-                        "webhook header `{h}` is missing `:` separator (use `Name: Value`)"
+                        "--webhook-header at position {} is missing `:` separator \
+                         (use `Name: Value`)",
+                        i + 1
                     )))
                 })?;
                 Ok((name.trim().to_owned(), value.trim().to_owned()))
@@ -235,6 +238,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         tracing::info!(url = %safe_url, "webhook push enabled");
         (Some(Arc::new(handle) as Arc<dyn StreamSink>), Some(counter))
     } else {
+        if !args.webhook_headers.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--webhook-header requires --webhook-url; \
+                 headers have no effect without a webhook URL"
+                    .into(),
+            )));
+        }
         (None, None)
     };
     #[cfg(not(feature = "webhook"))]
@@ -246,6 +256,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             return Err(Error::Config(ConfigError::Invalid(
                 "--webhook-url requires the `webhook` Cargo feature; \
                  rebuild with --features webhook"
+                    .into(),
+            )));
+        }
+        if !args.webhook_headers.is_empty() {
+            return Err(Error::Config(ConfigError::Invalid(
+                "--webhook-header requires --webhook-url; \
+                 headers have no effect without a webhook URL"
                     .into(),
             )));
         }
