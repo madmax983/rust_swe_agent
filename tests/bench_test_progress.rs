@@ -932,9 +932,10 @@ fn redact_generated_at(value: &serde_json::Value) -> serde_json::Value {
     redacted
 }
 
-// Resolved instances must not contribute FTP tests to hot_failing_tests.
-// resolved-1 in sweep_mixed has FTP=["test_a","test_b","test_c"] all in tests_passed.
-// None of those names should appear in hot_failing_tests.
+// Resolved instances must not contribute FTP tests to hot_failing_tests even when
+// eval.tests_passed is empty (the resolved_ids shape). resolved-1 in sweep_mixed has
+// eval.resolved=true with tests_passed=[] — build_instance_row synthesizes the full
+// pass list for scoring, but the hot-test loop must skip the row entirely.
 #[test]
 fn hot_failing_tests_excludes_resolved_instances() {
     let sweep = tempfile::tempdir().unwrap();
@@ -949,19 +950,40 @@ fn hot_failing_tests_excludes_resolved_instances() {
     assert!(output.status.success());
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    // resolved-1 must still score as resolved (synthesized from dataset lists)
     let inst = find_instance(&report, "resolved-1");
     assert_eq!(
         inst["verdict_bucket"].as_str().unwrap(),
         "resolved",
-        "resolved-1 must have verdict_bucket=resolved"
+        "resolved-1 must have verdict_bucket=resolved even with empty eval.tests_passed"
+    );
+    assert!(
+        (inst["partial_credit_score"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+        "resolved-1 must have partial_credit_score=1.0"
     );
 
     let hot = report["hot_failing_tests"].as_array().unwrap();
-    for resolved_ftp in ["test_a", "test_b", "test_c"] {
-        assert!(
-            !hot.iter()
-                .any(|e| e["test_name"].as_str() == Some(resolved_ftp)),
-            "resolved FTP test {resolved_ftp} must not appear in hot_failing_tests"
+
+    // test_c is in resolved-1's FTP list only — it must not appear in hot_failing_tests
+    // (if the resolved row were not skipped and tests_passed were used as-is from the
+    // empty eval data, test_c would be counted as failing)
+    assert!(
+        !hot.iter()
+            .any(|e| e["test_name"].as_str() == Some("test_c")),
+        "test_c (exclusive to resolved-1 FTP) must not appear in hot_failing_tests: {hot:?}"
+    );
+
+    // test_a also appears in no-progress-1's FTP list, so it legitimately appears in
+    // hot_failing_tests with count=1 (no-progress-1 only, NOT resolved-1)
+    if let Some(entry) = hot
+        .iter()
+        .find(|e| e["test_name"].as_str() == Some("test_a"))
+    {
+        assert_eq!(
+            entry["instance_count"].as_u64().unwrap(),
+            1,
+            "test_a instance_count must be 1 (no-progress-1 only, not resolved-1)"
         );
     }
 }
