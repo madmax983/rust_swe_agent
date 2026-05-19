@@ -157,10 +157,46 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         });
     }
 
+    // Warn when this binary was compiled without the docker feature — the actual
+    // run path immediately rejects docker configs in that case.
+    #[cfg(not(feature = "docker"))]
+    if opts.env_type == "docker" {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: "Docker environment requested but this binary was compiled without the \
+                      'docker' feature; agent startup will fail"
+                .into(),
+        });
+    }
+
+    // Warn when --env mismatches config.environment.kind — actual runs always
+    // use the kind from the config, so a mismatched preview gives a false signal.
+    let config_env_type = match cfg.root.environment.kind {
+        crate::config::EnvKind::Local => "local",
+        crate::config::EnvKind::Docker => "docker",
+    };
+    if opts.env_type != config_env_type {
+        findings.push(PreviewFinding {
+            severity: "warning".into(),
+            message: format!(
+                "Preview --env '{}' does not match config environment.kind '{}'; \
+                 actual runs will use '{}'",
+                opts.env_type, config_env_type, config_env_type
+            ),
+        });
+    }
+
+    // For docker, the workdir is the container's cwd, not a host path.
+    let host_paths = if opts.env_type == "local" {
+        vec![workdir]
+    } else {
+        vec![]
+    };
+
     EnvPreview {
         schema_version: 1,
         env_type: opts.env_type.clone(),
-        host_paths: vec![workdir],
+        host_paths,
         network_egress: "unrestricted".to_owned(),
         hooks,
         mcp_servers,
@@ -237,13 +273,34 @@ fn build_mcp_servers_preview(
 ///
 /// Relative commands (no leading `/` or `./`) resolve through `$PATH` and
 /// almost always land outside the workdir, so they are treated as outside.
+///
+/// Compound shell commands (`cmd1 && cmd2`, `cmd1 ; cmd2`, pipes) cannot be
+/// safely analyzed statically — we conservatively treat them as outside workdir.
 fn mcp_is_outside_workdir(raw_command: &str, workdir_canonical: &str) -> bool {
+    if has_shell_operators(raw_command) {
+        return true;
+    }
     let exe = extract_exe_path(raw_command);
     if !exe.starts_with('/') {
         // Relative or PATH-resolved command: flag as outside workdir.
         return true;
     }
     exe != workdir_canonical && !exe.starts_with(&format!("{workdir_canonical}/"))
+}
+
+/// Returns `true` when `command` contains shell list/pipe metacharacters that
+/// make static executable-path analysis unreliable.
+fn has_shell_operators(command: &str) -> bool {
+    command.contains("&&") || command.contains("||") || command.contains(';') || {
+        // Pipe must be outside `||` to avoid double-counting; `||` already caught above.
+        // We use a simple byte scan: if we see `|` not preceded or followed by `|`.
+        let bytes = command.as_bytes();
+        bytes.windows(1).enumerate().any(|(i, w)| {
+            w[0] == b'|'
+                && bytes.get(i.wrapping_sub(1)).copied() != Some(b'|')
+                && bytes.get(i + 1).copied() != Some(b'|')
+        })
+    }
 }
 
 /// Extract the executable path from a shell command string as an owned `String`.

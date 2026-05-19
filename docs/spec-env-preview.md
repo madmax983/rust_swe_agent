@@ -23,7 +23,7 @@ max agent env preview \
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--env` | yes | Environment type: `local`, `docker`, or `chaos`. |
+| `--env` | yes | Environment type: `local` or `docker`. |
 | `--task` | yes | Task description string (used for context; passed through the redactor). |
 | `--config` | no | Path to a TOML config file (overlays defaults). |
 | `--format` | no | Output format: `text` (default) or `json`. |
@@ -125,7 +125,7 @@ When findings are present:
 | Field | Type | Description |
 |-------|------|-------------|
 | `schema_version` | `u32` | Always `1` in this release. |
-| `env_type` | `string` | Environment type: `"local"`, `"docker"`, or `"chaos"`. |
+| `env_type` | `string` | Environment type: `"local"` or `"docker"`. |
 | `host_paths` | `string[]` | Host filesystem paths the agent has access to. |
 | `network_egress` | `string` | `"unrestricted"` or a comma-separated list of allowed hosts. |
 | `hooks.pre_tool_use` | `HookEntry[]` | Hooks registered to fire before every tool call. |

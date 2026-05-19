@@ -850,5 +850,122 @@ extra_deny_patterns = ["sk-secret("]
     }
 }
 
+// ── Preview env-type mismatches config.environment.kind ──────────────────────
+
+#[test]
+fn preview_env_mismatch_with_config_kind_triggers_warning() {
+    // Config says kind=local, but --env docker is passed → runs use local.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("does not match")),
+        "expected a mismatch finding; got: {:?}",
+        preview.findings
+    );
+}
+
+// ── Docker host_paths is empty ────────────────────────────────────────────────
+
+#[test]
+fn docker_env_host_paths_is_empty() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.host_paths.is_empty(),
+        "docker preview must not report container cwd as a host path; got: {:?}",
+        preview.host_paths
+    );
+}
+
+// ── Compound MCP command is flagged as outside workdir ────────────────────────
+
+#[test]
+fn compound_mcp_command_flagged_as_outside_workdir() {
+    // /workspace/bin/setup && /usr/local/bin/mcp — the second binary is external;
+    // since we can't safely analyse compound commands, the whole thing is flagged.
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/workspace/bin/setup && /usr/local/bin/mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview.mcp_servers.iter().any(|m| m.outside_workdir),
+        "compound shell command should be flagged as outside workdir"
+    );
+}
+
+// ── Docker without the docker feature warns ───────────────────────────────────
+
+#[cfg(not(feature = "docker"))]
+#[test]
+fn docker_without_docker_feature_triggers_warning() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "docker"
+workdir = "/workspace"
+docker_image = "ubuntu:22.04"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.message.contains("docker")),
+        "non-docker build should warn about the missing docker feature; got: {:?}",
+        preview.findings
+    );
+}
+
 // ── is_sensitive_var_name_test_helper covers all branch values ────────────────
 // (already tested above in sensitive_var_detection_covers_password_and_credential)

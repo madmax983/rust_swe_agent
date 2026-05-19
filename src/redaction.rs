@@ -117,7 +117,9 @@ impl Redactor {
                 );
             }
 
-            for (name, value) in std::env::vars() {
+            for (name_os, value_os) in std::env::vars_os() {
+                let name = name_os.to_string_lossy();
+                let value = value_os.to_string_lossy().into_owned();
                 if let Some(kind) = env_literal_kind(&name, &value) {
                     push_literal_rule(
                         &mut rules,
