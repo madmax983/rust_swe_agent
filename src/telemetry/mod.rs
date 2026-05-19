@@ -679,12 +679,14 @@ pub(crate) mod build {
     }
 
     fn extract_tool_name(action: &str) -> String {
-        // Actions are shell commands or tool invocations. Return just the first word.
-        action
-            .split_whitespace()
-            .next()
-            .unwrap_or("bash")
-            .to_owned()
+        // action_label() stores MCP tools as "name:{...json...}" (no whitespace before ':')
+        // and bash commands as the raw shell command.
+        if let Some((name, _)) = action.split_once(':') {
+            if !name.contains(char::is_whitespace) && !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+        "bash".to_owned()
     }
 
     fn extract_run_result(extra: &crate::model::MessageExtra) -> (i32, u64, bool) {

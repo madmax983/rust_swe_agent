@@ -2412,12 +2412,8 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                     patch_path_for_run(&args.output_dir, &ir.instance_id, last_run_index)
                         .metadata()
                         .map_or(0, |m| m.len());
-                let repo = ir
-                    .instance_id
-                    .split("__")
-                    .take(2)
-                    .collect::<Vec<_>>()
-                    .join("/");
+                let repo = crate::run::evaluate::parse_repo_from_instance_id(&ir.instance_id)
+                    .unwrap_or_default();
                 if let Ok(json) = std::fs::read_to_string(&traj_path) {
                     if let Ok(traj) = serde_json::from_str::<crate::trajectory::Trajectory>(&json) {
                         let span_start = sweep_start_nanos;

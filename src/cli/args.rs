@@ -1250,10 +1250,12 @@ pub struct SwebenchCmd {
 
     /// OTLP/HTTP base URL for trace export (e.g. `http://localhost:4318`).
     /// When set, the sweep streams spans via OTLP/HTTP for every instance,
-    /// model call, and tool invocation.  The `OTEL_EXPORTER_OTLP_ENDPOINT`
-    /// environment variable is used as a fallback when this flag is absent.
-    /// When both are unset, OTLP export is disabled and no sockets are opened.
-    #[arg(long, value_name = "URL", env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    /// model call, and tool invocation.  The telemetry layer also checks
+    /// `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (exact traces URL, highest
+    /// priority) and `OTEL_EXPORTER_OTLP_ENDPOINT` (base URL, lower priority)
+    /// so that standard OTel env vars work without this flag.
+    /// When all are unset, OTLP export is disabled and no sockets are opened.
+    #[arg(long, value_name = "URL")]
     pub otlp_endpoint: Option<String>,
 }
 
