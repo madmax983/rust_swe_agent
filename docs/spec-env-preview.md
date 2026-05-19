@@ -214,9 +214,14 @@ before running a real sweep.
 
 ## Shell Example
 
+The gate below uses `--env docker` and a docker-capable config. `--env local`
+always exits 13 (full host-filesystem access is always a risky finding), so it
+cannot be used as a clean gate. The binary must be built with `--features docker`
+for docker previews to be fully evaluated.
+
 ```bash
 # Gate CI on a clean env preview before launching a sweep:
-max agent env preview --env local --task "Fix the bug" --config config.toml
+max agent env preview --env docker --task "Fix the bug" --config config.toml
 preview_exit=$?
 
 if [ $preview_exit -eq 13 ]; then
@@ -229,5 +234,5 @@ if [ $preview_exit -ne 0 ]; then
 fi
 
 # Preview is clean; launch the sweep.
-max bench swebench --dataset lite --output runs/ --config config.toml
+max bench swebench --env docker --dataset lite --output runs/ --config config.toml
 ```

@@ -182,23 +182,6 @@ pub fn run_env_preview(cfg: &Config, opts: &EnvPreviewOpts) -> EnvPreview {
         });
     }
 
-    // Warn when --env mismatches config.environment.kind — actual runs always
-    // use the kind from the config, so a mismatched preview gives a false signal.
-    let config_env_type = match cfg.root.environment.kind {
-        crate::config::EnvKind::Local => "local",
-        crate::config::EnvKind::Docker => "docker",
-    };
-    if opts.env_type != config_env_type {
-        findings.push(PreviewFinding {
-            severity: "warning".into(),
-            message: format!(
-                "Preview --env '{}' does not match config environment.kind '{}'; \
-                 actual runs will use '{}'",
-                opts.env_type, config_env_type, config_env_type
-            ),
-        });
-    }
-
     // For docker, the workdir is the container's cwd, not a host path.
     let host_paths = if opts.env_type == "local" {
         vec![workdir]

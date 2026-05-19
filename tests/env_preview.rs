@@ -850,11 +850,13 @@ extra_deny_patterns = ["sk-secret("]
     }
 }
 
-// ── Preview env-type mismatches config.environment.kind ──────────────────────
+// ── --env overrides config.environment.kind (same as actual CLI runs) ─────────
 
 #[test]
-fn preview_env_mismatch_with_config_kind_triggers_warning() {
-    // Config says kind=local, but --env docker is passed → runs use local.
+fn preview_env_flag_overrides_config_kind_no_mismatch_warning() {
+    // `--env docker` overrides the config's `kind = "local"`, matching the
+    // behaviour of `mini --env docker` and `bench swebench --env docker`.
+    // No "does not match" finding should be produced.
     let cfg = Config::from_toml_str(
         r#"
 [environment]
@@ -871,11 +873,11 @@ workdir = "/workspace"
     };
     let preview = run_env_preview(&cfg, &opts);
     assert!(
-        preview
+        !preview
             .findings
             .iter()
             .any(|f| f.message.contains("does not match")),
-        "expected a mismatch finding; got: {:?}",
+        "--env override must not produce a mismatch finding; got: {:?}",
         preview.findings
     );
 }

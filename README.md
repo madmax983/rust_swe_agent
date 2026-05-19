@@ -88,7 +88,7 @@ docker_image = "ubuntu:22.04"
 ```
 
 ```bash
-cargo run --quiet -- --log error agent env preview \
+cargo run --quiet --features docker -- --log error agent env preview \
   --env docker --task "fix the bug" --config config.toml
 preview_exit=$?
 if [ $preview_exit -eq 13 ]; then
