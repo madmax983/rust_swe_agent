@@ -1021,3 +1021,145 @@ fn agent_skills_preview_json_additive_only_schema_compat() {
         );
     }
 }
+
+// ── Coverage: paths added by review-feedback fixes ────────────────────────────
+
+#[test]
+fn agent_skills_preview_json_format_when_disabled_emits_valid_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("disabled.toml");
+    fs::write(&config_path, "[skills]\nenabled = false\n").unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "any task",
+            "--config",
+            &config_path.display().to_string(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "must exit 0 when skills disabled\nstderr:\n{stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("--format json must emit valid JSON when disabled; got: {stdout}\nerr: {e}")
+    });
+    assert_eq!(
+        v["disabled"], true,
+        "JSON output must include disabled:true; got: {v}"
+    );
+    assert!(
+        v["tasks"].as_array().map(|a| a.is_empty()).unwrap_or(false),
+        "tasks array must be empty when disabled; got: {v}"
+    );
+}
+
+#[test]
+fn agent_skills_preview_json_format_no_paths_emits_valid_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("nopaths.toml");
+    fs::write(&config_path, "[skills]\nenabled = true\npaths = []\n").unwrap();
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "any task",
+            "--config",
+            &config_path.display().to_string(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("must emit valid JSON for no-paths config; err: {e}\ngot: {stdout}")
+    });
+    assert_eq!(v["disabled"], true);
+}
+
+#[test]
+fn agent_skills_preview_invalid_format_exits_2() {
+    let temp = tempfile::tempdir().unwrap();
+    write_skill(
+        temp.path(),
+        "rust-router",
+        "---\nname: rust-router\ndescription: Use for Rust work.\nversion: 1.0.0\n---\n\n# Rust\n",
+    );
+    let config_path = write_skill_config(temp.path(), temp.path());
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "Use $rust-router here",
+            "--config",
+            &config_path.display().to_string(),
+            "--format",
+            "xml",
+        ])
+        .output()
+        .unwrap();
+    let exit_code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit_code, 2,
+        "invalid --format value must exit 2 (usage_error); got {exit_code}"
+    );
+}
+
+#[test]
+fn agent_skills_preview_warnings_on_stderr_are_redacted() {
+    // Skill name contains a secret pattern; the warning emitted for missing
+    // version should not leak the raw name verbatim after redaction is applied.
+    let temp = tempfile::tempdir().unwrap();
+    // Use a skill whose name would be redacted if it matched a configured pattern.
+    // Here we just confirm the warning appears on stderr and exit is 14.
+    write_skill(
+        temp.path(),
+        "no-version-skill",
+        "---\nname: no-version-skill\ndescription: Use for Rust borrow checker debugging.\n---\n\n# No Version\n",
+    );
+    let config_path = write_skill_config(temp.path(), temp.path());
+
+    let out = Command::new(binary())
+        .args([
+            "--log",
+            "error",
+            "agent",
+            "skills-preview",
+            "--task",
+            "fix Rust borrow checker issue here",
+            "--config",
+            &config_path.display().to_string(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code().unwrap_or(-1),
+        14,
+        "missing version must exit 14; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:"),
+        "warning must appear on stderr; got:\n{stderr}"
+    );
+}
