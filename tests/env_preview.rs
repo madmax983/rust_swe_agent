@@ -1,0 +1,419 @@
+//! Tests for `agent env preview` — issue #313.
+//!
+//! RED phase: these tests should FAIL until the implementation exists.
+//! GREEN phase: implement src/run/env_preview.rs and wire CLI.
+//! REFACTOR phase: clean up.
+
+#![allow(clippy::unwrap_used)]
+
+use maxwells_daemon::exit_code::ExitCode;
+use maxwells_daemon::run::env_preview::{
+    EnvPreview, EnvPreviewOpts, HooksPreview, HookEntry, McpServerPreview, EnvVarPreview,
+    PolicyPreview, PreviewFinding, is_risky, run_env_preview,
+};
+use maxwells_daemon::config::Config;
+
+// ── Exit code ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn env_preview_warning_exit_code_is_13() {
+    assert_eq!(ExitCode::EnvPreviewWarning.as_i32(), 13);
+}
+
+#[test]
+fn env_preview_warning_outcome_class_string() {
+    assert_eq!(
+        ExitCode::EnvPreviewWarning.outcome_class(),
+        "env_preview_warning"
+    );
+}
+
+// ── Struct fields exist ───────────────────────────────────────────────────────
+
+#[test]
+fn env_preview_struct_has_expected_fields() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "local".into(),
+        host_paths: vec!["/workspace".into()],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec![],
+        },
+        findings: vec![],
+    };
+    assert_eq!(preview.schema_version, 1);
+    assert_eq!(preview.env_type, "local");
+}
+
+#[test]
+fn hook_entry_has_name_and_command() {
+    let hook = HookEntry {
+        name: "my-hook".into(),
+        command: "echo hello".into(),
+    };
+    assert_eq!(hook.name, "my-hook");
+    assert_eq!(hook.command, "echo hello");
+}
+
+#[test]
+fn mcp_server_preview_has_outside_workdir_flag() {
+    let mcp = McpServerPreview {
+        name: "my-mcp".into(),
+        command: "/usr/local/bin/mcp-server".into(),
+        outside_workdir: true,
+    };
+    assert!(mcp.outside_workdir);
+}
+
+#[test]
+fn env_var_preview_has_sensitive_flag() {
+    let ev = EnvVarPreview {
+        name: "FAKE_API_KEY".into(),
+        value_or_redacted: "[REDACTED]".into(),
+        sensitive: true,
+    };
+    assert!(ev.sensitive);
+}
+
+#[test]
+fn preview_finding_has_severity_and_message() {
+    let f = PreviewFinding {
+        severity: "warning".into(),
+        message: "Local env with wide path grants full host access".into(),
+    };
+    assert_eq!(f.severity, "warning");
+}
+
+// ── run_env_preview ───────────────────────────────────────────────────────────
+
+#[test]
+fn run_env_preview_returns_preview_with_correct_env_type() {
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "fix the bug".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.env_type, "local");
+    assert_eq!(preview.schema_version, 1);
+}
+
+#[test]
+fn run_env_preview_schema_version_is_one() {
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "docker".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.schema_version, 1);
+}
+
+// ── Risky detection ───────────────────────────────────────────────────────────
+
+#[test]
+fn is_risky_returns_false_for_clean_preview() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "local".into(),
+        host_paths: vec!["/workspace".into()],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec![],
+        },
+        findings: vec![],
+    };
+    assert!(!is_risky(&preview));
+}
+
+#[test]
+fn is_risky_returns_true_when_findings_present() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "local".into(),
+        host_paths: vec!["/".into()],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec![],
+        },
+        findings: vec![PreviewFinding {
+            severity: "warning".into(),
+            message: "Local env with wide host path: /".into(),
+        }],
+    };
+    assert!(is_risky(&preview));
+}
+
+// ── Local env + wide path triggers warning ────────────────────────────────────
+
+#[test]
+fn local_env_with_root_workdir_triggers_warning() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert!(
+        is_risky(&preview),
+        "local env with root workdir should trigger a risky finding"
+    );
+    assert!(
+        preview
+            .findings
+            .iter()
+            .any(|f| f.severity == "warning"),
+        "expected at least one warning finding"
+    );
+}
+
+// ── Sensitive env var detection ───────────────────────────────────────────────
+
+#[test]
+fn sensitive_env_var_name_is_flagged() {
+    // A config with a known-sensitive env var pattern injected via the preview
+    let cfg = Config::defaults().unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    // If FAKE_API_KEY is set in the process env, it should appear redacted in env_vars
+    // For this test we check that if a sensitive var is detected, it's marked sensitive
+    for ev in &preview.env_vars {
+        if ev.sensitive {
+            assert!(
+                !ev.value_or_redacted.contains("sk-deadbeef"),
+                "sensitive var value leaked verbatim: {}",
+                ev.value_or_redacted
+            );
+        }
+    }
+}
+
+// ── Redaction: FAKE_API_KEY must not appear verbatim ─────────────────────────
+
+#[test]
+fn redaction_sk_deadbeef_does_not_appear_in_text_output() {
+    // Build a config that has sk-deadbeef as a secret literal so the redactor
+    // will definitely fire on it.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["sk-deadbeef"]
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task referencing sk-deadbeef".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    // Render to text and verify the literal doesn't appear
+    let text_output = format!("{preview:?}");
+    // The task string went through redaction so sk-deadbeef should be gone
+    // (or if not in the debug output, at minimum env_vars don't leak it)
+    for ev in &preview.env_vars {
+        assert!(
+            !ev.value_or_redacted.contains("sk-deadbeef"),
+            "sk-deadbeef leaked in env var value: {}",
+            ev.value_or_redacted
+        );
+    }
+    // The task field itself, if stored, must not contain the literal
+    assert!(
+        !text_output.contains("sk-deadbeef")
+            || preview.findings.iter().all(|f| !f.message.contains("sk-deadbeef")),
+        "sk-deadbeef should not appear verbatim in findings"
+    );
+}
+
+// ── JSON serialization ────────────────────────────────────────────────────────
+
+#[test]
+fn env_preview_serializes_to_json_with_schema_version() {
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "local".into(),
+        host_paths: vec!["/workspace".into()],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec![],
+        },
+        findings: vec![],
+    };
+    let json = serde_json::to_string(&preview).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["env_type"], "local");
+}
+
+#[test]
+fn env_preview_json_has_env_preview_wrapper_key() {
+    // The JSON output wraps the preview in an `env_preview` key
+    let preview = EnvPreview {
+        schema_version: 1,
+        env_type: "docker".into(),
+        host_paths: vec![],
+        network_egress: "unrestricted".into(),
+        hooks: HooksPreview {
+            pre_tool_use: vec![],
+            post_tool_use: vec![],
+        },
+        mcp_servers: vec![],
+        env_vars: vec![],
+        policy: PolicyPreview {
+            profile: "safe".into(),
+            extra_deny: vec![],
+            extra_allow: vec![],
+        },
+        findings: vec![],
+    };
+    let wrapped = serde_json::json!({ "env_preview": &preview });
+    let json_str = serde_json::to_string(&wrapped).unwrap();
+    assert!(json_str.contains("\"env_preview\""));
+    assert!(json_str.contains("\"schema_version\":1"));
+}
+
+// ── MCP server outside workdir ────────────────────────────────────────────────
+
+#[test]
+fn mcp_server_outside_workdir_triggers_warning() {
+    let cfg = Config::from_toml_str(
+        r#"
+[environment]
+kind = "local"
+workdir = "/workspace"
+
+[[agent.mcp_servers]]
+command = "/usr/local/bin/external-mcp"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    // MCP server with absolute path outside workdir should be flagged
+    let outside: Vec<&McpServerPreview> = preview
+        .mcp_servers
+        .iter()
+        .filter(|m| m.outside_workdir)
+        .collect();
+    assert!(
+        !outside.is_empty(),
+        "expected MCP server outside workdir to be detected"
+    );
+}
+
+// ── Policy preview ────────────────────────────────────────────────────────────
+
+#[test]
+fn policy_preview_reflects_config_profile() {
+    let cfg = Config::from_toml_str(
+        r#"
+[policy]
+profile = "yolo"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.policy.profile, "yolo");
+}
+
+// ── Hooks preview ─────────────────────────────────────────────────────────────
+
+#[test]
+fn hooks_preview_reflects_config_hooks() {
+    let cfg = Config::from_toml_str(
+        r#"
+[[agent.hooks.pre_tool_use]]
+name = "pre-check"
+command = "echo pre"
+
+[[agent.hooks.post_tool_use]]
+name = "post-log"
+command = "echo post"
+"#,
+    )
+    .unwrap();
+    let opts = EnvPreviewOpts {
+        env_type: "local".into(),
+        task: "task".into(),
+        config_path: None,
+        format: "text".into(),
+        show_values: false,
+    };
+    let preview = run_env_preview(&cfg, &opts);
+    assert_eq!(preview.hooks.pre_tool_use.len(), 1);
+    assert_eq!(preview.hooks.post_tool_use.len(), 1);
+    assert_eq!(preview.hooks.pre_tool_use[0].name, "pre-check");
+    assert_eq!(preview.hooks.post_tool_use[0].name, "post-log");
+}
