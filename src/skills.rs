@@ -540,16 +540,24 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// ⚡ Bolt: Removes an intermediate `Vec` allocation and `.join()`
+/// by using an allocation-free string fold state machine.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut in_space = true;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
             out.push(ch.to_ascii_lowercase());
-        } else {
+            in_space = false;
+        } else if !in_space {
             out.push(' ');
+            in_space = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 fn is_stopword(token: &str) -> bool {

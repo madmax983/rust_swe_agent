@@ -582,8 +582,20 @@ fn build_mismatches(
     mismatches
 }
 
+/// ⚡ Bolt: Removes an intermediate `Vec` allocation during BTreeSet join
 fn sorted_join(values: BTreeSet<&str>) -> String {
-    values.into_iter().collect::<Vec<_>>().join(",")
+    let mut iter = values.into_iter();
+    if let Some(first) = iter.next() {
+        let mut out = String::with_capacity(first.len());
+        out.push_str(first);
+        for val in iter {
+            out.push(',');
+            out.push_str(val);
+        }
+        out
+    } else {
+        String::new()
+    }
 }
 
 fn compare_field(
