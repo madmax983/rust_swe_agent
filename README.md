@@ -315,6 +315,7 @@ a valid trajectory in hand:
 - [`bench command-stats`](docs/spec-command-stats.md): shell-command frequency
   and cost aggregated by outcome bucket, delta view for resolved-vs-unresolved
   comparison, and the `command-stats.json` schema.
+- [`bench policy-impact`](docs/spec-policy-impact.md): measure security policy impact on sweep outcomes.
 - [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
   in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
   (reads only on-disk artifacts).
