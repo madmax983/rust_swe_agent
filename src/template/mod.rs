@@ -49,12 +49,10 @@ impl Renderer {
     /// use maxwells_daemon::template::Renderer;
     /// use minijinja::context;
     ///
-    /// // Set a dummy environment variable for the example
-    /// std::env::set_var("TEST_BARD_VAR", "42");
-    ///
+    /// // Cargo always sets CARGO_PKG_NAME for tests
     /// let renderer = Renderer::new();
-    /// let output = renderer.render_with("Value is {{ env.TEST_BARD_VAR }}", context!()).unwrap();
-    /// assert_eq!(output, "Value is 42");
+    /// let output = renderer.render_with("Package is {{ env.CARGO_PKG_NAME }}", context!()).unwrap();
+    /// assert_eq!(output, "Package is maxwells-daemon");
     /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
