@@ -1131,15 +1131,18 @@ fn truncate_preview(text: &str) -> String {
 }
 
 /// Errors produced when validating a partial trajectory for `mini --resume`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ResumeValidationError {
     /// The trajectory already has a terminal outcome and cannot be continued.
+    #[error("already terminal")]
     AlreadyTerminal,
     /// The trajectory is missing required fields (`task`, `model_name`) that
     /// are the caller's source of truth for the resumed run's configuration.
+    #[error("manifest missing")]
     ManifestMissing,
     /// The trajectory's message sequence is structurally invalid for resume
     /// (e.g. empty, single message, or ends on a mid-assistant-turn).
+    #[error("invalid prefix: {0}")]
     InvalidPrefix(String),
 }
 

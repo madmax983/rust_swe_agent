@@ -153,7 +153,12 @@ impl ExitCode {
             | Error::Trajectory(_)
             | Error::Github(_)
             | Error::Io(_)
-            | Error::Json(_) => Self::InternalError,
+            | Error::Json(_)
+            | Error::ArtifactSchema(_)
+            | Error::PolicyConfig(_)
+            | Error::WebhookSink(_)
+            | Error::Bundle(_)
+            | Error::ResumeValidation(_) => Self::InternalError,
         }
     }
 

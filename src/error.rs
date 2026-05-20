@@ -17,6 +17,21 @@ pub enum Error {
     #[error(transparent)]
     Template(#[from] minijinja::Error),
 
+    #[error(transparent)]
+    ArtifactSchema(#[from] crate::artifact::ArtifactSchemaError),
+
+    #[error(transparent)]
+    PolicyConfig(#[from] crate::policy::PolicyConfigError),
+
+    #[error(transparent)]
+    WebhookSink(#[from] crate::stream::webhook::WebhookSinkError),
+
+    #[error(transparent)]
+    Bundle(#[from] crate::run::bundle::BundleError),
+
+    #[error(transparent)]
+    ResumeValidation(#[from] crate::run::mini::ResumeValidationError),
+
     #[error("trajectory io: {0}")]
     Trajectory(String),
 

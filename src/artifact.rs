@@ -173,7 +173,7 @@ pub fn classify_json_value(
     value: &Value,
     expected: ArtifactKind,
     path: impl Into<String>,
-) -> Result<ArtifactCompatibility, ArtifactSchemaError> {
+) -> Result<ArtifactCompatibility, crate::error::Error> {
     let path = path.into();
     let kind_value = value.get("artifact_kind");
     let version_value = value.get("schema_version");
@@ -191,40 +191,46 @@ pub fn classify_json_value(
     }
 
     let (Some(kind_value), Some(version_value)) = (kind_value, version_value) else {
-        return Err(ArtifactSchemaError::MalformedHeader {
-            path,
-            message: "artifact_kind and schema_version must be present together".into(),
-        });
+        return Err(crate::error::Error::ArtifactSchema(
+            ArtifactSchemaError::MalformedHeader {
+                path,
+                message: "artifact_kind and schema_version must be present together".into(),
+            },
+        ));
     };
 
     let found_kind: ArtifactKind = serde_json::from_value(kind_value.clone()).map_err(|err| {
-        ArtifactSchemaError::MalformedHeader {
+        crate::error::Error::ArtifactSchema(ArtifactSchemaError::MalformedHeader {
             path: path.clone(),
             message: format!("artifact_kind: {err}"),
-        }
+        })
     })?;
     if found_kind != expected {
-        return Err(ArtifactSchemaError::KindMismatch {
-            path,
-            expected,
-            found: found_kind,
-        });
+        return Err(crate::error::Error::ArtifactSchema(
+            ArtifactSchemaError::KindMismatch {
+                path,
+                expected,
+                found: found_kind,
+            },
+        ));
     }
 
     let version: ArtifactSchemaVersion =
         serde_json::from_value(version_value.clone()).map_err(|err| {
-            ArtifactSchemaError::MalformedHeader {
+            crate::error::Error::ArtifactSchema(ArtifactSchemaError::MalformedHeader {
                 path: path.clone(),
                 message: format!("schema_version: {err}"),
-            }
+            })
         })?;
     if version.major > ArtifactSchemaVersion::CURRENT.major {
-        return Err(ArtifactSchemaError::UnsupportedFuture {
-            path,
-            kind: found_kind,
-            version,
-            supported_major: ArtifactSchemaVersion::CURRENT.major,
-        });
+        return Err(crate::error::Error::ArtifactSchema(
+            ArtifactSchemaError::UnsupportedFuture {
+                path,
+                kind: found_kind,
+                version,
+                supported_major: ArtifactSchemaVersion::CURRENT.major,
+            },
+        ));
     }
 
     let mut warnings = Vec::new();
