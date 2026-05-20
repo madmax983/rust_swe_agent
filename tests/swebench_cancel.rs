@@ -12,6 +12,14 @@ use maxwells_daemon::run::swebench::{SwebenchArgs, SweepSignal, run, trajectory_
 use maxwells_daemon::trajectory::{FailureCategory, Trajectory, outcome};
 use tokio::sync::mpsc;
 
+// Windows process-tree killing (taskkill spawning a subprocess + process exit
+// latency) adds several seconds vs. Linux SIGKILL.  Use a generous ceiling on
+// Windows so the assertions don't race with CI runner load.
+#[cfg(windows)]
+const TEST_TIME_LIMIT: Duration = Duration::from_secs(60);
+#[cfg(not(windows))]
+const TEST_TIME_LIMIT: Duration = Duration::from_secs(8);
+
 fn write_dataset(path: &Path, instance_ids: &[&str]) {
     let mut s = String::new();
     for id in instance_ids {
@@ -196,7 +204,7 @@ async fn graceful_sigint_persists_cancelled_inflight_and_resume_retries_it() {
     .await
     .unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < TEST_TIME_LIMIT);
     assert_eq!(results.sweep_status, "cancelled");
     assert_eq!(results.cancel_exit_code, Some(130));
     assert!(results.cancelled_at.is_some());
@@ -257,7 +265,7 @@ async fn second_sigint_escalates_to_cancelled_exit_137() {
     let started = Instant::now();
     let results = run(args).await.unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < TEST_TIME_LIMIT);
     assert_eq!(results.sweep_status, "cancelled");
     assert_eq!(results.cancel_exit_code, Some(137));
     assert_eq!(results.completed, 1);
@@ -332,7 +340,7 @@ async fn forced_cancel_preserves_partial_command_output_in_trajectory() {
     let started = Instant::now();
     let results = run(args).await.unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < TEST_TIME_LIMIT);
     assert_eq!(results.sweep_status, "cancelled");
     let row = results
         .instances
@@ -389,14 +397,14 @@ async fn forced_cancel_interrupts_pre_run_rate_limit_wait() {
     args.cancel_deadline_secs = 0;
 
     let started = Instant::now();
-    let results = match tokio::time::timeout(Duration::from_secs(8), run(args)).await {
+    let results = match tokio::time::timeout(TEST_TIME_LIMIT, run(args)).await {
         Ok(result) => result.unwrap(),
         Err(err) => {
             panic!("forced cancellation should interrupt the rate-limit governor wait: {err}")
         }
     };
 
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < TEST_TIME_LIMIT);
     assert_eq!(results.sweep_status, "cancelled");
     assert_eq!(results.cancel_exit_code, Some(130));
     let Some(cancelled) = results
@@ -445,12 +453,12 @@ async fn forced_cancel_interrupts_retry_backoff_wait() {
     args.cancel_deadline_secs = 0;
 
     let started = Instant::now();
-    let results = match tokio::time::timeout(Duration::from_secs(8), run(args)).await {
+    let results = match tokio::time::timeout(TEST_TIME_LIMIT, run(args)).await {
         Ok(result) => result.unwrap(),
         Err(err) => panic!("forced cancellation should interrupt retry backoff: {err}"),
     };
 
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < TEST_TIME_LIMIT);
     assert_eq!(results.sweep_status, "cancelled");
     assert_eq!(results.cancel_exit_code, Some(130));
     let row = results
