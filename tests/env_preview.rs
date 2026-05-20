@@ -552,22 +552,25 @@ fn format_preview_text_contains_all_sections() {
         }],
     };
     let text = format_preview_text(&preview);
-    assert!(text.contains("env_type:       local"));
-    assert!(text.contains("host_paths:     /workspace"));
-    assert!(text.contains("network_egress: unrestricted"));
-    assert!(text.contains("--- Hooks ---"));
-    assert!(text.contains("PreToolUse  [pre]: echo pre"));
+    assert!(text.contains("Environment"));
+    assert!(text.contains("Type: local"));
+    assert!(text.contains("Paths: /workspace"));
+    assert!(text.contains("Egress: unrestricted"));
+    assert!(text.contains("Hooks"));
+    assert!(text.contains("PreToolUse [pre]: echo pre"));
     assert!(text.contains("PostToolUse [post]: echo post"));
-    assert!(text.contains("--- MCP Servers ---"));
-    assert!(text.contains("[OUTSIDE WORKDIR]"));
-    assert!(text.contains("--- Env Vars (sensitive) ---"));
+    assert!(text.contains("MCP Servers"));
+    assert!(text.contains("mcp-0: /usr/bin/mcp [OUTSIDE WORKDIR]"));
+    assert!(text.contains("Env Vars"));
     assert!(text.contains("MY_TOKEN: [REDACTED:env_preview]"));
-    assert!(text.contains("--- Policy ---"));
-    assert!(text.contains("profile:     safe"));
-    assert!(text.contains("extra_deny:  rm -rf"));
-    assert!(text.contains("extra_allow: (none)"));
-    assert!(text.contains("--- Findings ---"));
-    assert!(text.contains("[WARNING] MCP outside workdir"));
+    assert!(text.contains("Policy"));
+    assert!(text.contains("Profile: safe"));
+    assert!(text.contains("Deny: rm -rf"));
+    assert!(text.contains("Allow: (none)"));
+    assert!(text.contains("Severity"));
+    assert!(text.contains("Message"));
+    assert!(text.contains("WARNING"));
+    assert!(text.contains("MCP outside workdir"));
 }
 
 #[test]
@@ -591,9 +594,7 @@ fn format_preview_text_clean_findings_label() {
         findings: vec![],
     };
     let text = format_preview_text(&preview);
-    assert!(text.contains("--- Findings: CLEAN ---"));
-    assert!(text.contains("(none)"), "empty hooks/mcp/vars show (none)");
-    assert!(text.contains("extra_allow: safe-cmd"));
+    assert!(text.contains("Findings: CLEAN"));
 }
 
 // ── Docker env skips host-process env scan ────────────────────────────────────

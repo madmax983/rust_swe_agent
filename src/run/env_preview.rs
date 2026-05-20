@@ -660,77 +660,138 @@ pub fn is_risky(preview: &EnvPreview) -> bool {
 /// This is the same output that `agent env preview` (text mode) writes to
 /// stdout. Extracted here so it can be unit-tested independently of the CLI.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn format_preview_text(preview: &EnvPreview) -> String {
+    use comfy_table::{Cell, Color, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
     use std::fmt::Write as _;
+
     let mut out = String::new();
-    let _ = writeln!(out, "=== Agent Environment Preview ===");
-    let _ = writeln!(out, "env_type:       {}", preview.env_type);
-    let _ = writeln!(out, "host_paths:     {}", preview.host_paths.join(", "));
-    let _ = writeln!(out, "network_egress: {}", preview.network_egress);
-    let _ = writeln!(out);
-    let _ = writeln!(out, "--- Hooks ---");
-    if preview.hooks.pre_tool_use.is_empty() && preview.hooks.post_tool_use.is_empty() {
-        let _ = writeln!(out, "  (none)");
-    } else {
-        for h in &preview.hooks.pre_tool_use {
-            let _ = writeln!(out, "  PreToolUse  [{}]: {}", h.name, h.command);
-        }
-        for h in &preview.hooks.post_tool_use {
-            let _ = writeln!(out, "  PostToolUse [{}]: {}", h.name, h.command);
-        }
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Category", "Details"]);
+
+    // Environment
+    let mut env_details = format!(
+        "Type: {}
+Egress: {}",
+        preview.env_type, preview.network_egress
+    );
+    if !preview.host_paths.is_empty() {
+        let _ = write!(
+            env_details,
+            "
+Paths: {}",
+            preview.host_paths.join(", ")
+        );
     }
-    let _ = writeln!(out);
-    let _ = writeln!(out, "--- MCP Servers ---");
-    if preview.mcp_servers.is_empty() {
-        let _ = writeln!(out, "  (none)");
+    table.add_row(vec!["Environment", &env_details]);
+
+    // Hooks
+    let hooks_details =
+        if preview.hooks.pre_tool_use.is_empty() && preview.hooks.post_tool_use.is_empty() {
+            "(none)".to_string()
+        } else {
+            let mut d = String::new();
+            for h in &preview.hooks.pre_tool_use {
+                let _ = writeln!(d, "PreToolUse [{}]: {}", h.name, h.command);
+            }
+            for h in &preview.hooks.post_tool_use {
+                let _ = writeln!(d, "PostToolUse [{}]: {}", h.name, h.command);
+            }
+            d.trim_end().to_string()
+        };
+    table.add_row(vec!["Hooks", &hooks_details]);
+
+    // MCP Servers
+    let mcp_details = if preview.mcp_servers.is_empty() {
+        "(none)".to_string()
     } else {
-        for m in &preview.mcp_servers {
-            let flag = if m.outside_workdir {
-                " [OUTSIDE WORKDIR]"
-            } else {
-                ""
-            };
-            let _ = writeln!(out, "  {}: {}{}", m.name, m.command, flag);
-        }
-    }
-    let _ = writeln!(out);
-    let _ = writeln!(out, "--- Env Vars (sensitive) ---");
-    if preview.env_vars.is_empty() {
-        let _ = writeln!(out, "  (none)");
+        preview
+            .mcp_servers
+            .iter()
+            .map(|m| {
+                let flag = if m.outside_workdir {
+                    " [OUTSIDE WORKDIR]"
+                } else {
+                    ""
+                };
+                format!("{}: {}{flag}", m.name, m.command)
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    };
+    table.add_row(vec!["MCP Servers", &mcp_details]);
+
+    // Env Vars
+    let env_vars_details = if preview.env_vars.is_empty() {
+        "(none)".to_string()
     } else {
-        for ev in &preview.env_vars {
-            let _ = writeln!(out, "  {}: {}", ev.name, ev.value_or_redacted);
-        }
-    }
-    let _ = writeln!(out);
-    let _ = writeln!(out, "--- Policy ---");
-    let _ = writeln!(out, "  profile:     {}", preview.policy.profile);
-    let _ = writeln!(
-        out,
-        "  extra_deny:  {}",
+        preview
+            .env_vars
+            .iter()
+            .map(|ev| format!("{}: {}", ev.name, ev.value_or_redacted))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    };
+    table.add_row(vec!["Env Vars", &env_vars_details]);
+
+    // Policy
+    let policy_details = format!(
+        "Profile: {}
+Allow: {}
+Deny: {}",
+        preview.policy.profile,
+        if preview.policy.extra_allow.is_empty() {
+            "(none)".to_string()
+        } else {
+            preview.policy.extra_allow.join(", ")
+        },
         if preview.policy.extra_deny.is_empty() {
-            "(none)".to_owned()
+            "(none)".to_string()
         } else {
             preview.policy.extra_deny.join(", ")
         }
     );
-    let _ = writeln!(
-        out,
-        "  extra_allow: {}",
-        if preview.policy.extra_allow.is_empty() {
-            "(none)".to_owned()
-        } else {
-            preview.policy.extra_allow.join(", ")
-        }
-    );
-    let _ = writeln!(out);
+    table.add_row(vec!["Policy", &policy_details]);
+
+    let _ = writeln!(out, "{table}");
+
+    // Findings Table
     if preview.findings.is_empty() {
-        let _ = writeln!(out, "--- Findings: CLEAN ---");
+        let _ = writeln!(
+            out,
+            "
+Findings: CLEAN"
+        );
     } else {
-        let _ = writeln!(out, "--- Findings ---");
+        let mut findings_table = Table::new();
+        findings_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec![
+                Cell::new("Severity").fg(Color::Red),
+                Cell::new("Message").fg(Color::Red),
+            ]);
+
         for f in &preview.findings {
-            let _ = writeln!(out, "  [{}] {}", f.severity.to_uppercase(), f.message);
+            findings_table.add_row(vec![
+                Cell::new(f.severity.to_uppercase()).fg(Color::Red),
+                Cell::new(&f.message).fg(Color::Red),
+            ]);
         }
+        let _ = writeln!(
+            out,
+            "
+{findings_table}"
+        );
     }
     out
 }
