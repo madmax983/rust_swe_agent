@@ -2397,6 +2397,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
 }
 
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
@@ -2412,6 +2413,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
@@ -2427,6 +2429,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))
