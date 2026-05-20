@@ -25,12 +25,14 @@ type PipeBuffer = Arc<Mutex<Vec<u8>>>;
 
 pub struct LocalEnvironment {
     shell: String,
+    pub workdir: Option<std::path::PathBuf>,
 }
 
 impl Default for LocalEnvironment {
     fn default() -> Self {
         Self {
             shell: default_shell(),
+            workdir: None,
         }
     }
 }
@@ -43,6 +45,12 @@ impl LocalEnvironment {
     #[must_use]
     pub fn with_shell(mut self, shell: impl Into<String>) -> Self {
         self.shell = shell.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_workdir(mut self, workdir: Option<std::path::PathBuf>) -> Self {
+        self.workdir = workdir;
         self
     }
 }
@@ -63,6 +71,8 @@ impl Environment for LocalEnvironment {
 
         if let Some(cwd) = req.cwd.as_ref() {
             cmd.current_dir(cwd);
+        } else if let Some(ref wd) = self.workdir {
+            cmd.current_dir(wd);
         }
         for (k, v) in &req.env {
             cmd.env(k, v);

@@ -18,7 +18,7 @@ pub use crate::model::FallbackAttemptRecord;
 /// The version string for the trajectory serialization format.
 ///
 /// Used to maintain compatibility with consumers expecting the `mini-swe-agent-1.2` structure.
-pub const FORMAT_VERSION: &str = "mini-swe-agent-1.2";
+pub const FORMAT_VERSION: &str = "mini-swe-agent-1.3";
 
 /// Trajectory-level summary of fallback behavior for a single agent run.
 ///
@@ -571,6 +571,9 @@ pub struct TrajectoryInfo {
     /// `None` for sweeps run without OTLP export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Absolute canonicalized local working directory for the agent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_workdir: Option<String>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -784,7 +787,7 @@ impl Trajectory {
     /// use maxwells_daemon::trajectory::Trajectory;
     /// let traj = Trajectory::new();
     /// let json = traj.to_json_pretty().unwrap();
-    /// assert!(json.contains("mini-swe-agent-1.2"));
+    /// assert!(json.contains("mini-swe-agent-1.3"));
     /// ```
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)

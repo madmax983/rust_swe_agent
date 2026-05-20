@@ -547,6 +547,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         trace_id: None,
         webhook_url: None,
         webhook_headers: vec![],
+        local_workdir: None,
     };
 
     mini_run(args).await.unwrap();

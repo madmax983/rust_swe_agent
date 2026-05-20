@@ -362,8 +362,8 @@ fn no_key_smoke_example_produces_valid_trajectory() {
         serde_json::from_str(&std::fs::read_to_string(&trajectory_path).unwrap()).unwrap();
     assert_eq!(
         trajectory["trajectory_format"].as_str(),
-        Some("mini-swe-agent-1.2"),
-        "trajectory must be mini-swe-agent-1.2 format"
+        Some("mini-swe-agent-1.3"),
+        "trajectory must be mini-swe-agent-1.3 format"
     );
     assert_eq!(
         trajectory["info"]["outcome"].as_str(),
