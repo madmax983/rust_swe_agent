@@ -96,3 +96,70 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cost_source_combine() {
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::Unknown),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::Unknown.combine(CostSource::ProviderReported),
+            CostSource::Unknown
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::Unknown),
+            CostSource::Unknown
+        ); // (Self::RateCardEstimate, _) | (_, Self::RateCardEstimate) is matched after (Self::Unknown, _)
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+    }
+
+    #[test]
+    fn test_cost_source_display_and_label() {
+        assert_eq!(CostSource::ProviderReported.label(), "provider_reported");
+        assert_eq!(CostSource::RateCardEstimate.label(), "rate_card_estimate");
+        assert_eq!(CostSource::FreeTierInferred.label(), "free_tier_inferred");
+        assert_eq!(CostSource::Unknown.label(), "unknown");
+        assert_eq!(CostSource::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_non_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4");
+        assert!((cost - 24.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_cost_usd_anthropic() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "claude-3-opus");
+        assert!((cost - 22.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_is_free_tier_model() {
+        assert!(is_free_tier_model("huggingface/model:free"));
+        assert!(is_free_tier_model("model:free"));
+        assert!(!is_free_tier_model("huggingface/model"));
+        assert!(!is_free_tier_model("model:fre"));
+        assert!(!is_free_tier_model("free:model"));
+    }
+}
