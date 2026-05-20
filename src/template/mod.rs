@@ -1,6 +1,6 @@
 //! Jinja2-style template rendering via `minijinja`.
 //!
-//! `Renderer` owns a `minijinja::Environment` with autoescape disabled
+//! The [`Renderer`] owns a `minijinja::Environment` with autoescape disabled
 //! (we're rendering shell commands and prompts, not HTML). Environment
 //! variable access (`{{ env.USER }}`) comes from a global added on
 //! construction.
@@ -12,6 +12,21 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// A specialized template engine configured for rendering shell commands and agent prompts.
+///
+/// Unlike a standard web template engine, this [`Renderer`] explicitly disables HTML auto-escaping
+/// to prevent corrupting shell syntax (e.g., turning `&&` into `&amp;&amp;`). It also globally
+/// injects system environment variables so templates can seamlessly access values like `{{ env.USER }}`.
+///
+/// ## Examples
+/// ```
+/// use maxwells_daemon::template::Renderer;
+/// use std::collections::BTreeMap;
+///
+/// let renderer = Renderer::new();
+/// let output = renderer.render_str("echo {{ msg }}", &BTreeMap::from([("msg", "hello")])).unwrap();
+/// assert_eq!(output, "echo hello");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +38,24 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` with shell-safe defaults.
+    ///
+    /// This method performs two critical setup steps:
+    /// 1. Disables all auto-escaping (`minijinja::AutoEscape::None`).
+    /// 2. Captures all current system environment variables and exposes them via the global `env` context.
+    ///
+    /// ## Examples
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// // Set a dummy environment variable for the example
+    /// std::env::set_var("TEST_BARD_VAR", "42");
+    ///
+    /// let renderer = Renderer::new();
+    /// let output = renderer.render_with("Value is {{ env.TEST_BARD_VAR }}", context!()).unwrap();
+    /// assert_eq!(output, "Value is 42");
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -35,14 +68,46 @@ impl Renderer {
     }
 
     /// Render a template string against a context value that serializes to
-    /// a map. The `context!` macro from `minijinja` is the recommended way
-    /// to build ad-hoc contexts at call sites.
+    /// a map.
+    ///
+    /// This is the primary method for rendering templates with strongly-typed context structs.
+    /// The `context!` macro from `minijinja` is also a recommended way
+    /// to build ad-hoc contexts at call sites when not using custom structs.
+    ///
+    /// ## Examples
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// use std::collections::BTreeMap;
+    ///
+    /// let renderer = Renderer::new();
+    /// let output = renderer.render_str("Task: {{ t }}", &BTreeMap::from([("t", "Find bug")])).unwrap();
+    /// assert_eq!(output, "Task: Find bug");
+    /// ```
     pub fn render_str<T: Serialize>(&self, tmpl: &str, ctx: &T) -> Result<String, Error> {
         self.env
             .render_str(tmpl, Value::from_serialize(ctx))
             .map_err(Into::into)
     }
 
+    /// Renders a template string against an arbitrary `minijinja::Value` context.
+    ///
+    /// This is particularly useful when combining heterogeneous data types or dynamically
+    /// constructing contexts via the `minijinja::context!` macro.
+    ///
+    /// ## Examples
+    /// ```
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// let ctx = context!(
+    ///     task => "Find the bug",
+    ///     returncode => 1,
+    /// );
+    ///
+    /// let output = renderer.render_with("Task: {{ task }} (Status: {{ returncode }})", ctx).unwrap();
+    /// assert_eq!(output, "Task: Find the bug (Status: 1)");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
@@ -50,6 +115,17 @@ impl Renderer {
 
 /// Build a context with the keys mini-swe-agent conventionally exposes:
 /// `task`, `output`, `returncode`, plus arbitrary extras.
+///
+/// This ensures consistent variable naming across all agent observation templates.
+///
+/// ## Examples
+/// ```
+/// use maxwells_daemon::template::observation_context;
+/// use std::collections::BTreeMap;
+///
+/// let ctx = observation_context("ls output", 0, &BTreeMap::<String, String>::new());
+/// // The returned minijinja::Value can now be passed to Renderer::render_with
+/// ```
 pub fn observation_context(
     output: &str,
     returncode: i32,
@@ -60,6 +136,17 @@ pub fn observation_context(
 }
 
 /// Small helper — used by `InteractiveAgent` status strings and banners.
+///
+/// This provides a quick, allocation-light way to render a template without
+/// instantiating a full [`Renderer`] when only simple string variables are needed.
+///
+/// ## Examples
+/// ```
+/// use maxwells_daemon::template::render_simple;
+///
+/// let output = render_simple("Welcome {{ user }}!", &[("user", "Alice")]).unwrap();
+/// assert_eq!(output, "Welcome Alice!");
+/// ```
 pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
     let mut env = Environment::new();
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
