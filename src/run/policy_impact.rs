@@ -1,11 +1,14 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
-use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+#![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 
-use crate::artifact::{classify_json_value, ArtifactKind};
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
+use std::path::{Path, PathBuf};
+
+use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::error::Error;
-use crate::redaction::{surface, Redactor};
+use crate::redaction::{Redactor, surface};
 use crate::run::retry::load_sweep_results;
 use crate::trajectory::Trajectory;
 
@@ -150,8 +153,7 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
         let traj_paths = resolve_trajectory_paths(&args.sweep_dir, id);
         if traj_paths.is_empty() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "policy-impact: no trajectory file found for instance {}",
-                id
+                "policy-impact: no trajectory file found for instance {id}",
             ))));
         }
 
@@ -180,7 +182,7 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
                     .extra
                     .other
                     .get("policy_blocked")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
                 if is_blocked {
@@ -202,11 +204,13 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
                         .unwrap_or("")
                         .to_string();
 
-                    let rule_agg = rules_map.entry(rule_label).or_insert_with(|| RuleAggregate {
-                        block_count: 0,
-                        affected_instances: HashSet::new(),
-                        blocked_commands: HashMap::new(),
-                    });
+                    let rule_agg = rules_map
+                        .entry(rule_label)
+                        .or_insert_with(|| RuleAggregate {
+                            block_count: 0,
+                            affected_instances: HashSet::new(),
+                            blocked_commands: HashMap::new(),
+                        });
 
                     rule_agg.block_count += 1;
                     rule_agg.affected_instances.insert(id.clone());
@@ -222,7 +226,8 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
 
     let mut rules = Vec::new();
     for (rule_label, rule_agg) in rules_map {
-        let mut affected_instance_ids: Vec<String> = rule_agg.affected_instances.into_iter().collect();
+        let mut affected_instance_ids: Vec<String> =
+            rule_agg.affected_instances.into_iter().collect();
         affected_instance_ids.sort();
 
         let mut top_raw_cmd = String::new();
@@ -230,11 +235,9 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
         for (cmd, &count) in &rule_agg.blocked_commands {
             if count > max_count {
                 max_count = count;
-                top_raw_cmd = cmd.clone();
-            } else if count == max_count {
-                if cmd < &top_raw_cmd {
-                    top_raw_cmd = cmd.clone();
-                }
+                top_raw_cmd.clone_from(cmd);
+            } else if count == max_count && cmd < &top_raw_cmd {
+                top_raw_cmd.clone_from(cmd);
             }
         }
 
@@ -295,10 +298,12 @@ pub fn run(args: &PolicyImpactArgs) -> Result<PolicyImpactReport, Error> {
     }
 
     if blocked_group.total_count > 0 {
-        blocked_group.resolved_rate = blocked_group.resolved_count as f64 / blocked_group.total_count as f64;
+        blocked_group.resolved_rate =
+            blocked_group.resolved_count as f64 / blocked_group.total_count as f64;
     }
     if unblocked_group.total_count > 0 {
-        unblocked_group.resolved_rate = unblocked_group.resolved_count as f64 / unblocked_group.total_count as f64;
+        unblocked_group.resolved_rate =
+            unblocked_group.resolved_count as f64 / unblocked_group.total_count as f64;
     }
 
     let delta_resolved_rate = blocked_group.resolved_rate - unblocked_group.resolved_rate;
@@ -408,11 +413,11 @@ pub fn render_text(report: &PolicyImpactReport) -> String {
     out.push_str(&corr_table.to_string());
     out.push_str("\n\n");
 
-    out.push_str(&format!(
-        "Delta Resolved Rate: {:.1}%\n",
+    let _ = writeln!(
+        out,
+        "Delta Resolved Rate: {:.1}%",
         r.outcome_correlation.delta_resolved_rate * 100.0
-    ));
+    );
 
     out
 }
-
