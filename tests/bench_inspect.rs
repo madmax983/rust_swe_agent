@@ -2058,3 +2058,322 @@ fn json_format_includes_patch_error_log_for_patch_apply_failed() {
         "patch_error_log should appear in JSON output for patch_apply_failed instances"
     );
 }
+
+// ── issue-316: wire merged trajectory exporters into bench inspect ────────────
+
+#[test]
+fn format_markdown_renders_trajectory_as_markdown() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "markdown",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("# Trajectory Export"),
+        "expected markdown header:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("## Messages"),
+        "expected Messages section:\n{stdout}"
+    );
+}
+
+#[test]
+fn format_markdown_with_output_flag_writes_file_and_empty_stdout() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+    let out_file = sweep.path().join("traj.md");
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "markdown",
+            "--output",
+            out_file.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "stdout should be empty when --output is used:\n{stdout}"
+    );
+    let file_content = std::fs::read_to_string(&out_file).unwrap();
+    assert!(
+        file_content.contains("# Trajectory Export"),
+        "expected markdown header in file:\n{file_content}"
+    );
+}
+
+#[test]
+fn format_markdown_redacts_secrets_in_export() {
+    let sweep = tempfile::tempdir().unwrap();
+    let secret = "ghp_0123456789ABCDEF0123456789ABCDEF0123";
+
+    let mut t = maxwells_daemon::trajectory::Trajectory::new();
+    t.info.model_name = Some("test".into());
+    t.info.outcome = Some(maxwells_daemon::trajectory::outcome::SUBMITTED.into());
+    t.record_message(&maxwells_daemon::model::Message::user(format!(
+        "token={secret}"
+    )));
+    std::fs::write(
+        sweep.path().join("secret-instance.traj.json"),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "secret-instance",
+            "--format",
+            "markdown",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains(secret),
+        "secret should be redacted from markdown output:\n{stdout}"
+    );
+}
+
+#[cfg(not(feature = "html-export"))]
+#[test]
+fn format_html_without_feature_gives_format_unavailable_error() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "html",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should fail when html-export feature is not enabled"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("format_unavailable"),
+        "expected format_unavailable in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("html-export"),
+        "expected feature name in error message:\n{stderr}"
+    );
+}
+
+#[cfg(feature = "html-export")]
+#[test]
+fn format_html_produces_self_contained_html() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "html",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("<!DOCTYPE html>"),
+        "expected HTML doctype:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("<title>Trajectory Export</title>"),
+        "expected title tag:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("href=\"http"),
+        "self-contained: no external href links:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("src=\"http"),
+        "self-contained: no external script/img src:\n{stdout}"
+    );
+}
+
+#[cfg(not(feature = "csv-export"))]
+#[test]
+fn format_csv_without_feature_gives_format_unavailable_error() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "csv",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should fail when csv-export feature is not enabled"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("format_unavailable"),
+        "expected format_unavailable in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("csv-export"),
+        "expected feature name in error message:\n{stderr}"
+    );
+}
+
+#[cfg(feature = "csv-export")]
+#[test]
+fn format_csv_produces_csv_with_role_and_content_columns() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "csv",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("role,content"),
+        "expected CSV header:\n{stdout}"
+    );
+}
+
+#[cfg(not(feature = "mermaid-export"))]
+#[test]
+fn format_mermaid_without_feature_gives_format_unavailable_error() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "mermaid",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "should fail when mermaid-export feature is not enabled"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("format_unavailable"),
+        "expected format_unavailable in stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("mermaid-export"),
+        "expected feature name in error message:\n{stderr}"
+    );
+}
+
+#[cfg(feature = "mermaid-export")]
+#[test]
+fn format_mermaid_produces_sequence_diagram() {
+    let sweep = tempfile::tempdir().unwrap();
+    write_traj(sweep.path(), "abc", false);
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep.path().to_str().unwrap(),
+            "--instance",
+            "abc",
+            "--format",
+            "mermaid",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("sequenceDiagram"),
+        "expected mermaid sequence diagram:\n{stdout}"
+    );
+}

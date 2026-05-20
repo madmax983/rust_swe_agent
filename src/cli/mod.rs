@@ -2259,6 +2259,11 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
                 "inspect: --diff expects exactly two trajectory paths".into(),
             )));
         }
+        if i.output.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
+            )));
+        }
         let format = parse_trajectory_diff_format(&i.format)?;
         let report = crate::run::trajectory_diff::diff_paths(
             &crate::run::trajectory_diff::TrajectoryDiffArgs {
@@ -2271,12 +2276,23 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
+    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+        return bench_inspect_export(i);
+    }
+
+    if i.output.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            i.format
+        ))));
+    }
+
     let format = match i.format.as_str() {
         "text" => crate::run::inspect::InspectFormat::Text,
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text` or `json`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
             ))));
         }
     };
@@ -2301,6 +2317,128 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
+    if i.filter.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "inspect: --format {} cannot be combined with --filter; use --instance",
+            i.format
+        ))));
+    }
+    let sweep = i.sweep.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --sweep is required for export formats".into(),
+        ))
+    })?;
+    let instance_id = i.instance.as_deref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+        ))
+    })?;
+    let traj_path =
+        crate::run::inspect::resolve_trajectory_path(&sweep, instance_id).ok_or_else(|| {
+            Error::Trajectory(format!(
+                "inspect: trajectory not found for instance `{instance_id}` in {}",
+                sweep.display()
+            ))
+        })?;
+    let text = std::fs::read_to_string(&traj_path)?;
+    let traj: crate::trajectory::Trajectory = serde_json::from_str(&text)
+        .map_err(|e| Error::Trajectory(format!("inspect: failed to parse trajectory: {e}")))?;
+
+    let content = match i.format.as_str() {
+        "markdown" => {
+            use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
+            MarkdownExporter::export(&traj)
+        }
+        "html" => inspect_export_html(&traj)?,
+        "csv" => inspect_export_csv(&traj)?,
+        "mermaid" => inspect_export_mermaid(&traj)?,
+        _ => unreachable!("dispatch guarded by caller"),
+    };
+
+    if let Some(output_path) = i.output {
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let out_canon = std::fs::canonicalize(&output_path).unwrap_or_else(|_| output_path.clone());
+        let traj_canon = std::fs::canonicalize(&traj_path).unwrap_or_else(|_| traj_path.clone());
+        if out_canon == traj_canon {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "inspect: --output `{}` resolves to the source trajectory file; \
+                 writing would corrupt the sweep artifact",
+                output_path.display()
+            ))));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let (Ok(out_meta), Ok(traj_meta)) = (
+                std::fs::metadata(&output_path),
+                std::fs::metadata(&traj_path),
+            ) {
+                if out_meta.dev() == traj_meta.dev() && out_meta.ino() == traj_meta.ino() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "inspect: --output `{}` is a hard link to the source trajectory file; \
+                         writing would corrupt the sweep artifact",
+                        output_path.display()
+                    ))));
+                }
+            }
+        }
+        std::fs::write(&output_path, &content)?;
+    } else {
+        print!("{content}");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "html-export")]
+fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
+    Ok(HtmlExporter::export(traj))
+}
+
+#[cfg(not(feature = "html-export"))]
+fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format html requires the `html-export` Cargo feature; \
+         rebuild with `--features html-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "csv-export")]
+fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
+    Ok(CsvExporter::export(traj))
+}
+
+#[cfg(not(feature = "csv-export"))]
+fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format csv requires the `csv-export` Cargo feature; \
+         rebuild with `--features csv-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "mermaid-export")]
+fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
+    Ok(MermaidExporter::export(traj))
+}
+
+#[cfg(not(feature = "mermaid-export"))]
+fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
+         rebuild with `--features mermaid-export`"
+            .into(),
+    )))
 }
 
 fn bench_command_stats(c: args::CommandStatsCmd) -> Result<(), Error> {

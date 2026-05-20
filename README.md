@@ -146,6 +146,12 @@ This is the core operator loop before any sweep: run one task, inspect the
 trajectory, then decide whether the model, prompt, budget, and environment are
 ready for a broader run.
 
+Export the same trajectory as shareable Markdown in one command:
+
+```bash
+cargo run --quiet -- --log error bench inspect --sweep runs/quickstart --instance hello-world --format markdown --output traj.md
+```
+
 ### 6. Optional Preflight Before SWE-bench
 
 Use `doctor` on a local SWE-bench JSONL dataset before launching work. This

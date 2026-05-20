@@ -10,6 +10,11 @@ instances in filter mode.
 max bench inspect --sweep <dir> --instance <instance_id>
 max bench inspect --sweep <dir> --instance <instance_id> --full
 max bench inspect --sweep <dir> --instance <instance_id> --format json
+max bench inspect --sweep <dir> --instance <instance_id> --format markdown
+max bench inspect --sweep <dir> --instance <instance_id> --format markdown --output traj.md
+max bench inspect --sweep <dir> --instance <instance_id> --format html --output traj.html
+max bench inspect --sweep <dir> --instance <instance_id> --format csv --output traj.csv
+max bench inspect --sweep <dir> --instance <instance_id> --format mermaid --output traj.mmd
 max bench inspect --sweep <dir> --instance <instance_id> --show-expected
 max bench inspect --sweep <dir> --filter resolved=false
 max bench inspect --sweep <dir> --filter failure_category=step_limit
@@ -26,7 +31,23 @@ max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
 * `--sweep`: output directory from `bench swebench`.
 * `--instance`: render one instance transcript.
 * `--filter`: summary-table mode (`resolved=true|false` or `failure_category=<snake_case>`).
-* `--format`: `text` (default) or `json`.
+* `--format`: output format. Accepted values:
+  | Value      | Description                                             | Requires Cargo feature |
+  |------------|--------------------------------------------------------|------------------------|
+  | `text`     | Human-readable transcript (default)                    | —                      |
+  | `json`     | Machine-readable JSON                                  | —                      |
+  | `markdown` | Structured Markdown document (task, outcome, messages) | —                      |
+  | `html`     | Self-contained HTML (inline CSS, no external refs)     | `html-export`          |
+  | `csv`      | Flat CSV with `role` and `content` columns             | `csv-export`           |
+  | `mermaid`  | Mermaid `sequenceDiagram` of the conversation          | `mermaid-export`       |
+  | `unified`  | Unified diff (diff mode only)                          | —                      |
+
+  When the binary is built without the required feature, `--format <name>` exits
+  with a `format_unavailable` error naming the missing feature. See
+  [`src/trajectory/export.rs`](../src/trajectory/export.rs) for exporter unit tests.
+* `--output <PATH>`: write output to a file instead of stdout. Supported with
+  `markdown`, `html`, `csv`, and `mermaid` formats in instance mode. Stdout is
+  empty when `--output` is set.
 * `--full`: disable stdout/stderr truncation in transcript mode.
 * `--show-expected`: also print `PASS_TO_PASS` / `FAIL_TO_PASS` expected-test groupings read
   from `<sweep>/dataset.jsonl`. Silently skipped when the file is absent.
@@ -38,6 +59,17 @@ max bench compare --baseline <dir> --candidate <dir> --emit-diff-script <out.sh>
 Exactly one of `--instance` or `--filter` is required.
 Diff mode is separate and cannot be combined with `--sweep`, `--instance`, or
 `--filter`.
+Export formats (`markdown`, `html`, `csv`, `mermaid`) require `--instance` and
+`--sweep`; they cannot be combined with `--filter`.
+
+### Output redaction
+
+All export formats pass content through `Redactor::default_enabled()` with the
+`surface::EXPORT` surface (the same redaction path already used by the exporter
+unit tests). Secrets matching configured literals, env-var patterns, or
+structured shapes (Bearer tokens, GitHub tokens, PEM keys, `.env` assignments)
+are replaced with deterministic `[REDACTED:…]` markers before any output is
+written or the file is created.
 
 ## Transcript behavior
 
