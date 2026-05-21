@@ -1,19 +1,29 @@
-//! Newtype IDs. Keeps `TaskId` from being accidentally passed where a
-//! `ContainerId` is expected.
+//! Strongly-typed identifiers to prevent class-of-string errors.
+//!
+//! Why use Newtypes? If we pass a `ContainerId` where a `TaskId` is expected,
+//! the compiler catches it immediately. By wrapping `String` and `u32` in
+//! specialized types, we increase domain clarity and reduce runtime bugs.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 macro_rules! string_id {
-    ($name:ident) => {
+    (
+        $(#[$meta:meta])*
+        $name:ident
+    ) => {
+        $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(pub String);
 
         impl $name {
+            #[doc = concat!("Creates a new `", stringify!($name), "`.")]
             pub fn new(s: impl Into<String>) -> Self {
                 Self(s.into())
             }
+
+            #[doc = concat!("Returns a string slice for this `", stringify!($name), "`.")]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -39,21 +49,66 @@ macro_rules! string_id {
     };
 }
 
-string_id!(ContainerId);
-string_id!(TaskId);
+string_id!(
+    /// A unique identifier for an isolated runtime container.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::ids::ContainerId;
+    ///
+    /// let container = ContainerId::new("sandbox-x86-99");
+    /// assert_eq!(container.as_str(), "sandbox-x86-99");
+    /// ```
+    ContainerId
+);
 
+string_id!(
+    /// A unique identifier for a specific instance of a task.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::ids::TaskId;
+    ///
+    /// let task = TaskId::new("swe-bench-django-111");
+    /// assert_eq!(task.as_str(), "swe-bench-django-111");
+    /// ```
+    TaskId
+);
+
+/// A monotonically increasing index representing the current step in an agent's trajectory.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::ids::StepIdx;
+///
+/// let start = StepIdx::zero();
+/// assert_eq!(start.get(), 0);
+///
+/// let next = start.next();
+/// assert_eq!(next.get(), 1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct StepIdx(pub u32);
 
 impl StepIdx {
+    /// Creates a new `StepIdx` starting at `0`.
     pub const fn zero() -> Self {
         Self(0)
     }
+
+    /// Returns the next `StepIdx`, incrementing the internal counter by `1`.
+    ///
+    /// Uses saturating addition to prevent overflow panics.
     #[must_use]
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
+
+    /// Gets the raw `u32` value of this `StepIdx`.
     pub const fn get(self) -> u32 {
         self.0
     }
