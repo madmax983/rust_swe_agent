@@ -1,6 +1,6 @@
 {
   "artifact_kind": "preflight_report",
-  "schema_version": {"major": 1, "minor": 9},
+  "schema_version": {"major": 1, "minor": 10},
   "mode": "doctor",
   "checks": [
     {

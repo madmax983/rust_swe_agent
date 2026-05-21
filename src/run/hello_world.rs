@@ -36,6 +36,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         trace_id: None,
         webhook_url: None,
         webhook_headers: vec![],
+        local_workdir: None,
     };
     run(args).await?;
     println!("hello-world smoke complete");
@@ -65,6 +66,6 @@ mod tests {
             panic!("trajectory file not written");
         };
         let contents = std::fs::read_to_string(traj.path()).unwrap();
-        assert!(contents.contains("mini-swe-agent-1.2"));
+        assert!(contents.contains("mini-swe-agent-1.3"));
     }
 }

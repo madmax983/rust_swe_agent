@@ -140,6 +140,7 @@ fn make_mini_args(
         trace_id: None,
         webhook_url,
         webhook_headers,
+        local_workdir: None,
     }
 }
 
@@ -525,6 +526,7 @@ async fn webhook_redacts_secrets_before_post() {
         trace_id: None,
         webhook_url: Some(url),
         webhook_headers: vec![],
+        local_workdir: None,
     };
 
     let (run_result, bodies) =

@@ -68,6 +68,8 @@ pub struct RenderOnlyReport {
     /// Percentage of context window consumed by the initial prompt (0–100).
     pub context_window_pct: f64,
     pub upper_bound_cost: UpperBoundCost,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_workdir: Option<String>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -76,17 +78,20 @@ pub struct RenderOnlyArgs {
     pub task: String,
     pub extra_context: Option<String>,
     pub config: Config,
+    pub local_workdir: Option<std::path::PathBuf>,
 }
 
 /// Render the initial agent turn without any model call or trajectory write.
 ///
 /// Returns a `RenderOnlyReport` on success, or an `Error` when template
 /// rendering or config validation fails.
+#[allow(clippy::too_many_lines)]
 pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
     let RenderOnlyArgs {
         task,
         extra_context,
         config,
+        local_workdir,
     } = args;
 
     let renderer = Renderer::new();
@@ -205,6 +210,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
         context_window_tokens,
         context_window_pct,
         upper_bound_cost,
+        local_workdir: local_workdir.map(|p| p.display().to_string()),
     })
 }
 
@@ -261,12 +267,19 @@ pub fn format_text(report: &RenderOnlyReport) -> String {
     let mut sections = vec![
         "=== render-only preview (no model call made) ===".to_owned(),
         format!("Model: {}", report.model),
+    ];
+
+    if let Some(ref wd) = report.local_workdir {
+        sections.push(format!("Local workdir: {wd}"));
+    }
+
+    sections.extend(vec![
         format!("--- System message ---\n{}", report.system_message),
         format!(
             "--- User message (instance prompt) ---\n{}",
             report.user_message
         ),
-    ];
+    ]);
 
     let mut tools_lines = vec!["--- Registered tools ---".to_owned()];
     for t in &report.tools {
@@ -348,6 +361,7 @@ mod tests {
             task: "fix the bug".into(),
             extra_context: None,
             config: Config::defaults().unwrap(),
+            local_workdir: None,
         }
     }
 
@@ -516,6 +530,7 @@ mod tests {
             task: "test".into(),
             extra_context: None,
             config: cfg,
+            local_workdir: None,
         });
         assert!(result.is_err(), "broken template must return Err");
     }

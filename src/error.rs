@@ -212,6 +212,9 @@ pub enum ConfigError {
 
     #[error("invalid config: {0} (see docs/config-reference.md for valid values and examples)")]
     Invalid(String),
+
+    #[error("{0}")]
+    Usage(String),
 }
 
 impl From<toml::de::Error> for ConfigError {

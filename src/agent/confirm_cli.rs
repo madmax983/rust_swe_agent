@@ -272,6 +272,7 @@ mod tests {
         assert!(StderrCliConfirmer::new_if_tty().is_none());
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn confirm_under_non_tty_stdin_aborts_on_eof() {
         // `prompt_blocking` writes the banner to stderr, finds no TTY,
