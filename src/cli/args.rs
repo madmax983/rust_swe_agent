@@ -443,6 +443,8 @@ pub enum BenchCmd {
     /// Diff two completed sweep runs by instance id; surfaces regressions
     /// and (with `--max-regressions`) gates CI on prompt/harness changes.
     Compare(CompareCmd),
+    /// Diff two completed sweep manifests to analyze configuration drift.
+    DiffConfig(DiffConfigCmd),
     /// Evaluate a completed sweep with an evaluation backend (e.g. sb-cli).
     Evaluate(EvaluateCmd),
     /// Inspect a single trajectory or list filtered instance summaries.
@@ -1114,6 +1116,31 @@ pub struct CompareCmd {
     /// causes gating flags to exit non-zero.
     #[arg(long, default_value_t = false)]
     pub allow_underpowered: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DiffConfigCmd {
+    /// Sweep output directory written by a prior `bench swebench` run.
+    /// Treated as the baseline/before side of the diff.
+    #[arg(long)]
+    pub baseline: std::path::PathBuf,
+
+    /// Sweep output directory to compare against the baseline.
+    /// Treated as the candidate/after side of the diff.
+    #[arg(long)]
+    pub candidate: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json` (machine-readable report).
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Exit non-zero (exit code 3) when any non-ignored difference is found.
+    #[arg(long = "fail-on-change")]
+    pub fail_on_change: bool,
+
+    /// Optional comma-separated list of paths or groups to ignore in changed_fields.
+    #[arg(long)]
+    pub ignore: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
