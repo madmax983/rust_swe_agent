@@ -405,14 +405,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         .clone()
         .unwrap_or_else(|| crate::run::mini::slugify(&task));
     let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
-    let patch_capture = github_pr
-        .as_ref()
-        .map(|options| crate::run::mini::PatchCaptureSpec {
-            base_commit: Some(options.target_branch.clone()),
-            workdir: std::path::PathBuf::from(cfg.root.environment.workdir.clone()),
-            patch_path: options.patch_path.clone(),
-            skip_patch_validation: m.skip_patch_validation,
-        });
+    let patch_capture = build_patch_capture_spec(
+        github_pr.as_ref(),
+        resolved_workdir.as_ref(),
+        &cfg,
+        m.skip_patch_validation,
+    );
 
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
@@ -1311,6 +1309,23 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
             "--observation-head-ratio must be a finite value in [0,1], got {value}"
         ))))
     }
+}
+
+#[allow(clippy::single_option_map)]
+fn build_patch_capture_spec(
+    github_pr: Option<&crate::run::github_pr::GithubPrOptions>,
+    resolved_workdir: Option<&std::path::PathBuf>,
+    cfg: &Config,
+    skip_patch_validation: bool,
+) -> Option<crate::run::mini::PatchCaptureSpec> {
+    github_pr.map(|options| crate::run::mini::PatchCaptureSpec {
+        base_commit: Some(options.target_branch.clone()),
+        workdir: resolved_workdir
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(cfg.root.environment.workdir.clone())),
+        patch_path: options.patch_path.clone(),
+        skip_patch_validation,
+    })
 }
 
 fn mini_github_pr_options(
@@ -3846,6 +3861,37 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(open_options.mode, PublishMode::Open);
+    }
+
+    #[test]
+    fn build_patch_capture_spec_respects_workdir_override() {
+        let cfg = crate::config::Config::defaults().unwrap();
+        let m = mini_cmd(false, true);
+        let github_pr = mini_github_pr_options(&m, &cfg, "task").unwrap();
+
+        // 1. With NO workdir override, should use cfg workdir
+        let spec_no_override = super::build_patch_capture_spec(
+            github_pr.as_ref(),
+            None,
+            &cfg,
+            m.skip_patch_validation,
+        )
+        .unwrap();
+        assert_eq!(
+            spec_no_override.workdir,
+            PathBuf::from(&cfg.root.environment.workdir)
+        );
+
+        // 2. With workdir override, should use the override
+        let override_dir = PathBuf::from("my_override_dir_xyz_789");
+        let spec_override = super::build_patch_capture_spec(
+            github_pr.as_ref(),
+            Some(&override_dir),
+            &cfg,
+            m.skip_patch_validation,
+        )
+        .unwrap();
+        assert_eq!(spec_override.workdir, override_dir);
     }
 
     #[test]

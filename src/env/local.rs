@@ -70,7 +70,15 @@ impl Environment for LocalEnvironment {
         isolate_process_tree(&mut cmd);
 
         if let Some(cwd) = req.cwd.as_ref() {
-            cmd.current_dir(cwd);
+            if cwd.is_relative() {
+                if let Some(ref wd) = self.workdir {
+                    cmd.current_dir(wd.join(cwd));
+                } else {
+                    cmd.current_dir(cwd);
+                }
+            } else {
+                cmd.current_dir(cwd);
+            }
         } else if let Some(ref wd) = self.workdir {
             cmd.current_dir(wd);
         }
@@ -593,6 +601,29 @@ mod tests {
             .unwrap();
         assert_eq!(r.stdout.trim(), "out");
         assert_eq!(r.stderr.trim(), "err");
+    }
+
+    #[tokio::test]
+    async fn relative_cwd_joined_with_workdir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workdir_path = temp_dir.path().to_path_buf();
+        let subdir_path = workdir_path.join("subdir");
+        std::fs::create_dir(&subdir_path).unwrap();
+
+        let env = LocalEnvironment::new().with_workdir(Some(workdir_path));
+        let mut req = RunRequest::new("echo hello > test.txt");
+        req.cwd = Some(std::path::PathBuf::from("subdir"));
+
+        let r = env.run(req).await.unwrap();
+        assert_eq!(r.exit_code, 0);
+
+        let target_file = subdir_path.join("test.txt");
+        assert!(
+            target_file.exists(),
+            "test.txt should have been written to the joined relative path: {target_file:?}"
+        );
+        let contents = std::fs::read_to_string(&target_file).unwrap();
+        assert!(contents.contains("hello"));
     }
 
     fn env_echo_command() -> &'static str {
