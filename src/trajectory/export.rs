@@ -129,13 +129,23 @@ impl TrajectoryExporter for HtmlExporter {
         html.push_str("<title>Trajectory Export</title>\n");
         html.push_str("<style>\n");
         html.push_str(
-            "body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }\n",
+            "body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f9fafb; color: #1f2937; line-height: 1.6; }\n",
         );
-        html.push_str(".message { margin-bottom: 20px; padding: 15px; border-radius: 8px; }\n");
-        html.push_str(".system { background-color: #f8d7da; color: #721c24; }\n");
-        html.push_str(".user { background-color: #d1ecf1; color: #0c5460; }\n");
-        html.push_str(".assistant { background-color: #d4edda; color: #155724; }\n");
-        html.push_str(".tool { background-color: #e2e3e5; color: #383d41; font-family: monospace; white-space: pre-wrap; }\n");
+        html.push_str(
+            "h1 { color: #111827; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }\n",
+        );
+        html.push_str("p { margin-bottom: 1.5em; }\n");
+        html.push_str("strong { color: #374151; }\n");
+        html.push_str(".message { margin-bottom: 24px; padding: 18px 24px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }\n");
+        html.push_str(".message::before { display: block; font-weight: 600; margin-bottom: 8px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; }\n");
+        html.push_str(".system { background-color: #fef2f2; color: #991b1b; border-left: 4px solid #ef4444; }\n");
+        html.push_str(".system::before { content: 'System'; color: #b91c1c; }\n");
+        html.push_str(".user { background-color: #eff6ff; color: #1e3a8a; border-left: 4px solid #3b82f6; }\n");
+        html.push_str(".user::before { content: 'User'; color: #2563eb; }\n");
+        html.push_str(".assistant { background-color: #f0fdf4; color: #166534; border-left: 4px solid #22c55e; }\n");
+        html.push_str(".assistant::before { content: 'Assistant'; color: #15803d; }\n");
+        html.push_str(".tool { background-color: #f3f4f6; color: #374151; border-left: 4px solid #6b7280; font-family: ui-monospace, monospace; white-space: pre-wrap; font-size: 0.9em; }\n");
+        html.push_str(".tool::before { content: 'Tool'; color: #4b5563; font-family: system-ui, -apple-system, sans-serif; }\n");
         html.push_str("</style>\n</head>\n<body>\n");
 
         html.push_str("<h1>Trajectory Export</h1>\n");

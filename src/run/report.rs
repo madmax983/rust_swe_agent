@@ -539,6 +539,7 @@ fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
 
 // ── HTML rendering ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn md_to_html(md: &str) -> String {
     let mut buf = String::new();
     writeln!(buf, "<!DOCTYPE html>").ok();
@@ -554,26 +555,45 @@ fn md_to_html(md: &str) -> String {
     writeln!(buf, "<style>").ok();
     writeln!(
         buf,
-        "body{{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;line-height:1.5;color:#222}}"
+        "body{{font-family:system-ui,-apple-system,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a;background-color:#fcfcfc}}"
     )
     .ok();
     writeln!(
         buf,
-        "table{{border-collapse:collapse;width:100%;margin:1em 0}}th,td{{border:1px solid #ccc;padding:6px 12px;text-align:left}}th{{background:#f4f4f4}}"
+        "table{{border-collapse:collapse;width:100%;margin:1.5em 0;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.1);border-radius:8px;overflow:hidden}}"
     )
     .ok();
     writeln!(
         buf,
-        "blockquote{{border-left:4px solid #aaa;margin:0;padding:0 1em;color:#555}}"
+        "th,td{{border-bottom:1px solid #eaeaea;padding:12px 16px;text-align:left}}"
     )
     .ok();
     writeln!(
         buf,
-        "code,pre{{background:#f6f8fa;border-radius:4px;padding:2px 6px}}"
+        "th{{background:#f8f9fa;font-weight:600;color:#444;text-transform:uppercase;font-size:0.85em;letter-spacing:0.05em}}"
+    )
+    .ok();
+    writeln!(
+        buf,
+        "tr:last-child td{{border-bottom:none}} tr:hover{{background-color:#f5f8ff}}"
+    )
+    .ok();
+    writeln!(
+        buf,
+        "blockquote{{border-left:4px solid #0066cc;margin:0 0 1.5em 0;padding:0.5em 1.2em;color:#555;background:#f0f7ff;border-radius:0 4px 4px 0}}"
+    )
+    .ok();
+    writeln!(
+        buf,
+        "code,pre{{background:#f4f6f8;border:1px solid #e1e4e8;border-radius:4px;padding:0.2em 0.4em;font-family:ui-monospace,monospace;font-size:0.9em}}"
     )
     .ok();
     writeln!(buf, "em{{font-style:italic;color:#666}}").ok();
-    writeln!(buf, "h1,h2,h3{{margin-top:1.6em}}").ok();
+    writeln!(
+        buf,
+        "h1,h2,h3{{margin-top:1.8em;color:#111;font-weight:600}}"
+    )
+    .ok();
     writeln!(buf, "</style>").ok();
     writeln!(buf, "</head>").ok();
     writeln!(buf, "<body>").ok();
