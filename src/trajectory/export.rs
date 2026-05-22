@@ -341,3 +341,92 @@ mod tests {
         assert!(html.contains("Hello user"));
     }
 }
+
+
+#[cfg(feature = "chrome-trace-export")]
+pub struct ChromeTraceExporter;
+
+#[cfg(feature = "chrome-trace-export")]
+impl TrajectoryExporter for ChromeTraceExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut events = Vec::new();
+        let mut current_time_us: u64 = 0;
+
+        for msg in &trajectory.messages {
+            if let Some(harness_ms) = msg.extra.harness_overhead_ms {
+                let dur_us = harness_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": "Harness Overhead",
+                    "cat": "harness",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": current_time_us,
+                    "dur": dur_us,
+                }));
+                current_time_us += dur_us;
+            }
+
+            if let Some(model_ms) = msg.extra.model_latency_ms {
+                let dur_us = model_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": "Model Query",
+                    "cat": "model",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": current_time_us,
+                    "dur": dur_us,
+                }));
+                current_time_us += dur_us;
+            }
+
+            if let Some(tool_ms) = msg.extra.tool_latency_ms {
+                let dur_us = tool_ms * 1000;
+                events.push(serde_json::json!({
+                    "name": "Tool Execution",
+                    "cat": "tool",
+                    "ph": "X",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": current_time_us,
+                    "dur": dur_us,
+                }));
+                current_time_us += dur_us;
+            }
+        }
+
+        serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "chrome-trace-export")]
+mod tests_chrome_trace {
+    use super::*;
+    use crate::model::Message;
+
+    #[test]
+    fn test_chrome_trace_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+
+        let mut m1 = Message::user("Hello");
+        m1.extra.harness_overhead_ms = Some(10);
+
+        let mut m2 = Message::assistant("Hi");
+        m2.extra.model_latency_ms = Some(50);
+        m2.extra.tool_latency_ms = Some(20);
+
+        t.record_message(&m1);
+        t.record_message(&m2);
+
+        let trace = ChromeTraceExporter::export(&t);
+        assert!(trace.contains("Harness Overhead"));
+        assert!(trace.contains("Model Query"));
+        assert!(trace.contains("Tool Execution"));
+        assert!(trace.contains("\"dur\": 10000"));
+        assert!(trace.contains("\"dur\": 50000"));
+        assert!(trace.contains("\"dur\": 20000"));
+    }
+}
