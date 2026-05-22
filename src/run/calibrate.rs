@@ -582,8 +582,18 @@ fn build_mismatches(
     mismatches
 }
 
+/// Joins sorted values without intermediate `Vec` allocations.
 fn sorted_join(values: BTreeSet<&str>) -> String {
-    values.into_iter().collect::<Vec<_>>().join(",")
+    let mut res = String::new();
+    let mut first = true;
+    for v in values {
+        if !first {
+            res.push(',');
+        }
+        res.push_str(v);
+        first = false;
+    }
+    res
 }
 
 fn compare_field(

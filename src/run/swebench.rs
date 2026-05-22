@@ -4715,9 +4715,17 @@ pub fn apply_subset(
             .filter(|id| !dataset_ids.contains(id))
             .collect();
         if !unknown.is_empty() {
+            let mut unknown_str = String::new();
+            let mut first = true;
+            for id in unknown {
+                if !first {
+                    unknown_str.push_str(", ");
+                }
+                unknown_str.push_str(id);
+                first = false;
+            }
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "--instance-ids references unknown id(s): {}",
-                unknown.into_iter().collect::<Vec<_>>().join(", ")
+                "--instance-ids references unknown id(s): {unknown_str}"
             ))));
         }
         let include: HashSet<&str> = ids.iter().map(String::as_str).collect();

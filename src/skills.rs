@@ -540,16 +540,23 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text in a single pass without intermediate allocations.
+/// Reduces 2 heap allocations (Vec and intermediate String).
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut needs_space = false;
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
+            if needs_space && !out.is_empty() {
+                out.push(' ');
+            }
             out.push(ch.to_ascii_lowercase());
+            needs_space = false;
         } else {
-            out.push(' ');
+            needs_space = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
