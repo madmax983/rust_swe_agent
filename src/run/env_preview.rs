@@ -344,7 +344,7 @@ fn normalize_path(path: &str) -> String {
             other => result.push(other.as_os_str()),
         }
     }
-    result.to_string_lossy().into_owned()
+    result.to_string_lossy().into_owned().replace('\\', "/")
 }
 
 /// Returns `true` when `command` contains shell metacharacters that make
