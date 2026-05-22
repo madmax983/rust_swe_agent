@@ -96,3 +96,89 @@ pub fn is_free_tier_model(model: &str) -> bool {
         .is_some_and(|name| name.ends_with(":free"))
         || model.ends_with(":free")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cost_source_labels() {
+        assert_eq!(CostSource::ProviderReported.label(), "provider_reported");
+        assert_eq!(CostSource::RateCardEstimate.label(), "rate_card_estimate");
+        assert_eq!(CostSource::FreeTierInferred.label(), "free_tier_inferred");
+        assert_eq!(CostSource::Unknown.label(), "unknown");
+        assert_eq!(
+            format!("{}", CostSource::ProviderReported),
+            "provider_reported"
+        );
+    }
+
+    #[test]
+    fn cost_source_combine_precedence() {
+        let sources = vec![
+            CostSource::ProviderReported,
+            CostSource::RateCardEstimate,
+            CostSource::FreeTierInferred,
+            CostSource::Unknown,
+        ];
+
+        for &s in &sources {
+            assert_eq!(CostSource::Unknown.combine(s), CostSource::Unknown);
+            assert_eq!(s.combine(CostSource::Unknown), CostSource::Unknown);
+        }
+
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::ProviderReported),
+            CostSource::RateCardEstimate
+        );
+        assert_eq!(
+            CostSource::RateCardEstimate.combine(CostSource::FreeTierInferred),
+            CostSource::RateCardEstimate
+        );
+
+        assert_eq!(
+            CostSource::ProviderReported.combine(CostSource::FreeTierInferred),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::ProviderReported),
+            CostSource::ProviderReported
+        );
+        assert_eq!(
+            CostSource::FreeTierInferred.combine(CostSource::FreeTierInferred),
+            CostSource::FreeTierInferred
+        );
+    }
+
+    #[test]
+    fn free_tier_model_detection() {
+        assert!(is_free_tier_model("gemini-1.5-flash:free"));
+        assert!(is_free_tier_model(
+            "openrouter/google/gemini-1.5-flash:free"
+        ));
+        assert!(!is_free_tier_model("gpt-4"));
+        assert!(!is_free_tier_model("free-model")); // Needs to end with :free
+        assert!(!is_free_tier_model("openrouter/free:model"));
+    }
+
+    #[test]
+    fn estimate_cost_anthropic_models_use_multipliers() {
+        // Base input: $3/M, Output: $15/M
+        // Anthropic Read: 0.1x ($0.3/M)
+        // Anthropic Creation: 1.25x ($3.75/M)
+        let cost = estimate_cost_usd(
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            "claude-3-5-sonnet",
+        );
+        assert!((cost - (3.0 + 0.3 + 3.75 + 15.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn estimate_cost_non_anthropic_models_use_standard_rates() {
+        let cost = estimate_cost_usd(1_000_000, 1_000_000, 1_000_000, 1_000_000, "gpt-4o");
+        assert!((cost - (3.0 + 3.0 + 3.0 + 15.0)).abs() < f64::EPSILON);
+    }
+}
