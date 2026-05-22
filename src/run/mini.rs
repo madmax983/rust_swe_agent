@@ -154,6 +154,7 @@ pub struct MiniArgs {
     /// Absolute canonicalized local working directory.
     pub local_workdir: Option<PathBuf>,
     pub read_only: bool,
+    pub allow_mcp_in_read_only: bool,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -188,6 +189,14 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_usage_per_call.clone(),
     );
     let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
+    if args.read_only
+        && !args.allow_mcp_in_read_only
+        && !args.config.root.agent.mcp_servers.is_empty()
+    {
+        return Err(Error::Config(ConfigError::Invalid(
+            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
+        )));
+    }
     let tool_providers = crate::tool::discover_mcp_servers(
         env.as_ref(),
         &args.config.root.agent.mcp_servers,
@@ -1953,6 +1962,7 @@ index 8a1218a..24c5735 100644\n\
             webhook_headers: vec![],
             local_workdir: None,
             read_only: false,
+            allow_mcp_in_read_only: false,
         };
 
         run(args).await.unwrap();
@@ -2049,6 +2059,7 @@ index 8a1218a..24c5735 100644\n\
             webhook_headers: vec![],
             local_workdir: None,
             read_only: false,
+            allow_mcp_in_read_only: false,
         };
 
         run(args).await.unwrap();
@@ -2140,6 +2151,7 @@ index 8a1218a..24c5735 100644\n\
             webhook_headers: vec![],
             local_workdir: None,
             read_only: false,
+            allow_mcp_in_read_only: false,
         };
 
         run(args).await.unwrap();

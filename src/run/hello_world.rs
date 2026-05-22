@@ -38,6 +38,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         webhook_headers: vec![],
         local_workdir: None,
         read_only: false,
+        allow_mcp_in_read_only: false,
     };
     run(args).await?;
     println!("hello-world smoke complete");

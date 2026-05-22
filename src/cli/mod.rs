@@ -380,7 +380,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.environment.docker_image = Some(img);
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
-    apply_read_only_policy(&m, &mut cfg)?;
+    apply_read_only_policy(&m, &cfg)?;
     let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
 
     // ── Resume path ──────────────────────────────────────────────────────────
@@ -451,6 +451,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
         read_only: m.read_only,
+        allow_mcp_in_read_only: m.allow_mcp_in_read_only,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -784,7 +785,7 @@ async fn mini_resume_cmd(
 
     cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
     let task = traj.info.task.clone().unwrap_or_default();
-    apply_read_only_policy(&m, &mut cfg)?;
+    apply_read_only_policy(&m, &cfg)?;
 
     if m.resume_allow_step_bump {
         // Apply only caps the operator explicitly set on the resume invocation.
@@ -847,11 +848,12 @@ async fn mini_resume_cmd(
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
         read_only: m.read_only,
+        allow_mcp_in_read_only: m.allow_mcp_in_read_only,
     };
     crate::run::mini::run(args).await
 }
 
-fn apply_read_only_policy(m: &args::MiniCmd, cfg: &mut Config) -> Result<(), Error> {
+fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> {
     if !m.read_only {
         return Ok(());
     }
@@ -864,7 +866,9 @@ fn apply_read_only_policy(m: &args::MiniCmd, cfg: &mut Config) -> Result<(), Err
         )));
     }
     if !m.allow_mcp_in_read_only && !cfg.root.agent.mcp_servers.is_empty() {
-        cfg.root.agent.mcp_servers.clear();
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
+        )));
     }
     Ok(())
 }

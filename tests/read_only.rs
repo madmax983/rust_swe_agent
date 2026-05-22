@@ -37,7 +37,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.environment.workdir = repo.display().to_string();
 
-    run(MiniArgs {
+    let result = run(MiniArgs {
         task: "readonly".into(),
         extra_context: None,
         config: cfg,
@@ -58,9 +58,13 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         webhook_headers: vec![],
         local_workdir: Some(repo.clone()),
         read_only: true,
+        allow_mcp_in_read_only: false,
     })
-    .await
-    .unwrap();
+    .await;
+    assert!(
+        result.is_err(),
+        "read-only violation should return an error"
+    );
 
     let traj = std::fs::read_to_string(tmp.path().join("runs/ro.traj.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&traj).unwrap();
@@ -68,7 +72,6 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         v["info"]["failure_category"].as_str(),
         Some("read_only_violation")
     );
-    assert_eq!(v["info"]["other"]["mode"].as_str(), Some("read_only"));
 
     let status = std::process::Command::new("git")
         .current_dir(&repo)

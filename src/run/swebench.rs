@@ -4305,6 +4305,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             webhook_headers: vec![],
             local_workdir: None,
             read_only: false,
+            allow_mcp_in_read_only: false,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

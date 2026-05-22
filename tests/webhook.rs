@@ -142,6 +142,7 @@ fn make_mini_args(
         webhook_headers,
         local_workdir: None,
         read_only: false,
+        allow_mcp_in_read_only: false,
     }
 }
 
@@ -529,6 +530,7 @@ async fn webhook_redacts_secrets_before_post() {
         webhook_headers: vec![],
         local_workdir: None,
         read_only: false,
+        allow_mcp_in_read_only: false,
     };
 
     let (run_result, bodies) =
