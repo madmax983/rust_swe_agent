@@ -76,6 +76,7 @@ async fn two_turn_echo_submit_produces_well_formed_trajectory() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -150,6 +151,7 @@ async fn provider_native_bash_tool_call_executes_without_format_error_turn() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -221,6 +223,7 @@ async fn fenced_action_wins_over_conflicting_native_tool_call() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -280,6 +283,7 @@ async fn ignores_native_tool_calls_from_unselected_choices() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -333,6 +337,7 @@ async fn records_pytest_invocation_before_submit_from_action_text() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -369,6 +374,7 @@ async fn echoing_pytest_does_not_register_as_test_invocation() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -406,6 +412,7 @@ test_command_patterns = ["project-(check|test)"]
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -439,6 +446,7 @@ async fn pipeline_segment_after_single_pipe_counts_test_command() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -465,6 +473,7 @@ fn invalid_custom_test_command_regex_rejects_agent_build() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build() else {
         panic!("invalid regex should reject agent build");
@@ -495,6 +504,7 @@ async fn submit_without_test_commands_records_no_pre_submit_tests() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -615,6 +625,7 @@ timeout_secs = 3
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -720,6 +731,7 @@ extra_deny_patterns = ["forbidden-file"]
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -761,6 +773,7 @@ async fn runtime_tool_provider_executes_without_command_tool_config() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build_with_tool_providers(vec![provider])
     .unwrap();
@@ -818,6 +831,7 @@ async fn mcp_server_tool_executes_from_matching_fenced_block() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build_with_tool_providers(vec![provider])
     .unwrap();
@@ -866,6 +880,7 @@ async fn pre_tool_use_hook_can_block_the_bash_command() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -912,6 +927,7 @@ async fn blocked_pre_tool_use_test_command_does_not_count_as_test_invocation() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -954,6 +970,7 @@ async fn post_tool_use_hook_output_is_added_to_next_observation() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1008,6 +1025,7 @@ async fn tool_hooks_receive_cancellation_token() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1051,6 +1069,7 @@ async fn failing_post_tool_use_hook_is_reported_but_does_not_abort() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1096,6 +1115,7 @@ async fn post_tool_use_env_payload_is_capped_for_large_outputs() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1128,6 +1148,7 @@ async fn post_tool_use_environment_error_is_reported_not_propagated() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1174,6 +1195,7 @@ async fn post_tool_use_hook_output_is_truncated_before_observation_rendering() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1223,6 +1245,7 @@ async fn pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_to
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1268,6 +1291,7 @@ async fn pre_tool_use_hook_env_preserves_full_command_for_policy_checks() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -1307,6 +1331,7 @@ async fn tool_hook_task_context_keeps_raw_task_while_trajectory_is_redacted() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();

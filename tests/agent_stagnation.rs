@@ -30,6 +30,7 @@ fn build_agent(
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap()
@@ -259,6 +260,7 @@ fn stagnation_config_rejects_window_smaller_than_threshold() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build();
 
@@ -284,6 +286,7 @@ fn stagnation_config_rejects_zero_threshold() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build();
 
@@ -307,6 +310,7 @@ fn stagnation_config_rejects_zero_window() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build();
 

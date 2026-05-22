@@ -34,6 +34,7 @@ fn make_agent_with_sink(
         renderer: None,
         stream: Some(sink),
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap()

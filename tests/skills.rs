@@ -455,6 +455,7 @@ paths = ["{skill_path}"]
         webhook_url: None,
         webhook_headers: vec![],
         local_workdir: None,
+        read_only: false,
     })
     .await
     .unwrap();
@@ -529,6 +530,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         webhook_url: None,
         webhook_headers: vec![],
         local_workdir: None,
+        read_only: false,
     })
     .await
     .unwrap();

@@ -427,6 +427,9 @@ pub struct DefaultAgent {
     /// tool/bash action is gated on the operator's y/n/a decision
     /// between PreToolUse hooks and `env.run`.
     pub confirm_callback: Option<std::sync::Arc<dyn super::confirm::ConfirmCallback>>,
+    /// When true, tool execution is blocked and any attempted tool action
+    /// terminates the run with a read-only failure.
+    pub read_only: bool,
 }
 
 pub struct DefaultAgentBuilder {
@@ -441,6 +444,7 @@ pub struct DefaultAgentBuilder {
     /// state rather than starting fresh. Budget and step counters are
     /// seeded from the checkpoint so caps apply to the combined run.
     pub resume_from: Option<Box<ResumeState>>,
+    pub read_only: bool,
 }
 
 impl DefaultAgentBuilder {
@@ -623,6 +627,7 @@ impl DefaultAgentBuilder {
             stagnation_detector,
             checkpoint_path: None,
             confirm_callback: None,
+            read_only: self.read_only,
         })
     }
 }
@@ -1095,6 +1100,40 @@ impl Agent for DefaultAgent {
         let tool_name = tool_call.name;
         let tool_input = tool_call.input;
         let is_bash = tool_name == BASH_TOOL_NAME;
+        if self.read_only {
+            self.history.push(Message::assistant(
+                self.redactor
+                    .redact_text(&assistant_content, surface::MODEL_OBSERVATION)
+                    .text,
+            ));
+            record_redacted_message(
+                &mut self.trajectory,
+                &asst,
+                asst.extra.clone(),
+                &self.redactor,
+            );
+            let rejection = format!(
+                "Exit code: 1\nOutput:\nRead-only mode blocks tool execution (`{tool_name}`)."
+            );
+            let obs_msg = Message::user(rejection.clone());
+            self.history.push(obs_msg.clone());
+            let mut obs_extra = crate::model::MessageExtra {
+                harness_overhead_ms: Some(elapsed_ms_since(self.last_measurement_end)),
+                ..crate::model::MessageExtra::default()
+            };
+            obs_extra
+                .other
+                .insert("read_only_blocked".into(), serde_json::Value::Bool(true));
+            obs_extra.other.insert(
+                "blocked_tool".into(),
+                serde_json::Value::String(tool_name.clone()),
+            );
+            record_redacted_message(&mut self.trajectory, &obs_msg, obs_extra, &self.redactor);
+            self.trajectory.info.exit_reason = Some("error".into());
+            self.trajectory.info.failure_category = Some(FailureCategory::ReadOnlyViolation);
+            self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
+            return Err(crate::error::Error::Trajectory(rejection));
+        }
         if !self.tool_registry.contains(&tool_name) {
             unreachable!("Submit and None handled above");
         }
@@ -2479,6 +2518,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap()
@@ -2546,6 +2586,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap();
@@ -2592,6 +2633,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap();
@@ -2691,6 +2733,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap();
@@ -2916,6 +2959,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap()
@@ -3050,6 +3094,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap();

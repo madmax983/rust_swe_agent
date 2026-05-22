@@ -380,6 +380,20 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.environment.docker_image = Some(img);
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+    if m.read_only && !m.allow_mcp_in_read_only && !m.mcp_servers.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--read-only blocks --mcp-server unless --allow-mcp-in-read-only is set".into(),
+        )));
+    }
+    if m.read_only
+        && (m.github_pr.open_pr
+            || m.github_pr.target_repo.is_some()
+            || m.github_pr.target_branch.is_some())
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--read-only is incompatible with --open-pr, --target-repo, and --target-branch".into(),
+        )));
+    }
     let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
 
     // ── Resume path ──────────────────────────────────────────────────────────
@@ -449,6 +463,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -625,6 +640,7 @@ fn mini_render_only_cmd(
         extra_context: m.extra_context,
         config: cfg,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
     };
     let report = crate::run::render_only::render(args)?;
 
@@ -841,6 +857,7 @@ async fn mini_resume_cmd(
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
     };
     crate::run::mini::run(args).await
 }
@@ -900,6 +917,7 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
         extra_context: None,
         config: cfg,
         local_workdir: None,
+        read_only: false,
     };
     let report = crate::run::render_only::render(render_args)?;
 
@@ -4064,6 +4082,8 @@ mod tests {
             history_max_input_tokens: None,
             history_keep_last_observations: None,
             mcp_servers: Vec::new(),
+            read_only: false,
+            allow_mcp_in_read_only: false,
             config: None,
             workdir: None,
             env: None,

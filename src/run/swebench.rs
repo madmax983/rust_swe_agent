@@ -4304,6 +4304,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             webhook_url: None,
             webhook_headers: vec![],
             local_workdir: None,
+            read_only: false,
         };
         let run_err = crate::run::mini::run(args).await.err();
 
@@ -4638,6 +4639,7 @@ fn failure_category_label(cat: FailureCategory) -> &'static str {
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
         FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
+        FailureCategory::ReadOnlyViolation => "read_only_violation",
     }
 }
 

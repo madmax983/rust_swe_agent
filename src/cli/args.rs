@@ -244,6 +244,14 @@ pub struct MiniCmd {
     #[arg(long = "mcp-server", value_name = "COMMAND")]
     pub mcp_servers: Vec<String>,
 
+    /// Run in analysis-only mode: disable mutation-capable surfaces.
+    #[arg(long, default_value_t = false)]
+    pub read_only: bool,
+
+    /// Allow MCP tool registration in read-only mode.
+    #[arg(long, default_value_t = false, requires = "read_only")]
+    pub allow_mcp_in_read_only: bool,
+
     /// Optional path to a TOML config (overlays defaults).
     #[arg(long)]
     pub config: Option<PathBuf>,

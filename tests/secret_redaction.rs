@@ -85,6 +85,7 @@ custom_patterns = ["CUSTOMSECRET-[0-9]{{3}}"]
         renderer: None,
         stream: Some(bcast as Arc<dyn StreamSink>),
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -172,6 +173,7 @@ secret_literals = ["{configured_secret}"]
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -232,6 +234,7 @@ secret_literals = ["{configured_secret}"]
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();

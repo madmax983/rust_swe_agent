@@ -74,6 +74,7 @@ mod tests {
             renderer: None,
             stream: None,
             resume_from: None,
+            read_only: false,
         }
         .build()
         .unwrap();

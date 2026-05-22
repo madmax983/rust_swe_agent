@@ -173,6 +173,8 @@ pub enum FailureCategory {
     /// even after eliding all older observations. The run is terminated rather
     /// than sending an oversized prompt or triggering a provider context error.
     HistoryCompactionFailed,
+    /// Read-only mode blocked a tool invocation attempt.
+    ReadOnlyViolation,
     /// An unknown or unclassified failure occurred, or a value produced by a
     /// newer harness version that this reader does not recognise.
     #[serde(other)]
