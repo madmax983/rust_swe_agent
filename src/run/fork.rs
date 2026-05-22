@@ -1,6 +1,8 @@
 //! `bench fork` runner — re-runs a prefix from a parent trajectory under $0 cost
 //! and prompt/drift verification, then switches to live model calls at step N.
 
+#[cfg(feature = "docker")]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -447,8 +449,6 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
 
     if let Some(limit) = args.step_limit {
         config.root.agent.step_limit = limit;
-    } else {
-        config.root.agent.step_limit = parent_steps.max(50);
     }
 
     if let Some(budget) = args.per_task_budget_usd {

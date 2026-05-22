@@ -595,3 +595,121 @@ fn bench_fork_lineage_records_only_effective_mcp_override() {
         "mcp_config must not be recorded as it was not effective"
     );
 }
+
+fn make_valid_manifest_in_sweep(sweep_dir: &Path, resolved_toml: &str) {
+    let results = serde_json::json!({
+        "total": 0,
+        "submitted": 0,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "sweep_status": "completed",
+        "instances": [],
+        "manifest": {
+            "harness": {
+                "name": "test-harness",
+                "version": "1.0",
+                "git_sha": null,
+                "git_dirty": null,
+                "git_resolution": "test"
+            },
+            "dataset": {
+                "path": "test-dataset",
+                "sha256": "test-sha",
+                "instance_count": 0,
+                "dataset_kind": "local"
+            },
+            "prompt_template": {
+                "source": "test-template",
+                "sha256": "template-sha"
+            },
+            "config": {
+                "resolved": resolved_toml,
+                "overlay_paths": []
+            },
+            "model": {
+                "name": "test-model",
+                "backend": "test-backend"
+            },
+            "runtime": {
+                "started_at_utc": "2026-05-22T00:00:00Z",
+                "host_os": "linux"
+            },
+            "cli": {
+                "argv": []
+            }
+        }
+    });
+    fs::write(
+        sweep_dir.join("results.json"),
+        serde_json::to_string_pretty(&results).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn bench_fork_preserves_parent_step_limit_without_override() {
+    let temp = tempdir().unwrap();
+    let sweep_dir = temp.path().join("sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let legacy_path = temp.path().join("legacy.traj.json");
+    make_legacy_trajectory(&legacy_path);
+    record_fingerprinted_trajectory(&legacy_path, &sweep_dir, "myinstance");
+
+    // Write a valid results.json manifest specifying agent.step_limit = 1
+    let resolved_toml = "\
+[agent]
+step_limit = 1
+";
+    make_valid_manifest_in_sweep(&sweep_dir, resolved_toml);
+
+    // Run fork starting from step 1, WITHOUT --step-limit override
+    let out_dir = temp.path().join("out");
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "fork",
+            "--sweep",
+            sweep_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance",
+            "--from-step",
+            "1",
+            "--output",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "expected fork to succeed, got: {:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        stdout,
+        stderr
+    );
+
+    let fork_traj_path = out_dir.join("myinstance-fork.traj.json");
+    assert!(fork_traj_path.exists());
+    let traj_content = fs::read_to_string(&fork_traj_path).unwrap();
+    let traj: serde_json::Value = serde_json::from_str(&traj_content).unwrap();
+
+    // Verify it terminated due to the inherited step_limit of 1
+    let info = &traj["info"];
+    assert_eq!(
+        info["exit_reason"].as_str().unwrap(),
+        "step_limit",
+        "should terminate with step_limit due to inherited step_limit from parent manifest"
+    );
+
+    // Verify no step_limit is recorded in tail_overrides
+    let lineage = &traj["fork_lineage"];
+    let overrides = &lineage["tail_overrides"];
+    assert!(
+        overrides["step_limit"].is_null(),
+        "step_limit override should not be recorded since it wasn't overridden"
+    );
+}
