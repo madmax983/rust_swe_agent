@@ -603,6 +603,15 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.other.is_empty()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForkLineage {
+    pub parent_sweep_path: String,
+    pub parent_instance_id: String,
+    pub parent_trajectory_sha256: String,
+    pub fork_step: u32,
+    pub tail_overrides: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 /// The complete record of an agent's execution, including metadata, telemetry, and all messages.
 ///
@@ -615,6 +624,9 @@ pub struct Trajectory {
     pub info: TrajectoryInfo,
     /// The sequence of messages exchanged during the run.
     pub messages: Vec<MessageRecord>,
+    /// Metadata recording how this trajectory was forked from a parent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_lineage: Option<ForkLineage>,
 }
 
 impl Serialize for Trajectory {
@@ -622,7 +634,8 @@ impl Serialize for Trajectory {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("Trajectory", 5)?;
+        let len = if self.fork_lineage.is_some() { 6 } else { 5 };
+        let mut state = serializer.serialize_struct("Trajectory", len)?;
         state.serialize_field("trajectory_format", &self.trajectory_format)?;
         state.serialize_field("artifact_kind", &crate::artifact::ArtifactKind::Trajectory)?;
         state.serialize_field(
@@ -631,6 +644,9 @@ impl Serialize for Trajectory {
         )?;
         state.serialize_field("info", &self.info)?;
         state.serialize_field("messages", &self.messages)?;
+        if let Some(ref lineage) = self.fork_lineage {
+            state.serialize_field("fork_lineage", lineage)?;
+        }
         state.end()
     }
 }
@@ -641,6 +657,7 @@ impl Default for Trajectory {
             trajectory_format: FORMAT_VERSION.to_owned(),
             info: TrajectoryInfo::default(),
             messages: Vec::new(),
+            fork_lineage: None,
         }
     }
 }

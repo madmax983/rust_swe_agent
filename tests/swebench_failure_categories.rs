@@ -25,6 +25,7 @@ fn write_traj(output: &Path, id: &str, info: TrajectoryInfo) {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join(format!("{id}.traj.json")),

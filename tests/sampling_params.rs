@@ -164,6 +164,7 @@ fn write_traj_with_temperature(dir: &Path, instance_id: &str, temperature: f32) 
                 extra: assistant_extra,
             },
         ],
+        fork_lineage: None,
     };
     std::fs::write(
         dir.join(format!("{instance_id}.traj.json")),
@@ -580,6 +581,7 @@ fn inspect_redaction_masks_sampling_extra_secret_key() {
                 ..Default::default()
             },
         }],
+        fork_lineage: None,
     };
 
     let redactor = Redactor::default_enabled();
@@ -621,6 +623,7 @@ fn write_legacy_traj(dir: &Path, instance_id: &str) {
                 extra: MessageExtra::default(), // no sampling block
             },
         ],
+        fork_lineage: None,
     };
     std::fs::write(
         dir.join(format!("{instance_id}.traj.json")),

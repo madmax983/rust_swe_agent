@@ -176,6 +176,9 @@ pub struct InspectReport {
     /// via their dashboard's trace search. `None` when OTLP was not enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Metadata recording how this trajectory was forked from a parent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_lineage: Option<crate::trajectory::ForkLineage>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -375,6 +378,7 @@ fn build_instance_report(
                 partial: false,
                 partial_reason: None,
                 trace_id: None,
+                fork_lineage: None,
             });
         }
     };
@@ -461,6 +465,7 @@ fn build_instance_report(
         partial: traj.info.partial,
         partial_reason: traj.info.partial_reason,
         trace_id: traj.info.trace_id,
+        fork_lineage: traj.fork_lineage,
     })
 }
 
@@ -861,6 +866,29 @@ fn render_instance_text(report: &InspectReport) -> String {
     }
     if let Some(tid) = &report.trace_id {
         let _ = writeln!(s, "trace_id:         {tid}");
+    }
+    if let Some(lineage) = &report.fork_lineage {
+        let _ = writeln!(
+            s,
+            "fork_lineage:     parent_sweep_path={}",
+            lineage.parent_sweep_path
+        );
+        let _ = writeln!(
+            s,
+            "                  parent_instance_id={}",
+            lineage.parent_instance_id
+        );
+        let _ = writeln!(
+            s,
+            "                  parent_trajectory_sha256={}",
+            lineage.parent_trajectory_sha256
+        );
+        let _ = writeln!(s, "                  fork_step={}", lineage.fork_step);
+        let _ = writeln!(
+            s,
+            "                  tail_overrides={}",
+            serde_json::to_string(&lineage.tail_overrides).unwrap_or_default()
+        );
     }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");
@@ -1354,6 +1382,23 @@ pub fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Red
             }
         }
         for value in message.extra.other.values_mut() {
+            redacted |= redactor.redact_json_value(value, surface::INSPECT);
+        }
+    }
+    if let Some(lineage) = &mut trajectory.fork_lineage {
+        let outcome = redactor.redact_text(&lineage.parent_sweep_path, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_sweep_path = outcome.text;
+
+        let outcome = redactor.redact_text(&lineage.parent_instance_id, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_instance_id = outcome.text;
+
+        let outcome = redactor.redact_text(&lineage.parent_trajectory_sha256, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_trajectory_sha256 = outcome.text;
+
+        for value in lineage.tail_overrides.values_mut() {
             redacted |= redactor.redact_json_value(value, surface::INSPECT);
         }
     }

@@ -119,6 +119,7 @@ fn write_valid_run(output: &Path, instance_id: &str, run_index: u32, marker: &st
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let traj_path = trajectory_path_for_run(output, instance_id, run_index);
     std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();
@@ -143,6 +144,7 @@ fn write_valid_tested_run(output: &Path, instance_id: &str, run_index: u32, mark
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let traj_path = trajectory_path_for_run(output, instance_id, run_index);
     std::fs::create_dir_all(traj_path.parent().unwrap()).unwrap();

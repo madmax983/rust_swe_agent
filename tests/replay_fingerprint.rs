@@ -53,6 +53,7 @@ fn make_legacy_trajectory(dir: &Path) -> std::path::PathBuf {
                 extra: MessageExtra::default(),
             },
         ],
+        fork_lineage: None,
     };
     let path = dir.join("legacy.traj.json");
     traj.save_pretty(&path).unwrap();

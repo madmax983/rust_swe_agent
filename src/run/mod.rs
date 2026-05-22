@@ -15,6 +15,7 @@ pub mod env_preview;
 pub mod evaluate;
 pub mod evaluator_selftest;
 pub mod forecast;
+pub mod fork;
 pub mod frontier;
 pub mod github_pr;
 pub mod grep;

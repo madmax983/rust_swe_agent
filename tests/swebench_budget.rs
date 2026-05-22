@@ -749,6 +749,7 @@ async fn resume_skipped_costs_count_against_budget() {
             ..Default::default()
         },
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join("already-on-disk.traj.json"),
@@ -856,6 +857,7 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
             ..Default::default()
         },
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join("already-on-disk.traj.json"),
@@ -1039,6 +1041,7 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
             ..Default::default()
         },
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join("retryable.traj.json"),
@@ -1298,6 +1301,7 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
             ..Default::default()
         },
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join("already-on-disk.traj.json"),

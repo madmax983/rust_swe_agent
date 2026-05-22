@@ -72,6 +72,7 @@ fn emits_content_even_when_extra_empty() {
             content: "x".into(),
             extra: MessageExtra::default(),
         }],
+        fork_lineage: None,
     };
     let s = serde_json::to_string(&t).unwrap();
     // Extra was empty → must be omitted from the serialized form.

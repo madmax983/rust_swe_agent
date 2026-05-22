@@ -113,6 +113,7 @@ fn write_partial_trajectory(path: &Path, steps: u32, cost_usd: f64) {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir).unwrap();
@@ -132,6 +133,7 @@ fn write_complete_trajectory(path: &Path) {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir).unwrap();
@@ -161,6 +163,7 @@ fn partial_true_serializes_and_roundtrips() {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let json = serde_json::to_string_pretty(&traj).unwrap();
     assert!(
@@ -186,6 +189,7 @@ fn partial_false_omitted_from_json_for_backward_compat() {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     let json = serde_json::to_string_pretty(&traj).unwrap();
     // partial=false and partial_reason=None should NOT appear
@@ -661,6 +665,7 @@ fn bench_bundle_excludes_partial_trajectories_with_warning() {
         trajectory_format: FORMAT_VERSION.into(),
         info: complete_info,
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         complete_traj_dir.join("run-1.traj.json"),
@@ -682,6 +687,7 @@ fn bench_bundle_excludes_partial_trajectories_with_warning() {
         trajectory_format: FORMAT_VERSION.into(),
         info: partial_info,
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         partial_traj_dir.join("run-1.traj.json"),
@@ -750,6 +756,7 @@ fn bench_inspect_partial_trajectory_shows_banner() {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         traj_dir.join("run-1.traj.json"),
