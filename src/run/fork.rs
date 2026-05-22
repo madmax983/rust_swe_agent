@@ -251,7 +251,13 @@ fn extract_cassette(trajectory: &Trajectory) -> Vec<CassetteEntry> {
 pub async fn run(args: ForkCmd) -> Result<(), Error> {
     // 1. Locate and parse the parent trajectory.
     let (parent_trajectory, parent_trajectory_sha256) = {
+        // Canonical nested path written by swebench::trajectory_path_for_run:
+        //   <sweep>/<instance>/run-1.traj.json
+        // Legacy flat path written by early sweeps:
+        //   <sweep>/<instance>.traj.json
+        // Alternative layouts (e.g. bundle / trajectories subdir) are tried last.
         let single_candidates = [
+            crate::run::swebench::trajectory_path_for_run(&args.sweep, &args.instance, 1),
             args.sweep.join(format!("{}.traj.json", args.instance)),
             args.sweep.join(&args.instance).join("trajectory.json"),
             args.sweep
@@ -270,9 +276,14 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
 
         let (traj, bytes) = found.ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
-                "No trajectory found for instance {} under sweep directory {}",
+                "No trajectory found for instance {} under sweep directory {} (searched: {})",
                 args.instance,
-                args.sweep.display()
+                args.sweep.display(),
+                single_candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )))
         })?;
 
@@ -355,8 +366,26 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
         Vec::new()
     };
 
-    // 3. Build the configuration for the agent, incorporating the tail overrides.
-    let mut config = Config::defaults()?;
+    // 3. Build the configuration for the agent.
+    //
+    // Seed from the parent sweep's fully-resolved config so the replay prefix
+    // sees exactly the same prompt/tool/redaction settings as the original run.
+    // Fall back to defaults when the manifest is absent (e.g., old sweeps or
+    // non-sweep outputs).
+    let mut config = {
+        let from_manifest = load_manifest_from_sweep(&args.sweep)
+            .ok()
+            .and_then(|m| Config::from_toml_str(&m.config.resolved).ok());
+        if let Some(cfg) = from_manifest {
+            cfg
+        } else {
+            tracing::warn!(
+                "bench fork: sweep has no resolvable manifest config; \
+                 falling back to built-in defaults"
+            );
+            Config::defaults()?
+        }
+    };
 
     // Config overlays:
     if let Some(ref model_override) = args.model {
@@ -392,23 +421,60 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
             })
             .collect();
     } else if let Some(ref mcp_config_path) = args.mcp_config {
-        // Standard MCP config JSON loader compatibility if specified
-        if let Ok(text) = std::fs::read_to_string(mcp_config_path) {
-            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&text) {
-                if let Some(serde_json::Value::Object(mcp_servers)) = map.get("mcpServers") {
-                    let mut servers = Vec::new();
-                    for (_name, val) in mcp_servers {
-                        if let Some(cmd) = val.get("command").and_then(|c| c.as_str()) {
-                            servers.push(McpServerCfg {
-                                command: cmd.to_owned(),
-                                timeout_secs: None,
-                            });
-                        }
-                    }
-                    config.root.agent.mcp_servers = servers;
-                }
-            }
+        // Standard MCP config JSON loader — fail-fast on missing file or bad JSON shape.
+        let text = std::fs::read_to_string(mcp_config_path).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--mcp-config: cannot read {}: {e}",
+                mcp_config_path.display()
+            )))
+        })?;
+        let root: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--mcp-config: invalid JSON in {}: {e}",
+                mcp_config_path.display()
+            )))
+        })?;
+        let mcp_servers = root
+            .get("mcpServers")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--mcp-config: {} has no top-level \"mcpServers\" object",
+                    mcp_config_path.display()
+                )))
+            })?;
+        let mut servers = Vec::new();
+        for (name, val) in mcp_servers {
+            let cmd = val
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--mcp-config: server {name:?} is missing \"command\" field"
+                    )))
+                })?;
+            // Collect optional `args` array and append to the command string.
+            let args_suffix: Vec<String> = val
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let full_command = if args_suffix.is_empty() {
+                cmd.to_owned()
+            } else {
+                format!("{} {}", cmd, args_suffix.join(" "))
+            };
+            servers.push(McpServerCfg {
+                command: full_command,
+                timeout_secs: None,
+            });
         }
+        config.root.agent.mcp_servers = servers;
     }
 
     // 4. Construct the ForkingModel.
@@ -505,9 +571,14 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
         );
     }
     if let Some(budget) = args.per_task_budget_usd {
+        let budget_num = serde_json::Number::from_f64(budget).ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--per-task-budget-usd value {budget} is not a finite number"
+            )))
+        })?;
         tail_overrides.insert(
             "per_task_budget_usd".to_owned(),
-            serde_json::Value::Number(serde_json::Number::from_f64(budget).unwrap()),
+            serde_json::Value::Number(budget_num),
         );
     }
     if !args.mcp_servers.is_empty() {
