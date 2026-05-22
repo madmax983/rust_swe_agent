@@ -508,6 +508,59 @@ pub enum BenchCmd {
     TestProgress(TestProgressCmd),
     /// Fork a trajectory at step N and continue with config overrides.
     Fork(ForkCmd),
+    /// Calculate statistical power or required sample size.
+    Power(PowerCmd),
+}
+
+/// `bench power` — statistical power, sample size, or MDE calculations.
+#[derive(Debug, Args, Clone)]
+pub struct PowerCmd {
+    /// Baseline resolved rate as a float (e.g. `0.35`). Required unless `--from-sweep` is provided.
+    #[arg(long)]
+    pub baseline_rate: Option<f64>,
+
+    /// Absolute percentage points delta (e.g. `0.05`).
+    /// Mutually exclusive with `--n` (Mode A).
+    #[arg(long, conflicts_with = "n")]
+    pub delta: Option<f64>,
+
+    /// Sample size per arm.
+    /// Mutually exclusive with `--delta` (Mode B).
+    #[arg(long, conflicts_with = "delta")]
+    pub n: Option<usize>,
+
+    /// Sweep directory to load baseline resolved rate from.
+    /// Mutually exclusive with `--baseline-rate`.
+    #[arg(long, conflicts_with = "baseline_rate")]
+    pub from_sweep: Option<PathBuf>,
+
+    /// Significance level / Type I error rate.
+    #[arg(long, default_value_t = 0.05)]
+    pub alpha: f64,
+
+    /// Target statistical power / 1 - Type II error rate.
+    #[arg(long, default_value_t = 0.80)]
+    pub power: f64,
+
+    /// Run a one-sided test instead of a two-sided test.
+    #[arg(long, default_value_t = false)]
+    pub one_sided: bool,
+
+    /// Number of study arms (default is 2). Bonferroni correction is applied if arms > 2.
+    #[arg(long, default_value_t = 2)]
+    pub arms: usize,
+
+    /// Optional average run cost in USD per instance.
+    #[arg(long)]
+    pub cost_per_instance: Option<f64>,
+
+    /// Optional path to a forecast report JSON to compute cost from.
+    #[arg(long, conflicts_with = "cost_per_instance")]
+    pub from_forecast: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// `bench test-progress` — per-test partial-credit scoring across a sweep.
