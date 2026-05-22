@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -253,50 +254,61 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
     let mut out = String::from("=== agent skills-preview (no model call made) ===\n");
 
     for task in &report.tasks {
-        let _ = write!(out, "\ntask_hash: {}\n", task.task_hash);
+        let _ = writeln!(out, "\ntask_hash: {}", task.task_hash);
+        let _ = writeln!(
+            out,
+            "total_bytes_injected: {} | cap_hit: {} (dropped: {}) | merged_context: {}",
+            task.total_bytes_injected, task.max_active_cap_hit, task.dropped_count, task.merged_extra_context_bytes
+        );
+
         if task.active_skills.is_empty() {
             out.push_str("  (no skills activated)\n");
         } else {
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .apply_modifier(UTF8_ROUND_CORNERS)
+                .set_header(vec!["Skill", "Reason", "SHA256", "Bytes", "Path"]);
+
             for skill in &task.active_skills {
                 let reason_str = match skill.reason {
                     SkillActivationReason::ExplicitMention => "explicit",
                     SkillActivationReason::AutoMatch => "auto",
                 };
                 let path_str = skill.path.display().to_string();
-                let _ = writeln!(
-                    out,
-                    "  {} | {} | {} | {} bytes | {}",
-                    skill.name, reason_str, skill.sha256_prefix, skill.bytes, path_str,
-                );
+                table.add_row(vec![
+                    skill.name.as_str(),
+                    reason_str,
+                    skill.sha256_prefix.as_str(),
+                    skill.bytes.to_string().as_str(),
+                    path_str.as_str(),
+                ]);
             }
+            let _ = writeln!(out, "{table}");
         }
-        let _ = writeln!(out, "  total_bytes_injected: {}", task.total_bytes_injected);
-        let _ = writeln!(
-            out,
-            "  max_active_cap_hit: {} (dropped: {})",
-            task.max_active_cap_hit, task.dropped_count
-        );
-        let _ = writeln!(
-            out,
-            "  merged_extra_context_bytes: {}",
-            task.merged_extra_context_bytes
-        );
     }
 
-    let _ = writeln!(
-        out,
-        "\n--- summary ---\n\
-         task_count: {}\n\
-         unique_skills_activated: {}\n\
-         p50_bytes_per_task: {}\n\
-         p95_bytes_per_task: {}\n\
-         tasks_hitting_max_active: {}",
-        report.summary.task_count,
-        report.summary.unique_skills_activated,
-        report.summary.p50_bytes_per_task,
-        report.summary.p95_bytes_per_task,
-        report.summary.tasks_hitting_max_active,
-    );
+    let mut summary_table = Table::new();
+    summary_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Tasks",
+            "Unique Skills",
+            "p50 Bytes",
+            "p95 Bytes",
+            "Cap Hits",
+        ]);
+
+    summary_table.add_row(vec![
+        report.summary.task_count.to_string(),
+        report.summary.unique_skills_activated.to_string(),
+        report.summary.p50_bytes_per_task.to_string(),
+        report.summary.p95_bytes_per_task.to_string(),
+        report.summary.tasks_hitting_max_active.to_string(),
+    ]);
+
+    let _ = writeln!(out, "\n--- summary ---\n{summary_table}");
 
     redactor.redact_text(&out, surface::TRAJECTORY).text
 }
