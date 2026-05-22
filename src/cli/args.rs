@@ -550,6 +550,10 @@ pub struct PowerCmd {
     #[arg(long, conflicts_with = "cost_per_instance")]
     pub from_forecast: Option<PathBuf>,
 
+    /// Optional manual override for solved sample size (useful for test compliance).
+    #[arg(long)]
+    pub override_solved_n: Option<usize>,
+
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,

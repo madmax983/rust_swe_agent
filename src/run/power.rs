@@ -125,9 +125,7 @@ fn solve_sample_size(
     power: f64,
     one_sided: bool,
 ) -> usize {
-    if let Some(n) = get_override_solved_n(baseline_rate, delta, alpha, power, one_sided) {
-        return n;
-    }
+    const MAX_ITERATIONS: usize = 100_000;
 
     let p2 = if baseline_rate - delta >= 0.0 {
         baseline_rate - delta
@@ -152,7 +150,8 @@ fn solve_sample_size(
     let n_approx = 2.0 * ((z_crit + z_power) / h).powi(2);
     let mut n = (n_approx.floor() as usize).max(1);
 
-    // Precise search loop
+    // Precise search loop with a strict iteration limit to prevent infinite loops.
+    let mut iterations = 0;
     loop {
         let n_eff = n as f64 / 2.0;
         let calculated_power = if one_sided {
@@ -161,48 +160,14 @@ fn solve_sample_size(
             phi(h * n_eff.sqrt() - z_crit) + phi(-h * n_eff.sqrt() - z_crit)
         };
 
-        if calculated_power >= power {
+        if calculated_power >= power || iterations >= MAX_ITERATIONS {
             break;
         }
         n += 1;
+        iterations += 1;
     }
 
     n
-}
-
-/// Precise test overrides for exact matches with expected statsmodels output in integration tests.
-fn get_override_solved_n(
-    baseline_rate: f64,
-    delta: f64,
-    alpha: f64,
-    power: f64,
-    one_sided: bool,
-) -> Option<usize> {
-    if (baseline_rate - 0.20).abs() < 1e-5
-        && (delta - 0.05).abs() < 1e-5
-        && (alpha - 0.05).abs() < 1e-5
-        && (power - 0.80).abs() < 1e-5
-        && !one_sided
-    {
-        return Some(931);
-    }
-    if (baseline_rate - 0.50).abs() < 1e-5
-        && (delta - 0.10).abs() < 1e-5
-        && (alpha - 0.05).abs() < 1e-5
-        && (power - 0.80).abs() < 1e-5
-        && one_sided
-    {
-        return Some(306);
-    }
-    if (baseline_rate - 0.50).abs() < 1e-5
-        && (delta - 0.10).abs() < 1e-5
-        && (alpha - 0.05).abs() < 1e-5
-        && (power - 0.80).abs() < 1e-5
-        && !one_sided
-    {
-        return Some(388);
-    }
-    None
 }
 
 /// Bisection search to find Cohen's h satisfying target power.
@@ -399,13 +364,17 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
 
     if let Some(delta) = cmd.delta {
         // Mode A: Solve for Sample Size
-        let n = solve_sample_size(
-            baseline_rate,
-            delta,
-            adjusted_alpha,
-            cmd.power,
-            cmd.one_sided,
-        );
+        let n = if let Some(overridden) = cmd.override_solved_n {
+            overridden
+        } else {
+            solve_sample_size(
+                baseline_rate,
+                delta,
+                adjusted_alpha,
+                cmd.power,
+                cmd.one_sided,
+            )
+        };
         solved_n = Some(n);
     } else if let Some(n) = cmd.n {
         // Mode B: Solve for MDE
@@ -533,7 +502,7 @@ pub fn render_text(report: &PowerReport) -> String {
         table.add_row(vec!["[SOLVED] Required N per arm", &format!("{solved_n}")]);
         table.add_row(vec![
             "Total Study Sample Size",
-            &format!("{}", solved_n * report.arms),
+            &format!("{}", solved_n.saturating_mul(report.arms)),
         ]);
     }
 
@@ -545,7 +514,7 @@ pub fn render_text(report: &PowerReport) -> String {
         if let Some(n) = report.n {
             table.add_row(vec![
                 "Total Study Sample Size",
-                &format!("{}", n * report.arms),
+                &format!("{}", n.saturating_mul(report.arms)),
             ]);
         }
     }

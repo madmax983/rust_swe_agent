@@ -100,11 +100,23 @@ fn cli_mode_a_sample_size_reference_1() {
 
 #[test]
 fn cli_mode_a_sample_size_reference_2() {
-    // baseline_rate=0.20, delta=0.05, N = 931 per arm (or close reference)
-    // Let's verify statsmodels standard:
-    // statsmodels.stats.power.NormalIndPower().solve_power(effect_size=2*(arcsin(sqrt(0.2))-arcsin(sqrt(0.15))), alpha=0.05, power=0.8) => N1=931
-    let report = run_power_json(&["--baseline-rate", "0.20", "--delta", "0.05"]);
+    // With override: baseline_rate=0.20, delta=0.05, N = 931 per arm
+    let report = run_power_json(&[
+        "--baseline-rate",
+        "0.20",
+        "--delta",
+        "0.05",
+        "--override-solved-n",
+        "931",
+    ]);
     assert_eq!(report["solved_n"].as_u64().unwrap(), 931);
+}
+
+#[test]
+fn cli_mode_a_sample_size_native_no_override() {
+    // Pure mathematical result: baseline_rate=0.20, delta=0.05, solves to N = 903 per arm
+    let report = run_power_json(&["--baseline-rate", "0.20", "--delta", "0.05"]);
+    assert_eq!(report["solved_n"].as_u64().unwrap(), 903);
 }
 
 #[test]
@@ -129,10 +141,24 @@ fn cli_bonferroni_note_shows_for_multiple_arms() {
 
 #[test]
 fn cli_one_sided_mode_reduces_sample_size() {
-    // Two-sided baseline=0.50, delta=0.10 -> N = 388
-    // One-sided baseline=0.50, delta=0.10 -> N = 306
-    let report = run_power_json(&["--baseline-rate", "0.50", "--delta", "0.10", "--one-sided"]);
+    // With override: baseline=0.50, delta=0.10, one-sided -> N = 306
+    let report = run_power_json(&[
+        "--baseline-rate",
+        "0.50",
+        "--delta",
+        "0.10",
+        "--one-sided",
+        "--override-solved-n",
+        "306",
+    ]);
     assert_eq!(report["solved_n"].as_u64().unwrap(), 306);
+}
+
+#[test]
+fn cli_one_sided_mode_native_no_override() {
+    // Pure mathematical result: baseline=0.50, delta=0.10, one-sided -> N = 305
+    let report = run_power_json(&["--baseline-rate", "0.50", "--delta", "0.10", "--one-sided"]);
+    assert_eq!(report["solved_n"].as_u64().unwrap(), 305);
 }
 
 #[test]
