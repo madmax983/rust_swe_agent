@@ -172,6 +172,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Fork(f),
         } => Box::pin(crate::run::fork::run(f)).await,
+        Command::Bench {
+            cmd: args::BenchCmd::Power(p),
+        } => bench_power(&p),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -2574,6 +2577,25 @@ fn bench_test_progress(t: args::TestProgressCmd) -> Result<(), Error> {
             "{}",
             crate::run::test_progress::render_text(&report, t.bucket.as_deref())
         );
+    }
+    Ok(())
+}
+
+fn bench_power(p: &args::PowerCmd) -> Result<(), Error> {
+    let is_json = match p.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "power: unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+    let report = crate::run::power::run(p)?;
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", crate::run::power::render_text(&report));
     }
     Ok(())
 }

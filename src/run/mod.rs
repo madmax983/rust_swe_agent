@@ -27,6 +27,7 @@ pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
 pub mod policy_impact;
+pub mod power;
 pub mod rate_limit;
 pub mod render_only;
 pub mod replay;

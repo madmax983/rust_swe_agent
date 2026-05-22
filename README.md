@@ -351,6 +351,9 @@ a valid trajectory in hand:
   hash, byte cost, cap-hit status, and a per-corpus summary. Run before a
   paid sweep to audit prompt injection, detect stale manifests, and spot
   budget surprises.
+- [`bench power`](docs/spec-power.md): offline statistical power, required sample
+  size per arm, or Minimum Detectable Effect (MDE delta) calculations for
+  two-proportion z-tests.
 
 ## Nightly E2E smoke
 
