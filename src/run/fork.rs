@@ -243,7 +243,11 @@ fn extract_cassette(trajectory: &Trajectory) -> Vec<CassetteEntry> {
         .collect()
 }
 
-#[allow(clippy::too_many_lines, clippy::unwrap_used, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation
+)]
 pub async fn run(args: ForkCmd) -> Result<(), Error> {
     // 1. Locate and parse the parent trajectory.
     let (parent_trajectory, parent_trajectory_sha256) = {
