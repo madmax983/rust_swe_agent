@@ -337,3 +337,30 @@ fn cli_fails_with_malformed_forecast_point_cost() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("non-negative") || stderr.contains("total_cost_usd"));
 }
+
+#[test]
+fn cli_fails_with_infinite_cost_per_instance() {
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--cost-per-instance",
+        "inf",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("finite") || stderr.contains("Cost"));
+}
+
+#[test]
+fn cli_fails_with_overflowing_delta_sample_size() {
+    let output = run_power(&["--baseline-rate", "0.5", "--delta", "1e-16"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("too large to be represented")
+            || stderr.contains("precision")
+            || stderr.contains("Usage")
+    );
+}

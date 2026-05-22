@@ -161,23 +161,38 @@ fn solve_sample_size(
 
     // Initial analytical approximation (ceilinged)
     let n_approx = 2.0 * ((z_crit + z_power) / h).powi(2);
+    if n_approx.is_nan() || !n_approx.is_finite() || n_approx > usize::MAX as f64 {
+        return 0;
+    }
+
     let mut n = (n_approx.floor() as usize).max(1);
 
-    // Precise search loop with a strict iteration limit to prevent infinite loops.
-    let mut iterations = 0;
-    loop {
-        let n_eff = n as f64 / 2.0;
-        let calculated_power = if one_sided {
+    let check_power = |val_n: usize| -> f64 {
+        let n_eff = val_n as f64 / 2.0;
+        if one_sided {
             phi(h * n_eff.sqrt() - z_crit)
         } else {
             phi(h * n_eff.sqrt() - z_crit) + phi(-h * n_eff.sqrt() - z_crit)
-        };
-
-        if calculated_power >= power || iterations >= MAX_ITERATIONS {
-            break;
         }
-        n += 1;
-        iterations += 1;
+    };
+
+    // Precise search loop:
+    // If starting n already meets power, search downward to find absolute minimum n meeting power.
+    // If starting n does not meet power, search upward to find the first n meeting power.
+    let mut iterations = 0;
+    if check_power(n) >= power {
+        while n > 1 && check_power(n - 1) >= power && iterations < MAX_ITERATIONS {
+            n -= 1;
+            iterations += 1;
+        }
+    } else {
+        while check_power(n) < power && iterations < MAX_ITERATIONS {
+            if n == usize::MAX {
+                return 0;
+            }
+            n += 1;
+            iterations += 1;
+        }
     }
 
     n
@@ -275,7 +290,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
     }
 
     if let Some(c) = cmd.cost_per_instance {
-        if c.is_nan() || c < 0.0 {
+        if c.is_nan() || c < 0.0 || !c.is_finite() {
             return Err(Error::Config(crate::error::ConfigError::Usage(format!(
                 "Cost per instance must be a finite, non-negative number, got {c}"
             ))));
@@ -329,7 +344,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                 let resolved = sweep
                     .instances
                     .values()
-                    .filter(|inst| inst.resolved_count > 0)
+                    .filter(|inst| crate::run::swebench::resolved_count(inst) > 0)
                     .count();
                 resolved as f64 / total as f64
             }
@@ -439,6 +454,11 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                 cmd.one_sided,
             )
         };
+        if n == 0 {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "The required sample size is too large to be represented (infeasible precision or extremely small delta).".to_string()
+            )));
+        }
         solved_n = Some(n);
     } else if let Some(n) = cmd.n {
         // Mode B: Solve for MDE
@@ -455,9 +475,9 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
     let cost_per_instance = match (cmd.cost_per_instance, &cmd.from_forecast) {
         (Some(c), None) => {
             // Already validated at CLI boundary, but safe sanity check.
-            if c.is_nan() || c < 0.0 {
+            if c.is_nan() || c < 0.0 || !c.is_finite() {
                 return Err(Error::Config(crate::error::ConfigError::Usage(format!(
-                    "Cost per instance cannot be negative, got {c}"
+                    "Cost per instance must be a finite, non-negative number, got {c}"
                 ))));
             }
             Some(c)
