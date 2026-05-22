@@ -99,17 +99,21 @@ fn cli_mode_a_sample_size_reference_1() {
 }
 
 #[test]
-fn cli_mode_a_sample_size_reference_2() {
-    // With override: baseline_rate=0.20, delta=0.05, N = 931 per arm
-    let report = run_power_json(&[
+fn cli_fails_when_power_below_alpha() {
+    // Under null, power is already alpha (0.05). Targeting 0.01 <= 0.05 is rejected as invalid.
+    let output = run_power(&[
         "--baseline-rate",
-        "0.20",
-        "--delta",
+        "0.50",
+        "--n",
+        "100",
+        "--alpha",
         "0.05",
-        "--override-solved-n",
-        "931",
+        "--power",
+        "0.01",
     ]);
-    assert_eq!(report["solved_n"].as_u64().unwrap(), 931);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("strictly greater than"));
 }
 
 #[test]
@@ -137,21 +141,6 @@ fn cli_bonferroni_note_shows_for_multiple_arms() {
         .as_str()
         .expect("expected Bonferroni note");
     assert!(bonferroni.contains("arms=3") || bonferroni.contains("Bonferroni"));
-}
-
-#[test]
-fn cli_one_sided_mode_reduces_sample_size() {
-    // With override: baseline=0.50, delta=0.10, one-sided -> N = 306
-    let report = run_power_json(&[
-        "--baseline-rate",
-        "0.50",
-        "--delta",
-        "0.10",
-        "--one-sided",
-        "--override-solved-n",
-        "306",
-    ]);
-    assert_eq!(report["solved_n"].as_u64().unwrap(), 306);
 }
 
 #[test]

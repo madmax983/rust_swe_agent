@@ -7,7 +7,8 @@
     clippy::manual_midpoint,
     clippy::unreadable_literal,
     clippy::excessive_precision,
-    clippy::many_single_char_names
+    clippy::many_single_char_names,
+    clippy::while_float
 )]
 
 //! `bench power` — statistical power, sample size, or MDE calculations.
@@ -177,17 +178,24 @@ fn solve_sample_size(
     };
 
     // Precise search loop:
-    // If starting n already meets power, search downward to find absolute minimum n meeting power.
+    // If starting n already meets power, search downward using binary search to find the absolute minimum n meeting power.
     // If starting n does not meet power, search upward to find the first n meeting power.
     let mut iterations = 0;
     if check_power(n) >= power {
-        while n > 1 && check_power(n - 1) >= power && iterations < MAX_ITERATIONS {
-            n -= 1;
-            iterations += 1;
+        let mut low = 1;
+        let mut high = n;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if check_power(mid) >= power {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
         }
+        n = high;
     } else {
-        while check_power(n) < power && iterations < MAX_ITERATIONS {
-            if n == usize::MAX {
+        while check_power(n) < power {
+            if n == usize::MAX || iterations >= MAX_ITERATIONS {
                 return 0;
             }
             n += 1;
@@ -200,6 +208,10 @@ fn solve_sample_size(
 
 /// Bisection search to find Cohen's h satisfying target power.
 fn solve_h_for_power(n: usize, alpha: f64, target_power: f64, one_sided: bool) -> f64 {
+    if target_power <= alpha {
+        return 0.0;
+    }
+
     let z_crit = if one_sided {
         inverse_phi(1.0 - alpha)
     } else {
@@ -229,6 +241,9 @@ fn solve_h_for_power(n: usize, alpha: f64, target_power: f64, one_sided: bool) -
 
 /// Convert Cohen's h back to delta absolute percentage points.
 fn h_to_delta(p1: f64, h: f64) -> Option<f64> {
+    if h == 0.0 {
+        return Some(0.0);
+    }
     let asin_p1 = p1.sqrt().asin();
 
     let term_pos = asin_p1 + h / 2.0;
@@ -423,6 +438,14 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
         None
     };
 
+    // Target power must be strictly greater than significance level alpha (taking Bonferroni corrections into account).
+    if cmd.power <= adjusted_alpha {
+        return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+            "Target statistical power ({}) must be strictly greater than the (possibly corrected) significance level alpha ({})",
+            cmd.power, adjusted_alpha
+        ))));
+    }
+
     // Extreme precision bounds check on adjusted alpha and power
     let z_crit = if cmd.one_sided {
         inverse_phi(1.0 - adjusted_alpha)
@@ -443,17 +466,13 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
 
     if let Some(delta) = cmd.delta {
         // Mode A: Solve for Sample Size
-        let n = if let Some(overridden) = cmd.override_solved_n {
-            overridden
-        } else {
-            solve_sample_size(
-                baseline_rate,
-                delta,
-                adjusted_alpha,
-                cmd.power,
-                cmd.one_sided,
-            )
-        };
+        let n = solve_sample_size(
+            baseline_rate,
+            delta,
+            adjusted_alpha,
+            cmd.power,
+            cmd.one_sided,
+        );
         if n == 0 {
             return Err(Error::Config(crate::error::ConfigError::Usage(
                 "The required sample size is too large to be represented (infeasible precision or extremely small delta).".to_string()
