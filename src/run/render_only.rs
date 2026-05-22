@@ -57,6 +57,7 @@ pub struct RenderOnlyReport {
     pub artifact_kind: ArtifactKind,
     pub schema_version: ArtifactSchemaVersion,
     pub model: String,
+    pub mode: String,
     pub system_message: String,
     pub user_message: String,
     pub tools: Vec<RenderedTool>,
@@ -79,6 +80,7 @@ pub struct RenderOnlyArgs {
     pub extra_context: Option<String>,
     pub config: Config,
     pub local_workdir: Option<std::path::PathBuf>,
+    pub read_only: bool,
 }
 
 /// Render the initial agent turn without any model call or trajectory write.
@@ -92,6 +94,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
         extra_context,
         config,
         local_workdir,
+        read_only,
     } = args;
 
     let renderer = Renderer::new();
@@ -202,6 +205,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
         artifact_kind: ArtifactKind::RenderOnly,
         schema_version: ArtifactSchemaVersion::CURRENT,
         model: model_name.clone(),
+        mode: if read_only { "read_only" } else { "default" }.into(),
         system_message,
         user_message,
         tools,
@@ -267,6 +271,7 @@ pub fn format_text(report: &RenderOnlyReport) -> String {
     let mut sections = vec![
         "=== render-only preview (no model call made) ===".to_owned(),
         format!("Model: {}", report.model),
+        format!("Mode: {}", report.mode),
     ];
 
     if let Some(ref wd) = report.local_workdir {
@@ -362,6 +367,7 @@ mod tests {
             extra_context: None,
             config: Config::defaults().unwrap(),
             local_workdir: None,
+            read_only: false,
         }
     }
 
@@ -531,6 +537,7 @@ mod tests {
             extra_context: None,
             config: cfg,
             local_workdir: None,
+            read_only: false,
         });
         assert!(result.is_err(), "broken template must return Err");
     }

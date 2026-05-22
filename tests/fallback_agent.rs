@@ -145,6 +145,7 @@ async fn fallback_summary_is_populated_on_fallback() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -199,6 +200,7 @@ async fn all_candidates_fail_sets_all_failed_flag_in_trajectory() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -253,6 +255,7 @@ async fn multi_step_fallback_preserves_all_step_responders() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();
@@ -310,6 +313,7 @@ async fn no_fallback_run_leaves_no_fallback_summary() {
         renderer: None,
         stream: None,
         resume_from: None,
+        read_only: false,
     }
     .build()
     .unwrap();

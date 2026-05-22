@@ -117,6 +117,12 @@ snapshot diffing:
 cargo run --quiet -- --log error mini --render-only --task "fix the bug" --model claude-opus-4-7 --format json
 ```
 
+Use `--read-only` to force analysis-only behavior during real runs. In this
+mode, tool execution (including built-in `bash`) is blocked and any attempted
+tool action terminates the run with `failure_category: read_only_violation`.
+`--read-only` is incompatible with PR-publish flags and invocation-time MCP
+servers unless `--allow-mcp-in-read-only` is explicitly set.
+
 To avoid complex shell escaping when passing multi-line prompt markdown or special characters, you can load the task from a file or standard input using `--task-file`:
 
 ```bash

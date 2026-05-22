@@ -552,6 +552,8 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         webhook_url: None,
         webhook_headers: vec![],
         local_workdir: None,
+        read_only: false,
+        allow_mcp_in_read_only: false,
     };
 
     mini_run(args).await.unwrap();

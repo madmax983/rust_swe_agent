@@ -350,6 +350,7 @@ fn failure_category_label(c: FailureCategory) -> &'static str {
         FailureCategory::SecretLeakDetected => "secret_leak_detected",
         FailureCategory::HistoryCompactionFailed => "history_compaction_failed",
         FailureCategory::Unknown => "unknown",
+        FailureCategory::ReadOnlyViolation => "read_only_violation",
     }
 }
 

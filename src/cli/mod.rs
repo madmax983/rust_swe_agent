@@ -380,6 +380,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.environment.docker_image = Some(img);
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+    apply_read_only_policy(&m, &cfg)?;
     let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
 
     // ── Resume path ──────────────────────────────────────────────────────────
@@ -449,6 +450,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
+        allow_mcp_in_read_only: m.allow_mcp_in_read_only,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -625,6 +628,7 @@ fn mini_render_only_cmd(
         extra_context: m.extra_context,
         config: cfg,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
     };
     let report = crate::run::render_only::render(args)?;
 
@@ -718,6 +722,7 @@ fn reject_cap_bump_without_flag(m: &args::MiniCmd) {
 /// Validates the on-disk trajectory, extracts configuration from it (AC #2),
 /// and invokes `mini::run()` with `resume_from` populated so the agent
 /// continues from the last persisted step without replaying the prefix (AC #3).
+#[allow(clippy::too_many_lines)]
 async fn mini_resume_cmd(
     m: args::MiniCmd,
     mut cfg: Config,
@@ -780,6 +785,7 @@ async fn mini_resume_cmd(
 
     cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
     let task = traj.info.task.clone().unwrap_or_default();
+    apply_read_only_policy(&m, &cfg)?;
 
     if m.resume_allow_step_bump {
         // Apply only caps the operator explicitly set on the resume invocation.
@@ -841,8 +847,30 @@ async fn mini_resume_cmd(
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
         local_workdir: resolved_workdir,
+        read_only: m.read_only,
+        allow_mcp_in_read_only: m.allow_mcp_in_read_only,
     };
     crate::run::mini::run(args).await
+}
+
+fn apply_read_only_policy(m: &args::MiniCmd, cfg: &Config) -> Result<(), Error> {
+    if !m.read_only {
+        return Ok(());
+    }
+    if m.github_pr.open_pr
+        || m.github_pr.target_repo.is_some()
+        || m.github_pr.target_branch.is_some()
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--read-only is incompatible with --open-pr, --target-repo, and --target-branch".into(),
+        )));
+    }
+    if !m.allow_mcp_in_read_only && !cfg.root.agent.mcp_servers.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
+        )));
+    }
+    Ok(())
 }
 
 fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
@@ -900,6 +928,7 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
         extra_context: None,
         config: cfg,
         local_workdir: None,
+        read_only: false,
     };
     let report = crate::run::render_only::render(render_args)?;
 
@@ -4064,6 +4093,8 @@ mod tests {
             history_max_input_tokens: None,
             history_keep_last_observations: None,
             mcp_servers: Vec::new(),
+            read_only: false,
+            allow_mcp_in_read_only: false,
             config: None,
             workdir: None,
             env: None,
