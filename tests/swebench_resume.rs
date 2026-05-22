@@ -47,6 +47,7 @@ fn write_valid_trajectory(path: &Path, marker: &str) {
         trajectory_format: FORMAT_VERSION.into(),
         info,
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(path, serde_json::to_string_pretty(&traj).unwrap()).unwrap();
 }

@@ -6345,6 +6345,7 @@ instance = "inst"
                 ..Default::default()
             },
             messages: vec![],
+            fork_lineage: None,
         };
         let path = trajectory_path_for(dir.path(), "inst-1");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

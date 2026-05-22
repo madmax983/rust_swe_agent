@@ -579,6 +579,7 @@ mod tests {
                     extra: MessageExtra::default(),
                 },
             ],
+            fork_lineage: None,
         }
     }
 

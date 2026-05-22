@@ -498,6 +498,8 @@ pub enum BenchCmd {
     Cascade(CascadeCmd),
     /// Compute per-test partial-credit scores across a completed sweep.
     TestProgress(TestProgressCmd),
+    /// Fork a trajectory at step N and continue with config overrides.
+    Fork(ForkCmd),
 }
 
 /// `bench test-progress` — per-test partial-credit scoring across a sweep.
@@ -1952,6 +1954,55 @@ pub struct SkillsPreviewCmd {
     /// Output format: `text` (default, human-readable) or `json` (schema-versioned).
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+/// `bench fork` — fork a trajectory at step N and continue with config overrides.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ForkCmd {
+    /// Completed sweep directory containing the instance trajectory.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Specific instance id to fork.
+    #[arg(long)]
+    pub instance: String,
+
+    /// The step number to fork from (zero-indexed).
+    #[arg(long = "from-step")]
+    pub from_step: u32,
+
+    /// Output directory for the new trajectory.
+    #[arg(long)]
+    pub output: std::path::PathBuf,
+
+    /// Override model name for the tail (e.g. `claude-opus-4-7`).
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Override system prompt file for the tail.
+    #[arg(long = "system-prompt-file")]
+    pub system_prompt_file: Option<std::path::PathBuf>,
+
+    /// Override max agent steps.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Override per-task USD budget cap for the tail.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Override MCP stdio server command(s).
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
+
+    /// Override path to an MCP config JSON file.
+    #[arg(long = "mcp-config")]
+    pub mcp_config: Option<std::path::PathBuf>,
+
+    /// Allow forking from a parent trajectory that has no stored input fingerprints.
+    #[arg(long, default_value_t = false)]
+    pub allow_unfingerprinted: bool,
 }
 
 #[cfg(test)]

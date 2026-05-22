@@ -4012,6 +4012,7 @@ mod tests {
                 ..Default::default()
             },
             messages: vec![],
+            fork_lineage: None,
         };
         std::fs::write(
             dir.path().join("inst-1.traj.json"),
@@ -4131,6 +4132,7 @@ mod tests {
                 ..Default::default()
             },
             messages: vec![],
+            fork_lineage: None,
         };
         std::fs::write(
             dir.path().join("x.traj.json"),
@@ -4215,6 +4217,7 @@ mod tests {
                 ..Default::default()
             },
             messages: vec![],
+            fork_lineage: None,
         };
         std::fs::write(
             dir.path().join("old.traj.json"),
@@ -4332,6 +4335,7 @@ mod tests {
                 ..Default::default()
             },
             messages: vec![],
+            fork_lineage: None,
         };
         std::fs::write(
             dir.path().join("resume-old.traj.json"),

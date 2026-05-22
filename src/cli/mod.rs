@@ -169,6 +169,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::TestProgress(t),
         } => bench_test_progress(t),
+        Command::Bench {
+            cmd: args::BenchCmd::Fork(f),
+        } => Box::pin(crate::run::fork::run(f)).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]

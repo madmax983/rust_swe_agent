@@ -466,6 +466,7 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
             ..Default::default()
         },
         messages: vec![],
+        fork_lineage: None,
     };
     std::fs::write(
         output.join("resume-id.traj.json"),
