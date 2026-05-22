@@ -123,6 +123,12 @@ fn key_event_to_decision(key: KeyEvent) -> Option<ConfirmDecision> {
 }
 
 fn read_line_buffered() -> ConfirmDecision {
+    #[cfg(test)]
+    {
+        if std::env::var("MAX_TEST_MOCK_STDIN_EOF").is_ok() {
+            return ConfirmDecision::Abort;
+        }
+    }
     let mut buf = String::new();
     let Ok(_) = std::io::stdin().read_line(&mut buf) else {
         return ConfirmDecision::Abort;
@@ -279,6 +285,9 @@ mod tests {
         // closed/redirected stdin, the read returns EOF, which
         // `parse_line_decision` maps to Abort. End-to-end: confirm()
         // returns Abort without hanging.
+        unsafe {
+            std::env::set_var("MAX_TEST_MOCK_STDIN_EOF", "1");
+        }
         let c = StderrCliConfirmer::forced();
         let ctx = ConfirmContext {
             tool_name: "bash".into(),
@@ -289,6 +298,9 @@ mod tests {
             cache_marker: "cache:auto-or-none",
         };
         let d = c.confirm(&ctx).await;
+        unsafe {
+            std::env::remove_var("MAX_TEST_MOCK_STDIN_EOF");
+        }
         assert_eq!(d, ConfirmDecision::Abort);
     }
 }
