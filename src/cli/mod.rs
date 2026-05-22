@@ -258,76 +258,86 @@ fn resolve_and_validate_workdir(
 }
 
 #[allow(clippy::too_many_lines)]
-async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
-    let task = if m.resume_from.is_some() {
-        if m.task.is_some() {
+fn resolve_task(
+    resume_from: Option<&std::path::PathBuf>,
+    task: Option<&String>,
+    task_file: Option<&String>,
+) -> Result<String, Error> {
+    if resume_from.is_some() {
+        if task.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
                 "both --task and --resume were provided".into(),
             )));
         }
-        if m.task_file.is_some() {
+        if task_file.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
                 "both --task-file and --resume were provided".into(),
             )));
         }
-        String::new()
-    } else {
-        match (&m.task, &m.task_file) {
-            (Some(_), Some(_)) => {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "both --task and --task-file were provided".into(),
-                )));
-            }
-            (None, None) => {
-                return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "either --task or --task-file must be provided".into(),
-                )));
-            }
-            (Some(t), None) => {
-                if t.trim().is_empty() {
-                    return Err(Error::Config(crate::error::ConfigError::Invalid(
-                        "empty --task source".into(),
-                    )));
-                }
-                t.clone()
-            }
-            (None, Some(tf)) => {
-                let mut raw_content = if tf == "-" {
-                    let mut buffer = String::new();
-                    std::io::stdin().read_to_string(&mut buffer).map_err(|e| {
-                        Error::Config(crate::error::ConfigError::Invalid(format!(
-                            "failed to read task from stdin: {e}"
-                        )))
-                    })?;
-                    buffer
-                } else {
-                    let path = std::path::Path::new(tf);
-                    if !path.exists() {
-                        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                            "--task-file does not exist: {tf}"
-                        ))));
-                    }
-                    std::fs::read_to_string(path).map_err(|e| {
-                        Error::Config(crate::error::ConfigError::Invalid(format!(
-                            "failed to read --task-file `{tf}`: {e}"
-                        )))
-                    })?
-                };
+        return Ok(String::new());
+    }
 
-                if raw_content.starts_with('\u{FEFF}') {
-                    raw_content.remove(0);
-                }
-
-                if raw_content.trim().is_empty() {
-                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                        "empty task source from `{tf}`"
-                    ))));
-                }
-
-                raw_content
+    match (task, task_file) {
+        (Some(_), Some(_)) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "both --task and --task-file were provided".into(),
+        ))),
+        (None, None) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "either --task or --task-file must be provided".into(),
+        ))),
+        (Some(t), None) => {
+            if t.trim().is_empty() {
+                Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "empty --task source".into(),
+                )))
+            } else {
+                Ok(t.clone())
             }
         }
-    };
+        (None, Some(tf)) => {
+            let mut raw_content = if tf == "-" {
+                let mut buffer = String::new();
+                std::io::stdin().read_to_string(&mut buffer).map_err(|e| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "failed to read task from stdin: {e}"
+                    )))
+                })?;
+                buffer
+            } else {
+                let path = std::path::Path::new(tf);
+                if !path.exists() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--task-file does not exist: {tf}"
+                    ))));
+                }
+                std::fs::read_to_string(path).map_err(|e| {
+                    Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "failed to read --task-file `{tf}`: {e}"
+                    )))
+                })?
+            };
+
+            if raw_content.starts_with('\u{FEFF}') {
+                raw_content.remove(0);
+            }
+
+            if raw_content.trim().is_empty() {
+                Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "empty task source from `{tf}`"
+                ))))
+            } else {
+                Ok(raw_content)
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
+    let task = resolve_task(
+        m.resume_from.as_ref(),
+        m.task.as_ref(),
+        m.task_file.as_ref(),
+    )?;
 
     let mut cfg = match &m.config {
         Some(p) => Config::load(p)?,
@@ -2473,6 +2483,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
 }
 
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
@@ -2488,6 +2499,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
@@ -2503,6 +2515,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))
