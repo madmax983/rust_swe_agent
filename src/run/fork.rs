@@ -663,13 +663,38 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
         );
     }
 
-    let lineage = ForkLineage {
+    let mut lineage = ForkLineage {
         parent_sweep_path: args.sweep.to_string_lossy().into_owned(),
         parent_instance_id: args.instance.clone(),
         parent_trajectory_sha256,
         fork_step: args.from_step,
         tail_overrides,
     };
+
+    // Redact sensitive values inside fork lineage using the agent's redactor before persisting
+    let parent_sweep_outcome = agent.redactor.redact_text(
+        &lineage.parent_sweep_path,
+        crate::redaction::surface::TRAJECTORY,
+    );
+    lineage.parent_sweep_path = parent_sweep_outcome.text;
+
+    let parent_instance_outcome = agent.redactor.redact_text(
+        &lineage.parent_instance_id,
+        crate::redaction::surface::TRAJECTORY,
+    );
+    lineage.parent_instance_id = parent_instance_outcome.text;
+
+    let parent_sha_outcome = agent.redactor.redact_text(
+        &lineage.parent_trajectory_sha256,
+        crate::redaction::surface::TRAJECTORY,
+    );
+    lineage.parent_trajectory_sha256 = parent_sha_outcome.text;
+
+    for value in lineage.tail_overrides.values_mut() {
+        agent
+            .redactor
+            .redact_json_value(value, crate::redaction::surface::TRAJECTORY);
+    }
 
     agent.trajectory.fork_lineage = Some(lineage);
 
@@ -717,7 +742,16 @@ fn build_live_model(cfg: &Config) -> Arc<dyn Model> {
 
 async fn build_env(cfg: &Config) -> Result<Box<dyn Environment>, Error> {
     match cfg.root.environment.kind {
-        EnvKind::Local => Ok(Box::new(LocalEnvironment::new())),
+        EnvKind::Local => {
+            let mut env = LocalEnvironment::new();
+            if !cfg.root.environment.workdir.is_empty()
+                && cfg.root.environment.workdir != "/workspace"
+            {
+                let wd = std::path::PathBuf::from(&cfg.root.environment.workdir);
+                env = env.with_workdir(Some(wd));
+            }
+            Ok(Box::new(env))
+        }
         EnvKind::Docker => build_docker_env(cfg).await,
     }
 }
@@ -763,13 +797,17 @@ fn current_rust_version() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Wrap `s` in POSIX single-quotes so it survives `bash -c` without any word
-/// splitting or glob expansion. A single-quote inside `s` is escaped using the
-/// standard `'\''` technique (close quote, escaped literal `'`, reopen quote).
+/// Wrap `s` in Windows-safe double-quotes or POSIX single-quotes so it survives shell execution
+/// without word splitting or glob expansion.
 fn shell_quote_single(s: &str) -> String {
-    // Replace every ' with '\'' and wrap the whole thing in outer single-quotes.
-    let escaped = s.replace('\'', r"'\''");
-    format!("'{escaped}'")
+    if cfg!(windows) {
+        let escaped = s.replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        // Replace every ' with '\'' and wrap the whole thing in outer single-quotes.
+        let escaped = s.replace('\'', r"'\''");
+        format!("'{escaped}'")
+    }
 }
 
 #[cfg(test)]
@@ -778,21 +816,47 @@ mod shell_quote_tests {
 
     #[test]
     fn plain_arg() {
-        assert_eq!(shell_quote_single("hello"), "'hello'");
+        if cfg!(windows) {
+            assert_eq!(shell_quote_single("hello"), "\"hello\"");
+        } else {
+            assert_eq!(shell_quote_single("hello"), "'hello'");
+        }
     }
 
     #[test]
     fn arg_with_spaces() {
-        assert_eq!(shell_quote_single("My Project"), "'My Project'");
+        if cfg!(windows) {
+            assert_eq!(shell_quote_single("My Project"), "\"My Project\"");
+        } else {
+            assert_eq!(shell_quote_single("My Project"), "'My Project'");
+        }
     }
 
     #[test]
     fn arg_with_single_quote() {
-        assert_eq!(shell_quote_single("it's"), "'it'\\''s'");
+        if cfg!(windows) {
+            assert_eq!(shell_quote_single("it's"), "\"it's\"");
+        } else {
+            assert_eq!(shell_quote_single("it's"), "'it'\\''s'");
+        }
+    }
+
+    #[test]
+    fn arg_with_double_quote() {
+        if cfg!(windows) {
+            assert_eq!(
+                shell_quote_single("hello \"world\""),
+                "\"hello \\\"world\\\"\""
+            );
+        }
     }
 
     #[test]
     fn arg_with_shell_metacharacters() {
-        assert_eq!(shell_quote_single("$HOME/bin"), "'$HOME/bin'");
+        if cfg!(windows) {
+            assert_eq!(shell_quote_single("$HOME/bin"), "\"$HOME/bin\"");
+        } else {
+            assert_eq!(shell_quote_single("$HOME/bin"), "'$HOME/bin'");
+        }
     }
 }

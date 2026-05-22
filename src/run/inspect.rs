@@ -1385,6 +1385,23 @@ pub fn redact_trajectory_for_inspect(trajectory: &mut Trajectory, redactor: &Red
             redacted |= redactor.redact_json_value(value, surface::INSPECT);
         }
     }
+    if let Some(lineage) = &mut trajectory.fork_lineage {
+        let outcome = redactor.redact_text(&lineage.parent_sweep_path, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_sweep_path = outcome.text;
+
+        let outcome = redactor.redact_text(&lineage.parent_instance_id, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_instance_id = outcome.text;
+
+        let outcome = redactor.redact_text(&lineage.parent_trajectory_sha256, surface::INSPECT);
+        redacted |= outcome.redacted;
+        lineage.parent_trajectory_sha256 = outcome.text;
+
+        for value in lineage.tail_overrides.values_mut() {
+            redacted |= redactor.redact_json_value(value, surface::INSPECT);
+        }
+    }
     redacted
 }
 

@@ -713,3 +713,75 @@ step_limit = 1
         "step_limit override should not be recorded since it wasn't overridden"
     );
 }
+
+#[test]
+fn bench_fork_lineage_redaction() {
+    let temp = tempdir().unwrap();
+    let sweep_dir = temp.path().join("sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let legacy_path = temp.path().join("legacy.traj.json");
+    make_legacy_trajectory(&legacy_path);
+
+    let _fp_traj = record_fingerprinted_trajectory(&legacy_path, &sweep_dir, "myinstance");
+
+    // Run fork starting from step 1, with a sensitive environment variable "MY_SECRET_KEY" = "supersecret123"
+    // and pass this secret in the --model override.
+    let out_dir = temp.path().join("out");
+    let out = Command::new(binary_path())
+        .env("MY_SECRET_KEY", "supersecret123")
+        .args([
+            "bench",
+            "fork",
+            "--sweep",
+            sweep_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance",
+            "--from-step",
+            "1",
+            "--output",
+            out_dir.to_str().unwrap(),
+            "--step-limit",
+            "1",
+            "--model",
+            "claude-with-supersecret123",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+
+    // Verify output trajectory exists and has fork_lineage
+    let fork_traj_path = out_dir.join("myinstance-fork.traj.json");
+    assert!(fork_traj_path.exists());
+
+    let traj_content = fs::read_to_string(&fork_traj_path).unwrap();
+
+    // The raw secret "supersecret123" should NOT be present anywhere in the trajectory file on disk!
+    assert!(
+        !traj_content.contains("supersecret123"),
+        "Persisted trajectory should have redacted the sensitive override value, but found: {}",
+        traj_content
+    );
+
+    // Let's also run bench inspect and make sure that is redacted.
+    let inspect_out = Command::new(binary_path())
+        .env("MY_SECRET_KEY", "supersecret123")
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            out_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance-fork",
+        ])
+        .output()
+        .unwrap();
+
+    let inspect_stdout = String::from_utf8_lossy(&inspect_out.stdout);
+    assert!(
+        !inspect_stdout.contains("supersecret123"),
+        "Inspect output should have redacted the sensitive override value, but found: {}",
+        inspect_stdout
+    );
+}
