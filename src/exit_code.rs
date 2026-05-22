@@ -133,6 +133,7 @@ impl ExitCode {
     #[must_use]
     pub fn from_error(e: &Error) -> Self {
         match e {
+            Error::Preflight(_) => Self::PreflightFailure,
             Error::Config(_) => Self::UsageError,
             Error::VerificationFailed(..) => Self::VerificationFailure,
             Error::Env(env_e) => Self::from_env_error(env_e),
@@ -180,6 +181,14 @@ mod tests {
         assert_eq!(
             ExitCode::from_error(&Error::Config(ConfigError::Invalid("x".into()))),
             ExitCode::UsageError
+        );
+    }
+
+    #[test]
+    fn from_error_preflight_is_preflight_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Preflight("drift".into())),
+            ExitCode::PreflightFailure
         );
     }
 

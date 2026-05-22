@@ -665,3 +665,270 @@ fn test_ignore_and_fail_on_change() {
     assert!(parsed["changed_fields"].as_array().unwrap().is_empty());
     assert_eq!(parsed["ignored_fields"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn test_invalid_format_value_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .arg("--format")
+        .arg("jsno")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unsupported output format"));
+}
+
+#[test]
+fn test_corrupted_json_results_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    std::fs::write(baseline.join("results.json"), "{invalid json").unwrap();
+    std::fs::write(candidate.join("results.json"), "{}").unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("failed to parse results.json"));
+}
+
+#[test]
+fn test_malformed_toml_resolved_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let manifest_base = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        },
+        "config": {
+            "resolved": "invalid = toml = structure = 123"
+        }
+    });
+
+    let payload_base = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_base
+    });
+
+    std::fs::write(
+        baseline.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("failed to parse baseline config.resolved"));
+}
+
+#[test]
+fn test_malformed_manifest_type_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let payload_base = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": "not-an-object"
+    });
+
+    std::fs::write(
+        baseline.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("invalid 'manifest' type: expected a JSON object"));
+}
+
+#[test]
+fn test_empty_container_drift_detected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let manifest_base = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        },
+        "sampling": {}
+    });
+
+    let manifest_cand = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        },
+        "sampling": []
+    });
+
+    let payload_base = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_base
+    });
+    let payload_cand = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_cand
+    });
+
+    std::fs::write(
+        baseline.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join("results.json"),
+        serde_json::to_string(&payload_cand).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[sampling]"));
+    assert!(
+        stdout.contains("{}")
+            && (stdout.contains("[]") || stdout.contains("->") || stdout.contains("→"))
+    );
+}
+
+#[test]
+fn test_fail_on_change_returns_exit_3() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let manifest_base = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        }
+    });
+
+    let mut manifest_cand = manifest_base.clone();
+    manifest_cand["harness"]["name"] = serde_json::json!("different");
+
+    let payload_base = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_base
+    });
+    let payload_cand = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_cand
+    });
+
+    std::fs::write(
+        baseline.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join("results.json"),
+        serde_json::to_string(&payload_cand).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .arg("--fail-on-change")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+}

@@ -122,10 +122,14 @@ fn key_event_to_decision(key: KeyEvent) -> Option<ConfirmDecision> {
     }
 }
 
+#[cfg(test)]
+pub static MOCK_STDIN_EOF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn read_line_buffered() -> ConfirmDecision {
     #[cfg(test)]
     {
-        if std::env::var("MAX_TEST_MOCK_STDIN_EOF").is_ok() {
+        if MOCK_STDIN_EOF.load(std::sync::atomic::Ordering::Relaxed) {
             return ConfirmDecision::Abort;
         }
     }
@@ -285,9 +289,7 @@ mod tests {
         // closed/redirected stdin, the read returns EOF, which
         // `parse_line_decision` maps to Abort. End-to-end: confirm()
         // returns Abort without hanging.
-        unsafe {
-            std::env::set_var("MAX_TEST_MOCK_STDIN_EOF", "1");
-        }
+        MOCK_STDIN_EOF.store(true, std::sync::atomic::Ordering::Relaxed);
         let c = StderrCliConfirmer::forced();
         let ctx = ConfirmContext {
             tool_name: "bash".into(),
@@ -298,9 +300,7 @@ mod tests {
             cache_marker: "cache:auto-or-none",
         };
         let d = c.confirm(&ctx).await;
-        unsafe {
-            std::env::remove_var("MAX_TEST_MOCK_STDIN_EOF");
-        }
+        MOCK_STDIN_EOF.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(d, ConfirmDecision::Abort);
     }
 }

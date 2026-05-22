@@ -55,6 +55,13 @@ pub struct IgnoredField {
 
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
+    if args.format != "text" && args.format != "json" {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "unsupported output format `{}`; must be `text` or `json`",
+            args.format
+        ))));
+    }
+
     let baseline_manifest = load_manifest(&args.baseline)?;
     let candidate_manifest = load_manifest(&args.candidate)?;
 
@@ -330,16 +337,38 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     );
 
     // 9. config.resolved
-    let base_resolved_str = get_field_val(&baseline_manifest, &["config", "resolved"])
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
-    let cand_resolved_str = get_field_val(&candidate_manifest, &["config", "resolved"])
-        .as_str()
-        .unwrap_or("")
-        .to_owned();
-    let base_resolved: Value = toml::from_str(&base_resolved_str).unwrap_or(Value::Null);
-    let cand_resolved: Value = toml::from_str(&cand_resolved_str).unwrap_or(Value::Null);
+    let base_resolved_val = get_field_val(&baseline_manifest, &["config", "resolved"]);
+    let cand_resolved_val = get_field_val(&candidate_manifest, &["config", "resolved"]);
+
+    let base_resolved: Value = if base_resolved_val.is_null() {
+        Value::Null
+    } else {
+        let s = base_resolved_val.as_str().ok_or_else(|| {
+            Error::Config(ConfigError::Invalid(
+                "baseline config.resolved must be a string".to_string(),
+            ))
+        })?;
+        toml::from_str(s).map_err(|e| {
+            Error::Config(ConfigError::Invalid(format!(
+                "failed to parse baseline config.resolved: {e}"
+            )))
+        })?
+    };
+
+    let cand_resolved: Value = if cand_resolved_val.is_null() {
+        Value::Null
+    } else {
+        let s = cand_resolved_val.as_str().ok_or_else(|| {
+            Error::Config(ConfigError::Invalid(
+                "candidate config.resolved must be a string".to_string(),
+            ))
+        })?;
+        toml::from_str(s).map_err(|e| {
+            Error::Config(ConfigError::Invalid(format!(
+                "failed to parse candidate config.resolved: {e}"
+            )))
+        })?
+    };
     compare_block(
         "config.resolved",
         &base_resolved,
@@ -484,11 +513,9 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     }
 
     if args.fail_on_change && has_changes {
-        eprintln!("outcome_class: preflight_failure");
-        eprintln!("error: config drift detected with --fail-on-change");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        let _ = std::io::Write::flush(&mut std::io::stderr());
-        std::process::exit(3);
+        return Err(Error::Preflight(
+            "config drift detected with --fail-on-change".to_string(),
+        ));
     }
 
     Ok(())
@@ -550,7 +577,9 @@ fn compare_block(
     for key in all_keys {
         let b_val = base_leaves.get(&key).cloned().unwrap_or(Value::Null);
         let c_val = cand_leaves.get(&key).cloned().unwrap_or(Value::Null);
-        let disp_path = if key.starts_with('.') || key.starts_with('[') {
+        let disp_path = if key.is_empty() {
+            String::new()
+        } else if key.starts_with('.') || key.starts_with('[') {
             key.clone()
         } else {
             format!(".{key}")
@@ -596,8 +625,19 @@ fn load_manifest(dir: &Path) -> Result<Value, Error> {
         ))));
     }
 
-    let content = std::fs::read_to_string(&results_path)?;
-    let root: Value = serde_json::from_str(&content).map_err(Error::Json)?;
+    let file = std::fs::File::open(&results_path).map_err(|e| {
+        Error::Config(ConfigError::Invalid(format!(
+            "failed to open results.json at `{}`: {e}",
+            results_path.display()
+        )))
+    })?;
+    let reader = std::io::BufReader::new(file);
+    let root: Value = serde_json::from_reader(reader).map_err(|e| {
+        Error::Config(ConfigError::Invalid(format!(
+            "failed to parse results.json at `{}`: {e}",
+            results_path.display()
+        )))
+    })?;
 
     let manifest = root.get("manifest").ok_or_else(|| {
         Error::Config(ConfigError::Invalid(format!(
@@ -613,7 +653,26 @@ fn load_manifest(dir: &Path) -> Result<Value, Error> {
         ))));
     }
 
+    if !manifest.is_object() {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "results.json at `{}` has an invalid 'manifest' type: expected a JSON object, found {}",
+            dir.display(),
+            manifest_type_name(manifest)
+        ))));
+    }
+
     Ok(manifest.clone())
+}
+
+fn manifest_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn get_field_val(obj: &Value, keys: &[&str]) -> Value {
@@ -631,19 +690,27 @@ fn get_field_val(obj: &Value, keys: &[&str]) -> Value {
 fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) {
     match val {
         Value::Object(obj) => {
-            for (k, v) in obj {
-                let next_prefix = if prefix.is_empty() {
-                    format!(".{k}")
-                } else {
-                    format!("{prefix}.{k}")
-                };
-                collect_leaves(&next_prefix, v, map);
+            if obj.is_empty() {
+                map.insert(prefix.to_string(), val.clone());
+            } else {
+                for (k, v) in obj {
+                    let next_prefix = if prefix.is_empty() {
+                        format!(".{k}")
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
+                    collect_leaves(&next_prefix, v, map);
+                }
             }
         }
         Value::Array(arr) => {
-            for (i, v) in arr.iter().enumerate() {
-                let next_prefix = format!("{prefix}[{i}]");
-                collect_leaves(&next_prefix, v, map);
+            if arr.is_empty() {
+                map.insert(prefix.to_string(), val.clone());
+            } else {
+                for (i, v) in arr.iter().enumerate() {
+                    let next_prefix = format!("{prefix}[{i}]");
+                    collect_leaves(&next_prefix, v, map);
+                }
             }
         }
         other => {
