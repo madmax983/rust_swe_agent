@@ -3287,3 +3287,43 @@ fn compare_min_significance_gate_blocked_for_rerun_sweep() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn test_compare_appends_diff_config_hint() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    let baseline = submitted("cached");
+    let candidate = submitted("cached");
+
+    write_results_with_model(
+        baseline_dir.path(),
+        vec![baseline],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+    write_results_with_model(
+        candidate_dir.path(),
+        vec![candidate],
+        Some("anthropic/claude-sonnet-4-6"),
+    );
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    assert!(
+        stdout.contains("Manifest delta:     none (run `bench diff-config` for details)")
+            || stdout.contains("Manifest delta: (run `bench diff-config` for details)"),
+        "expected stdout to contain the bench diff-config hint; got:\n{stdout}"
+    );
+}

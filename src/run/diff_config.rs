@@ -53,6 +53,7 @@ pub struct IgnoredField {
     pub candidate: Value,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     let baseline_manifest = load_manifest(&args.baseline)?;
     let candidate_manifest = load_manifest(&args.candidate)?;
@@ -72,69 +73,282 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     let mut ignored_fields = Vec::new();
 
     // 1. harness
-    compare_field("harness", ".name", &get_field_val(&baseline_manifest, &["harness", "name"]), &get_field_val(&candidate_manifest, &["harness", "name"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("harness", ".version", &get_field_val(&baseline_manifest, &["harness", "version"]), &get_field_val(&candidate_manifest, &["harness", "version"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("harness", ".git_sha", &get_field_val(&baseline_manifest, &["harness", "git_sha"]), &get_field_val(&candidate_manifest, &["harness", "git_sha"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("harness", ".git_dirty", &get_field_val(&baseline_manifest, &["harness", "git_dirty"]), &get_field_val(&candidate_manifest, &["harness", "git_dirty"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_field(
+        "harness",
+        ".name",
+        &get_field_val(&baseline_manifest, &["harness", "name"]),
+        &get_field_val(&candidate_manifest, &["harness", "name"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "harness",
+        ".version",
+        &get_field_val(&baseline_manifest, &["harness", "version"]),
+        &get_field_val(&candidate_manifest, &["harness", "version"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "harness",
+        ".git_sha",
+        &get_field_val(&baseline_manifest, &["harness", "git_sha"]),
+        &get_field_val(&candidate_manifest, &["harness", "git_sha"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "harness",
+        ".git_dirty",
+        &get_field_val(&baseline_manifest, &["harness", "git_dirty"]),
+        &get_field_val(&candidate_manifest, &["harness", "git_dirty"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 2. dataset
-    compare_field("dataset", ".path", &get_field_val(&baseline_manifest, &["dataset", "path"]), &get_field_val(&candidate_manifest, &["dataset", "path"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("dataset", ".sha256", &get_field_val(&baseline_manifest, &["dataset", "sha256"]), &get_field_val(&candidate_manifest, &["dataset", "sha256"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("dataset", ".instance_count", &get_field_val(&baseline_manifest, &["dataset", "instance_count"]), &get_field_val(&candidate_manifest, &["dataset", "instance_count"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    
+    compare_field(
+        "dataset",
+        ".path",
+        &get_field_val(&baseline_manifest, &["dataset", "path"]),
+        &get_field_val(&candidate_manifest, &["dataset", "path"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "dataset",
+        ".sha256",
+        &get_field_val(&baseline_manifest, &["dataset", "sha256"]),
+        &get_field_val(&candidate_manifest, &["dataset", "sha256"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "dataset",
+        ".instance_count",
+        &get_field_val(&baseline_manifest, &["dataset", "instance_count"]),
+        &get_field_val(&candidate_manifest, &["dataset", "instance_count"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+
     let base_fs = get_field_val(&baseline_manifest, &["dataset", "filter_spec"]);
     let cand_fs = get_field_val(&candidate_manifest, &["dataset", "filter_spec"]);
     let mut base_fs_leaves = BTreeMap::new();
     let mut cand_fs_leaves = BTreeMap::new();
     collect_leaves(".filter_spec", &base_fs, &mut base_fs_leaves);
     collect_leaves(".filter_spec", &cand_fs, &mut cand_fs_leaves);
-    let all_fs_keys: BTreeSet<String> = base_fs_leaves.keys().cloned().chain(cand_fs_leaves.keys().cloned()).collect();
+    let all_fs_keys: BTreeSet<String> = base_fs_leaves
+        .keys()
+        .cloned()
+        .chain(cand_fs_leaves.keys().cloned())
+        .collect();
     for key in all_fs_keys {
         let b_val = base_fs_leaves.get(&key).cloned().unwrap_or(Value::Null);
         let c_val = cand_fs_leaves.get(&key).cloned().unwrap_or(Value::Null);
-        compare_field("dataset", &key, &b_val, &c_val, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+        compare_field(
+            "dataset",
+            &key,
+            &b_val,
+            &c_val,
+            &mut compared_fields,
+            &mut changed_fields,
+            &mut ignored_fields,
+            &ignore_patterns,
+        );
     }
 
     // 3. prompt_template
-    compare_field("prompt_template", ".source", &get_field_val(&baseline_manifest, &["prompt_template", "source"]), &get_field_val(&candidate_manifest, &["prompt_template", "source"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("prompt_template", ".path", &get_field_val(&baseline_manifest, &["prompt_template", "path"]), &get_field_val(&candidate_manifest, &["prompt_template", "path"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("prompt_template", ".sha256", &get_field_val(&baseline_manifest, &["prompt_template", "sha256"]), &get_field_val(&candidate_manifest, &["prompt_template", "sha256"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_field(
+        "prompt_template",
+        ".source",
+        &get_field_val(&baseline_manifest, &["prompt_template", "source"]),
+        &get_field_val(&candidate_manifest, &["prompt_template", "source"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "prompt_template",
+        ".path",
+        &get_field_val(&baseline_manifest, &["prompt_template", "path"]),
+        &get_field_val(&candidate_manifest, &["prompt_template", "path"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "prompt_template",
+        ".sha256",
+        &get_field_val(&baseline_manifest, &["prompt_template", "sha256"]),
+        &get_field_val(&candidate_manifest, &["prompt_template", "sha256"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 4. model
-    compare_field("model", ".name", &get_field_val(&baseline_manifest, &["model", "name"]), &get_field_val(&candidate_manifest, &["model", "name"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("model", ".backend", &get_field_val(&baseline_manifest, &["model", "backend"]), &get_field_val(&candidate_manifest, &["model", "backend"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("model", ".backend_version", &get_field_val(&baseline_manifest, &["model", "backend_version"]), &get_field_val(&candidate_manifest, &["model", "backend_version"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("model", ".base_url", &get_field_val(&baseline_manifest, &["model", "base_url"]), &get_field_val(&candidate_manifest, &["model", "base_url"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_field(
+        "model",
+        ".name",
+        &get_field_val(&baseline_manifest, &["model", "name"]),
+        &get_field_val(&candidate_manifest, &["model", "name"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "model",
+        ".backend",
+        &get_field_val(&baseline_manifest, &["model", "backend"]),
+        &get_field_val(&candidate_manifest, &["model", "backend"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "model",
+        ".backend_version",
+        &get_field_val(&baseline_manifest, &["model", "backend_version"]),
+        &get_field_val(&candidate_manifest, &["model", "backend_version"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "model",
+        ".base_url",
+        &get_field_val(&baseline_manifest, &["model", "base_url"]),
+        &get_field_val(&candidate_manifest, &["model", "base_url"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 5. sampling
     let base_sampling = get_field_val(&baseline_manifest, &["sampling"]);
     let cand_sampling = get_field_val(&candidate_manifest, &["sampling"]);
-    compare_block("sampling", &base_sampling, &cand_sampling, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_block(
+        "sampling",
+        &base_sampling,
+        &cand_sampling,
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 6. tools
     let base_tools = get_field_val(&baseline_manifest, &["tools"]);
     let cand_tools = get_field_val(&candidate_manifest, &["tools"]);
-    compare_block("tools", &base_tools, &cand_tools, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_block(
+        "tools",
+        &base_tools,
+        &cand_tools,
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 7. hooks
     let base_hooks = get_field_val(&baseline_manifest, &["hooks"]);
     let cand_hooks = get_field_val(&candidate_manifest, &["hooks"]);
-    compare_block("hooks", &base_hooks, &cand_hooks, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_block(
+        "hooks",
+        &base_hooks,
+        &cand_hooks,
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 8. limits
     let base_limits = get_field_val(&baseline_manifest, &["limits"]);
     let cand_limits = get_field_val(&candidate_manifest, &["limits"]);
-    compare_field("limits", ".step_limit", &get_field_val(&base_limits, &["step_limit"]), &get_field_val(&cand_limits, &["step_limit"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("limits", ".per_task_budget_usd", &get_field_val(&base_limits, &["per_task_budget_usd"]), &get_field_val(&cand_limits, &["per_task_budget_usd"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("limits", ".task_timeout_secs", &get_field_val(&base_limits, &["task_timeout_secs"]), &get_field_val(&cand_limits, &["task_timeout_secs"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
-    compare_field("limits", ".sweep_cost_limit_usd", &get_field_val(&base_limits, &["sweep_cost_limit_usd"]), &get_field_val(&cand_limits, &["sweep_cost_limit_usd"]), &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_field(
+        "limits",
+        ".step_limit",
+        &get_field_val(&base_limits, &["step_limit"]),
+        &get_field_val(&cand_limits, &["step_limit"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "limits",
+        ".per_task_budget_usd",
+        &get_field_val(&base_limits, &["per_task_budget_usd"]),
+        &get_field_val(&cand_limits, &["per_task_budget_usd"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "limits",
+        ".task_timeout_secs",
+        &get_field_val(&base_limits, &["task_timeout_secs"]),
+        &get_field_val(&cand_limits, &["task_timeout_secs"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
+    compare_field(
+        "limits",
+        ".sweep_cost_limit_usd",
+        &get_field_val(&base_limits, &["sweep_cost_limit_usd"]),
+        &get_field_val(&cand_limits, &["sweep_cost_limit_usd"]),
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 9. config.resolved
-    let base_resolved_str = get_field_val(&baseline_manifest, &["config", "resolved"]).as_str().unwrap_or("").to_owned();
-    let cand_resolved_str = get_field_val(&candidate_manifest, &["config", "resolved"]).as_str().unwrap_or("").to_owned();
+    let base_resolved_str = get_field_val(&baseline_manifest, &["config", "resolved"])
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    let cand_resolved_str = get_field_val(&candidate_manifest, &["config", "resolved"])
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
     let base_resolved: Value = toml::from_str(&base_resolved_str).unwrap_or(Value::Null);
     let cand_resolved: Value = toml::from_str(&cand_resolved_str).unwrap_or(Value::Null);
-    compare_block("config.resolved", &base_resolved, &cand_resolved, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+    compare_block(
+        "config.resolved",
+        &base_resolved,
+        &cand_resolved,
+        &mut compared_fields,
+        &mut changed_fields,
+        &mut ignored_fields,
+        &ignore_patterns,
+    );
 
     // 10. cli.argv
     let base_argv = get_field_val(&baseline_manifest, &["cli", "argv"]);
@@ -144,11 +358,28 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
         for i in 0..max_len {
             let b_val = b_arr.get(i).cloned().unwrap_or(Value::Null);
             let c_val = c_arr.get(i).cloned().unwrap_or(Value::Null);
-            let path = format!("[{}]", i);
-            compare_field("cli.argv", &path, &b_val, &c_val, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+            let path = format!("[{i}]");
+            compare_field(
+                "cli.argv",
+                &path,
+                &b_val,
+                &c_val,
+                &mut compared_fields,
+                &mut changed_fields,
+                &mut ignored_fields,
+                &ignore_patterns,
+            );
         }
     } else {
-        compare_block("cli.argv", &base_argv, &cand_argv, &mut compared_fields, &mut changed_fields, &mut ignored_fields, &ignore_patterns);
+        compare_block(
+            "cli.argv",
+            &base_argv,
+            &cand_argv,
+            &mut compared_fields,
+            &mut changed_fields,
+            &mut ignored_fields,
+            &ignore_patterns,
+        );
     }
 
     let all_groups = [
@@ -187,17 +418,32 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
             unchanged_groups,
             ignored_fields,
         };
-        println!("{}", serde_json::to_string_pretty(&report).map_err(Error::Json)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(Error::Json)?
+        );
     } else {
         if changed_fields.is_empty() {
-            println!("manifests identical ({} fields compared)", compared_fields.len());
+            println!(
+                "manifests identical ({} fields compared)",
+                compared_fields.len()
+            );
         } else {
             let mut headline = "other configuration drift detected";
-            if changed_fields.iter().any(|f| f.group == "prompt_template" && f.path == ".sha256") {
+            if changed_fields
+                .iter()
+                .any(|f| f.group == "prompt_template" && f.path == ".sha256")
+            {
                 headline = "prompt_template.sha256 changed";
-            } else if changed_fields.iter().any(|f| f.group == "model" && f.path == ".name") {
+            } else if changed_fields
+                .iter()
+                .any(|f| f.group == "model" && f.path == ".name")
+            {
                 headline = "model.name changed";
-            } else if changed_fields.iter().any(|f| f.group == "harness" && f.path == ".git_sha") {
+            } else if changed_fields
+                .iter()
+                .any(|f| f.group == "harness" && f.path == ".git_sha")
+            {
                 headline = "harness.git_sha changed";
             } else if changed_fields.iter().any(|f| f.group == "limits") {
                 headline = "limits changed";
@@ -207,18 +453,21 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
                 headline = "hooks changed";
             }
 
-            println!("HEADLINE: {}", headline);
+            println!("HEADLINE: {headline}");
             println!();
 
             for group in all_groups {
-                let group_changes: Vec<&ChangedField> = changed_fields.iter().filter(|f| f.group == group).collect();
+                let group_changes: Vec<&ChangedField> =
+                    changed_fields.iter().filter(|f| f.group == group).collect();
                 if group_changes.is_empty() {
-                    println!("[{}] identical", group);
+                    println!("[{group}] identical");
                 } else {
-                    println!("[{}]", group);
+                    println!("[{group}]");
                     for change in group_changes {
-                        let b_str = serde_json::to_string(&change.baseline).unwrap_or_else(|_| "".to_string());
-                        let c_str = serde_json::to_string(&change.candidate).unwrap_or_else(|_| "".to_string());
+                        let b_str = serde_json::to_string(&change.baseline)
+                            .unwrap_or_else(|_| String::new());
+                        let c_str = serde_json::to_string(&change.candidate)
+                            .unwrap_or_else(|_| String::new());
                         println!("  {}: {} → {}", change.path, b_str, c_str);
                     }
                 }
@@ -245,6 +494,7 @@ pub fn run(args: &DiffConfigArgs) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compare_field(
     group: &str,
     path: &str,
@@ -292,21 +542,34 @@ fn compare_block(
     collect_leaves("", base_val, &mut base_leaves);
     collect_leaves("", cand_val, &mut cand_leaves);
 
-    let all_keys: BTreeSet<String> = base_leaves.keys().cloned().chain(cand_leaves.keys().cloned()).collect();
+    let all_keys: BTreeSet<String> = base_leaves
+        .keys()
+        .cloned()
+        .chain(cand_leaves.keys().cloned())
+        .collect();
     for key in all_keys {
         let b_val = base_leaves.get(&key).cloned().unwrap_or(Value::Null);
         let c_val = cand_leaves.get(&key).cloned().unwrap_or(Value::Null);
         let disp_path = if key.starts_with('.') || key.starts_with('[') {
             key.clone()
         } else {
-            format!(".{}", key)
+            format!(".{key}")
         };
-        compare_field(group, &disp_path, &b_val, &c_val, compared_fields, changed_fields, ignored_fields, ignore_patterns);
+        compare_field(
+            group,
+            &disp_path,
+            &b_val,
+            &c_val,
+            compared_fields,
+            changed_fields,
+            ignored_fields,
+            ignore_patterns,
+        );
     }
 }
 
 fn is_ignored(group: &str, path: &str, patterns: &[String]) -> bool {
-    let full_path = format!("{}{}", group, path);
+    let full_path = format!("{group}{path}");
     for pattern in patterns {
         if pattern == group {
             return true;
@@ -370,16 +633,16 @@ fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) 
         Value::Object(obj) => {
             for (k, v) in obj {
                 let next_prefix = if prefix.is_empty() {
-                    format!(".{}", k)
+                    format!(".{k}")
                 } else {
-                    format!("{}.{}", prefix, k)
+                    format!("{prefix}.{k}")
                 };
                 collect_leaves(&next_prefix, v, map);
             }
         }
         Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
-                let next_prefix = format!("{}[{}]", prefix, i);
+                let next_prefix = format!("{prefix}[{i}]");
                 collect_leaves(&next_prefix, v, map);
             }
         }

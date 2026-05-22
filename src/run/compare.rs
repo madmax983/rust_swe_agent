@@ -707,10 +707,19 @@ fn filtered_subset_warnings(report: &CompareReport) -> Vec<String> {
 }
 
 fn write_manifest_delta_section(s: &mut String, manifest_deltas: &[String]) {
+    let both_have_manifests = !manifest_deltas.iter().any(|d| d == "manifest unavailable");
     if manifest_deltas.is_empty() {
-        s.push_str("Manifest delta:     none\n");
+        if both_have_manifests {
+            s.push_str("Manifest delta:     none (run `bench diff-config` for details)\n");
+        } else {
+            s.push_str("Manifest delta:     none\n");
+        }
     } else {
-        s.push_str("Manifest delta:\n");
+        if both_have_manifests {
+            s.push_str("Manifest delta: (run `bench diff-config` for details)\n");
+        } else {
+            s.push_str("Manifest delta:\n");
+        }
         for d in manifest_deltas {
             let _ = writeln!(s, "  - {d}");
         }
