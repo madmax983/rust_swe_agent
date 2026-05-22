@@ -127,14 +127,27 @@ fn solve_sample_size(
 ) -> usize {
     const MAX_ITERATIONS: usize = 100_000;
 
-    let p2 = if baseline_rate - delta >= 0.0 {
-        baseline_rate - delta
+    let h_neg = if baseline_rate - delta >= 0.0 {
+        cohens_h(baseline_rate, baseline_rate - delta)
     } else {
-        baseline_rate + delta
+        f64::INFINITY
+    };
+    let h_pos = if baseline_rate + delta <= 1.0 {
+        cohens_h(baseline_rate, baseline_rate + delta)
+    } else {
+        f64::INFINITY
     };
 
-    let h = cohens_h(baseline_rate, p2);
-    if h == 0.0 {
+    // Pick the smaller positive Cohen's h to solve for the more conservative (larger) sample size.
+    let h = if h_neg <= 0.0 {
+        h_pos
+    } else if h_pos <= 0.0 {
+        h_neg
+    } else {
+        h_neg.min(h_pos)
+    };
+
+    if h <= 0.0 || h.is_nan() || h.is_infinite() {
         return 0;
     }
 
@@ -200,7 +213,7 @@ fn solve_h_for_power(n: usize, alpha: f64, target_power: f64, one_sided: bool) -
 }
 
 /// Convert Cohen's h back to delta absolute percentage points.
-fn h_to_delta(p1: f64, h: f64) -> f64 {
+fn h_to_delta(p1: f64, h: f64) -> Option<f64> {
     let asin_p1 = p1.sqrt().asin();
 
     let term_pos = asin_p1 + h / 2.0;
@@ -229,25 +242,26 @@ fn h_to_delta(p1: f64, h: f64) -> f64 {
     };
 
     if !d_pos.is_nan() && !d_neg.is_nan() {
-        d_pos.min(d_neg)
+        // Report the larger (conservative/robust) delta
+        Some(d_pos.max(d_neg))
     } else if !d_pos.is_nan() {
-        d_pos
+        Some(d_pos)
     } else if !d_neg.is_nan() {
-        d_neg
+        Some(d_neg)
     } else {
-        0.0
+        None
     }
 }
 
 pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
     // 1. Validation Checks
-    if cmd.alpha <= 0.0 || cmd.alpha >= 1.0 {
+    if cmd.alpha.is_nan() || cmd.alpha <= 0.0 || cmd.alpha >= 1.0 {
         return Err(Error::Config(crate::error::ConfigError::Usage(format!(
             "Significance level alpha must be between 0.0 and 1.0, got {}",
             cmd.alpha
         ))));
     }
-    if cmd.power <= 0.0 || cmd.power >= 1.0 {
+    if cmd.power.is_nan() || cmd.power <= 0.0 || cmd.power >= 1.0 {
         return Err(Error::Config(crate::error::ConfigError::Usage(format!(
             "Statistical power must be between 0.0 and 1.0, got {}",
             cmd.power
@@ -260,10 +274,18 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
         ))));
     }
 
+    if let Some(c) = cmd.cost_per_instance {
+        if c.is_nan() || c < 0.0 {
+            return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                "Cost per instance must be a finite, non-negative number, got {c}"
+            ))));
+        }
+    }
+
     // 2. Resolve Baseline Resolved Rate
     let baseline_rate = match (cmd.baseline_rate, &cmd.from_sweep) {
         (Some(b), None) => {
-            if !(0.0..=1.0).contains(&b) {
+            if b.is_nan() || !(0.0..=1.0).contains(&b) {
                 return Err(Error::Config(crate::error::ConfigError::Usage(format!(
                     "Baseline rate must be in [0.0, 1.0], got {b}"
                 ))));
@@ -326,11 +348,39 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
         )));
     }
 
-    if let Some(d) = cmd.delta {
-        if !(0.0..=1.0).contains(&d) {
+    if let Some(delta) = cmd.delta {
+        if delta.is_nan() || delta <= 0.0 || delta >= 1.0 {
             return Err(Error::Config(crate::error::ConfigError::Usage(format!(
-                "Delta must be in [0.0, 1.0], got {d}"
+                "Target delta must be strictly positive and less than 1.0, got {delta}"
             ))));
+        }
+
+        let has_valid_lower = (baseline_rate - delta) >= 0.0;
+        let has_valid_upper = (baseline_rate + delta) <= 1.0;
+
+        if !has_valid_lower && !has_valid_upper {
+            return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                "Impossible baseline rate ({baseline_rate}) and delta ({delta}) combination: comparison rate is outside [0, 1]"
+            ))));
+        }
+
+        // Check if Cohen's h collapses to zero under floating-point precision
+        let h_neg = if has_valid_lower {
+            cohens_h(baseline_rate, baseline_rate - delta)
+        } else {
+            f64::INFINITY
+        };
+        let h_pos = if has_valid_upper {
+            cohens_h(baseline_rate, baseline_rate + delta)
+        } else {
+            f64::INFINITY
+        };
+        let h = h_neg.min(h_pos);
+
+        if h <= 0.0 || h.is_nan() {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "The requested delta is too small and collapses to zero effect size under floating-point precision".to_string(),
+            )));
         }
     }
 
@@ -358,6 +408,20 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
         None
     };
 
+    // Extreme precision bounds check on adjusted alpha and power
+    let z_crit = if cmd.one_sided {
+        inverse_phi(1.0 - adjusted_alpha)
+    } else {
+        inverse_phi(1.0 - adjusted_alpha / 2.0)
+    };
+    let z_power = inverse_phi(cmd.power);
+
+    if !z_crit.is_finite() || !z_power.is_finite() {
+        return Err(Error::Config(crate::error::ConfigError::Usage(
+            "Significance level alpha or power is too extreme to be resolved with finite float precision".to_string(),
+        )));
+    }
+
     // 4. Mode Solver
     let mut solved_n = None;
     let mut solved_mde = None;
@@ -379,14 +443,19 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
     } else if let Some(n) = cmd.n {
         // Mode B: Solve for MDE
         let h = solve_h_for_power(n, adjusted_alpha, cmd.power, cmd.one_sided);
-        let mde = h_to_delta(baseline_rate, h);
+        let mde = h_to_delta(baseline_rate, h).ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Usage(format!(
+                "Infeasible configuration: required Cohen's h ({h:.4}) cannot be resolved from baseline rate {baseline_rate} for sample size {n}"
+            )))
+        })?;
         solved_mde = Some(mde);
     }
 
     // 5. Cost calculation
     let cost_per_instance = match (cmd.cost_per_instance, &cmd.from_forecast) {
         (Some(c), None) => {
-            if c < 0.0 {
+            // Already validated at CLI boundary, but safe sanity check.
+            if c.is_nan() || c < 0.0 {
                 return Err(Error::Config(crate::error::ConfigError::Usage(format!(
                     "Cost per instance cannot be negative, got {c}"
                 ))));
@@ -412,10 +481,10 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                     ))
                 })?;
 
-            if target_n == 0.0 {
-                return Err(Error::Config(crate::error::ConfigError::Usage(
-                    "Forecast file `/forecast/target_n` cannot be zero".to_string(),
-                )));
+            if target_n.is_nan() || target_n <= 0.0 || target_n.fract() != 0.0 {
+                return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                    "Forecast file `/forecast/target_n` must be a positive integer, got {target_n}"
+                ))));
             }
 
             let point_cost = val
@@ -426,6 +495,12 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                         "Forecast file missing `/forecast/total_cost_usd/point` field".to_string(),
                     ))
                 })?;
+
+            if point_cost.is_nan() || point_cost < 0.0 || !point_cost.is_finite() {
+                return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                    "Forecast total cost must be non-negative and finite, got {point_cost}"
+                ))));
+            }
 
             Some(point_cost / target_n)
         }

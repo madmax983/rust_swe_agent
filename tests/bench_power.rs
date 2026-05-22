@@ -114,9 +114,9 @@ fn cli_mode_a_sample_size_reference_2() {
 
 #[test]
 fn cli_mode_a_sample_size_native_no_override() {
-    // Pure mathematical result: baseline_rate=0.20, delta=0.05, solves to N = 903 per arm
+    // Pure mathematical result: baseline_rate=0.20, delta=0.05, solves to N = 1092 per arm
     let report = run_power_json(&["--baseline-rate", "0.20", "--delta", "0.05"]);
-    assert_eq!(report["solved_n"].as_u64().unwrap(), 903);
+    assert_eq!(report["solved_n"].as_u64().unwrap(), 1092);
 }
 
 #[test]
@@ -173,4 +173,167 @@ fn cli_cost_per_instance_calculates_total_cost() {
         "2.50",
     ]);
     assert_eq!(report["total_cost"].as_f64().unwrap(), 1940.0);
+}
+
+#[test]
+fn cli_fails_with_nan_inputs() {
+    // alpha NaN
+    let output = run_power(&["--baseline-rate", "0.5", "--delta", "0.1", "--alpha", "NaN"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Usage") || stderr.contains("alpha"));
+
+    // power NaN
+    let output = run_power(&["--baseline-rate", "0.5", "--delta", "0.1", "--power", "NaN"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Usage") || stderr.contains("power"));
+
+    // cost-per-instance NaN
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--cost-per-instance",
+        "NaN",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Usage") || stderr.contains("Cost"));
+}
+
+#[test]
+fn cli_fails_with_impossible_delta() {
+    // baseline 0.9, delta 0.95 -> p2 would be -0.05 or 1.85 (both outside [0, 1])
+    let output = run_power(&["--baseline-rate", "0.9", "--delta", "0.95"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Impossible") || stderr.contains("delta"));
+}
+
+#[test]
+fn cli_fails_with_under_resolved_delta() {
+    // delta too small, collapses to zero effect
+    let output = run_power(&["--baseline-rate", "0.5", "--delta", "1e-18"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("too small") || stderr.contains("delta") || stderr.contains("effect"));
+}
+
+#[test]
+fn cli_fails_with_extreme_precision_alpha() {
+    // Extremely small alpha that would cause infinity in inverse_phi
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--alpha",
+        "5e-324",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("too extreme") || stderr.contains("precision"));
+}
+
+#[test]
+fn cli_fails_with_mode_b_infeasibility() {
+    // With small sample size, required h is so large it's impossible to resolve from baseline_rate
+    let output = run_power(&["--baseline-rate", "0.01", "--n", "1"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Infeasible") || stderr.contains("Cohen's h"));
+}
+
+#[test]
+fn cli_mode_a_conservative_delta_mapping() {
+    // In Mode A, we want to ensure we compute the sample size corresponding to the more conservative direction
+    // For baseline_rate=0.20, delta=0.05:
+    // Direction +delta (0.25) yields smaller h (0.12) -> larger N (1092)
+    // Direction -delta (0.15) yields larger h (0.132) -> smaller N (903)
+    // So the solver must output 1092 per arm.
+    let report = run_power_json(&["--baseline-rate", "0.20", "--delta", "0.05"]);
+    assert_eq!(report["solved_n"].as_u64().unwrap(), 1092);
+}
+
+#[test]
+fn cli_mode_b_conservative_mde_reporting() {
+    // In Mode B, solving for MDE at baseline 0.20 with N = 1092
+    // Since N = 1092 satisfies BOTH directions, we should report the larger (conservative) absolute delta MDE.
+    // Let's verify that the output resolved MDE is around 0.05 (specifically 0.05 or slightly larger).
+    let report = run_power_json(&["--baseline-rate", "0.20", "--n", "1092"]);
+    let solved_mde = report["solved_mde"].as_f64().unwrap();
+    assert!(
+        (solved_mde - 0.05).abs() < 1e-2,
+        "expected around 0.05, got {solved_mde}"
+    );
+}
+
+#[test]
+fn cli_fails_with_malformed_forecast_target_n() {
+    use std::fs::write;
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("malformed_forecast_target_n.json");
+
+    // target_n is negative
+    write(
+        &file_path,
+        r#"{"forecast": {"target_n": -10.0, "total_cost_usd": {"point": 100.0}}}"#,
+    )
+    .unwrap();
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--from-forecast",
+        file_path.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("positive integer") || stderr.contains("target_n"));
+
+    // target_n is fractional
+    write(
+        &file_path,
+        r#"{"forecast": {"target_n": 10.5, "total_cost_usd": {"point": 100.0}}}"#,
+    )
+    .unwrap();
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--from-forecast",
+        file_path.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("positive integer") || stderr.contains("target_n"));
+}
+
+#[test]
+fn cli_fails_with_malformed_forecast_point_cost() {
+    use std::fs::write;
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("malformed_forecast_point_cost.json");
+
+    // point_cost is negative
+    write(
+        &file_path,
+        r#"{"forecast": {"target_n": 100.0, "total_cost_usd": {"point": -50.0}}}"#,
+    )
+    .unwrap();
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--from-forecast",
+        file_path.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("non-negative") || stderr.contains("total_cost_usd"));
 }
