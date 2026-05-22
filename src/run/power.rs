@@ -547,10 +547,19 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
         _ => unreachable!(),
     };
 
-    let total_cost = cost_per_instance.map(|c| {
+    let total_cost = if let Some(c) = cost_per_instance {
         let size = solved_n.or(cmd.n).unwrap_or(0);
-        size as f64 * cmd.arms as f64 * c
-    });
+        let tc = size as f64 * cmd.arms as f64 * c;
+        if !tc.is_finite() {
+            return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                "Total study cost calculation overflowed (result must be finite): size ({size}) * arms ({}) * cost per instance ({c}) = {tc}",
+                cmd.arms
+            ))));
+        }
+        Some(tc)
+    } else {
+        None
+    };
 
     Ok(PowerReport {
         baseline_rate,

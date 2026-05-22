@@ -353,3 +353,18 @@ fn cli_fails_with_overflowing_delta_sample_size() {
             || stderr.contains("Usage")
     );
 }
+
+#[test]
+fn cli_fails_with_overflowing_total_cost() {
+    let output = run_power(&[
+        "--baseline-rate",
+        "0.5",
+        "--delta",
+        "0.1",
+        "--cost-per-instance",
+        "1e308",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Total study cost calculation overflowed") || stderr.contains("Usage"));
+}
