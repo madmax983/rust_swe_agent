@@ -333,4 +333,145 @@ mod tests {
             "resume_invalid_prefix"
         );
     }
+
+    #[test]
+    fn from_error_agent_stagnation_is_agent_stagnation() {
+        assert_eq!(
+            ExitCode::from_error(&Error::AgentStagnation {
+                count: 3,
+                window: 10
+            }),
+            ExitCode::AgentStagnation
+        );
+    }
+
+    #[test]
+    fn from_error_trajectory_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Trajectory("err".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_github_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Github("err".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_template_is_internal_error() {
+        let err = minijinja::Error::new(minijinja::ErrorKind::SyntaxError, "test");
+        assert_eq!(
+            ExitCode::from_error(&Error::Template(err)),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn from_error_json_is_internal_error() {
+        let err: Result<(), serde_json::Error> = serde_json::from_str("invalid");
+        assert_eq!(
+            ExitCode::from_error(&Error::Json(err.unwrap_err())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_model_malformed_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::Malformed("err".into()))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn from_error_model_refused_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::Refused("err".into()))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn from_error_model_missing_credentials_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::MissingCredentials("err".into()))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
+
+    #[test]
+    fn from_error_model_replay_drift_is_replay_prompt_drift() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ReplayDrift(0))),
+            ExitCode::ReplayPromptDrift
+        );
+    }
+
+    #[test]
+    fn test_all_outcome_class_strings() {
+        assert_eq!(ExitCode::Success.outcome_class(), "success");
+        assert_eq!(ExitCode::InternalError.outcome_class(), "internal_error");
+        assert_eq!(ExitCode::UsageError.outcome_class(), "usage_error");
+        assert_eq!(
+            ExitCode::PreflightFailure.outcome_class(),
+            "preflight_failure"
+        );
+        assert_eq!(
+            ExitCode::TaskUnsuccessful.outcome_class(),
+            "task_unsuccessful"
+        );
+        assert_eq!(ExitCode::BudgetHalt.outcome_class(), "budget_halt");
+        assert_eq!(
+            ExitCode::RegressionGateFailure.outcome_class(),
+            "regression_gate_failure"
+        );
+        assert_eq!(
+            ExitCode::VerificationFailure.outcome_class(),
+            "verification_failure"
+        );
+        assert_eq!(
+            ExitCode::CalibrationOptimistic.outcome_class(),
+            "calibration_optimistic"
+        );
+        assert_eq!(
+            ExitCode::ReplayPromptDrift.outcome_class(),
+            "replay_prompt_drift"
+        );
+        assert_eq!(
+            ExitCode::ReplayResponseExhausted.outcome_class(),
+            "replay_response_exhausted"
+        );
+        assert_eq!(ExitCode::SystemicHalt.outcome_class(), "systemic_halt");
+        assert_eq!(
+            ExitCode::AgentStagnation.outcome_class(),
+            "agent_stagnation"
+        );
+        assert_eq!(
+            ExitCode::EnvPreviewWarning.outcome_class(),
+            "env_preview_warning"
+        );
+        assert_eq!(
+            ExitCode::SkillsPreviewWarning.outcome_class(),
+            "skills_preview_warning"
+        );
+        assert_eq!(
+            ExitCode::ResumeAlreadyTerminal.outcome_class(),
+            "resume_already_terminal"
+        );
+        assert_eq!(
+            ExitCode::ResumeManifestMissing.outcome_class(),
+            "resume_manifest_missing"
+        );
+        assert_eq!(
+            ExitCode::ResumeInvalidPrefix.outcome_class(),
+            "resume_invalid_prefix"
+        );
+        assert_eq!(ExitCode::Interrupted.outcome_class(), "interrupted");
+        assert_eq!(ExitCode::Killed.outcome_class(), "killed");
+    }
 }

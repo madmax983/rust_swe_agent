@@ -173,6 +173,99 @@ mod tests {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
     }
+
+    #[test]
+    fn test_error_display_formatting() {
+        let err = Error::Trajectory("io error".into());
+        assert_eq!(format!("{err}"), "trajectory io: io error");
+
+        let err = Error::Github("auth error".into());
+        assert_eq!(format!("{err}"), "github pr: auth error");
+
+        let err = Error::VerificationFailed(2, 5);
+        assert_eq!(
+            format!("{err}"),
+            "verification failed: 2 of 5 check(s) did not pass"
+        );
+
+        let err = Error::AgentStagnation {
+            count: 3,
+            window: 10,
+        };
+        assert_eq!(
+            format!("{err}"),
+            "agent stagnation detected: action repeated 3 times in 10-step window"
+        );
+    }
+
+    #[test]
+    fn test_model_error_display_formatting() {
+        let err = ModelError::Malformed("bad json".into());
+        assert_eq!(
+            format!("{err}"),
+            "model returned malformed response: bad json"
+        );
+
+        let err = ModelError::Refused("policy violation".into());
+        assert_eq!(format!("{err}"), "model refused request: policy violation");
+
+        let err = ModelError::MissingCredentials("OPENAI_API_KEY".into());
+        assert_eq!(format!("{err}"), "missing credentials: OPENAI_API_KEY");
+
+        let err = ModelError::AllCandidatesFailed("all failed".into(), vec![]);
+        assert_eq!(
+            format!("{err}"),
+            "all fallback candidates failed: all failed"
+        );
+
+        let err = ModelError::ReplayDrift(5);
+        assert_eq!(
+            format!("{err}"),
+            "replay prompt drift at step 5: fingerprints do not match"
+        );
+
+        let err = ModelError::ResponsesExhausted(10);
+        assert_eq!(format!("{err}"), "scripted responses exhausted at step 10");
+
+        let err = ModelError::ScriptedResponsesExhausted(15);
+        assert_eq!(
+            format!("{err}"),
+            "replay response exhausted: no scripted response for step 15"
+        );
+
+        let err = ModelError::ReplayUnfingerprintedLegacy(20);
+        assert_eq!(
+            format!("{err}"),
+            "trajectory has no fingerprint at step 20; use --allow-unfingerprinted to permit replaying legacy trajectories"
+        );
+    }
+
+    #[test]
+    fn test_env_error_display_formatting() {
+        let err = EnvError::Timeout(std::time::Duration::from_secs(5));
+        assert_eq!(format!("{err}"), "command timed out after 5s");
+
+        let err = EnvError::DockerNotInstalled;
+        assert_eq!(format!("{err}"), "docker not installed or not on PATH");
+
+        let err = EnvError::UnexpectedExit("exit code 1".into());
+        assert_eq!(format!("{err}"), "unexpected process exit: exit code 1");
+    }
+
+    #[test]
+    fn test_config_error_display_formatting() {
+        let err = ConfigError::NotFound("foo.toml".into());
+        assert_eq!(format!("{err}"), "config file not found: foo.toml");
+
+        let err = ConfigError::IncludeDepthExceeded(10);
+        assert_eq!(
+            format!("{err}"),
+            "include chain exceeded 10 levels (possible cycle)"
+        );
+
+        let err = ConfigError::Usage("bad flag".into());
+        assert_eq!(format!("{err}"), "bad flag");
+    }
 }
 
 #[derive(Debug, Error)]
