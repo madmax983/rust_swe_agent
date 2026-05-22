@@ -229,6 +229,34 @@ fn init_logging(level: &str) {
         .try_init();
 }
 
+fn resolve_and_validate_workdir(
+    workdir_opt: Option<&std::path::PathBuf>,
+    cfg: &crate::config::Config,
+) -> Result<Option<std::path::PathBuf>, Error> {
+    if let Some(wd) = workdir_opt {
+        if !wd.exists() || !wd.is_dir() {
+            return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                "--workdir {} does not exist or is not a directory",
+                wd.display()
+            ))));
+        }
+        if matches!(cfg.root.environment.kind, crate::config::EnvKind::Docker) {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "docker container workdir is fixed; --workdir cannot be used with docker environment".to_string()
+            )));
+        }
+        let canonical = std::fs::canonicalize(wd).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Usage(format!(
+                "failed to canonicalize --workdir {}: {e}",
+                wd.display()
+            )))
+        })?;
+        Ok(Some(canonical))
+    } else {
+        Ok(None)
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let task = if m.resume_from.is_some() {
@@ -349,6 +377,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         cfg.root.environment.docker_image = Some(img);
     }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
+    let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
 
     // ── Resume path ──────────────────────────────────────────────────────────
     if let Some(resume_path) = m.resume_from.clone() {
@@ -379,14 +408,12 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         .clone()
         .unwrap_or_else(|| crate::run::mini::slugify(&task));
     let github_pr = mini_github_pr_options(&m, &cfg, &trajectory_name)?;
-    let patch_capture = github_pr
-        .as_ref()
-        .map(|options| crate::run::mini::PatchCaptureSpec {
-            base_commit: Some(options.target_branch.clone()),
-            workdir: std::path::PathBuf::from(cfg.root.environment.workdir.clone()),
-            patch_path: options.patch_path.clone(),
-            skip_patch_validation: m.skip_patch_validation,
-        });
+    let patch_capture = build_patch_capture_spec(
+        github_pr.as_ref(),
+        resolved_workdir.as_ref(),
+        &cfg,
+        m.skip_patch_validation,
+    );
 
     let stream_addr = match &m.stream {
         Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
@@ -418,6 +445,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
+        local_workdir: resolved_workdir,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -587,10 +615,13 @@ fn mini_render_only_cmd(
         },
     )?;
 
+    let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
+
     let args = crate::run::render_only::RenderOnlyArgs {
         task,
         extra_context: m.extra_context,
         config: cfg,
+        local_workdir: resolved_workdir,
     };
     let report = crate::run::render_only::render(args)?;
 
@@ -774,6 +805,14 @@ async fn mini_resume_cmd(
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
 
+    let resolved_workdir = match m.workdir.as_ref() {
+        Some(w) => resolve_and_validate_workdir(Some(w), &cfg)?,
+        None => match &traj.info.local_workdir {
+            Some(w) => resolve_and_validate_workdir(Some(&std::path::PathBuf::from(w)), &cfg)?,
+            None => None,
+        },
+    };
+
     let traj_output_dir = resume_path.parent().map_or_else(
         || std::path::PathBuf::from("."),
         std::path::Path::to_path_buf,
@@ -798,6 +837,7 @@ async fn mini_resume_cmd(
         trace_id: None,
         webhook_url: m.webhook_url,
         webhook_headers: m.webhook_headers,
+        local_workdir: resolved_workdir,
     };
     crate::run::mini::run(args).await
 }
@@ -856,6 +896,7 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
         task,
         extra_context: None,
         config: cfg,
+        local_workdir: None,
     };
     let report = crate::run::render_only::render(render_args)?;
 
@@ -1271,6 +1312,23 @@ fn validate_observation_head_ratio(value: f64) -> Result<(), Error> {
             "--observation-head-ratio must be a finite value in [0,1], got {value}"
         ))))
     }
+}
+
+#[allow(clippy::single_option_map)]
+fn build_patch_capture_spec(
+    github_pr: Option<&crate::run::github_pr::GithubPrOptions>,
+    resolved_workdir: Option<&std::path::PathBuf>,
+    cfg: &Config,
+    skip_patch_validation: bool,
+) -> Option<crate::run::mini::PatchCaptureSpec> {
+    github_pr.map(|options| crate::run::mini::PatchCaptureSpec {
+        base_commit: Some(options.target_branch.clone()),
+        workdir: resolved_workdir
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(cfg.root.environment.workdir.clone())),
+        patch_path: options.patch_path.clone(),
+        skip_patch_validation,
+    })
 }
 
 fn mini_github_pr_options(
@@ -3821,6 +3879,37 @@ mod tests {
     }
 
     #[test]
+    fn build_patch_capture_spec_respects_workdir_override() {
+        let cfg = crate::config::Config::defaults().unwrap();
+        let m = mini_cmd(false, true);
+        let github_pr = mini_github_pr_options(&m, &cfg, "task").unwrap();
+
+        // 1. With NO workdir override, should use cfg workdir
+        let spec_no_override = super::build_patch_capture_spec(
+            github_pr.as_ref(),
+            None,
+            &cfg,
+            m.skip_patch_validation,
+        )
+        .unwrap();
+        assert_eq!(
+            spec_no_override.workdir,
+            PathBuf::from(&cfg.root.environment.workdir)
+        );
+
+        // 2. With workdir override, should use the override
+        let override_dir = PathBuf::from("my_override_dir_xyz_789");
+        let spec_override = super::build_patch_capture_spec(
+            github_pr.as_ref(),
+            Some(&override_dir),
+            &cfg,
+            m.skip_patch_validation,
+        )
+        .unwrap();
+        assert_eq!(spec_override.workdir, override_dir);
+    }
+
+    #[test]
     fn github_pr_arg_helpers_validate_required_inputs_and_modes() {
         assert_eq!(
             required_github_arg(Some(" owner/repo "), "--target-repo").unwrap(),
@@ -3973,6 +4062,7 @@ mod tests {
             history_keep_last_observations: None,
             mcp_servers: Vec::new(),
             config: None,
+            workdir: None,
             env: None,
             docker_image: None,
             output: PathBuf::from("runs"),

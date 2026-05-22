@@ -151,6 +151,8 @@ pub struct MiniArgs {
     /// Extra HTTP headers to inject on every webhook POST, e.g.
     /// `"Authorization: Bearer <token>"`.  Not echoed in logs.
     pub webhook_headers: Vec<String>,
+    /// Absolute canonicalized local working directory.
+    pub local_workdir: Option<PathBuf>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -184,7 +186,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_responses,
         args.deterministic_usage_per_call.clone(),
     );
-    let env = build_env(&args.config).await?;
+    let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
     let tool_providers = crate::tool::discover_mcp_servers(
         env.as_ref(),
         &args.config.root.agent.mcp_servers,
@@ -358,6 +360,8 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     if args.trace_id.is_some() {
         agent.trajectory.info.trace_id = args.trace_id.clone();
     }
+    agent.trajectory.info.local_workdir =
+        args.local_workdir.as_ref().map(|p| p.display().to_string());
 
     let traj_path = args
         .output_dir
@@ -971,9 +975,14 @@ fn build_model(
     Arc::new(FallbackModel::new(models))
 }
 
-async fn build_env(cfg: &Config) -> Result<Box<dyn Environment>, Error> {
+async fn build_env(
+    cfg: &Config,
+    local_workdir: Option<&PathBuf>,
+) -> Result<Box<dyn Environment>, Error> {
     match cfg.root.environment.kind {
-        EnvKind::Local => Ok(Box::new(LocalEnvironment::new())),
+        EnvKind::Local => Ok(Box::new(
+            LocalEnvironment::new().with_workdir(local_workdir.cloned()),
+        )),
         EnvKind::Docker => build_docker_env(cfg).await,
     }
 }
@@ -1933,6 +1942,7 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            local_workdir: None,
         };
 
         run(args).await.unwrap();
@@ -2027,6 +2037,7 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            local_workdir: None,
         };
 
         run(args).await.unwrap();
@@ -2116,6 +2127,7 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            local_workdir: None,
         };
 
         run(args).await.unwrap();

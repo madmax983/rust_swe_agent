@@ -488,12 +488,10 @@ fn ladder_output_is_deterministic() {
 // ── insta snapshot tests ──────────────────────────────────────────────────────
 
 fn normalize_root(s: &str) -> String {
-    // Replace the absolute fixture path with a stable placeholder so snapshots
-    // are machine-independent and byte-for-byte identical in CI.
-    let path_str = fixture_root().display().to_string();
-    let escaped_path_str = path_str.replace('\\', "\\\\");
-    s.replace(&escaped_path_str, "[LADDER_FIXTURES]")
-        .replace(&path_str, "[LADDER_FIXTURES]")
+    let display = fixture_root().display().to_string();
+    let escaped = display.replace('\\', "\\\\");
+    s.replace(&escaped, "[LADDER_FIXTURES]")
+        .replace(&display, "[LADDER_FIXTURES]")
 }
 
 #[test]

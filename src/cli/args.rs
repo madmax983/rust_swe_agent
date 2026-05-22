@@ -248,6 +248,10 @@ pub struct MiniCmd {
     #[arg(long)]
     pub config: Option<PathBuf>,
 
+    /// Root directory for the local environment agent run.
+    #[arg(long)]
+    pub workdir: Option<PathBuf>,
+
     /// Environment: `local` or `docker`.
     #[arg(long)]
     pub env: Option<String>,

@@ -687,6 +687,20 @@ fn get_field_val(obj: &Value, keys: &[&str]) -> Value {
     current.clone()
 }
 
+fn escape_key(k: &str) -> String {
+    let mut s = String::with_capacity(k.len());
+    for c in k.chars() {
+        match c {
+            '\\' => s.push_str("\\\\"),
+            '.' => s.push_str("\\."),
+            '[' => s.push_str("\\["),
+            ']' => s.push_str("\\]"),
+            other => s.push(other),
+        }
+    }
+    s
+}
+
 fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) {
     match val {
         Value::Object(obj) => {
@@ -694,10 +708,11 @@ fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) 
                 map.insert(prefix.to_string(), val.clone());
             } else {
                 for (k, v) in obj {
+                    let escaped_k = escape_key(k);
                     let next_prefix = if prefix.is_empty() {
-                        format!(".{k}")
+                        format!(".{escaped_k}")
                     } else {
-                        format!("{prefix}.{k}")
+                        format!("{prefix}.{escaped_k}")
                     };
                     collect_leaves(&next_prefix, v, map);
                 }
@@ -718,3 +733,4 @@ fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) 
         }
     }
 }
+

@@ -932,3 +932,81 @@ fn test_fail_on_change_returns_exit_3() {
 
     assert_eq!(out.status.code(), Some(3));
 }
+
+#[test]
+fn test_escaped_object_keys_in_flattened_diff_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let baseline = tmp.path().join("baseline");
+    let candidate = tmp.path().join("candidate");
+    std::fs::create_dir(&baseline).unwrap();
+    std::fs::create_dir(&candidate).unwrap();
+
+    let manifest_base = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        },
+        "config": {
+            "resolved": "\"a.b\" = 1\n"
+        }
+    });
+
+    let manifest_cand = serde_json::json!({
+        "harness": {
+            "name": "maxwells-daemon",
+            "version": "1.0.0",
+            "git_sha": "abc1234",
+            "git_dirty": false
+        },
+        "config": {
+            "resolved": "[a]\nb = 1\n"
+        }
+    });
+
+    let payload_base = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_base
+    });
+    let payload_cand = serde_json::json!({
+        "total": 1,
+        "instances": [],
+        "manifest": manifest_cand
+    });
+
+    std::fs::write(
+        baseline.join("results.json"),
+        serde_json::to_string(&payload_base).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join("results.json"),
+        serde_json::to_string(&payload_cand).unwrap(),
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(support::binary_path())
+        .arg("bench")
+        .arg("diff-config")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--candidate")
+        .arg(&candidate)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    
+    // With escaped keys:
+    // Baseline flattens to config.resolved.a\.b = 1
+    // Candidate flattens to config.resolved.a.b = 1
+    // Since they have different paths, it must report changes!
+    let changed_count = parsed["summary"]["changed_field_count"].as_u64().unwrap();
+    assert!(changed_count > 0, "Lossy flattening failed to differentiate 'a.b' and [a].b keys: got {}", stdout);
+}
+

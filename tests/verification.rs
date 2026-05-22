@@ -40,6 +40,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         trace_id: None,
         webhook_url: None,
         webhook_headers: vec![],
+        local_workdir: None,
     }
 }
 
