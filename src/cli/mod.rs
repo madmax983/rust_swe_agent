@@ -89,6 +89,9 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Compare(c),
         } => bench_compare(c),
         Command::Bench {
+            cmd: args::BenchCmd::DiffConfig(c),
+        } => bench_diff_config(c),
+        Command::Bench {
             cmd: args::BenchCmd::Evaluate(e),
         } => bench_evaluate(e),
         Command::Bench {
@@ -1685,6 +1688,18 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         c.allow_underpowered,
     );
     Ok(())
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn bench_diff_config(c: args::DiffConfigCmd) -> Result<(), Error> {
+    let args = crate::run::diff_config::DiffConfigArgs {
+        baseline: c.baseline,
+        candidate: c.candidate,
+        format: c.format,
+        fail_on_change: c.fail_on_change,
+        ignore: c.ignore,
+    };
+    crate::run::diff_config::run(&args)
 }
 
 fn apply_significance_gates(

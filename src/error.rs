@@ -42,6 +42,10 @@ pub enum Error {
     /// exists only so the CLI can exit with code 12.
     #[error("agent stagnation detected: action repeated {count} times in {window}-step window")]
     AgentStagnation { count: u32, window: u32 },
+
+    /// Preflight gate failure (e.g. config drift with --fail-on-change).
+    #[error("{0}")]
+    Preflight(String),
 }
 
 #[derive(Debug, Error)]
