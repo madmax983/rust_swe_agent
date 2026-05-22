@@ -188,17 +188,13 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_usage_per_call.clone(),
     );
     let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
-    let tool_providers = if args.read_only {
-        Vec::new()
-    } else {
-        crate::tool::discover_mcp_servers(
-            env.as_ref(),
-            &args.config.root.agent.mcp_servers,
-            args.config.root.agent.tool_hook_timeout_secs,
-            args.cancellation.clone(),
-        )
-        .await?
-    };
+    let tool_providers = crate::tool::discover_mcp_servers(
+        env.as_ref(),
+        &args.config.root.agent.mcp_servers,
+        args.config.root.agent.tool_hook_timeout_secs,
+        args.cancellation.clone(),
+    )
+    .await?;
 
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
