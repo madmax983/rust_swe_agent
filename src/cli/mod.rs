@@ -2394,7 +2394,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
     }
     Ok(())
 }
-
+#[allow(clippy::unnecessary_wraps)]
 fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     if i.filter.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
@@ -2472,6 +2472,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "html-export")]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
@@ -2487,6 +2488,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
     )))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "csv-export")]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
@@ -2502,6 +2504,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
     )))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "mermaid-export")]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};

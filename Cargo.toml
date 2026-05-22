@@ -42,7 +42,7 @@ indicatif = "0.18.4"
 # `mini --interactive` confirmation prompt: single-key reads on a TTY plus
 # a ratatui dashboard when `--ui ratatui` is selected (issue #312).
 crossterm = { version = "0.28", features = ["event-stream"] }
-ratatui = "0.29"
+ratatui = "0.30.0"
 
 # HTTP fallback (used inside `LitellmBackend` for headers, and as a thin
 # escape hatch if any backend needs raw HTTP).
@@ -52,7 +52,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # stack (actix-web, sea-orm, redis); we want only the library API
 # (`completion`, `system_message`, `user_message`, response types,
 # CacheControl). `default-features = false` strips the gateway.
-litellm-rs = { version = "0.4.16", default-features = false }
+litellm-rs = { version = "0.5.0", default-features = false }
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
