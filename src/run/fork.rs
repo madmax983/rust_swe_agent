@@ -265,12 +265,42 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
                 .join(format!("{}.traj.json", args.instance)),
         ];
         let mut found = None;
-        for path in &single_candidates {
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(traj) = serde_json::from_slice::<Trajectory>(&bytes) {
-                    found = Some((traj, bytes));
-                    break;
+        for (idx, path) in single_candidates.iter().enumerate() {
+            match std::fs::read(path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Not present — try the next candidate.
                 }
+                Err(e) => {
+                    // Readable failure (permissions, I/O error) on any candidate is fatal.
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "Cannot read trajectory candidate {}: {e}",
+                        path.display()
+                    ))));
+                }
+                Ok(bytes) => match serde_json::from_slice::<Trajectory>(&bytes) {
+                    Ok(traj) => {
+                        found = Some((traj, bytes));
+                        break;
+                    }
+                    Err(parse_err) => {
+                        if idx == 0 {
+                            // The canonical (preferred) path exists but is corrupt —
+                            // fail immediately rather than silently falling through to
+                            // a stale legacy file which would give wrong results.
+                            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                                format!(
+                                    "Trajectory at {} exists but could not be parsed: {parse_err}",
+                                    path.display()
+                                ),
+                            )));
+                        }
+                        // Non-preferred candidate is malformed — skip and try next.
+                        tracing::warn!(
+                            "Skipping malformed trajectory at {}: {parse_err}",
+                            path.display()
+                        );
+                    }
+                },
             }
         }
 
@@ -408,6 +438,12 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
     }
 
     if let Some(budget) = args.per_task_budget_usd {
+        // Validate before applying — NaN/inf would let the budget guard silently malfunction.
+        if !budget.is_finite() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "--per-task-budget-usd value {budget} is not a finite number"
+            ))));
+        }
         config.root.agent.per_task_budget_usd = Some(budget);
     }
 
@@ -453,21 +489,31 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
                         "--mcp-config: server {name:?} is missing \"command\" field"
                     )))
                 })?;
-            // Collect optional `args` array and append to the command string.
-            let args_suffix: Vec<String> = val
-                .get("args")
-                .and_then(serde_json::Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
+            // Collect optional `args` array; reject non-string entries immediately.
+            let args_suffix: Vec<String> =
+                if let Some(arr) = val.get("args").and_then(serde_json::Value::as_array) {
+                    let mut collected = Vec::with_capacity(arr.len());
+                    for (i, v) in arr.iter().enumerate() {
+                        let s = v.as_str().ok_or_else(|| {
+                            Error::Config(crate::error::ConfigError::Invalid(format!(
+                                "--mcp-config: server {name:?} args[{i}] is not a string (got {v})"
+                            )))
+                        })?;
+                        collected.push(s.to_owned());
+                    }
+                    collected
+                } else {
+                    Vec::new()
+                };
+            // Shell-quote each arg individually so that args containing spaces,
+            // quotes, or other metacharacters survive the `bash -c` invocation
+            // that env.run() uses to launch the server.
             let full_command = if args_suffix.is_empty() {
                 cmd.to_owned()
             } else {
-                format!("{} {}", cmd, args_suffix.join(" "))
+                let quoted: Vec<String> =
+                    args_suffix.iter().map(|a| shell_quote_single(a)).collect();
+                format!("{} {}", cmd, quoted.join(" "))
             };
             servers.push(McpServerCfg {
                 command: full_command,
@@ -697,4 +743,38 @@ fn current_rust_version() -> Option<String> {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
+}
+
+/// Wrap `s` in POSIX single-quotes so it survives `bash -c` without any word
+/// splitting or glob expansion. A single-quote inside `s` is escaped using the
+/// standard `'\''` technique (close quote, escaped literal `'`, reopen quote).
+fn shell_quote_single(s: &str) -> String {
+    // Replace every ' with '\'' and wrap the whole thing in outer single-quotes.
+    let escaped = s.replace('\'', r"'\''");
+    format!("'{escaped}'")
+}
+
+#[cfg(test)]
+mod shell_quote_tests {
+    use super::shell_quote_single;
+
+    #[test]
+    fn plain_arg() {
+        assert_eq!(shell_quote_single("hello"), "'hello'");
+    }
+
+    #[test]
+    fn arg_with_spaces() {
+        assert_eq!(shell_quote_single("My Project"), "'My Project'");
+    }
+
+    #[test]
+    fn arg_with_single_quote() {
+        assert_eq!(shell_quote_single("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn arg_with_shell_metacharacters() {
+        assert_eq!(shell_quote_single("$HOME/bin"), "'$HOME/bin'");
+    }
 }
