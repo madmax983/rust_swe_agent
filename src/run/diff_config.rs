@@ -733,4 +733,3 @@ fn collect_leaves(prefix: &str, val: &Value, map: &mut BTreeMap<String, Value>) 
         }
     }
 }
-

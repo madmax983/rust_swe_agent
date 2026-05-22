@@ -1001,12 +1001,14 @@ fn test_escaped_object_keys_in_flattened_diff_paths() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    
+
     // With escaped keys:
     // Baseline flattens to config.resolved.a\.b = 1
     // Candidate flattens to config.resolved.a.b = 1
     // Since they have different paths, it must report changes!
     let changed_count = parsed["summary"]["changed_field_count"].as_u64().unwrap();
-    assert!(changed_count > 0, "Lossy flattening failed to differentiate 'a.b' and [a].b keys: got {}", stdout);
+    assert!(
+        changed_count > 0,
+        "Lossy flattening failed to differentiate 'a.b' and [a].b keys: got {stdout}"
+    );
 }
-
