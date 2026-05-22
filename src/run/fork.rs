@@ -361,7 +361,16 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
     }
 
     // 2. Perform environment-drift checks from reproducible sweeps.
-    let drift_records = if let Ok(source_manifest) = load_manifest_from_sweep(&args.sweep) {
+    let results_path = args.sweep.join("results.json");
+    let has_manifest = results_path.exists();
+
+    let drift_records = if has_manifest {
+        let source_manifest = load_manifest_from_sweep(&args.sweep).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "Failed to load manifest results.json from sweep {}: {e}",
+                args.sweep.display()
+            )))
+        })?;
         let mut current_manifest = source_manifest.clone();
         current_manifest.harness.git_sha = current_git_sha();
         current_manifest.harness.git_dirty = None;
@@ -402,19 +411,24 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
     // sees exactly the same prompt/tool/redaction settings as the original run.
     // Fall back to defaults when the manifest is absent (e.g., old sweeps or
     // non-sweep outputs).
-    let mut config = {
-        let from_manifest = load_manifest_from_sweep(&args.sweep)
-            .ok()
-            .and_then(|m| Config::from_toml_str(&m.config.resolved).ok());
-        if let Some(cfg) = from_manifest {
-            cfg
-        } else {
-            tracing::warn!(
-                "bench fork: sweep has no resolvable manifest config; \
-                 falling back to built-in defaults"
-            );
-            Config::defaults()?
-        }
+    let mut config = if has_manifest {
+        let manifest = load_manifest_from_sweep(&args.sweep).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "Failed to load manifest results.json from sweep {}: {e}",
+                args.sweep.display()
+            )))
+        })?;
+        Config::from_toml_str(&manifest.config.resolved).map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "failed to parse parent resolved config from manifest: {e}"
+            )))
+        })?
+    } else {
+        tracing::warn!(
+            "bench fork: sweep has no resolvable manifest config; \
+             falling back to built-in defaults"
+        );
+        Config::defaults()?
     };
 
     // Config overlays:
@@ -490,8 +504,8 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
                     )))
                 })?;
             // Collect optional `args` array; reject non-string entries immediately.
-            let args_suffix: Vec<String> =
-                if let Some(arr) = val.get("args").and_then(serde_json::Value::as_array) {
+            let args_suffix: Vec<String> = match val.get("args") {
+                Some(serde_json::Value::Array(arr)) => {
                     let mut collected = Vec::with_capacity(arr.len());
                     for (i, v) in arr.iter().enumerate() {
                         let s = v.as_str().ok_or_else(|| {
@@ -502,9 +516,14 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
                         collected.push(s.to_owned());
                     }
                     collected
-                } else {
-                    Vec::new()
-                };
+                }
+                Some(other) => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--mcp-config: server {name:?} \"args\" must be an array (got {other})"
+                    ))));
+                }
+                None => Vec::new(),
+            };
             // Shell-quote each arg individually so that args containing spaces,
             // quotes, or other metacharacters survive the `bash -c` invocation
             // that env.run() uses to launch the server.
@@ -637,8 +656,7 @@ pub async fn run(args: ForkCmd) -> Result<(), Error> {
                     .collect(),
             ),
         );
-    }
-    if let Some(ref p) = args.mcp_config {
+    } else if let Some(ref p) = args.mcp_config {
         tail_overrides.insert(
             "mcp_config".to_owned(),
             serde_json::Value::String(p.to_string_lossy().into_owned()),

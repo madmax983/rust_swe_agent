@@ -402,3 +402,196 @@ fn bench_fork_successful_run_and_inspect() {
         inspect_stdout
     );
 }
+
+#[test]
+fn bench_fork_invalid_args_in_mcp_config_fails() {
+    let temp = tempdir().unwrap();
+    let sweep_dir = temp.path().join("sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let legacy_path = temp.path().join("legacy.traj.json");
+    make_legacy_trajectory(&legacy_path);
+    record_fingerprinted_trajectory(&legacy_path, &sweep_dir, "myinstance");
+
+    // Write a malformed mcp-config (args is a string, not an array)
+    let mcp_cfg_path = temp.path().join("mcp_config.json");
+    let mcp_cfg_content = serde_json::json!({
+        "mcpServers": {
+            "test-server": {
+                "command": "node",
+                "args": "--version" // Invalid: should be ["--version"]
+            }
+        }
+    });
+    fs::write(
+        &mcp_cfg_path,
+        serde_json::to_string_pretty(&mcp_cfg_content).unwrap(),
+    )
+    .unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "fork",
+            "--sweep",
+            sweep_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance",
+            "--from-step",
+            "1",
+            "--output",
+            temp.path().join("out").to_str().unwrap(),
+            "--mcp-config",
+            mcp_cfg_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "expected failure for malformed mcp-config"
+    );
+    assert!(
+        stderr.contains("must be an array")
+            || stderr.contains("invalid")
+            || stderr.contains("args"),
+        "expected error about args array requirement, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn bench_fork_corrupt_manifest_fails() {
+    let temp = tempdir().unwrap();
+    let sweep_dir = temp.path().join("sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let legacy_path = temp.path().join("legacy.traj.json");
+    make_legacy_trajectory(&legacy_path);
+    record_fingerprinted_trajectory(&legacy_path, &sweep_dir, "myinstance");
+
+    // Write a corrupt results.json in sweep_dir (e.g. invalid JSON)
+    let results_path = sweep_dir.join("results.json");
+    fs::write(&results_path, "corrupt JSON content } }").unwrap();
+
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "fork",
+            "--sweep",
+            sweep_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance",
+            "--from-step",
+            "1",
+            "--output",
+            temp.path().join("out").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "expected failure for corrupt manifest results.json"
+    );
+    assert!(
+        stderr.contains("results.json") || stderr.contains("JSON") || stderr.contains("manifest"),
+        "expected error about results.json parsing, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn bench_fork_lineage_records_only_effective_mcp_override() {
+    let temp = tempdir().unwrap();
+    let sweep_dir = temp.path().join("sweep");
+    fs::create_dir_all(&sweep_dir).unwrap();
+
+    let legacy_path = temp.path().join("legacy.traj.json");
+    make_legacy_trajectory(&legacy_path);
+    record_fingerprinted_trajectory(&legacy_path, &sweep_dir, "myinstance");
+
+    // Write a mock MCP server python script that implements handshake and tools/list
+    let mock_mcp_path = temp.path().join("mock_mcp.py");
+    fs::write(
+        &mock_mcp_path,
+        "import sys\n\
+         sys.stdin.readline()\n\
+         sys.stdin.readline()\n\
+         print('{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock\",\"version\":\"1.0\"}}}')\n\
+         print('{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}')\n"
+    ).unwrap();
+    let mcp_cmd = format!("python {}", mock_mcp_path.to_str().unwrap());
+
+    // Write a valid mcp-config
+    let mcp_cfg_path = temp.path().join("mcp_config.json");
+    let mcp_cfg_content = serde_json::json!({
+        "mcpServers": {
+            "test-server": {
+                "command": "node",
+                "args": ["--version"]
+            }
+        }
+    });
+    fs::write(
+        &mcp_cfg_path,
+        serde_json::to_string_pretty(&mcp_cfg_content).unwrap(),
+    )
+    .unwrap();
+
+    // Run fork with BOTH --mcp-server and --mcp-config
+    let out_dir = temp.path().join("out");
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "fork",
+            "--sweep",
+            sweep_dir.to_str().unwrap(),
+            "--instance",
+            "myinstance",
+            "--from-step",
+            "1",
+            "--output",
+            out_dir.to_str().unwrap(),
+            "--step-limit",
+            "0",
+            "--mcp-server",
+            &mcp_cmd,
+            "--mcp-config",
+            mcp_cfg_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "expected success but got status={:?}\nstdout: {}\nstderr: {}",
+        out.status.code(),
+        stdout,
+        stderr
+    );
+
+    let fork_traj_path = out_dir.join("myinstance-fork.traj.json");
+    let traj_content = fs::read_to_string(&fork_traj_path).unwrap();
+    let traj: serde_json::Value = serde_json::from_str(&traj_content).unwrap();
+
+    let lineage = &traj["fork_lineage"];
+    let overrides = &lineage["tail_overrides"];
+
+    // Should contain mcp_servers
+    assert!(
+        overrides["mcp_servers"].is_array(),
+        "mcp_servers must be recorded as it was effective"
+    );
+    assert_eq!(overrides["mcp_servers"][0].as_str().unwrap(), mcp_cmd);
+
+    // Should NOT contain mcp_config because it was ignored in favor of mcp_servers
+    assert!(
+        overrides["mcp_config"].is_null(),
+        "mcp_config must not be recorded as it was not effective"
+    );
+}
