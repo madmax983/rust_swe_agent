@@ -295,6 +295,10 @@ pub struct MiniCmd {
     #[arg(long = "webhook-header", value_name = "NAME: VALUE")]
     pub webhook_headers: Vec<String>,
 
+    /// Append line-delimited JSON events to PATH for live tail/jq workflows.
+    #[arg(long = "event-log", value_name = "PATH")]
+    pub event_log: Option<PathBuf>,
+
     /// Skip `git apply --check` and empty-diff validation after patch capture.
     /// Escape hatch for non-git environments; not for normal use.
     #[arg(long, default_value_t = false)]
@@ -1002,6 +1006,10 @@ pub struct MatrixCmd {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
+    /// Append line-delimited JSON events to PATH for live tail/jq workflows.
+    #[arg(long = "event-log", value_name = "PATH")]
+    pub event_log: Option<PathBuf>,
+
     /// Dataset subset selector. Either a comma-separated id list
     /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
     #[arg(long)]
@@ -1352,6 +1360,10 @@ pub struct SwebenchCmd {
     /// step 0.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// Append line-delimited JSON events to PATH for live tail/jq workflows.
+    #[arg(long = "event-log", value_name = "PATH")]
+    pub event_log: Option<PathBuf>,
 
     /// Maximum total USD spend for the entire sweep. When set, the runner
     /// stops dequeuing new tasks once cumulative cost reaches the limit;

@@ -19,7 +19,9 @@ use crate::error::{ConfigError, Error};
 use crate::model::litellm::LitellmBackend;
 use crate::model::{DeterministicModel, FallbackModel, Model, ModelUsage};
 use crate::redaction::surface;
-use crate::stream::{BroadcastSink, MultiSink, SseServer, StatusLineStderrSink, StreamSink};
+use crate::stream::{
+    BroadcastSink, EventLogSink, MultiSink, SseServer, StatusLineStderrSink, StreamSink,
+};
 #[cfg(feature = "webhook")]
 use crate::stream::{WebhookSink, WebhookSinkHandle};
 use crate::trajectory::FailureCategory;
@@ -151,6 +153,8 @@ pub struct MiniArgs {
     /// Extra HTTP headers to inject on every webhook POST, e.g.
     /// `"Authorization: Bearer <token>"`.  Not echoed in logs.
     pub webhook_headers: Vec<String>,
+    pub event_log: Option<PathBuf>,
+    pub event_log_instance_id: Option<String>,
     /// Absolute canonicalized local working directory.
     pub local_workdir: Option<PathBuf>,
     pub read_only: bool,
@@ -332,7 +336,47 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
         Arc::new(crate::redaction::RedactingSink::new(ws, redactor)) as Arc<dyn StreamSink>
     });
-
+    let event_log_sink: Option<Arc<dyn StreamSink>> = args.event_log.as_ref().and_then(|path| {
+        match EventLogSink::new(
+            path,
+            args.event_log_instance_id
+                .clone()
+                .unwrap_or_else(|| "mini".to_owned()),
+        ) {
+            Ok(sink) => {
+                #[cfg(unix)]
+                {
+                    let reopen_sink = sink.clone();
+                    tokio::spawn(async move {
+                        if let Ok(mut hup) =
+                            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                        {
+                            while hup.recv().await.is_some() {
+                                reopen_sink.request_reopen();
+                            }
+                        }
+                    });
+                }
+                let redactor =
+                    crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+                Some(Arc::new(crate::redaction::RedactingSink::new(
+                    Arc::new(sink),
+                    redactor,
+                )) as Arc<dyn StreamSink>)
+            }
+            Err(err) => {
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr(),
+                    format!(
+                        "warn: failed to open event log at {}: {err}\n",
+                        path.display()
+                    )
+                    .as_bytes(),
+                );
+                None
+            }
+        }
+    });
     let sink = compose_stream_sinks(
         sse_sink,
         dashboard.as_ref().map(RatatuiDashboardHandle::stream_sink),
@@ -345,6 +389,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             None
         },
         webhook_sink_redacted,
+        event_log_sink,
     );
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
@@ -667,8 +712,9 @@ fn compose_stream_sinks(
     dashboard: Option<Arc<dyn StreamSink>>,
     status_line: Option<Arc<dyn StreamSink>>,
     webhook: Option<Arc<dyn StreamSink>>,
+    event_log: Option<Arc<dyn StreamSink>>,
 ) -> Option<Arc<dyn StreamSink>> {
-    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line, webhook]
+    let sinks: Vec<Arc<dyn StreamSink>> = [sse, dashboard, status_line, webhook, event_log]
         .into_iter()
         .flatten()
         .collect();
@@ -1237,13 +1283,13 @@ mod tests {
 
     #[test]
     fn compose_stream_sinks_returns_none_when_all_absent() {
-        assert!(compose_stream_sinks(None, None, None, None).is_none());
+        assert!(compose_stream_sinks(None, None, None, None, None).is_none());
     }
 
     #[test]
     fn compose_stream_sinks_unwraps_single_sink_without_multi_wrap() {
         let sse: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(sse.clone()), None, None, None).unwrap();
+        let composed = compose_stream_sinks(Some(sse.clone()), None, None, None, None).unwrap();
         // Single-sink path returns the same Arc, not a MultiSink wrapper.
         assert!(Arc::ptr_eq(&composed, &sse));
     }
@@ -1252,7 +1298,7 @@ mod tests {
     fn compose_stream_sinks_multi_wraps_when_multiple() {
         let a: Arc<dyn StreamSink> = Arc::new(NullSink);
         let b: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(a), Some(b), None, None).unwrap();
+        let composed = compose_stream_sinks(Some(a), Some(b), None, None, None).unwrap();
         // Just emit through it to verify it works; if it were a NullSink
         // directly the call would still succeed, but MultiSink::emit
         // exercises the fan-out path.
@@ -1960,6 +2006,8 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
@@ -2057,6 +2105,8 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
@@ -2149,6 +2199,8 @@ index 8a1218a..24c5735 100644\n\
             trace_id: None,
             webhook_url: None,
             webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,

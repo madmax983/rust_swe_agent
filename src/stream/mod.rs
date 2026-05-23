@@ -14,11 +14,13 @@
 use serde::Serialize;
 
 pub mod broadcast;
+pub mod event_log;
 pub mod sse;
 #[cfg(feature = "webhook")]
 pub mod webhook;
 
 pub use broadcast::BroadcastSink;
+pub use event_log::EventLogSink;
 pub use sse::SseServer;
 #[cfg(feature = "webhook")]
 pub use webhook::{
