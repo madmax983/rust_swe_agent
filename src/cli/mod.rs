@@ -933,9 +933,13 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
 
     if sweep_cmd.rehearse {
-        let path_str = sweep_cmd.output.to_string_lossy();
-        if !path_str.ends_with(".rehearsal") {
-            sweep_cmd.output = std::path::PathBuf::from(format!("{path_str}.rehearsal"));
+        if let Some(file_name) = sweep_cmd.output.file_name() {
+            let name_str = file_name.to_string_lossy();
+            if !name_str.ends_with(".rehearsal") {
+                let mut new_name = file_name.to_owned();
+                new_name.push(".rehearsal");
+                sweep_cmd.output.set_file_name(new_name);
+            }
         }
         sweep_cmd.github_pr.open_prs = false;
         sweep_cmd.github_pr.github_pr_dry_run = false;
@@ -4733,5 +4737,27 @@ mod tests {
             err_str.contains("dataset-stats: unknown --format `jsno`"),
             "unexpected error string: {err_str}"
         );
+    }
+
+    #[test]
+    fn test_rehearsal_output_path_normalization() {
+        let test_cases = vec![
+            ("out", "out.rehearsal"),
+            ("out/", "out.rehearsal"),
+            ("a/b/c", "a/b/c.rehearsal"),
+            ("a/b/c/", "a/b/c.rehearsal"),
+        ];
+        for (input, expected) in test_cases {
+            let mut path = PathBuf::from(input);
+            if let Some(file_name) = path.file_name() {
+                let name_str = file_name.to_string_lossy();
+                if !name_str.ends_with(".rehearsal") {
+                    let mut new_name = file_name.to_owned();
+                    new_name.push(".rehearsal");
+                    path.set_file_name(new_name);
+                }
+            }
+            assert_eq!(path, PathBuf::from(expected));
+        }
     }
 }
