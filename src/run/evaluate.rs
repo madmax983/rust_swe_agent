@@ -386,7 +386,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
             EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
-        EvaluateBackend::Rehearsal => run_rehearsal_eval(&results),
+        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results),
     };
     let EvaluateRunOutput {
         mut eval,
@@ -893,33 +893,63 @@ fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
     (lower, upper)
 }
 
-fn run_rehearsal_eval(results: &HashMap<String, InstanceResult>) -> EvaluateRunOutput {
+fn run_rehearsal_eval(
+    args: &EvaluateArgs,
+    results: &HashMap<String, InstanceResult>,
+) -> EvaluateRunOutput {
     let mut resolved_by_run = HashMap::new();
     let mut instances = Vec::new();
 
     for (id, r) in results {
         let runs = effective_runs(r);
-        let has_patch = r.outcome.as_deref() == Some(outcome::SUBMITTED) && r.patch_present;
+        let mut resolved_runs = 0;
+        let mut first_run_resolved = false;
 
         for run_idx in 1..=runs {
+            let traj_path =
+                crate::run::swebench::trajectory_path_for_run(&args.sweep_dir, id, run_idx);
+            let patch_path = crate::run::swebench::patch_path_for_run(&args.sweep_dir, id, run_idx);
+
+            // Check if trajectory has outcome: Some("submitted") and patch exists and is non-empty
+            let mut run_resolved = false;
+            if traj_path.exists() && patch_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&traj_path) {
+                    if let Ok(traj_val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let outcome = traj_val["info"]["outcome"].as_str();
+                        let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
+                        if outcome == Some("submitted") && !partial {
+                            run_resolved = true;
+                        }
+                    }
+                }
+            }
+
             resolved_by_run.insert(
                 RunSlotKey {
                     instance_id: id.clone(),
                     run_index: run_idx,
                 },
-                has_patch,
+                run_resolved,
             );
+
+            if run_resolved {
+                resolved_runs += 1;
+            }
+            if run_idx == 1 {
+                first_run_resolved = run_resolved;
+            }
         }
 
+        let is_resolved = resolved_runs > 0;
         instances.push(InstanceEvaluation {
             instance_id: id.to_owned(),
-            resolved: has_patch,
+            resolved: is_resolved,
             runs,
-            resolved_count: if has_patch { runs } else { 0 },
-            pass_at_1: has_patch,
+            resolved_count: resolved_runs,
+            pass_at_1: first_run_resolved,
             tests_passed: vec![],
             tests_failed: vec![],
-            eval_exit_reason: if has_patch {
+            eval_exit_reason: if is_resolved {
                 EvalExitReason::Resolved
             } else {
                 EvalExitReason::SkippedNoPatch

@@ -127,6 +127,12 @@ fn swebench_args_has_otlp_endpoint_field() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     };
     assert!(args.otlp_endpoint.is_none());
 }
@@ -291,7 +297,13 @@ async fn no_otlp_traffic_when_endpoint_unset() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
-        otlp_endpoint: None, // <-- OTLP disabled
+        otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None, // <-- OTLP disabled
     };
 
     // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
@@ -379,6 +391,12 @@ async fn trace_id_written_to_instance_result_and_trajectory() {
         systemic_failure_share_pct: 80,
         // Dead endpoint: export will fail, but must not crash.
         otlp_endpoint: Some("http://127.0.0.1:1".into()),
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     };
 
     let results = run(args).await.unwrap();
@@ -476,7 +494,13 @@ async fn export_failure_does_not_fail_sweep_and_increments_counter() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
-        otlp_endpoint: Some("http://127.0.0.1:1".into()), // dead endpoint
+        otlp_endpoint: Some("http://127.0.0.1:1".into()),
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None, // dead endpoint
     };
 
     // Must not panic or return Err.
@@ -643,7 +667,13 @@ async fn env_var_activates_otlp_tracing() {
         abort_on_systemic_failure: false,
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
-        otlp_endpoint: None, // env var activates instead of CLI flag
+        otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None, // env var activates instead of CLI flag
     };
 
     let results = run(args).await.unwrap();

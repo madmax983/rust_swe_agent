@@ -15,6 +15,7 @@ fn interactive_flag_defaults_false() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(!m.interactive);
     assert!(!m.yolo);
     assert!(matches!(m.ui, UiKind::Stderr));
@@ -26,6 +27,7 @@ fn interactive_flag_parses() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(m.interactive);
 }
 
@@ -35,6 +37,7 @@ fn yolo_flag_parses() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(m.yolo);
 }
 
@@ -44,6 +47,7 @@ fn interactive_and_yolo_can_both_be_set() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(m.interactive);
     assert!(m.yolo);
 }
@@ -62,6 +66,7 @@ fn ui_ratatui_parses() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(matches!(m.ui, UiKind::Ratatui));
 }
 
@@ -79,6 +84,7 @@ fn ui_stderr_parses() {
     let Command::Mini(m) = cli.command else {
         panic!("expected mini");
     };
+    let m = *m;
     assert!(matches!(m.ui, UiKind::Stderr));
 }
 

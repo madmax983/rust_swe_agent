@@ -82,6 +82,12 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();

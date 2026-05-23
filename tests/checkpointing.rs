@@ -414,6 +414,12 @@ async fn resume_classifies_partial_trajectory_and_reruns_not_skips() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -494,6 +500,12 @@ async fn resume_corrupted_trajectory_reruns_from_step_zero() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -889,6 +901,12 @@ async fn sweep_summary_table_shows_partial_count() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();

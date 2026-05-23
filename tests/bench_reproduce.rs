@@ -492,10 +492,10 @@ fn cli_parses_bench_reproduce_required_args() {
         "/tmp/replay-sweep",
     ]);
 
-    let maxwells_daemon::cli::Command::Bench {
-        cmd: BenchCmd::Reproduce(cmd),
-    } = cli.command
-    else {
+    let maxwells_daemon::cli::Command::Bench { cmd } = cli.command else {
+        panic!("expected bench reproduce command, got something else");
+    };
+    let BenchCmd::Reproduce(cmd) = *cmd else {
         panic!("expected bench reproduce command, got something else");
     };
 
@@ -526,10 +526,10 @@ fn cli_parses_bench_reproduce_optional_overrides() {
         "--skip-model-probe",
     ]);
 
-    let maxwells_daemon::cli::Command::Bench {
-        cmd: BenchCmd::Reproduce(cmd),
-    } = cli.command
-    else {
+    let maxwells_daemon::cli::Command::Bench { cmd } = cli.command else {
+        panic!("expected bench reproduce");
+    };
+    let BenchCmd::Reproduce(cmd) = *cmd else {
         panic!("expected bench reproduce");
     };
 

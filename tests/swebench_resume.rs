@@ -182,6 +182,12 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -291,6 +297,12 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -369,6 +381,12 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -447,6 +465,12 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -552,6 +576,12 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -631,6 +661,12 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -747,6 +783,12 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -851,6 +893,12 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
