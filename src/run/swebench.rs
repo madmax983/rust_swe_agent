@@ -1309,6 +1309,7 @@ pub struct SwebenchArgs {
     /// deterministic cancellation; `None` disables injected signals.
     #[doc(hidden)]
     pub cancellation_signals: Option<mpsc::UnboundedReceiver<SweepSignal>>,
+    pub event_log: Option<PathBuf>,
     /// Optional GitHub PR publisher for submitted patch artifacts.
     pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
     /// When this sweep is a reproduction of a prior run, embed a back-pointer
@@ -1971,6 +1972,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 resume_from: run.resume_from.clone(),
                 trace_id: instance_trace_id,
                 rehearse: args.rehearse,
+                event_log: args.event_log.clone(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -4218,6 +4220,8 @@ struct RunOneParams {
     /// `None` when OTLP export is not configured.
     trace_id: Option<String>,
     rehearse: bool,
+    /// Optional append-only JSONL stream target forwarded to mini runs.
+    event_log: Option<PathBuf>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4236,6 +4240,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         resume_from,
         ref trace_id,
         rehearse,
+        event_log,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -4362,6 +4367,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             trace_id: trace_id.clone(),
             webhook_url: None,
             webhook_headers: vec![],
+            event_log: event_log.clone(),
+            event_log_instance_id: Some(id.clone()),
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
@@ -5176,6 +5183,7 @@ mod tests {
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            event_log: None,
             max_rpm: Some(1),
             max_input_tpm: None,
             cancel_deadline_secs: 0,
@@ -6067,6 +6075,7 @@ mod tests {
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            event_log: None,
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
@@ -6149,6 +6158,7 @@ mod tests {
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            event_log: None,
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
@@ -6242,6 +6252,7 @@ instance = "inst"
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            event_log: None,
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
@@ -6375,6 +6386,7 @@ instance = "inst"
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: true,
+            event_log: None,
             max_rpm: None,
             max_input_tpm: None,
             cancel_deadline_secs: 30,
@@ -7057,6 +7069,7 @@ instance = "inst"
             preflight_total_timeout_s: 60,
             preflight_mode: "test".into(),
             skip_patch_validation: false,
+            event_log: None,
             max_rpm: Some(4000),
             max_input_tpm: Some(400_000),
             cancel_deadline_secs: 30,

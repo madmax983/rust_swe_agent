@@ -144,6 +144,8 @@ fn make_mini_args(
         read_only: false,
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
+        event_log: None,
+        event_log_instance_id: None,
     }
 }
 
@@ -529,6 +531,8 @@ async fn webhook_redacts_secrets_before_post() {
         trace_id: None,
         webhook_url: Some(url),
         webhook_headers: vec![],
+        event_log: None,
+        event_log_instance_id: None,
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,

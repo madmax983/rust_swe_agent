@@ -56,6 +56,8 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         trace_id: None,
         webhook_url: None,
         webhook_headers: vec![],
+        event_log: None,
+        event_log_instance_id: None,
         local_workdir: Some(repo.clone()),
         read_only: true,
         allow_mcp_in_read_only: false,

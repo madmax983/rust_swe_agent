@@ -797,6 +797,7 @@ async fn run_tier(
         preflight_total_timeout_s: 120,
         preflight_mode: "sweep".into(),
         skip_patch_validation: false,
+        event_log: None,
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: ctx.cancel_deadline_secs,

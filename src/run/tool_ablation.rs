@@ -830,6 +830,7 @@ async fn run_arm_ablation(
         preflight_total_timeout_s: 120,
         preflight_mode: "sweep".into(),
         skip_patch_validation: false,
+        event_log: None,
         max_rpm: ctx.max_rpm,
         max_input_tpm: ctx.max_input_tpm,
         cancel_deadline_secs: ctx.cancel_deadline_secs,

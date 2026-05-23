@@ -81,6 +81,7 @@ fn base_rehearsal_args(dataset_source: DatasetSource, output_dir: PathBuf) -> Sw
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        event_log: None,
     }
 }
 
