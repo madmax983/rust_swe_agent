@@ -3893,13 +3893,25 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
         stratify_mode,
     };
 
+    let mut light_full = Vec::with_capacity(full_instances.len());
+    for inst in &full_instances {
+        light_full.push(crate::run::swebench::SweBenchInstance {
+            instance_id: inst.instance_id.clone(),
+            repo: inst.repo.clone(),
+            base_commit: None,
+            problem_statement: inst.problem_statement.clone(),
+            image: None,
+            other: serde_json::Map::new(),
+        });
+    }
+
     let (slice_instances, _filter_spec) =
-        crate::run::swebench::apply_subset(full_instances.clone(), &params)?;
+        crate::run::swebench::apply_subset(full_instances, &params)?;
 
     // Compute stats
     let mut stats = crate::run::dataset_stats::compute_stats(
         &slice_instances,
-        &full_instances,
+        &light_full,
         &s.model,
         &s.runs_dir,
         &Some(meta.sha256.clone()),
@@ -3915,17 +3927,21 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
         .instance_ids
         .clone_from(&s.instance_ids);
     stats.subset_selector.stratify_by = s.stratify_by.map(|v| match v {
-        args::StratifyByArg::Repo => "Repo".to_owned(),
+        args::StratifyByArg::Repo => "repo".to_owned(),
     });
-    stats.subset_selector.stratify_mode = Some(
-        match s
-            .stratify_mode
-            .unwrap_or(args::StratifyModeArg::Proportional)
-        {
-            args::StratifyModeArg::Proportional => "Proportional".to_owned(),
-            args::StratifyModeArg::Balanced => "Balanced".to_owned(),
-        },
-    );
+    stats.subset_selector.stratify_mode = if s.stratify_by.is_some() {
+        Some(
+            match s
+                .stratify_mode
+                .unwrap_or(args::StratifyModeArg::Proportional)
+            {
+                args::StratifyModeArg::Proportional => "proportional".to_owned(),
+                args::StratifyModeArg::Balanced => "balanced".to_owned(),
+            },
+        )
+    } else {
+        None
+    };
 
     if s.format == "json" {
         let serialized = serde_json::to_string_pretty(&stats)?;
