@@ -3862,6 +3862,12 @@ fn print_doctor_skills_preview(cfg: &crate::config::Config) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
+    if s.format != "text" && s.format != "json" {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "dataset-stats: unknown --format `{}`; valid values: text, json",
+            s.format
+        ))));
+    }
     let (dataset_source, dataset_cache_dir) = parse_dataset_source_stats(&s)?;
     let (dataset_bytes, meta) =
         crate::run::dataset::resolve_dataset(&dataset_source, &dataset_cache_dir)?;
@@ -4422,5 +4428,31 @@ mod tests {
         let err2 = parse_verify_checks(&["test:".into()]).unwrap_err();
         assert!(matches!(err2, Error::Config(_)));
         assert!(err2.to_string().contains("non-empty"), "{err2}");
+    }
+
+    #[test]
+    fn bench_dataset_stats_rejects_invalid_format() {
+        let cmd = args::DatasetStatsCmd {
+            dataset_path: Some(PathBuf::from("dummy.jsonl")),
+            dataset: None,
+            split: None,
+            dataset_cache_dir: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: None,
+            runs_dir: PathBuf::from("./runs"),
+            format: "jsno".to_owned(),
+            model: "gpt-4".to_owned(),
+        };
+        let res = super::bench_dataset_stats(cmd);
+        assert!(res.is_err());
+        let err_str = res.unwrap_err().to_string();
+        assert!(
+            err_str.contains("dataset-stats: unknown --format `jsno`"),
+            "unexpected error string: {err_str}"
+        );
     }
 }

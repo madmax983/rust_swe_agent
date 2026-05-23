@@ -229,18 +229,15 @@ fn percentile_90(values: &[usize]) -> usize {
     values[idx]
 }
 
-#[allow(clippy::manual_midpoint)]
 fn median_f64(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        values[mid - 1].midpoint(values[mid])
     } else {
-        sorted[mid]
+        values[mid]
     }
 }
 
@@ -271,8 +268,11 @@ fn detect_languages(instances: &[SweBenchInstance]) -> Vec<String> {
                 for line in val.lines() {
                     if line.starts_with("--- a/") || line.starts_with("+++ b/") {
                         if let Some(ext) = line.split('.').next_back() {
-                            let ext_clean: String =
-                                ext.chars().filter(|c| c.is_alphanumeric()).collect();
+                            let ext_clean: String = ext
+                                .chars()
+                                .filter(|c| c.is_alphanumeric())
+                                .flat_map(char::to_lowercase)
+                                .collect();
                             let lang = match ext_clean.as_str() {
                                 "py" => Some("Python"),
                                 "rs" => Some("Rust"),
@@ -365,6 +365,7 @@ fn analyze_historical_resolved_rates(
             if let Ok(results) = serde_json::from_str::<SweepResults>(&text) {
                 let matches = match (dataset_hash, &results.manifest) {
                     (Some(curr_hash), Some(manifest)) => manifest.dataset.sha256 == **curr_hash,
+                    (Some(_), None) => false,
                     _ => true,
                 };
                 if matches {
@@ -373,7 +374,17 @@ fn analyze_historical_resolved_rates(
                             .entry(inst_res.instance_id.clone())
                             .or_insert((0u32, 0u32));
                         let runs = if inst_res.runs == 0 { 1 } else { inst_res.runs };
-                        entry.0 += inst_res.resolved_count;
+                        let resolved = if inst_res.runs == 0 {
+                            u32::from(
+                                inst_res.pass_at_1
+                                    || inst_res.outcome.as_deref() == Some("resolved")
+                                    || (inst_res.outcome.as_deref() == Some("submitted")
+                                        && inst_res.failure_category.is_none()),
+                            )
+                        } else {
+                            inst_res.resolved_count
+                        };
+                        entry.0 += resolved;
                         entry.1 += runs;
                     }
                 }
