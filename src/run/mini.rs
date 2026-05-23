@@ -1298,7 +1298,7 @@ mod tests {
     fn compose_stream_sinks_multi_wraps_when_multiple() {
         let a: Arc<dyn StreamSink> = Arc::new(NullSink);
         let b: Arc<dyn StreamSink> = Arc::new(NullSink);
-        let composed = compose_stream_sinks(Some(a), Some(b), None, None).unwrap();
+        let composed = compose_stream_sinks(Some(a), Some(b), None, None, None).unwrap();
         // Just emit through it to verify it works; if it were a NullSink
         // directly the call would still succeed, but MultiSink::emit
         // exercises the fan-out path.

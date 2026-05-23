@@ -45,21 +45,18 @@ impl EventLogSink {
 impl StreamSink for EventLogSink {
     fn emit(&self, event: StreamEvent) {
         if self.reopen_requested.swap(false, Ordering::SeqCst) {
-            match OpenOptions::new()
+            if let Ok(new_writer) = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.path)
                 .map(|f| Box::new(f) as Box<dyn Write + Send>)
             {
-                Ok(new_writer) => {
-                    if let Ok(mut w) = self.writer.lock() {
-                        *w = new_writer;
-                    }
+                if let Ok(mut w) = self.writer.lock() {
+                    *w = new_writer;
                 }
-                Err(_) => {
-                    self.dropped_reopen_failures.fetch_add(1, Ordering::SeqCst);
-                    self.warn_once("event-log reopen failed after SIGHUP; continuing");
-                }
+            } else {
+                self.dropped_reopen_failures.fetch_add(1, Ordering::SeqCst);
+                self.warn_once("event-log reopen failed after SIGHUP; continuing");
             }
         }
         let mut obj = Map::new();
@@ -87,7 +84,7 @@ impl StreamSink for EventLogSink {
                 }
             }
             Err(_) => {
-                self.warn_once("event-log writer lock poisoned; continuing without event log")
+                self.warn_once("event-log writer lock poisoned; continuing without event log");
             }
         }
     }
@@ -95,6 +92,7 @@ impl StreamSink for EventLogSink {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

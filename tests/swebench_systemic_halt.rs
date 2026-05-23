@@ -106,6 +106,7 @@ fn base_args(
         preflight_total_timeout_s: 60,
         preflight_mode: "test".into(),
         skip_patch_validation: true,
+        event_log: None,
         max_rpm: None,
         max_input_tpm: None,
         cancel_deadline_secs: 30,
