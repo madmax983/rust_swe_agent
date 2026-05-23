@@ -937,6 +937,15 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         if !path_str.ends_with(".rehearsal") {
             sweep_cmd.output = std::path::PathBuf::from(format!("{path_str}.rehearsal"));
         }
+        sweep_cmd.github_pr.open_prs = false;
+        sweep_cmd.github_pr.github_pr_dry_run = false;
+        sweep_cmd.skip_model_probe = true;
+    }
+
+    if sweep_cmd.diff.is_some() && !sweep_cmd.rehearse {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--diff can only be used in rehearsal mode (with --rehearse)".to_owned(),
+        )));
     }
 
     if sweep_cmd.render_only {
@@ -4162,47 +4171,62 @@ pub fn compare_rehearsals(
         }
     }
 
-    if let (Some(b_eval), Some(c_eval)) = (base_eval, cand_eval) {
-        let base_eval_map: std::collections::HashMap<_, _> = b_eval
-            .instances
-            .iter()
-            .map(|i| (&i.instance_id, i))
-            .collect();
-        let cand_eval_map: std::collections::HashMap<_, _> = c_eval
-            .instances
-            .iter()
-            .map(|i| (&i.instance_id, i))
-            .collect();
+    match (base_eval, cand_eval) {
+        (Some(b_eval), Some(c_eval)) => {
+            let base_eval_map: std::collections::HashMap<_, _> = b_eval
+                .instances
+                .iter()
+                .map(|i| (&i.instance_id, i))
+                .collect();
+            let cand_eval_map: std::collections::HashMap<_, _> = c_eval
+                .instances
+                .iter()
+                .map(|i| (&i.instance_id, i))
+                .collect();
 
-        for (id, base_eval_inst) in &base_eval_map {
-            match cand_eval_map.get(id) {
-                Some(cand_eval_inst) => {
-                    if base_eval_inst.resolved != cand_eval_inst.resolved {
-                        drift_messages.push(format!(
-                            "Instance {id} resolved status changed from {} to {}",
-                            base_eval_inst.resolved, cand_eval_inst.resolved
-                        ));
-                        if base_eval_inst.resolved && !cand_eval_inst.resolved {
-                            regressions.push(format!(
-                                "Instance {id} was resolved in baseline but is unresolved in candidate."
+            for (id, base_eval_inst) in &base_eval_map {
+                match cand_eval_map.get(id) {
+                    Some(cand_eval_inst) => {
+                        if base_eval_inst.resolved != cand_eval_inst.resolved {
+                            drift_messages.push(format!(
+                                "Instance {id} resolved status changed from {} to {}",
+                                base_eval_inst.resolved, cand_eval_inst.resolved
                             ));
+                            if base_eval_inst.resolved && !cand_eval_inst.resolved {
+                                regressions.push(format!(
+                                    "Instance {id} was resolved in baseline but is unresolved in candidate."
+                                ));
+                            }
                         }
                     }
+                    None => {
+                        regressions.push(format!(
+                            "Instance {id} is present in baseline evaluation but missing from candidate evaluation."
+                        ));
+                    }
                 }
-                None => {
+            }
+
+            for id in cand_eval_map.keys() {
+                if !base_eval_map.contains_key(id) {
                     regressions.push(format!(
-                        "Instance {id} is present in baseline evaluation but missing from candidate evaluation."
+                        "Instance {id} has evaluation in candidate but missing from baseline."
                     ));
                 }
             }
         }
-
-        for id in cand_eval_map.keys() {
-            if !base_eval_map.contains_key(id) {
-                regressions.push(format!(
-                    "Instance {id} has evaluation in candidate but missing from baseline."
-                ));
-            }
+        (None, None) => {}
+        (Some(_), None) => {
+            regressions.push(
+                "Baseline has evaluation data, but candidate is missing evaluation data."
+                    .to_owned(),
+            );
+        }
+        (None, Some(_)) => {
+            regressions.push(
+                "Candidate has evaluation data, but baseline is missing evaluation data."
+                    .to_owned(),
+            );
         }
     }
 
