@@ -1607,7 +1607,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
-    let started_at_utc = chrono::Utc::now().to_rfc3339();
+    let started_at_utc = if std::env::var("MAX_REHEARSAL_MODE").is_ok() {
+        "2026-05-23T00:00:00Z".to_string()
+    } else {
+        chrono::Utc::now().to_rfc3339()
+    };
     let prior_results = if args.resume {
         load_prior_results_by_instance(&args.output_dir)
     } else {
@@ -1960,6 +1964,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 github_pr: args.github_pr.clone(),
                 resume_from: run.resume_from.clone(),
                 trace_id: instance_trace_id,
+                rehearse: std::env::var("MAX_REHEARSAL_MODE").is_ok(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -2368,7 +2373,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             &dataset_meta,
             &initial.filter_spec,
             &started_at_utc,
-            Some(chrono::Utc::now().to_rfc3339()),
+            Some(if std::env::var("MAX_REHEARSAL_MODE").is_ok() {
+                "2026-05-23T00:00:00Z".to_string()
+            } else {
+                chrono::Utc::now().to_rfc3339()
+            }),
         )),
         cost_limit_usd: args.cost_limit_usd,
         instances: instance_results,
@@ -4202,6 +4211,7 @@ struct RunOneParams {
     /// OTel trace ID to embed in the trajectory and instance result.
     /// `None` when OTLP export is not configured.
     trace_id: Option<String>,
+    rehearse: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4219,6 +4229,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         github_pr,
         resume_from,
         ref trace_id,
+        rehearse,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -4300,12 +4311,20 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             verification_timeout_secs: 60,
             resume_from: attempt_resume,
             interactive_mode: crate::run::mini::InteractiveMode::Off,
-            trace_id: params.trace_id.clone(),
+            trace_id: trace_id.clone(),
             webhook_url: None,
             webhook_headers: vec![],
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: if rehearse {
+                inst.other
+                    .get("patch")
+                    .and_then(serde_json::Value::as_str)
+                    .map(std::borrow::ToOwned::to_owned)
+            } else {
+                None
+            },
         };
         let run_err = crate::run::mini::run(args).await.err();
 

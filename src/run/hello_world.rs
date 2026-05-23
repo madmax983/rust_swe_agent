@@ -39,6 +39,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,
+        rehearsal_gold_patch: None,
     };
     run(args).await?;
     println!("hello-world smoke complete");

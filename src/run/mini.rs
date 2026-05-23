@@ -155,6 +155,7 @@ pub struct MiniArgs {
     pub local_workdir: Option<PathBuf>,
     pub read_only: bool,
     pub allow_mcp_in_read_only: bool,
+    pub rehearsal_gold_patch: Option<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -177,6 +178,51 @@ pub enum InteractiveMode {
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
+
+    if let Some(ref gold_patch) = args.rehearsal_gold_patch {
+        tracing::info!("Rehearsal Mode: Intercepting execution with gold patch shadow submission.");
+        let traj_path = args
+            .output_dir
+            .join(format!("{}.traj.json", args.trajectory_name));
+
+        let mut traj = crate::trajectory::Trajectory::default();
+        traj.info.task = Some(args.task.clone());
+        traj.info.model_name = Some("gold-shadow-agent".into());
+        traj.info.exit_reason = Some("submitted".into());
+        traj.info.outcome = Some("submitted".into());
+        traj.info.total_cost_usd = Some(0.0);
+        traj.info.actual_cost_usd = Some(0.0);
+        traj.info.baseline_cost_usd = Some(0.0);
+        traj.info.steps = Some(1);
+        traj.info.started_at = Some("2026-05-23T00:00:00Z".into());
+        traj.info.ended_at = Some("2026-05-23T00:00:00Z".into());
+        traj.info.duration_secs = Some(0.0);
+        traj.info
+            .other
+            .insert("mode".into(), serde_json::Value::String("rehearsal".into()));
+
+        traj.messages.push(crate::trajectory::MessageRecord {
+            role: "assistant".into(),
+            content: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nRehearsal shadow submission\n```"
+                .into(),
+            extra: Default::default(),
+        });
+
+        traj.save_pretty(&traj_path)?;
+
+        if let Some(ref spec) = args.patch_capture {
+            if let Some(parent) = spec.patch_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&spec.patch_path, gold_patch)?;
+            let out_path = args
+                .output_dir
+                .join(format!("{}.output.txt", args.trajectory_name));
+            std::fs::write(out_path, "Rehearsal shadow submission\n")?;
+        }
+
+        return Ok(());
+    }
 
     let resolved_skills = crate::skills::resolve_for_task(
         &args.config.root.skills,
@@ -1963,6 +2009,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();
@@ -2060,6 +2107,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();
@@ -2152,6 +2200,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();

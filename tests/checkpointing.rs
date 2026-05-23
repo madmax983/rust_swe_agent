@@ -554,6 +554,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,
+        rehearsal_gold_patch: None,
     };
 
     mini_run(args).await.unwrap();

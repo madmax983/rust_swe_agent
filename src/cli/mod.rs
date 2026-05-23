@@ -77,6 +77,12 @@ pub async fn run() -> Result<(), Error> {
             cmd: args::BenchCmd::Swebench(s),
         } => Box::pin(bench_swebench(s)).await,
         Command::Bench {
+            cmd: args::BenchCmd::Rehearsal(mut s),
+        } => {
+            s.rehearse = true;
+            Box::pin(bench_swebench(s)).await
+        }
+        Command::Bench {
             cmd: args::BenchCmd::Forecast(s),
         } => Box::pin(bench_forecast(s)).await,
         Command::Bench {
@@ -458,6 +464,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         local_workdir: resolved_workdir,
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
+        rehearsal_gold_patch: None,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -855,6 +862,7 @@ async fn mini_resume_cmd(
         local_workdir: resolved_workdir,
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
+        rehearsal_gold_patch: None,
     };
     crate::run::mini::run(args).await
 }
@@ -985,8 +993,16 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
     crate::run::replay::run(args).await
 }
 
-async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
+#[allow(clippy::too_many_lines)]
+pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+
+    if sweep_cmd.rehearse {
+        let path_str = sweep_cmd.output.to_string_lossy();
+        if !path_str.ends_with(".rehearsal") {
+            sweep_cmd.output = std::path::PathBuf::from(format!("{path_str}.rehearsal"));
+        }
+    }
 
     if sweep_cmd.render_only {
         return bench_swebench_render_only(&sweep_cmd);
@@ -1023,6 +1039,25 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
             sweep_cmd.seed = None;
         }
     }
+
+    let is_rehearsal = sweep_cmd.rehearse;
+    if is_rehearsal {
+        unsafe {
+            std::env::set_var("MAX_REHEARSAL_MODE", "1");
+            if sweep_cmd.skip_evaluator {
+                std::env::set_var("MAX_REHEARSAL_SKIP_EVALUATOR", "1");
+            }
+            std::env::set_var("MAX_REHEARSAL_EVAL_BACKEND", &sweep_cmd.eval_backend);
+        }
+    }
+    let skip_evaluator = sweep_cmd.skip_evaluator;
+    let eval_backend_str = sweep_cmd.eval_backend.clone();
+    let dataset_path_opt = sweep_cmd.dataset_path.clone();
+    let dataset_alias_opt = sweep_cmd.dataset.clone();
+    let split_str = sweep_cmd.split.clone();
+    let parallel_num = sweep_cmd.parallel;
+    let diff_path_opt = sweep_cmd.diff.clone();
+    let output_dir = sweep_cmd.output.clone();
 
     let cfg = swebench_config_from_cmd(&sweep_cmd)?;
     let preflight_mode = if sweep_cmd.dry_run {
@@ -1065,6 +1100,81 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
             "{github_pr_failures} GitHub PR publication(s) failed; see results.json for instance errors"
         )));
     }
+
+    if is_rehearsal {
+        if !skip_evaluator {
+            let eval_backend = match eval_backend_str.to_lowercase().as_str() {
+                "none" => crate::run::evaluate::EvaluateBackend::None,
+                "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
+                _ => crate::run::evaluate::EvaluateBackend::Rehearsal,
+            };
+
+            let actual_dataset_path = if let Some(path) = dataset_path_opt {
+                Some(path)
+            } else if let Some(alias) = dataset_alias_opt {
+                let source = crate::run::dataset::DatasetSource::Named {
+                    alias: alias
+                        .parse()
+                        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?,
+                    split: split_str
+                        .unwrap_or_else(|| "test".to_owned())
+                        .parse()
+                        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?,
+                };
+                let cache_dir = crate::run::dataset::default_cache_dir();
+                let (_, meta) = crate::run::dataset::resolve_dataset(&source, &cache_dir)?;
+                Some(meta.path)
+            } else {
+                None
+            };
+
+            let eval_args = crate::run::evaluate::EvaluateArgs {
+                sweep_dir: output_dir.clone(),
+                dataset_path: actual_dataset_path,
+                backend: eval_backend,
+                timeout_per_instance_secs: 1800,
+                parallel: parallel_num,
+                sb_subset: String::new(),
+                sb_split: "test".to_owned(),
+                run_id: None,
+                breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
+                cost_attribution: true,
+            };
+            let eval = crate::run::evaluate::run(&eval_args)?;
+            let loaded_sweep = crate::run::compare::load_sweep(&output_dir)?;
+            let summary = crate::run::evaluate::summarize_with_model(
+                &eval,
+                &loaded_sweep.instances,
+                loaded_sweep
+                    .manifest
+                    .as_ref()
+                    .map(|m| m.model.name.as_str()),
+            );
+            tracing::info!(
+                instances = summary.instances,
+                resolved = summary.resolved,
+                resolved_rate = summary.resolved_rate,
+                "rehearsal evaluation complete"
+            );
+            print!("{}", crate::run::evaluate::render_summary_table(&summary));
+        }
+
+        // Run report generator stage
+        let report_args = crate::run::report::ReportArgs {
+            sweep_dir: output_dir.clone(),
+            output: output_dir.join("report.md"),
+            baseline: None,
+            top_failures: 5,
+            format: crate::run::report::ReportFormat::Markdown,
+        };
+        crate::run::report::run(&report_args)?;
+
+        // If diff_path is Some, run the diff comparator
+        if let Some(ref diff_path) = diff_path_opt {
+            compare_rehearsals(diff_path, &output_dir)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1884,9 +1994,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
     let backend = match e.backend.as_str() {
         "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
+        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --backend `{other}` (expected `sb-cli` or `none`)"
+                "unknown --backend `{other}` (expected `sb-cli`, `none`, or `rehearsal`)"
             ))));
         }
     };
@@ -3040,9 +3151,10 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
     let eval_backend = match c.eval_backend.to_lowercase().as_str() {
         "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
+        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --eval-backend `{other}`; expected `sb-cli`"
+                "unknown --eval-backend `{other}`; expected `sb-cli` or `rehearsal`"
             ))));
         }
     };
@@ -3987,6 +4099,139 @@ fn parse_dataset_source_stats(
             ))
         }
     }
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn compare_rehearsals(
+    baseline: &std::path::Path,
+    candidate: &std::path::Path,
+) -> Result<(), Error> {
+    println!("=== Comparing Rehearsal Results ===");
+    println!("Baseline:  {}", baseline.display());
+    println!("Candidate: {}", candidate.display());
+
+    let base_results_path = baseline.join("results.json");
+    let cand_results_path = candidate.join("results.json");
+
+    if !base_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Baseline results file not found: {}",
+            base_results_path.display()
+        ))));
+    }
+    if !cand_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Candidate results file not found: {}",
+            cand_results_path.display()
+        ))));
+    }
+
+    let base_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&base_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse baseline results: {e}")))?;
+    let cand_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&cand_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse candidate results: {e}")))?;
+
+    let base_eval_path = baseline.join("evaluation.json");
+    let cand_eval_path = candidate.join("evaluation.json");
+
+    let base_eval: Option<crate::run::evaluate::EvaluationResults> = if base_eval_path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&base_eval_path)?).ok()
+    } else {
+        None
+    };
+
+    let cand_eval: Option<crate::run::evaluate::EvaluationResults> = if cand_eval_path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(&cand_eval_path)?).ok()
+    } else {
+        None
+    };
+
+    let mut regressions = Vec::new();
+    let mut drift_messages = Vec::new();
+
+    let base_instances: std::collections::HashMap<_, _> = base_sweep
+        .instances
+        .iter()
+        .map(|i| (&i.instance_id, i))
+        .collect();
+    let cand_instances: std::collections::HashMap<_, _> = cand_sweep
+        .instances
+        .iter()
+        .map(|i| (&i.instance_id, i))
+        .collect();
+
+    for (id, base_inst) in &base_instances {
+        match cand_instances.get(id) {
+            None => {
+                regressions.push(format!("Instance {id} is missing from candidate results."));
+            }
+            Some(cand_inst) => {
+                if base_inst.outcome != cand_inst.outcome {
+                    drift_messages.push(format!(
+                        "Instance {id} outcome changed from {:?} to {:?}",
+                        base_inst.outcome, cand_inst.outcome
+                    ));
+                    if base_inst.outcome.as_deref() == Some("submitted")
+                        && cand_inst.outcome.as_deref() != Some("submitted")
+                    {
+                        regressions.push(format!(
+                            "Instance {id} failed to submit in candidate (outcome: {:?}).",
+                            cand_inst.outcome
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if let (Some(b_eval), Some(c_eval)) = (base_eval, cand_eval) {
+        let base_eval_map: std::collections::HashMap<_, _> = b_eval
+            .instances
+            .iter()
+            .map(|i| (&i.instance_id, i))
+            .collect();
+        let cand_eval_map: std::collections::HashMap<_, _> = c_eval
+            .instances
+            .iter()
+            .map(|i| (&i.instance_id, i))
+            .collect();
+
+        for (id, base_eval_inst) in &base_eval_map {
+            if let Some(cand_eval_inst) = cand_eval_map.get(id) {
+                if base_eval_inst.resolved != cand_eval_inst.resolved {
+                    drift_messages.push(format!(
+                        "Instance {id} resolved status changed from {} to {}",
+                        base_eval_inst.resolved, cand_eval_inst.resolved
+                    ));
+                    if base_eval_inst.resolved && !cand_eval_inst.resolved {
+                        regressions.push(format!(
+                            "Instance {id} was resolved in baseline but is unresolved in candidate."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n=== Comparison Summary ===");
+    for msg in &drift_messages {
+        println!("  [DRIFT] {msg}");
+    }
+
+    if !regressions.is_empty() {
+        eprintln!("\n❌ REGRESSIONS DETECTED:");
+        for reg in &regressions {
+            eprintln!("  - {reg}");
+        }
+        return Err(Error::Trajectory(
+            "Drift/regression comparison failed: regressions detected.".to_owned(),
+        ));
+    }
+
+    println!("\n✅ No regressions detected between baseline and candidate.");
+    Ok(())
 }
 
 #[cfg(test)]
