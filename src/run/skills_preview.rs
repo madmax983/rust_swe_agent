@@ -250,53 +250,93 @@ fn sha256_prefix_12(bytes: &[u8]) -> String {
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String {
-    let mut out = String::from("=== agent skills-preview (no model call made) ===\n");
+    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+    use comfy_table::presets::UTF8_FULL;
+    use comfy_table::{Cell, Color, Table};
+
+    let mut out = String::from("=== agent skills-preview (no model call made) ===\n\n");
 
     for task in &report.tasks {
-        let _ = write!(out, "\ntask_hash: {}\n", task.task_hash);
+        let _ = writeln!(out, "Task Hash: {}", task.task_hash);
+
         if task.active_skills.is_empty() {
             out.push_str("  (no skills activated)\n");
         } else {
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .apply_modifier(UTF8_ROUND_CORNERS)
+                .set_header(vec!["Skill Name", "Reason", "SHA256", "Bytes", "Path"]);
+
             for skill in &task.active_skills {
                 let reason_str = match skill.reason {
                     SkillActivationReason::ExplicitMention => "explicit",
                     SkillActivationReason::AutoMatch => "auto",
                 };
-                let path_str = skill.path.display().to_string();
-                let _ = writeln!(
-                    out,
-                    "  {} | {} | {} | {} bytes | {}",
-                    skill.name, reason_str, skill.sha256_prefix, skill.bytes, path_str,
-                );
+
+                table.add_row(vec![
+                    Cell::new(&skill.name).fg(Color::Cyan),
+                    Cell::new(reason_str).fg(if reason_str == "explicit" {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    }),
+                    Cell::new(&skill.sha256_prefix),
+                    Cell::new(skill.bytes.to_string()),
+                    Cell::new(skill.path.display().to_string()),
+                ]);
             }
+            let _ = writeln!(out, "{table}");
         }
-        let _ = writeln!(out, "  total_bytes_injected: {}", task.total_bytes_injected);
-        let _ = writeln!(
-            out,
-            "  max_active_cap_hit: {} (dropped: {})",
-            task.max_active_cap_hit, task.dropped_count
-        );
-        let _ = writeln!(
-            out,
-            "  merged_extra_context_bytes: {}",
-            task.merged_extra_context_bytes
-        );
+
+        let mut stats_table = Table::new();
+        stats_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec![
+                "Total Bytes Injected",
+                "Max Active Cap Hit",
+                "Merged Extra Context",
+            ]);
+
+        stats_table.add_row(vec![
+            Cell::new(task.total_bytes_injected.to_string()),
+            Cell::new(format!(
+                "{} (dropped: {})",
+                task.max_active_cap_hit, task.dropped_count
+            ))
+            .fg(if task.max_active_cap_hit {
+                Color::Red
+            } else {
+                Color::Green
+            }),
+            Cell::new(task.merged_extra_context_bytes.to_string()),
+        ]);
+
+        let _ = writeln!(out, "{stats_table}\n");
     }
 
-    let _ = writeln!(
-        out,
-        "\n--- summary ---\n\
-         task_count: {}\n\
-         unique_skills_activated: {}\n\
-         p50_bytes_per_task: {}\n\
-         p95_bytes_per_task: {}\n\
-         tasks_hitting_max_active: {}",
-        report.summary.task_count,
-        report.summary.unique_skills_activated,
-        report.summary.p50_bytes_per_task,
-        report.summary.p95_bytes_per_task,
-        report.summary.tasks_hitting_max_active,
-    );
+    let mut summary_table = Table::new();
+    summary_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec![
+            "Task Count",
+            "Unique Skills",
+            "p50 Bytes",
+            "p95 Bytes",
+            "Cap Hit Tasks",
+        ]);
+
+    summary_table.add_row(vec![
+        Cell::new(report.summary.task_count.to_string()),
+        Cell::new(report.summary.unique_skills_activated.to_string()),
+        Cell::new(report.summary.p50_bytes_per_task.to_string()),
+        Cell::new(report.summary.p95_bytes_per_task.to_string()),
+        Cell::new(report.summary.tasks_hitting_max_active.to_string()),
+    ]);
+
+    let _ = writeln!(out, "--- summary ---\n{summary_table}");
 
     redactor.redact_text(&out, surface::TRAJECTORY).text
 }
