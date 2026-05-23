@@ -133,6 +133,8 @@ fn make_mini_args(
         cancellation: None,
         stream_addr,
         patch_capture: None,
+        event_log: None,
+        event_log_instance_id: None,
         verification_checks: vec![],
         verification_timeout_secs: 60,
         resume_from: None,
