@@ -28,6 +28,7 @@ fn long_running_response() -> String {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
     let work = tempfile::tempdir().unwrap();
     let dataset = work.path().join("dataset.jsonl");
