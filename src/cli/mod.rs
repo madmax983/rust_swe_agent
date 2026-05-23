@@ -1247,6 +1247,11 @@ fn exit_if_systemic_halt_sweep(results: &crate::run::swebench::SweepResults) {
 async fn run_forecast_from_cmd(
     mut s: args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    if s.rehearse {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "rehearsal mode cannot be used with forecast-first; forecast projects real sweep costs".to_owned()
+        )));
+    }
     s.github_pr.open_prs = false;
     s.github_pr.github_pr_dry_run = false;
     let calibration_n = s.calibration_n;
@@ -4199,6 +4204,29 @@ pub fn compare_rehearsals(
                             if base_eval_inst.resolved && !cand_eval_inst.resolved {
                                 regressions.push(format!(
                                     "Instance {id} was resolved in baseline but is unresolved in candidate."
+                                ));
+                            }
+                        }
+                        if base_eval_inst.resolved_count != cand_eval_inst.resolved_count {
+                            drift_messages.push(format!(
+                                "Instance {id} resolved count changed from {} to {}",
+                                base_eval_inst.resolved_count, cand_eval_inst.resolved_count
+                            ));
+                            if base_eval_inst.resolved_count > cand_eval_inst.resolved_count {
+                                regressions.push(format!(
+                                    "Instance {id} resolved count regressed from {} to {} in candidate.",
+                                    base_eval_inst.resolved_count, cand_eval_inst.resolved_count
+                                ));
+                            }
+                        }
+                        if base_eval_inst.pass_at_1 != cand_eval_inst.pass_at_1 {
+                            drift_messages.push(format!(
+                                "Instance {id} pass@1 status changed from {} to {}",
+                                base_eval_inst.pass_at_1, cand_eval_inst.pass_at_1
+                            ));
+                            if base_eval_inst.pass_at_1 && !cand_eval_inst.pass_at_1 {
+                                regressions.push(format!(
+                                    "Instance {id} pass@1 regressed from true to false in candidate."
                                 ));
                             }
                         }

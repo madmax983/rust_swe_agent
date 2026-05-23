@@ -1,5 +1,6 @@
 //! Integration tests for bench rehearsal subcommand and TDD workflow (issue #282).
 
+#![recursion_limit = "256"]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -512,3 +513,253 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
         err_msg
     );
 }
+
+#[tokio::test]
+async fn test_forecast_rejects_rehearsal() {
+    use clap::Parser as _;
+    use maxwells_daemon::cli::{Cli, Command};
+
+    let args = vec![
+        "max".to_string(),
+        "bench".to_string(),
+        "swebench".to_string(),
+        "--rehearse".to_string(),
+        "--forecast-first".to_string(),
+        "--dataset-path".to_string(),
+        "dummy.jsonl".to_string(),
+        "--output".to_string(),
+        "dummy".to_string(),
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+    if let Command::Bench { cmd } = cli.command {
+        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+            assert!(res.is_err());
+            let err_msg = res.unwrap_err().to_string();
+            assert!(err_msg.contains("rehearsal mode cannot be used with forecast-first"));
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
+    let work = tempfile::tempdir().unwrap();
+    let base_dir = work.path().join("base_cmp");
+    let cand_dir = work.path().join("cand_cmp");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+
+    let sweep_results = maxwells_daemon::run::swebench::SweepResults {
+        total: 1,
+        sweep_status: "complete".to_owned(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 1,
+        in_flight_at_cancel: 0,
+        not_started: 0,
+        submitted: 1,
+        submitted_with_tests: 0,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: std::collections::BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 1,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
+        github_pr_failures: 0,
+        total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
+        cache_hit_rate: 0.0,
+        retries: 0,
+        retried_instances: 0,
+        pass_at_k: 0.0,
+        filter_spec: maxwells_daemon::run::swebench::FilterSpec::default(),
+        manifest: None,
+        cost_limit_usd: None,
+        instances: vec![maxwells_daemon::run::swebench::InstanceResult {
+            instance_id: "inst-1".to_owned(),
+            exit_reason: "submitted".to_owned(),
+            outcome: Some("submitted".to_owned()),
+            failure_category: None,
+            steps: Some(1),
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(0),
+            duration_secs: Some(0.0),
+            error: None,
+            github_pr_error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: vec![],
+            runs: 3,
+            resolved_count: 3,
+            pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+            fallback_count: None,
+            final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
+            trace_id: None,
+        }],
+        rate_limit_events: None,
+        total_fallbacks: 0,
+        model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
+        retry_history: vec![],
+        partial: 0,
+        span_export_dropped: 0,
+    };
+    let results_json = serde_json::to_string(&sweep_results).unwrap();
+
+    let base_eval_res = maxwells_daemon::run::evaluate::EvaluationResults {
+        instances: vec![maxwells_daemon::run::evaluate::InstanceEvaluation {
+            instance_id: "inst-1".to_owned(),
+            resolved: true,
+            runs: 3,
+            resolved_count: 3,
+            pass_at_1: true,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: maxwells_daemon::run::evaluate::EvalExitReason::Resolved,
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log: None,
+        }],
+        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
+        breakdown: vec![],
+        cost_attribution: vec![],
+        model_mix_summary: vec![],
+        latency_summary: None,
+        provenance: None,
+    };
+    let base_eval_json = serde_json::to_string(&base_eval_res).unwrap();
+
+    // Candidate has resolved count regressed from 3 to 1, and pass_at_1 regressed to false
+    let cand_eval_res = maxwells_daemon::run::evaluate::EvaluationResults {
+        instances: vec![maxwells_daemon::run::evaluate::InstanceEvaluation {
+            instance_id: "inst-1".to_owned(),
+            resolved: true,
+            runs: 3,
+            resolved_count: 1,
+            pass_at_1: false,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: maxwells_daemon::run::evaluate::EvalExitReason::Resolved,
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log: None,
+        }],
+        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
+        breakdown: vec![],
+        cost_attribution: vec![],
+        model_mix_summary: vec![],
+        latency_summary: None,
+        provenance: None,
+    };
+    let cand_eval_json = serde_json::to_string(&cand_eval_res).unwrap();
+
+    std::fs::write(base_dir.join("results.json"), &results_json).unwrap();
+    std::fs::write(base_dir.join("evaluation.json"), &base_eval_json).unwrap();
+    std::fs::write(cand_dir.join("results.json"), &results_json).unwrap();
+    std::fs::write(cand_dir.join("evaluation.json"), &cand_eval_json).unwrap();
+
+    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    assert!(cmp_res.is_err());
+    let err_msg = cmp_res.err().unwrap().to_string();
+    assert!(err_msg.contains("Drift/regression comparison failed: regressions detected."));
+}
+
+#[tokio::test]
+async fn test_rehearsal_fails_on_corrupted_trajectory() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Create a dummy sweep output dir with a corrupted trajectory JSON
+    let sweep_dir = work.path().join("sweep");
+    let inst_dir = sweep_dir.join("inst-1");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    std::fs::write(inst_dir.join("run-1.traj.json"), "{ corrupted json...").unwrap();
+    std::fs::write(inst_dir.join("run-1.patch"), "some diff\n").unwrap();
+
+    let sweep_results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 1,
+            "resolved_count": 1,
+            "pass_at_1": true,
+            "tests_run_before_submit": false
+        }]
+    });
+    std::fs::write(sweep_dir.join("results.json"), serde_json::to_string(&sweep_results).unwrap()).unwrap();
+
+    let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir,
+        dataset_path: None,
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::Rehearsal,
+        timeout_per_instance_secs: 60,
+        parallel: 1,
+        sb_subset: "".to_owned(),
+        sb_split: "test".to_owned(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
+        cost_attribution: true,
+    };
+
+    let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
+    assert!(eval_res.is_err());
+    let err_msg = eval_res.err().unwrap().to_string();
+    assert!(err_msg.contains("Failed to parse trajectory file"));
+}
+

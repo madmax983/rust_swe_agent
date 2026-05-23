@@ -386,7 +386,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
             EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
-        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results),
+        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
     };
     let EvaluateRunOutput {
         mut eval,
@@ -896,7 +896,7 @@ fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
 fn run_rehearsal_eval(
     args: &EvaluateArgs,
     results: &HashMap<String, InstanceResult>,
-) -> EvaluateRunOutput {
+) -> Result<EvaluateRunOutput, Error> {
     let mut resolved_by_run = HashMap::new();
     let mut instances = Vec::new();
 
@@ -912,20 +912,27 @@ fn run_rehearsal_eval(
 
             // Check if trajectory has outcome: Some("submitted") and patch exists and is non-empty
             let mut run_resolved = false;
-            if traj_path.exists() && patch_path.exists() {
-                if let Ok(metadata) = std::fs::metadata(&patch_path) {
+            if traj_path.exists() {
+                let content = std::fs::read_to_string(&traj_path).map_err(|e| {
+                    Error::Trajectory(format!(
+                        "Failed to read trajectory file {} during rehearsal: {e}",
+                        traj_path.display()
+                    ))
+                })?;
+                let traj_val = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
+                    Error::Trajectory(format!(
+                        "Failed to parse trajectory file {} during rehearsal: {e}",
+                        traj_path.display()
+                    ))
+                })?;
+
+                if patch_path.exists() {
+                    let metadata = std::fs::metadata(&patch_path)?;
                     if metadata.len() > 0 {
-                        if let Ok(content) = std::fs::read_to_string(&traj_path) {
-                            if let Ok(traj_val) =
-                                serde_json::from_str::<serde_json::Value>(&content)
-                            {
-                                let outcome = traj_val["info"]["outcome"].as_str();
-                                let partial =
-                                    traj_val["info"]["partial"].as_bool().unwrap_or(false);
-                                if outcome == Some("submitted") && !partial {
-                                    run_resolved = true;
-                                }
-                            }
+                        let outcome = traj_val["info"]["outcome"].as_str();
+                        let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
+                        if outcome == Some("submitted") && !partial {
+                            run_resolved = true;
                         }
                     }
                 }
@@ -969,7 +976,7 @@ fn run_rehearsal_eval(
 
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
-    EvaluateRunOutput {
+    Ok(EvaluateRunOutput {
         eval: EvaluationResults {
             instances,
             behavioral: BehavioralMetrics::default(),
@@ -981,7 +988,7 @@ fn run_rehearsal_eval(
         },
         resolved_by_run,
         effective_run_id: Some("rehearsal-eval".to_owned()),
-    }
+    })
 }
 
 fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResults {
