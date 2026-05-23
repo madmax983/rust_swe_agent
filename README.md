@@ -160,6 +160,12 @@ cargo run --quiet -- --log error bench inspect --sweep runs/quickstart --instanc
 
 ### 6. Optional Preflight Before SWE-bench
 
+Use `bench dataset-stats` to preview the composition, token distributions (computed completely offline using `litellm-rs`'s `TokenCounter`), expected tests count, languages present, representative slice skewness (warns if unique repos < 50% or median token length difference > 25% compared to the full dataset), and historical resolved rates matching current dataset hash before running a sweep:
+
+```powershell
+cargo run --quiet -- --log error bench dataset-stats --dataset lite --split test --sample 10 --seed 42
+```
+
 Use `doctor` on a local SWE-bench JSONL dataset before launching work. This
 checks the dataset and environment setup; `--skip-model-probe` keeps this
 preflight from touching a model provider.
@@ -360,6 +366,8 @@ a valid trajectory in hand:
 - [`bench power`](docs/spec-power.md): offline statistical power, required sample
   size per arm, or Minimum Detectable Effect (MDE delta) calculations for
   two-proportion z-tests.
+- [`bench dataset-stats`](docs/spec-dataset-stats.md): zero-cost preflight to
+  preview and analyze dataset composition offline before running a sweep.
 
 ## Nightly E2E smoke
 
