@@ -343,3 +343,172 @@ async fn test_diff_surfaces_drift() {
     let err_msg = diff_result.err().unwrap().to_string();
     assert!(err_msg.contains("regressions detected"));
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
+    let work = tempfile::tempdir().unwrap();
+
+    // 1. Test empty patch is not resolved
+    let dataset = work.path().join("dataset.jsonl");
+    write_jsonl(&dataset, &["inst-empty"], &[""]);
+
+    let output = work.path().join("out_empty");
+    let args = base_rehearsal_args(DatasetSource::LocalPath(dataset), output.clone());
+    let results = run(args).await.unwrap();
+    assert_eq!(results.total, 1);
+
+    // Call evaluate manually
+    let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir: output.clone(),
+        dataset_path: None,
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::Rehearsal,
+        timeout_per_instance_secs: 60,
+        parallel: 1,
+        sb_subset: "".to_owned(),
+        sb_split: "test".to_owned(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
+        cost_attribution: true,
+    };
+
+    let eval_results = maxwells_daemon::run::evaluate::run(&eval_args).unwrap();
+    assert_eq!(eval_results.instances.len(), 1);
+    assert!(!eval_results.instances[0].resolved);
+    assert_eq!(
+        eval_results.instances[0].eval_exit_reason,
+        maxwells_daemon::run::evaluate::EvalExitReason::SkippedNoPatch
+    );
+
+    // 2. Test missing candidate evaluation comparison
+    let base_dir = work.path().join("base_cmp");
+    let cand_dir = work.path().join("cand_cmp");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+
+    let sweep_results = maxwells_daemon::run::swebench::SweepResults {
+        total: 1,
+        sweep_status: "complete".to_owned(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 1,
+        in_flight_at_cancel: 0,
+        not_started: 0,
+        submitted: 1,
+        submitted_with_tests: 0,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: std::collections::BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 1,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
+        github_pr_failures: 0,
+        total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
+        cache_hit_rate: 0.0,
+        retries: 0,
+        retried_instances: 0,
+        pass_at_k: 0.0,
+        filter_spec: maxwells_daemon::run::swebench::FilterSpec::default(),
+        manifest: None,
+        cost_limit_usd: None,
+        instances: vec![maxwells_daemon::run::swebench::InstanceResult {
+            instance_id: "inst-1".to_owned(),
+            exit_reason: "submitted".to_owned(),
+            outcome: Some("submitted".to_owned()),
+            failure_category: None,
+            steps: Some(1),
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(0),
+            duration_secs: Some(0.0),
+            error: None,
+            github_pr_error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: vec![],
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+            fallback_count: None,
+            final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
+            trace_id: None,
+        }],
+        rate_limit_events: None,
+        total_fallbacks: 0,
+        model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
+        retry_history: vec![],
+        partial: 0,
+        span_export_dropped: 0,
+    };
+    let results_json = serde_json::to_string(&sweep_results).unwrap();
+
+    let base_eval_res = maxwells_daemon::run::evaluate::EvaluationResults {
+        instances: vec![maxwells_daemon::run::evaluate::InstanceEvaluation {
+            instance_id: "inst-1".to_owned(),
+            resolved: true,
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: maxwells_daemon::run::evaluate::EvalExitReason::Resolved,
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log: None,
+        }],
+        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
+        breakdown: vec![],
+        cost_attribution: vec![],
+        model_mix_summary: vec![],
+        latency_summary: None,
+        provenance: None,
+    };
+    let base_eval_json = serde_json::to_string(&base_eval_res).unwrap();
+
+    std::fs::write(base_dir.join("results.json"), &results_json).unwrap();
+    std::fs::write(base_dir.join("evaluation.json"), &base_eval_json).unwrap();
+
+    let cand_eval_res = maxwells_daemon::run::evaluate::EvaluationResults {
+        instances: vec![],
+        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
+        breakdown: vec![],
+        cost_attribution: vec![],
+        model_mix_summary: vec![],
+        latency_summary: None,
+        provenance: None,
+    };
+    let cand_eval_json = serde_json::to_string(&cand_eval_res).unwrap();
+
+    std::fs::write(cand_dir.join("results.json"), &results_json).unwrap();
+    std::fs::write(cand_dir.join("evaluation.json"), &cand_eval_json).unwrap();
+
+    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    if let Err(ref e) = cmp_res {
+        println!("DEBUG MOCK CMP ERROR: {}", e);
+    }
+    assert!(cmp_res.is_err());
+    let err_msg = cmp_res.err().unwrap().to_string();
+    assert!(
+        err_msg.contains("Drift/regression comparison failed: regressions detected."),
+        "Unexpected error message: {}",
+        err_msg
+    );
+}

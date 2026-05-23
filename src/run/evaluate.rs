@@ -157,7 +157,7 @@ impl BreakdownSelection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalExitReason {
     Resolved,
@@ -913,12 +913,19 @@ fn run_rehearsal_eval(
             // Check if trajectory has outcome: Some("submitted") and patch exists and is non-empty
             let mut run_resolved = false;
             if traj_path.exists() && patch_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&traj_path) {
-                    if let Ok(traj_val) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let outcome = traj_val["info"]["outcome"].as_str();
-                        let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
-                        if outcome == Some("submitted") && !partial {
-                            run_resolved = true;
+                if let Ok(metadata) = std::fs::metadata(&patch_path) {
+                    if metadata.len() > 0 {
+                        if let Ok(content) = std::fs::read_to_string(&traj_path) {
+                            if let Ok(traj_val) =
+                                serde_json::from_str::<serde_json::Value>(&content)
+                            {
+                                let outcome = traj_val["info"]["outcome"].as_str();
+                                let partial =
+                                    traj_val["info"]["partial"].as_bool().unwrap_or(false);
+                                if outcome == Some("submitted") && !partial {
+                                    run_resolved = true;
+                                }
+                            }
                         }
                     }
                 }

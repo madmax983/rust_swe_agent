@@ -987,6 +987,8 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let eval_timeout_secs_opt = sweep_cmd.eval_timeout_secs;
     let sb_subset_opt = sweep_cmd.sb_subset.clone();
     let sb_split_opt = sweep_cmd.sb_split.clone();
+    let dataset_cache_dir_opt = sweep_cmd.dataset_cache_dir.clone();
+    let dry_run = sweep_cmd.dry_run;
 
     let cfg = swebench_config_from_cmd(&sweep_cmd)?;
     let preflight_mode = if sweep_cmd.dry_run {
@@ -1030,7 +1032,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         )));
     }
 
-    if is_rehearsal {
+    if is_rehearsal && !dry_run {
         if !skip_evaluator {
             let eval_backend = match eval_backend_str.to_lowercase().as_str() {
                 "none" => crate::run::evaluate::EvaluateBackend::None,
@@ -1055,7 +1057,9 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
                         .parse()
                         .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?,
                 };
-                let cache_dir = crate::run::dataset::default_cache_dir();
+                let cache_dir = dataset_cache_dir_opt
+                    .clone()
+                    .unwrap_or_else(crate::run::dataset::default_cache_dir);
                 let (_, meta) = crate::run::dataset::resolve_dataset(&source, &cache_dir)?;
                 Some(meta.path)
             } else {
@@ -4171,17 +4175,24 @@ pub fn compare_rehearsals(
             .collect();
 
         for (id, base_eval_inst) in &base_eval_map {
-            if let Some(cand_eval_inst) = cand_eval_map.get(id) {
-                if base_eval_inst.resolved != cand_eval_inst.resolved {
-                    drift_messages.push(format!(
-                        "Instance {id} resolved status changed from {} to {}",
-                        base_eval_inst.resolved, cand_eval_inst.resolved
-                    ));
-                    if base_eval_inst.resolved && !cand_eval_inst.resolved {
-                        regressions.push(format!(
-                            "Instance {id} was resolved in baseline but is unresolved in candidate."
+            match cand_eval_map.get(id) {
+                Some(cand_eval_inst) => {
+                    if base_eval_inst.resolved != cand_eval_inst.resolved {
+                        drift_messages.push(format!(
+                            "Instance {id} resolved status changed from {} to {}",
+                            base_eval_inst.resolved, cand_eval_inst.resolved
                         ));
+                        if base_eval_inst.resolved && !cand_eval_inst.resolved {
+                            regressions.push(format!(
+                                "Instance {id} was resolved in baseline but is unresolved in candidate."
+                            ));
+                        }
                     }
+                }
+                None => {
+                    regressions.push(format!(
+                        "Instance {id} is present in baseline evaluation but missing from candidate evaluation."
+                    ));
                 }
             }
         }
