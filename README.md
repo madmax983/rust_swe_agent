@@ -258,6 +258,8 @@ Two transports let you observe per-step events without waiting for the trajector
   Good for an interactive local session where you can `curl` or open a browser.
 - **Webhook (`--webhook-url <url>`)** — the agent POSTs each event to your listener.
   Good for headless CI, Docker, or any environment that cannot expose an inbound port.
+- **Event log (`--event-log <path>`)** — append one redacted JSON event per line.
+  Good for `tail -f | jq` workflows and CI artifact collection.
 
 Both can be active at once:
 
@@ -273,6 +275,13 @@ Each webhook POST body is a versioned JSON envelope
 Secrets are redacted before POST. HTTP failures are logged and counted; they never
 block or abort the run. See [`docs/spec-streaming.md`](docs/spec-streaming.md) for the
 full transport comparison and envelope schema.
+
+`--event-log` example:
+
+```bash
+max mini --task "…" --event-log runs/events.jsonl
+tail -f runs/events.jsonl | jq -c '{event_type, instance_id}'
+```
 
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your

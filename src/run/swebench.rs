@@ -1309,6 +1309,7 @@ pub struct SwebenchArgs {
     /// deterministic cancellation; `None` disables injected signals.
     #[doc(hidden)]
     pub cancellation_signals: Option<mpsc::UnboundedReceiver<SweepSignal>>,
+    pub event_log: Option<PathBuf>,
     /// Optional GitHub PR publisher for submitted patch artifacts.
     pub github_pr: Option<crate::run::github_pr::GithubPrSweepConfig>,
     /// When this sweep is a reproduction of a prior run, embed a back-pointer
@@ -4303,6 +4304,8 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             trace_id: params.trace_id.clone(),
             webhook_url: None,
             webhook_headers: vec![],
+            event_log: args.event_log.clone(),
+            event_log_instance_id: Some(id.clone()),
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,

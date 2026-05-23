@@ -637,6 +637,10 @@ pub struct CascadeCmd {
     #[arg(long, default_value_t = false)]
     pub resume: bool,
 
+    /// Append line-delimited JSON events to PATH for live tail/jq workflows.
+    #[arg(long = "event-log", value_name = "PATH")]
+    pub event_log: Option<PathBuf>,
+
     /// Dataset subset selector. Either a comma-separated id list
     /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
     #[arg(long)]
@@ -943,6 +947,10 @@ pub struct MatrixCmd {
     /// step 0.
     #[arg(long, default_value_t = false)]
     pub resume: bool,
+
+    /// Append line-delimited JSON events to PATH for live tail/jq workflows.
+    #[arg(long = "event-log", value_name = "PATH")]
+    pub event_log: Option<PathBuf>,
 
     /// Dataset subset selector. Either a comma-separated id list
     /// (`id1,id2`) or `@path/to/file.txt` with one id per line.
