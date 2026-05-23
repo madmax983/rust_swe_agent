@@ -88,6 +88,7 @@ fn test_mock_dataset_stats_computation() {
     // Verify expected tests distribution (3 for inst1, 1 for inst2)
     assert_eq!(stats.expected_tests.min, 1);
     assert_eq!(stats.expected_tests.max, 3);
+    assert_eq!(stats.expected_tests.p90, 3);
 }
 
 #[test]
@@ -380,7 +381,7 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
 
     // 3. Write a modern results.json with non-matching manifest hash
     let mut modern_mismatched_results = legacy_results.clone();
-    let mut mismatched_manifest = manifest_template;
+    let mut mismatched_manifest = manifest_template.clone();
     mismatched_manifest.dataset.sha256 = "other_hash".to_string();
     modern_mismatched_results.manifest = Some(mismatched_manifest);
     modern_mismatched_results.instances = vec![InstanceResult {
@@ -394,6 +395,24 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
     write(
         &modern_mismatched_path,
         serde_json::to_string_pretty(&modern_mismatched_results).unwrap(),
+    )
+    .unwrap();
+
+    // 4. Write a modern results.json that matches manifest but is not completed ("running")
+    let mut modern_running_results = legacy_results.clone();
+    modern_running_results.sweep_status = "running".to_string();
+    modern_running_results.manifest = Some(manifest_template);
+    modern_running_results.instances = vec![InstanceResult {
+        runs: 1,
+        resolved_count: 0,
+        ..legacy_results.instances[0].clone()
+    }];
+    let modern_running_dir = runs_dir.join("modern_running");
+    create_dir_all(&modern_running_dir).unwrap();
+    let modern_running_path = modern_running_dir.join("results.json");
+    write(
+        &modern_running_path,
+        serde_json::to_string_pretty(&modern_running_results).unwrap(),
     )
     .unwrap();
 

@@ -225,7 +225,8 @@ fn percentile_90(values: &[usize]) -> usize {
     if values.is_empty() {
         return 0;
     }
-    let idx = (values.len() - 1) * 9 / 10;
+    let rank = (9 * values.len()).div_ceil(10);
+    let idx = rank - 1;
     values[idx]
 }
 
@@ -363,11 +364,12 @@ fn analyze_historical_resolved_rates(
     for path in results_paths {
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(results) = serde_json::from_str::<SweepResults>(&text) {
-                let matches = match (dataset_hash, &results.manifest) {
-                    (Some(curr_hash), Some(manifest)) => manifest.dataset.sha256 == **curr_hash,
-                    (Some(_), None) => false,
-                    _ => true,
-                };
+                let matches = results.sweep_status == "completed"
+                    && match (dataset_hash, &results.manifest) {
+                        (Some(curr_hash), Some(manifest)) => manifest.dataset.sha256 == **curr_hash,
+                        (Some(_), None) => false,
+                        _ => true,
+                    };
                 if matches {
                     for inst_res in &results.instances {
                         let entry = hist_map
