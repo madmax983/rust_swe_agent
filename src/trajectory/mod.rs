@@ -606,11 +606,17 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Metadata recording how this trajectory was forked from a parent run.
 pub struct ForkLineage {
+    /// The file path to the sweep that contained the parent instance.
     pub parent_sweep_path: String,
+    /// The unique identifier of the parent instance from which this run diverged.
     pub parent_instance_id: String,
+    /// The SHA256 checksum of the parent's trajectory file to ensure deterministic lineage.
     pub parent_trajectory_sha256: String,
+    /// The specific step index at which this run forked from the parent's trajectory.
     pub fork_step: u32,
+    /// The tail state overrides applied when the fork occurred.
     pub tail_overrides: std::collections::BTreeMap<String, serde_json::Value>,
 }
 

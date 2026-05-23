@@ -1,3 +1,9 @@
+//! Webhook event streaming sink for real-time observability.
+//!
+//! This module provides a non-blocking `StreamSink` implementation that
+//! POSTs events to an HTTP endpoint as JSON envelopes. It uses a bounded
+//! channel and a background task to ensure the agent's main loop is never
+//! blocked by slow network requests or full buffers.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,7 +22,9 @@ const WEBHOOK_HTTP_TIMEOUT_SECS: u64 = 5;
 /// Stable schema version sent in every webhook envelope.
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaVersion {
+    /// The major version number, incremented for breaking schema changes.
     pub major: u32,
+    /// The minor version number, incremented for backwards-compatible additions.
     pub minor: u32,
 }
 
@@ -34,11 +42,16 @@ impl Default for SchemaVersion {
 /// appended at the envelope level so operators can detect missed events.
 #[derive(Debug, Serialize)]
 pub struct WebhookEnvelope {
+    /// The schema version of the envelope.
     pub schema_version: SchemaVersion,
+    /// The unique identifier of the agent run emitting this event.
     pub run_id: String,
+    /// The actual event payload.
     pub event: StreamEvent,
+    /// ISO 8601 formatted timestamp when the event was emitted.
     pub emitted_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Total number of events dropped prior to this one, usually due to buffer overflows.
     pub webhook_events_dropped: Option<u64>,
 }
 
@@ -72,15 +85,25 @@ pub struct WebhookSink {
 #[derive(Debug, thiserror::Error)]
 pub enum WebhookSinkError {
     #[error("webhook sink requires an active Tokio runtime")]
+    /// Emitted when trying to construct the sink outside of a Tokio runtime.
     NoRuntime(#[source] TryCurrentError),
     #[error("webhook buffer capacity must be greater than zero")]
+    /// Emitted if the buffer capacity is explicitly set to 0.
     InvalidBufferCapacity,
     #[error("invalid webhook URL: {0}")]
+    /// Emitted if the provided URL string cannot be parsed as a valid URL.
     InvalidUrl(String),
     #[error("failed to build webhook HTTP client")]
+    /// Emitted if the underlying HTTP client builder fails.
     Client(#[source] reqwest::Error),
     #[error("invalid webhook header `{name}`: {reason}")]
-    InvalidHeader { name: String, reason: String },
+    /// Emitted if a provided custom header name or value is invalid.
+    InvalidHeader {
+        /// The name of the invalid header.
+        name: String,
+        /// The reason the header was considered invalid.
+        reason: String,
+    },
 }
 
 impl WebhookSink {
@@ -219,6 +242,7 @@ pub struct WebhookSinkHandle {
 }
 
 impl WebhookSinkHandle {
+    /// Wraps a shared `WebhookSink` with a specific run ID to form a `StreamSink`.
     pub fn new(inner: Arc<WebhookSink>, run_id: String) -> Self {
         Self { inner, run_id }
     }

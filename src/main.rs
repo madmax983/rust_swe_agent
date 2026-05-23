@@ -1,3 +1,8 @@
+//! Binary entrypoint for the `maxwells-daemon` agent.
+//!
+//! This crate provides the CLI interface to run the agent interactively or in
+//! sweep mode across datasets.
+
 use maxwells_daemon::exit_code::ExitCode;
 
 #[tokio::main]

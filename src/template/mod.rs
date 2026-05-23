@@ -12,6 +12,21 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// Renders Jinja2 templates into strings using the configured environment.
+///
+/// Under the hood, this maintains a `minijinja::Environment` configured with
+/// autoescaping disabled, because we are generally generating shell prompts
+/// rather than HTML output.
+///
+/// # Examples
+/// ```
+/// use maxwells_daemon::template::Renderer;
+/// use minijinja::context;
+///
+/// let renderer = Renderer::new();
+/// let output = renderer.render_with("Hello {{ user }}", context!(user => "Bard")).unwrap();
+/// assert_eq!(output, "Hello Bard");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +38,10 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` instance.
+    ///
+    /// The environment is automatically populated with a global `env` variable
+    /// containing a snapshot of the current process environment variables.
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +62,11 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Render a template string against a provided dynamic value context.
+    ///
+    /// This is typically used with `minijinja::context!` for quick inline
+    /// variable assignments without needing to create custom serializable
+    /// struct definitions.
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
