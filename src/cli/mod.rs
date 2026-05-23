@@ -175,6 +175,9 @@ pub async fn run() -> Result<(), Error> {
         Command::Bench {
             cmd: args::BenchCmd::Power(p),
         } => bench_power(&p),
+        Command::Bench {
+            cmd: args::BenchCmd::DatasetStats(s),
+        } => bench_dataset_stats(s),
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -3854,6 +3857,113 @@ fn print_doctor_skills_preview(cfg: &crate::config::Config) {
             );
         }
         Err(e) => eprintln!("skills-preview error (non-fatal): {e}"),
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
+    let (dataset_source, dataset_cache_dir) = parse_dataset_source_stats(&s)?;
+    let (dataset_bytes, meta) =
+        crate::run::dataset::resolve_dataset(&dataset_source, &dataset_cache_dir)?;
+    let full_instances = crate::run::swebench::load_dataset_from_bytes_pub(&dataset_bytes)?;
+
+    let stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => crate::run::swebench::StratifyBy::Repo,
+    });
+    let stratify_mode = match s
+        .stratify_mode
+        .unwrap_or(args::StratifyModeArg::Proportional)
+    {
+        args::StratifyModeArg::Proportional => crate::run::swebench::StratifyMode::Proportional,
+        args::StratifyModeArg::Balanced => crate::run::swebench::StratifyMode::Balanced,
+    };
+
+    let params = crate::run::swebench::ApplySubsetParams {
+        instance_ids_arg: s.instance_ids.as_deref(),
+        limit: s.limit,
+        sample: s.sample,
+        seed: s.seed,
+        stratify_by,
+        stratify_mode,
+    };
+
+    let (slice_instances, _filter_spec) =
+        crate::run::swebench::apply_subset(full_instances.clone(), &params)?;
+
+    // Compute stats
+    let mut stats = crate::run::dataset_stats::compute_stats(
+        &slice_instances,
+        &full_instances,
+        &s.model,
+        &s.runs_dir,
+        &Some(meta.sha256.clone()),
+    )?;
+
+    // Populate dataset stats fields
+    stats.dataset_path = meta.path.display().to_string();
+    stats.subset_selector.limit = s.limit;
+    stats.subset_selector.sample = s.sample;
+    stats.subset_selector.seed = s.seed;
+    stats
+        .subset_selector
+        .instance_ids
+        .clone_from(&s.instance_ids);
+    stats.subset_selector.stratify_by = s.stratify_by.map(|v| match v {
+        args::StratifyByArg::Repo => "Repo".to_owned(),
+    });
+    stats.subset_selector.stratify_mode = Some(
+        match s
+            .stratify_mode
+            .unwrap_or(args::StratifyModeArg::Proportional)
+        {
+            args::StratifyModeArg::Proportional => "Proportional".to_owned(),
+            args::StratifyModeArg::Balanced => "Balanced".to_owned(),
+        },
+    );
+
+    if s.format == "json" {
+        let serialized = serde_json::to_string_pretty(&stats)?;
+        println!("{serialized}");
+    } else {
+        let text = crate::run::dataset_stats::render_text(&stats);
+        println!("{text}");
+    }
+
+    Ok(())
+}
+
+fn parse_dataset_source_stats(
+    s: &args::DatasetStatsCmd,
+) -> Result<(crate::run::dataset::DatasetSource, std::path::PathBuf), Error> {
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    match (&s.dataset_path, &s.dataset) {
+        (Some(_), Some(_)) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--dataset-path and --dataset are mutually exclusive; provide only one".into(),
+        ))),
+        (None, None) => Err(Error::Config(crate::error::ConfigError::Invalid(
+            "one of --dataset-path or --dataset is required".into(),
+        ))),
+        (Some(path), None) => Ok((
+            crate::run::dataset::DatasetSource::LocalPath(path.clone()),
+            cache_dir,
+        )),
+        (None, Some(alias_str)) => {
+            let alias = alias_str
+                .parse::<crate::run::dataset::SwebenchAlias>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            let split_str = s.split.as_deref().unwrap_or("test");
+            let split = split_str
+                .parse::<crate::run::dataset::SwebenchSplit>()
+                .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+            Ok((
+                crate::run::dataset::DatasetSource::Named { alias, split },
+                cache_dir,
+            ))
+        }
     }
 }
 

@@ -10,6 +10,7 @@ pub mod cascade;
 pub mod command_stats;
 pub mod compare;
 pub mod dataset;
+pub mod dataset_stats;
 pub mod diff_config;
 pub mod env_preview;
 pub mod evaluate;

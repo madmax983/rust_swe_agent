@@ -510,6 +510,64 @@ pub enum BenchCmd {
     Fork(ForkCmd),
     /// Calculate statistical power or required sample size.
     Power(PowerCmd),
+    /// Preview SWE-bench dataset composition offline and zero-cost before running a sweep.
+    DatasetStats(DatasetStatsCmd),
+}
+
+/// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.
+#[derive(Debug, Args, Clone)]
+pub struct DatasetStatsCmd {
+    /// Local JSONL dataset file. Mutually exclusive with `--dataset`.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// Named SWE-bench dataset alias: `full`, `lite`, or `verified`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// Dataset split for named aliases: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test", value_name = "SPLIT")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long, value_name = "DIR")]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Dataset subset selector: comma-separated id list or `@path/to/file.txt`.
+    #[arg(long)]
+    pub instance_ids: Option<String>,
+
+    /// Keep at most N instances after subsetting.
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Reproducibly random-subset to N instances.
+    #[arg(long)]
+    pub sample: Option<usize>,
+
+    /// RNG seed used by `--sample`.
+    #[arg(long)]
+    pub seed: Option<u64>,
+
+    /// Stratify `--sample` by key.
+    #[arg(long, value_enum)]
+    pub stratify_by: Option<StratifyByArg>,
+
+    /// Allocation mode used with `--stratify-by`.
+    #[arg(long, value_enum)]
+    pub stratify_mode: Option<StratifyModeArg>,
+
+    /// Runs root directory override for scanning historical sweeps.
+    #[arg(long, default_value = "./runs")]
+    pub runs_dir: PathBuf,
+
+    /// Format: `text` or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Model name to use for TokenCounter offline estimation.
+    #[arg(long, default_value = "gpt-4")]
+    pub model: String,
 }
 
 /// `bench power` — statistical power, sample size, or MDE calculations.
