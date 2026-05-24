@@ -449,13 +449,15 @@ pub struct ReplayCmd {
 #[derive(Debug, Subcommand)]
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
-    Swebench(SwebenchCmd),
+    Swebench(Box<SwebenchCmd>),
+    /// Walk the full sweep pipeline end-to-end at zero cost using gold-patch shadow submissions.
+    Rehearsal(Box<SwebenchCmd>),
     /// Forecast sweep cost from a reproducible calibration slice.
-    Forecast(SwebenchCmd),
+    Forecast(Box<SwebenchCmd>),
     /// Compare a forecast artifact against completed sweep results.
     Calibrate(CalibrateCmd),
     /// Validate sweep inputs without launching tasks.
-    Doctor(SwebenchCmd),
+    Doctor(Box<SwebenchCmd>),
     /// Diff two completed sweep runs by instance id; surfaces regressions
     /// and (with `--max-regressions`) gates CI on prompt/harness changes.
     Compare(CompareCmd),
@@ -1565,6 +1567,34 @@ pub struct SwebenchCmd {
     /// When all are unset, OTLP export is disabled and no sockets are opened.
     #[arg(long, value_name = "URL")]
     pub otlp_endpoint: Option<String>,
+
+    /// Run the zero-cost rehearsal pipeline instead of a real sweep.
+    #[arg(long, default_value_t = false)]
+    pub rehearse: bool,
+
+    /// Skip running the evaluator stage during rehearsal.
+    #[arg(long, default_value_t = false)]
+    pub skip_evaluator: bool,
+
+    /// Evaluator backend to use during rehearsal: sb-cli, none, or rehearsal.
+    #[arg(long, default_value = "rehearsal")]
+    pub eval_backend: String,
+
+    /// SWE-bench subset name required by some evaluator backends (e.g. sb-cli).
+    #[arg(long)]
+    pub sb_subset: Option<String>,
+
+    /// SWE-bench split name required by some evaluator backends.
+    #[arg(long)]
+    pub sb_split: Option<String>,
+
+    /// Timeout in seconds for the evaluation stage.
+    #[arg(long)]
+    pub eval_timeout_secs: Option<u64>,
+
+    /// Compare the current rehearsal artifacts against a saved one and surface drift.
+    #[arg(long, value_name = "PATH")]
+    pub diff: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

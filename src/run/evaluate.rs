@@ -114,6 +114,7 @@ pub const ALL_FAILURE_CATEGORIES: [FailureCategory; 13] = [
 pub enum EvaluateBackend {
     SbCli,
     None,
+    Rehearsal,
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +157,7 @@ impl BreakdownSelection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalExitReason {
     Resolved,
@@ -385,6 +386,7 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
             EvaluateRunOutput::without_run_resolution(build_none_eval(&results))
         }
         EvaluateBackend::SbCli => run_sb_cli(args, &results)?,
+        EvaluateBackend::Rehearsal => run_rehearsal_eval(args, &results)?,
     };
     let EvaluateRunOutput {
         mut eval,
@@ -449,6 +451,7 @@ fn build_provenance(
         .unwrap_or_default();
     let (backend_str, sb_cli, source_reports) = match args.backend {
         EvaluateBackend::None => ("none", None, vec![]),
+        EvaluateBackend::Rehearsal => ("rehearsal", None, vec![]),
         EvaluateBackend::SbCli => {
             let preds = swebench::predictions_path(&args.sweep_dir);
             let report_dir = args.sweep_dir.join("sb_cli_reports");
@@ -477,7 +480,7 @@ fn build_provenance(
     };
 
     let prediction_path = match args.backend {
-        EvaluateBackend::SbCli => {
+        EvaluateBackend::SbCli | EvaluateBackend::Rehearsal => {
             let p = swebench::predictions_path(&args.sweep_dir);
             Some(p.display().to_string())
         }
@@ -494,15 +497,15 @@ fn build_provenance(
         backend: backend_str.into(),
         backend_version: match args.backend {
             EvaluateBackend::SbCli => probe_sb_cli_version(),
-            EvaluateBackend::None => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
         },
         dataset_subset: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_subset.clone()),
-            EvaluateBackend::None => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
         },
         dataset_split: match args.backend {
             EvaluateBackend::SbCli => Some(args.sb_split.clone()),
-            EvaluateBackend::None => None,
+            EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
         },
         run_id: recorded_run_id,
         prediction_path,
@@ -888,6 +891,113 @@ fn bootstrap_cost_per_resolved_ci95(samples: &[(f64, bool)]) -> (f64, f64) {
     let lower = estimates[lower_idx];
     let upper = estimates[upper_idx.min(estimates.len() - 1)];
     (lower, upper)
+}
+
+fn run_rehearsal_eval(
+    args: &EvaluateArgs,
+    results: &HashMap<String, InstanceResult>,
+) -> Result<EvaluateRunOutput, Error> {
+    let mut resolved_by_run = HashMap::new();
+    let mut instances = Vec::new();
+
+    for (id, r) in results {
+        let runs = effective_runs(r);
+        let mut resolved_runs = 0;
+        let mut first_run_resolved = false;
+
+        for run_idx in 1..=runs {
+            let traj_path =
+                crate::run::swebench::trajectory_path_for_run(&args.sweep_dir, id, run_idx);
+            let patch_path = crate::run::swebench::patch_path_for_run(&args.sweep_dir, id, run_idx);
+
+            // Check if trajectory has outcome: Some("submitted") and patch exists and is non-empty
+            let mut run_resolved = false;
+            if !traj_path.exists() {
+                return Err(Error::Trajectory(format!(
+                    "Trajectory file {} does not exist during rehearsal evaluation",
+                    traj_path.display()
+                )));
+            }
+            let content = std::fs::read_to_string(&traj_path).map_err(|e| {
+                Error::Trajectory(format!(
+                    "Failed to read trajectory file {} during rehearsal: {e}",
+                    traj_path.display()
+                ))
+            })?;
+            let traj: crate::trajectory::Trajectory =
+                serde_json::from_str(&content).map_err(|e| {
+                    Error::Trajectory(format!(
+                        "Failed to parse trajectory file {} during rehearsal: {e}",
+                        traj_path.display()
+                    ))
+                })?;
+
+            let outcome = traj.info.outcome.as_deref().ok_or_else(|| {
+                Error::Trajectory(format!(
+                    "Trajectory file {} info.outcome is missing or null during rehearsal",
+                    traj_path.display()
+                ))
+            })?;
+            let partial = traj.info.partial;
+
+            if patch_path.exists() {
+                let metadata = std::fs::metadata(&patch_path)?;
+                if metadata.len() > 0 && outcome == "submitted" && !partial {
+                    run_resolved = true;
+                }
+            }
+
+            resolved_by_run.insert(
+                RunSlotKey {
+                    instance_id: id.clone(),
+                    run_index: run_idx,
+                },
+                run_resolved,
+            );
+
+            if run_resolved {
+                resolved_runs += 1;
+            }
+            if run_idx == 1 {
+                first_run_resolved = run_resolved;
+            }
+        }
+
+        let is_resolved = resolved_runs > 0;
+        instances.push(InstanceEvaluation {
+            instance_id: id.to_owned(),
+            resolved: is_resolved,
+            runs,
+            resolved_count: resolved_runs,
+            pass_at_1: first_run_resolved,
+            tests_passed: vec![],
+            tests_failed: vec![],
+            eval_exit_reason: if is_resolved {
+                EvalExitReason::Resolved
+            } else {
+                EvalExitReason::SkippedNoPatch
+            },
+            eval_log_path: None,
+            patch_stats: None,
+            patch_error_log: None,
+        });
+    }
+
+    instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+    Ok(EvaluateRunOutput {
+        eval: EvaluationResults {
+            instances,
+            behavioral: BehavioralMetrics::default(),
+            breakdown: Vec::new(),
+            cost_attribution: Vec::new(),
+            model_mix_summary: Vec::new(),
+            latency_summary: None,
+            provenance: None,
+        },
+        resolved_by_run,
+        effective_run_id: Some("rehearsal-eval".to_owned()),
+    })
 }
 
 fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResults {

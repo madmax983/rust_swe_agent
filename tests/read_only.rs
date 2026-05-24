@@ -61,6 +61,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         local_workdir: Some(repo.clone()),
         read_only: true,
         allow_mcp_in_read_only: false,
+        rehearsal_gold_patch: None,
     })
     .await;
     assert!(

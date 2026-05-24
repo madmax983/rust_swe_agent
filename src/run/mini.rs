@@ -159,6 +159,7 @@ pub struct MiniArgs {
     pub local_workdir: Option<PathBuf>,
     pub read_only: bool,
     pub allow_mcp_in_read_only: bool,
+    pub rehearsal_gold_patch: Option<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -192,22 +193,6 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_responses,
         args.deterministic_usage_per_call.clone(),
     );
-    let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
-    if args.read_only
-        && !args.allow_mcp_in_read_only
-        && !args.config.root.agent.mcp_servers.is_empty()
-    {
-        return Err(Error::Config(ConfigError::Invalid(
-            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
-        )));
-    }
-    let tool_providers = crate::tool::discover_mcp_servers(
-        env.as_ref(),
-        &args.config.root.agent.mcp_servers,
-        args.config.root.agent.tool_hook_timeout_secs,
-        args.cancellation.clone(),
-    )
-    .await?;
 
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
@@ -391,6 +376,89 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         webhook_sink_redacted,
         event_log_sink,
     );
+
+    if let Some(ref gold_patch) = args.rehearsal_gold_patch {
+        tracing::info!("Rehearsal Mode: Intercepting execution with gold patch shadow submission.");
+        let traj_path = args
+            .output_dir
+            .join(format!("{}.traj.json", args.trajectory_name));
+
+        let mut traj = crate::trajectory::Trajectory::default();
+        traj.info.task = Some(args.task.clone());
+        traj.info.model_name = Some("gold-shadow-agent".into());
+        traj.info.exit_reason = Some("submitted".into());
+        traj.info.outcome = Some("submitted".into());
+        traj.info.total_cost_usd = Some(0.0);
+        traj.info.actual_cost_usd = Some(0.0);
+        traj.info.baseline_cost_usd = Some(0.0);
+        traj.info.steps = Some(1);
+        traj.info.started_at = Some("2026-05-23T00:00:00Z".into());
+        traj.info.ended_at = Some("2026-05-23T00:00:00Z".into());
+        traj.info.duration_secs = Some(0.0);
+        traj.info
+            .other
+            .insert("mode".into(), serde_json::Value::String("rehearsal".into()));
+
+        traj.messages.push(crate::trajectory::MessageRecord {
+            role: "assistant".into(),
+            content: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nRehearsal shadow submission\n```"
+                .into(),
+            extra: Default::default(),
+        });
+
+        // Emit stream events if a sink is configured
+        if let Some(ref s) = sink {
+            s.emit(crate::stream::StreamEvent::RunStarted {
+                task: args.task.clone(),
+                model: "gold-shadow-agent".to_owned(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+            });
+        }
+
+        // P2 Badge: Write patch before persisting submitted rehearsal trajectory
+        if let Some(ref spec) = args.patch_capture {
+            if let Some(parent) = spec.patch_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&spec.patch_path, gold_patch)?;
+            let out_path = args
+                .output_dir
+                .join(format!("{}.output.txt", args.trajectory_name));
+            std::fs::write(out_path, "Rehearsal shadow submission\n")?;
+        }
+
+        traj.save_pretty(&traj_path)?;
+
+        if let Some(ref s) = sink {
+            s.emit(crate::stream::StreamEvent::RunEnded {
+                exit_reason: "submitted".to_owned(),
+                failure_category: None,
+                final_output: Some("Rehearsal shadow submission".to_owned()),
+                steps: 1,
+                total_cost_usd: 0.0,
+                ended_at: chrono::Utc::now().to_rfc3339(),
+            });
+        }
+
+        return Ok(());
+    }
+
+    let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
+    if args.read_only
+        && !args.allow_mcp_in_read_only
+        && !args.config.root.agent.mcp_servers.is_empty()
+    {
+        return Err(Error::Config(ConfigError::Invalid(
+            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
+        )));
+    }
+    let tool_providers = crate::tool::discover_mcp_servers(
+        env.as_ref(),
+        &args.config.root.agent.mcp_servers,
+        args.config.root.agent.tool_hook_timeout_secs,
+        args.cancellation.clone(),
+    )
+    .await?;
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
         config: args.config.clone(),
@@ -2011,6 +2079,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();
@@ -2110,6 +2179,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();
@@ -2204,6 +2274,7 @@ index 8a1218a..24c5735 100644\n\
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
         };
 
         run(args).await.unwrap();

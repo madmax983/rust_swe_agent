@@ -809,6 +809,12 @@ async fn run_tier(
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     };
 
     crate::run::swebench::run(tier_args).await

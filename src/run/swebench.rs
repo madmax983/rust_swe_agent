@@ -1332,6 +1332,12 @@ pub struct SwebenchArgs {
     /// consulted.  When both are absent, OTLP export is disabled and no
     /// sockets are opened.
     pub otlp_endpoint: Option<String>,
+    pub rehearse: bool,
+    pub skip_evaluator: bool,
+    pub eval_backend: String,
+    pub sb_subset: Option<String>,
+    pub sb_split: Option<String>,
+    pub eval_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1608,7 +1614,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         });
     }
     std::fs::create_dir_all(&args.output_dir)?;
-    let started_at_utc = chrono::Utc::now().to_rfc3339();
+    let started_at_utc = if args.rehearse {
+        "2026-05-23T00:00:00Z".to_string()
+    } else {
+        chrono::Utc::now().to_rfc3339()
+    };
     let prior_results = if args.resume {
         load_prior_results_by_instance(&args.output_dir)
     } else {
@@ -1961,6 +1971,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 github_pr: args.github_pr.clone(),
                 resume_from: run.resume_from.clone(),
                 trace_id: instance_trace_id,
+                rehearse: args.rehearse,
                 event_log: args.event_log.clone(),
             };
             set.spawn(async move {
@@ -2370,7 +2381,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             &dataset_meta,
             &initial.filter_spec,
             &started_at_utc,
-            Some(chrono::Utc::now().to_rfc3339()),
+            Some(if args.rehearse {
+                "2026-05-23T00:00:00Z".to_string()
+            } else {
+                chrono::Utc::now().to_rfc3339()
+            }),
         )),
         cost_limit_usd: args.cost_limit_usd,
         instances: instance_results,
@@ -4204,6 +4219,7 @@ struct RunOneParams {
     /// OTel trace ID to embed in the trajectory and instance result.
     /// `None` when OTLP export is not configured.
     trace_id: Option<String>,
+    rehearse: bool,
     /// Optional append-only JSONL stream target forwarded to mini runs.
     event_log: Option<PathBuf>,
 }
@@ -4223,6 +4239,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         github_pr,
         resume_from,
         ref trace_id,
+        rehearse,
         event_log,
     } = params;
     let id = inst.instance_id.clone();
@@ -4284,6 +4301,48 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         } else {
             None
         };
+        let rehearsal_gold_patch = if rehearse {
+            let patch = inst.other.get("patch").and_then(serde_json::Value::as_str);
+            match patch {
+                Some(p) => Some(p.to_owned()),
+                None => {
+                    return InstanceResult {
+                        instance_id: id.clone(),
+                        exit_reason: "error".to_owned(),
+                        outcome: Some("error".to_owned()),
+                        failure_category: Some(FailureCategory::Unknown),
+                        steps: Some(0),
+                        cost_usd: Some(0.0),
+                        prompt_tokens: Some(0),
+                        cache_read_tokens: Some(0),
+                        cache_creation_tokens: Some(0),
+                        completion_tokens: Some(0),
+                        duration_secs: Some(0.0),
+                        error: Some(format!(
+                            "Instance {id} lacks a gold patch in manifest 'other.patch' during rehearsal mode"
+                        )),
+                        github_pr_error: None,
+                        patch_present: false,
+                        non_empty_patch: false,
+                        attempts: 1,
+                        retry_reasons: vec![],
+                        runs: 1,
+                        resolved_count: 0,
+                        pass_at_1: false,
+                        tests_run_before_submit: false,
+                        last_tests_passed: None,
+                        fallback_count: None,
+                        final_model: None,
+                        retry_id: None,
+                        previous_failure_category: None,
+                        trace_id: trace_id.clone(),
+                    };
+                }
+            }
+        } else {
+            None
+        };
+
         let args = crate::run::mini::MiniArgs {
             task: task.clone(),
             extra_context: None,
@@ -4313,6 +4372,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             local_workdir: None,
             read_only: false,
             allow_mcp_in_read_only: false,
+            rehearsal_gold_patch,
         };
         let run_err = crate::run::mini::run(args).await.err();
 
@@ -5135,6 +5195,12 @@ mod tests {
             systemic_failure_min_samples: 5,
             systemic_failure_share_pct: 80,
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -6022,6 +6088,12 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6099,6 +6171,12 @@ mod tests {
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6122,6 +6200,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn prompt_template_hash_changes_when_overlay_edits_prompt() {
         let cfg_a = Config::from_toml_str(
             r#"
@@ -6186,6 +6265,12 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6314,6 +6399,12 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -6991,6 +7082,12 @@ instance = "inst"
             systemic_failure_share_pct: 80,
 
             otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));

@@ -30,20 +30,20 @@ pub struct Cli {
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Run one task end-to-end and write a trajectory.
-    Mini(args::MiniCmd),
+    Mini(Box<args::MiniCmd>),
     /// Smoke-test: scripted model + local env writes a trajectory.
     HelloWorld(args::HelloWorldCmd),
     /// Replay an existing trajectory using a deterministic model.
-    Replay(args::ReplayCmd),
+    Replay(Box<args::ReplayCmd>),
     /// SWE-bench parallel sweep.
     Bench {
         #[command(subcommand)]
-        cmd: args::BenchCmd,
+        cmd: Box<args::BenchCmd>,
     },
     /// Agent inspection and preview utilities.
     Agent {
         #[command(subcommand)]
-        cmd: args::AgentCmd,
+        cmd: Box<args::AgentCmd>,
     },
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
@@ -65,119 +65,56 @@ pub async fn run() -> Result<(), Error> {
     init_logging(&log);
 
     match cli.command {
-        Command::Agent {
-            cmd: args::AgentCmd::SkillsPreview(s),
-        } => agent_skills_preview_cmd(&s),
-        Command::Mini(m) => mini_cmd(m).await,
+        Command::Mini(m) => mini_cmd(*m).await,
         Command::HelloWorld(h) => {
             crate::run::hello_world::main(h.output, h.config.as_deref()).await
         }
-        Command::Replay(r) => replay_cmd(r).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Swebench(s),
-        } => Box::pin(bench_swebench(s)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Forecast(s),
-        } => Box::pin(bench_forecast(s)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Calibrate(c),
-        } => bench_calibrate(c),
-        Command::Bench {
-            cmd: args::BenchCmd::Doctor(s),
-        } => Box::pin(bench_doctor(s)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Compare(c),
-        } => bench_compare(c),
-        Command::Bench {
-            cmd: args::BenchCmd::DiffConfig(c),
-        } => bench_diff_config(c),
-        Command::Bench {
-            cmd: args::BenchCmd::Evaluate(e),
-        } => bench_evaluate(e),
-        Command::Bench {
-            cmd: args::BenchCmd::Inspect(i),
-        } => bench_inspect(i),
-        Command::Bench {
-            cmd: args::BenchCmd::Tail(t),
-        } => bench_tail(t).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Watch(w),
-        } => bench_watch(w).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Triage(t),
-        } => bench_triage(t),
-        Command::Bench {
-            cmd: args::BenchCmd::CommandStats(c),
-        } => bench_command_stats(c),
-        Command::Bench {
-            cmd: args::BenchCmd::Grep(g),
-        } => bench_grep(g),
-        Command::Bench {
-            cmd: args::BenchCmd::Frontier(f),
-        } => bench_frontier(f),
-        Command::Bench {
-            cmd: args::BenchCmd::Reproduce(r),
-        } => Box::pin(bench_reproduce(r)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Bundle(b),
-        } => bench_bundle(b),
-        Command::Bench {
-            cmd: args::BenchCmd::Matrix(m),
-        } => Box::pin(bench_matrix(m)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::EvaluatorSelftest(s),
-        } => bench_evaluator_selftest(s),
-        Command::Bench {
-            cmd: args::BenchCmd::Report(r),
-        } => bench_report(r),
-        Command::Bench {
-            cmd: args::BenchCmd::Retry(r),
-        } => Box::pin(bench_retry(r)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Behavior(b),
-        } => bench_behavior(b),
-        Command::Bench {
-            cmd: args::BenchCmd::ToolCoverage(t),
-        } => bench_tool_coverage(t),
-        Command::Bench {
-            cmd: args::BenchCmd::PolicyImpact(p),
-        } => bench_policy_impact(p),
-        Command::Bench {
-            cmd: args::BenchCmd::InstanceHistory(h),
-        } => bench_instance_history(h),
-        Command::Bench {
-            cmd: args::BenchCmd::CacheStats(c),
-        } => bench_cache_stats(c),
-        Command::Bench {
-            cmd: args::BenchCmd::BudgetFit(b),
-        } => bench_budget_fit(b),
-        Command::Bench {
-            cmd: args::BenchCmd::ToolAblation(t),
-        } => Box::pin(bench_tool_ablation(t)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Ladder(l),
-        } => bench_ladder(l),
-        Command::Bench {
-            cmd: args::BenchCmd::Cascade(c),
-        } => Box::pin(bench_cascade(c)).await,
-        Command::Agent {
-            cmd:
-                args::AgentCmd::Env {
-                    cmd: args::AgentEnvCmd::Preview(ref p),
-                },
-        } => agent_env_preview_cmd(p),
-        Command::Bench {
-            cmd: args::BenchCmd::TestProgress(t),
-        } => bench_test_progress(t),
-        Command::Bench {
-            cmd: args::BenchCmd::Fork(f),
-        } => Box::pin(crate::run::fork::run(f)).await,
-        Command::Bench {
-            cmd: args::BenchCmd::Power(p),
-        } => bench_power(&p),
-        Command::Bench {
-            cmd: args::BenchCmd::DatasetStats(s),
-        } => bench_dataset_stats(s),
+        Command::Replay(r) => replay_cmd(*r).await,
+        Command::Bench { cmd } => match *cmd {
+            args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
+            args::BenchCmd::Rehearsal(mut s) => {
+                s.rehearse = true;
+                Box::pin(bench_swebench(*s)).await
+            }
+            args::BenchCmd::Forecast(s) => Box::pin(bench_forecast(*s)).await,
+            args::BenchCmd::Calibrate(c) => bench_calibrate(c),
+            args::BenchCmd::Doctor(s) => Box::pin(bench_doctor(*s)).await,
+            args::BenchCmd::Compare(c) => bench_compare(c),
+            args::BenchCmd::DiffConfig(c) => bench_diff_config(c),
+            args::BenchCmd::Evaluate(e) => bench_evaluate(e),
+            args::BenchCmd::Inspect(i) => bench_inspect(i),
+            args::BenchCmd::Tail(t) => bench_tail(t).await,
+            args::BenchCmd::Watch(w) => bench_watch(w).await,
+            args::BenchCmd::Triage(t) => bench_triage(t),
+            args::BenchCmd::CommandStats(c) => bench_command_stats(c),
+            args::BenchCmd::Grep(g) => bench_grep(g),
+            args::BenchCmd::Frontier(f) => bench_frontier(f),
+            args::BenchCmd::Reproduce(r) => Box::pin(bench_reproduce(r)).await,
+            args::BenchCmd::Bundle(b) => bench_bundle(b),
+            args::BenchCmd::Matrix(m) => Box::pin(bench_matrix(m)).await,
+            args::BenchCmd::EvaluatorSelftest(s) => bench_evaluator_selftest(s),
+            args::BenchCmd::Report(r) => bench_report(r),
+            args::BenchCmd::Retry(r) => Box::pin(bench_retry(r)).await,
+            args::BenchCmd::Behavior(b) => bench_behavior(b),
+            args::BenchCmd::ToolCoverage(t) => bench_tool_coverage(t),
+            args::BenchCmd::PolicyImpact(p) => bench_policy_impact(p),
+            args::BenchCmd::InstanceHistory(h) => bench_instance_history(h),
+            args::BenchCmd::CacheStats(c) => bench_cache_stats(c),
+            args::BenchCmd::BudgetFit(b) => bench_budget_fit(b),
+            args::BenchCmd::ToolAblation(t) => Box::pin(bench_tool_ablation(t)).await,
+            args::BenchCmd::Ladder(l) => bench_ladder(l),
+            args::BenchCmd::Cascade(c) => Box::pin(bench_cascade(c)).await,
+            args::BenchCmd::TestProgress(t) => bench_test_progress(t),
+            args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
+            args::BenchCmd::Power(p) => bench_power(&p),
+            args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
+        },
+        Command::Agent { cmd } => match *cmd {
+            args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
+            args::AgentCmd::Env {
+                cmd: args::AgentEnvCmd::Preview(ref p),
+            } => agent_env_preview_cmd(p),
+        },
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -460,6 +397,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         local_workdir: resolved_workdir,
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
+        rehearsal_gold_patch: None,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -859,6 +797,7 @@ async fn mini_resume_cmd(
         local_workdir: resolved_workdir,
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
+        rehearsal_gold_patch: None,
     };
     crate::run::mini::run(args).await
 }
@@ -989,8 +928,40 @@ async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {
     crate::run::replay::run(args).await
 }
 
-async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
+#[allow(clippy::too_many_lines)]
+pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
+
+    if sweep_cmd.rehearse {
+        let file_name = sweep_cmd.output.file_name().ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(
+                "rehearsal output path must contain a terminal path segment (cannot be '.', '..', or '/')"
+                    .to_owned(),
+            ))
+        })?;
+        let name_str = file_name.to_string_lossy();
+        if !name_str.ends_with(".rehearsal") {
+            let mut new_name = file_name.to_owned();
+            new_name.push(".rehearsal");
+            sweep_cmd.output.set_file_name(new_name);
+        }
+        sweep_cmd.github_pr.open_prs = false;
+        sweep_cmd.github_pr.github_pr_dry_run = false;
+        sweep_cmd.skip_model_probe = true;
+        sweep_cmd.skip_preflight = true;
+    }
+
+    if sweep_cmd.diff.is_some() && !sweep_cmd.rehearse {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--diff can only be used in rehearsal mode (with --rehearse)".to_owned(),
+        )));
+    }
+
+    if sweep_cmd.diff.is_some() && sweep_cmd.dry_run {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--diff cannot be used with --dry-run".to_owned(),
+        )));
+    }
 
     if sweep_cmd.render_only {
         return bench_swebench_render_only(&sweep_cmd);
@@ -1027,6 +998,21 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
             sweep_cmd.seed = None;
         }
     }
+
+    let is_rehearsal = sweep_cmd.rehearse;
+    let skip_evaluator = sweep_cmd.skip_evaluator;
+    let eval_backend_str = sweep_cmd.eval_backend.clone();
+    let dataset_path_opt = sweep_cmd.dataset_path.clone();
+    let dataset_alias_opt = sweep_cmd.dataset.clone();
+    let split_str = sweep_cmd.split.clone();
+    let parallel_num = sweep_cmd.parallel;
+    let diff_path_opt = sweep_cmd.diff.clone();
+    let output_dir = sweep_cmd.output.clone();
+    let eval_timeout_secs_opt = sweep_cmd.eval_timeout_secs;
+    let sb_subset_opt = sweep_cmd.sb_subset.clone();
+    let sb_split_opt = sweep_cmd.sb_split.clone();
+    let dataset_cache_dir_opt = sweep_cmd.dataset_cache_dir.clone();
+    let dry_run = sweep_cmd.dry_run;
 
     let cfg = swebench_config_from_cmd(&sweep_cmd)?;
     let preflight_mode = if sweep_cmd.dry_run {
@@ -1069,6 +1055,94 @@ async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
             "{github_pr_failures} GitHub PR publication(s) failed; see results.json for instance errors"
         )));
     }
+
+    if is_rehearsal && !dry_run {
+        if skip_evaluator {
+            let stale_eval = output_dir.join("evaluation.json");
+            if stale_eval.exists() {
+                std::fs::remove_file(&stale_eval)?;
+            }
+        }
+        if !skip_evaluator {
+            let eval_backend = match eval_backend_str.to_lowercase().as_str() {
+                "none" => crate::run::evaluate::EvaluateBackend::None,
+                "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
+                "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "unknown --eval-backend {other} (expected sb-cli, none, or rehearsal)"
+                    ))));
+                }
+            };
+
+            let actual_dataset_path = if let Some(path) = dataset_path_opt {
+                Some(path)
+            } else if let Some(alias) = dataset_alias_opt {
+                let source = crate::run::dataset::DatasetSource::Named {
+                    alias: alias
+                        .parse()
+                        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?,
+                    split: split_str
+                        .unwrap_or_else(|| "test".to_owned())
+                        .parse()
+                        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?,
+                };
+                let cache_dir = dataset_cache_dir_opt
+                    .clone()
+                    .unwrap_or_else(crate::run::dataset::default_cache_dir);
+                let (_, meta) = crate::run::dataset::resolve_dataset(&source, &cache_dir)?;
+                Some(meta.path)
+            } else {
+                None
+            };
+
+            let eval_args = crate::run::evaluate::EvaluateArgs {
+                sweep_dir: output_dir.clone(),
+                dataset_path: actual_dataset_path,
+                backend: eval_backend,
+                timeout_per_instance_secs: eval_timeout_secs_opt.unwrap_or(1800),
+                parallel: parallel_num,
+                sb_subset: sb_subset_opt.unwrap_or_default(),
+                sb_split: sb_split_opt.unwrap_or_else(|| "test".to_owned()),
+                run_id: None,
+                breakdown: crate::run::evaluate::BreakdownSelection::default_axes(),
+                cost_attribution: true,
+            };
+            let eval = crate::run::evaluate::run(&eval_args)?;
+            let loaded_sweep = crate::run::compare::load_sweep(&output_dir)?;
+            let summary = crate::run::evaluate::summarize_with_model(
+                &eval,
+                &loaded_sweep.instances,
+                loaded_sweep
+                    .manifest
+                    .as_ref()
+                    .map(|m| m.model.name.as_str()),
+            );
+            tracing::info!(
+                instances = summary.instances,
+                resolved = summary.resolved,
+                resolved_rate = summary.resolved_rate,
+                "rehearsal evaluation complete"
+            );
+            print!("{}", crate::run::evaluate::render_summary_table(&summary));
+        }
+
+        // Run report generator stage
+        let report_args = crate::run::report::ReportArgs {
+            sweep_dir: output_dir.clone(),
+            output: output_dir.join("report.md"),
+            baseline: None,
+            top_failures: 5,
+            format: crate::run::report::ReportFormat::Markdown,
+        };
+        crate::run::report::run(&report_args)?;
+
+        // If diff_path is Some, run the diff comparator
+        if let Some(ref diff_path) = diff_path_opt {
+            compare_rehearsals(diff_path, &output_dir)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1190,6 +1264,12 @@ fn exit_if_systemic_halt_sweep(results: &crate::run::swebench::SweepResults) {
 async fn run_forecast_from_cmd(
     mut s: args::SwebenchCmd,
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
+    if s.rehearse {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "rehearsal mode cannot be used with forecast-first; forecast projects real sweep costs"
+                .to_owned(),
+        )));
+    }
     s.github_pr.open_prs = false;
     s.github_pr.github_pr_dry_run = false;
     let calibration_n = s.calibration_n;
@@ -1583,6 +1663,12 @@ fn swebench_args_from_cmd(
         systemic_failure_min_samples: s.systemic_failure_min_samples,
         systemic_failure_share_pct: s.systemic_failure_share_pct,
         otlp_endpoint: s.otlp_endpoint,
+        rehearse: s.rehearse,
+        skip_evaluator: s.skip_evaluator,
+        eval_backend: s.eval_backend,
+        sb_subset: s.sb_subset,
+        sb_split: s.sb_split,
+        eval_timeout_secs: s.eval_timeout_secs,
     })
 }
 
@@ -1889,9 +1975,10 @@ fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
     let backend = match e.backend.as_str() {
         "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
+        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --backend `{other}` (expected `sb-cli` or `none`)"
+                "unknown --backend `{other}` (expected `sb-cli`, `none`, or `rehearsal`)"
             ))));
         }
     };
@@ -2176,6 +2263,7 @@ fn hash_manifest(manifest: &crate::run::swebench::ProvenanceManifest) -> String 
     format!("sha256:{hex}")
 }
 
+#[allow(clippy::too_many_lines)]
 fn reproduce_swebench_args(
     r: &args::ReproduceCmd,
     manifest: &crate::run::swebench::ProvenanceManifest,
@@ -2293,6 +2381,12 @@ fn reproduce_swebench_args(
             .as_ref()
             .map_or(80, |cb| cb.share_pct),
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
 }
 
@@ -3046,9 +3140,10 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
     let eval_backend = match c.eval_backend.to_lowercase().as_str() {
         "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
         "none" => crate::run::evaluate::EvaluateBackend::None,
+        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --eval-backend `{other}`; expected `sb-cli`"
+                "unknown --eval-backend `{other}`; expected `sb-cli` or `rehearsal`"
             ))));
         }
     };
@@ -3732,6 +3827,12 @@ fn retry_swebench_args(
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
 }
 
@@ -3996,6 +4097,231 @@ fn parse_dataset_source_stats(
     }
 }
 
+#[allow(clippy::too_many_lines)]
+pub fn compare_rehearsals(
+    baseline: &std::path::Path,
+    candidate: &std::path::Path,
+) -> Result<(), Error> {
+    println!("=== Comparing Rehearsal Results ===");
+    println!("Baseline:  {}", baseline.display());
+    println!("Candidate: {}", candidate.display());
+
+    let base_results_path = baseline.join("results.json");
+    let cand_results_path = candidate.join("results.json");
+
+    if !base_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Baseline results file not found: {}",
+            base_results_path.display()
+        ))));
+    }
+    if !cand_results_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Candidate results file not found: {}",
+            cand_results_path.display()
+        ))));
+    }
+
+    let base_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&base_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse baseline results: {e}")))?;
+    let cand_sweep: crate::run::swebench::SweepResults =
+        serde_json::from_str(&std::fs::read_to_string(&cand_results_path)?)
+            .map_err(|e| Error::Trajectory(format!("Failed to parse candidate results: {e}")))?;
+
+    let base_eval_path = baseline.join("evaluation.json");
+    let cand_eval_path = candidate.join("evaluation.json");
+
+    let base_eval: Option<crate::run::evaluate::EvaluationResults> =
+        if base_eval_path.exists() {
+            let text = std::fs::read_to_string(&base_eval_path)?;
+            Some(serde_json::from_str(&text).map_err(|e| {
+                Error::Trajectory(format!("Failed to parse baseline evaluation: {e}"))
+            })?)
+        } else {
+            None
+        };
+
+    let cand_eval: Option<crate::run::evaluate::EvaluationResults> =
+        if cand_eval_path.exists() {
+            let text = std::fs::read_to_string(&cand_eval_path)?;
+            Some(serde_json::from_str(&text).map_err(|e| {
+                Error::Trajectory(format!("Failed to parse candidate evaluation: {e}"))
+            })?)
+        } else {
+            None
+        };
+
+    let mut regressions = Vec::new();
+    let mut drift_messages = Vec::new();
+
+    let base_instances: std::collections::HashMap<_, _> = base_sweep
+        .instances
+        .iter()
+        .map(|i| (&i.instance_id, i))
+        .collect();
+    let cand_instances: std::collections::HashMap<_, _> = cand_sweep
+        .instances
+        .iter()
+        .map(|i| (&i.instance_id, i))
+        .collect();
+
+    for (id, base_inst) in &base_instances {
+        match cand_instances.get(id) {
+            None => {
+                regressions.push(format!("Instance {id} is missing from candidate results."));
+            }
+            Some(cand_inst) => {
+                if base_inst.outcome != cand_inst.outcome {
+                    drift_messages.push(format!(
+                        "Instance {id} outcome changed from {:?} to {:?}",
+                        base_inst.outcome, cand_inst.outcome
+                    ));
+                    if base_inst.outcome.as_deref() == Some("submitted")
+                        && cand_inst.outcome.as_deref() != Some("submitted")
+                    {
+                        regressions.push(format!(
+                            "Instance {id} failed to submit in candidate (outcome: {:?}).",
+                            cand_inst.outcome
+                        ));
+                    }
+                }
+                if base_inst.resolved_count != cand_inst.resolved_count {
+                    drift_messages.push(format!(
+                        "Instance {id} results resolved count changed from {} to {}",
+                        base_inst.resolved_count, cand_inst.resolved_count
+                    ));
+                    if base_inst.resolved_count > cand_inst.resolved_count {
+                        regressions.push(format!(
+                            "Instance {id} results resolved count regressed from {} to {} in candidate.",
+                            base_inst.resolved_count, cand_inst.resolved_count
+                        ));
+                    }
+                }
+                if base_inst.pass_at_1 != cand_inst.pass_at_1 {
+                    drift_messages.push(format!(
+                        "Instance {id} results pass@1 status changed from {} to {}",
+                        base_inst.pass_at_1, cand_inst.pass_at_1
+                    ));
+                    if base_inst.pass_at_1 && !cand_inst.pass_at_1 {
+                        regressions.push(format!(
+                            "Instance {id} results pass@1 regressed from true to false in candidate."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    for id in cand_instances.keys() {
+        if !base_instances.contains_key(id) {
+            regressions.push(format!(
+                "Instance {id} is present in candidate but missing from baseline results."
+            ));
+        }
+    }
+
+    match (base_eval, cand_eval) {
+        (Some(b_eval), Some(c_eval)) => {
+            let base_eval_map: std::collections::HashMap<_, _> = b_eval
+                .instances
+                .iter()
+                .map(|i| (&i.instance_id, i))
+                .collect();
+            let cand_eval_map: std::collections::HashMap<_, _> = c_eval
+                .instances
+                .iter()
+                .map(|i| (&i.instance_id, i))
+                .collect();
+
+            for (id, base_eval_inst) in &base_eval_map {
+                match cand_eval_map.get(id) {
+                    Some(cand_eval_inst) => {
+                        if base_eval_inst.resolved != cand_eval_inst.resolved {
+                            drift_messages.push(format!(
+                                "Instance {id} resolved status changed from {} to {}",
+                                base_eval_inst.resolved, cand_eval_inst.resolved
+                            ));
+                            if base_eval_inst.resolved && !cand_eval_inst.resolved {
+                                regressions.push(format!(
+                                    "Instance {id} was resolved in baseline but is unresolved in candidate."
+                                ));
+                            }
+                        }
+                        if base_eval_inst.resolved_count != cand_eval_inst.resolved_count {
+                            drift_messages.push(format!(
+                                "Instance {id} resolved count changed from {} to {}",
+                                base_eval_inst.resolved_count, cand_eval_inst.resolved_count
+                            ));
+                            if base_eval_inst.resolved_count > cand_eval_inst.resolved_count {
+                                regressions.push(format!(
+                                    "Instance {id} resolved count regressed from {} to {} in candidate.",
+                                    base_eval_inst.resolved_count, cand_eval_inst.resolved_count
+                                ));
+                            }
+                        }
+                        if base_eval_inst.pass_at_1 != cand_eval_inst.pass_at_1 {
+                            drift_messages.push(format!(
+                                "Instance {id} pass@1 status changed from {} to {}",
+                                base_eval_inst.pass_at_1, cand_eval_inst.pass_at_1
+                            ));
+                            if base_eval_inst.pass_at_1 && !cand_eval_inst.pass_at_1 {
+                                regressions.push(format!(
+                                    "Instance {id} pass@1 regressed from true to false in candidate."
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        regressions.push(format!(
+                            "Instance {id} is present in baseline evaluation but missing from candidate evaluation."
+                        ));
+                    }
+                }
+            }
+
+            for id in cand_eval_map.keys() {
+                if !base_eval_map.contains_key(id) {
+                    regressions.push(format!(
+                        "Instance {id} has evaluation in candidate but missing from baseline."
+                    ));
+                }
+            }
+        }
+        (None, None) => {}
+        (Some(_), None) => {
+            regressions.push(
+                "Baseline has evaluation data, but candidate is missing evaluation data."
+                    .to_owned(),
+            );
+        }
+        (None, Some(_)) => {
+            regressions.push(
+                "Candidate has evaluation data, but baseline is missing evaluation data."
+                    .to_owned(),
+            );
+        }
+    }
+
+    println!("\n=== Comparison Summary ===");
+    for msg in &drift_messages {
+        println!("  [DRIFT] {msg}");
+    }
+
+    if !regressions.is_empty() {
+        eprintln!("\n❌ REGRESSIONS DETECTED:");
+        for reg in &regressions {
+            eprintln!("  - {reg}");
+        }
+        return Err(Error::Trajectory(
+            "Drift/regression comparison failed: regressions detected.".to_owned(),
+        ));
+    }
+
+    println!("\n✅ No regressions detected between baseline and candidate.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -4138,6 +4464,7 @@ mod tests {
         let crate::cli::Command::Mini(cmd) = cli.command else {
             panic!("expected mini command");
         };
+        let cmd = *cmd;
 
         assert_eq!(cmd.mcp_servers, vec!["diagnostic-mcp"]);
     }
@@ -4218,15 +4545,16 @@ mod tests {
             "--output",
             "runs",
         ]);
-        let crate::cli::Command::Bench {
-            cmd: args::BenchCmd::Swebench(cmd),
-        } = cli.command
-        else {
+        let crate::cli::Command::Bench { cmd } = cli.command else {
+            panic!("expected bench swebench command");
+        };
+        let args::BenchCmd::Swebench(cmd) = *cmd else {
             panic!("expected bench swebench command");
         };
 
-        let args = swebench_args_from_cmd(cmd, crate::config::Config::defaults().unwrap(), "sweep")
-            .unwrap();
+        let args =
+            swebench_args_from_cmd(*cmd, crate::config::Config::defaults().unwrap(), "sweep")
+                .unwrap();
         assert!(args.install_os_signal_handlers);
         assert!(
             args.cancellation_signals.is_none(),
@@ -4478,5 +4806,27 @@ mod tests {
             err_str.contains("dataset-stats: unknown --format `jsno`"),
             "unexpected error string: {err_str}"
         );
+    }
+
+    #[test]
+    fn test_rehearsal_output_path_normalization() {
+        let test_cases = vec![
+            ("out", "out.rehearsal"),
+            ("out/", "out.rehearsal"),
+            ("a/b/c", "a/b/c.rehearsal"),
+            ("a/b/c/", "a/b/c.rehearsal"),
+        ];
+        for (input, expected) in test_cases {
+            let mut path = PathBuf::from(input);
+            if let Some(file_name) = path.file_name() {
+                let name_str = file_name.to_string_lossy();
+                if !name_str.ends_with(".rehearsal") {
+                    let mut new_name = file_name.to_owned();
+                    new_name.push(".rehearsal");
+                    path.set_file_name(new_name);
+                }
+            }
+            assert_eq!(path, PathBuf::from(expected));
+        }
     }
 }

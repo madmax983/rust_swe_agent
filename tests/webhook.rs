@@ -143,6 +143,9 @@ fn make_mini_args(
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,
+        rehearsal_gold_patch: None,
+        event_log: None,
+        event_log_instance_id: None,
     }
 }
 
@@ -533,6 +536,7 @@ async fn webhook_redacts_secrets_before_post() {
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,
+        rehearsal_gold_patch: None,
     };
 
     let (run_result, bodies) =

@@ -1,7 +1,7 @@
 //! Secret redaction contract tests for trajectories, streams, exports, inspect,
 //! and submission artifacts.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -367,6 +367,12 @@ secret_literals = ["{configured_secret}"]
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
@@ -474,6 +480,12 @@ name = "scripted-test-model"
         systemic_failure_min_samples: 5,
         systemic_failure_share_pct: 80,
         otlp_endpoint: None,
+        rehearse: false,
+        skip_evaluator: false,
+        eval_backend: "rehearsal".to_string(),
+        sb_subset: None,
+        sb_split: None,
+        eval_timeout_secs: None,
     })
     .await
     .unwrap();
