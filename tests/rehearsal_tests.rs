@@ -766,3 +766,117 @@ async fn test_rehearsal_fails_on_corrupted_trajectory() {
     let err_msg = eval_res.err().unwrap().to_string();
     assert!(err_msg.contains("Failed to parse trajectory file"));
 }
+
+#[tokio::test]
+async fn test_rehearsal_rejects_diff_combined_with_dry_run() {
+    use clap::Parser as _;
+    use maxwells_daemon::cli::{Cli, Command};
+
+    let args = vec![
+        "max".to_string(),
+        "bench".to_string(),
+        "swebench".to_string(),
+        "--rehearse".to_string(),
+        "--dry-run".to_string(),
+        "--diff".to_string(),
+        "dummy_dir".to_string(),
+        "--dataset-path".to_string(),
+        "dummy.jsonl".to_string(),
+        "--output".to_string(),
+        "dummy".to_string(),
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+    if let Command::Bench { cmd } = cli.command {
+        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+            assert!(res.is_err());
+            let err_msg = res.unwrap_err().to_string();
+            assert!(err_msg.contains("--diff cannot be used with --dry-run"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_rehearsal_fails_on_missing_trajectory() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Create a dummy sweep output dir with a missing trajectory JSON
+    let sweep_dir = work.path().join("sweep");
+    let inst_dir = sweep_dir.join("inst-1");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    // Do NOT write the traj.json file
+    std::fs::write(inst_dir.join("run-1.patch"), "some diff\n").unwrap();
+
+    let sweep_results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 1,
+            "resolved_count": 1,
+            "pass_at_1": true,
+            "tests_run_before_submit": false
+        }]
+    });
+    std::fs::write(
+        sweep_dir.join("results.json"),
+        serde_json::to_string(&sweep_results).unwrap(),
+    )
+    .unwrap();
+
+    let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir,
+        dataset_path: None,
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::Rehearsal,
+        timeout_per_instance_secs: 60,
+        parallel: 1,
+        sb_subset: "".to_owned(),
+        sb_split: "test".to_owned(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
+        cost_attribution: true,
+    };
+
+    let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
+    assert!(eval_res.is_err());
+    let err_msg = eval_res.err().unwrap().to_string();
+    assert!(err_msg.contains("does not exist during rehearsal evaluation"));
+}

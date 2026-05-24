@@ -912,29 +912,32 @@ fn run_rehearsal_eval(
 
             // Check if trajectory has outcome: Some("submitted") and patch exists and is non-empty
             let mut run_resolved = false;
-            if traj_path.exists() {
-                let content = std::fs::read_to_string(&traj_path).map_err(|e| {
-                    Error::Trajectory(format!(
-                        "Failed to read trajectory file {} during rehearsal: {e}",
-                        traj_path.display()
-                    ))
-                })?;
-                let traj_val =
-                    serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-                        Error::Trajectory(format!(
-                            "Failed to parse trajectory file {} during rehearsal: {e}",
-                            traj_path.display()
-                        ))
-                    })?;
+            if !traj_path.exists() {
+                return Err(Error::Trajectory(format!(
+                    "Trajectory file {} does not exist during rehearsal evaluation",
+                    traj_path.display()
+                )));
+            }
+            let content = std::fs::read_to_string(&traj_path).map_err(|e| {
+                Error::Trajectory(format!(
+                    "Failed to read trajectory file {} during rehearsal: {e}",
+                    traj_path.display()
+                ))
+            })?;
+            let traj_val = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
+                Error::Trajectory(format!(
+                    "Failed to parse trajectory file {} during rehearsal: {e}",
+                    traj_path.display()
+                ))
+            })?;
 
-                if patch_path.exists() {
-                    let metadata = std::fs::metadata(&patch_path)?;
-                    if metadata.len() > 0 {
-                        let outcome = traj_val["info"]["outcome"].as_str();
-                        let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
-                        if outcome == Some("submitted") && !partial {
-                            run_resolved = true;
-                        }
+            if patch_path.exists() {
+                let metadata = std::fs::metadata(&patch_path)?;
+                if metadata.len() > 0 {
+                    let outcome = traj_val["info"]["outcome"].as_str();
+                    let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
+                    if outcome == Some("submitted") && !partial {
+                        run_resolved = true;
                     }
                 }
             }

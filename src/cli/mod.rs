@@ -944,11 +944,18 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         sweep_cmd.github_pr.open_prs = false;
         sweep_cmd.github_pr.github_pr_dry_run = false;
         sweep_cmd.skip_model_probe = true;
+        sweep_cmd.skip_preflight = true;
     }
 
     if sweep_cmd.diff.is_some() && !sweep_cmd.rehearse {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
             "--diff can only be used in rehearsal mode (with --rehearse)".to_owned(),
+        )));
+    }
+
+    if sweep_cmd.diff.is_some() && sweep_cmd.dry_run {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "--diff cannot be used with --dry-run".to_owned(),
         )));
     }
 
