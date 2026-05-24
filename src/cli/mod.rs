@@ -86,6 +86,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Tail(t) => bench_tail(t).await,
             args::BenchCmd::Watch(w) => bench_watch(w).await,
             args::BenchCmd::Triage(t) => bench_triage(t),
+            args::BenchCmd::TriageDiff(t) => bench_triage_diff(t),
             args::BenchCmd::CommandStats(c) => bench_command_stats(c),
             args::BenchCmd::Grep(g) => bench_grep(g),
             args::BenchCmd::Frontier(f) => bench_frontier(f),
@@ -3315,6 +3316,37 @@ fn bench_triage(t: args::TriageCmd) -> Result<(), Error> {
             Ok(())
         }
     }
+}
+
+fn bench_triage_diff(t: args::TriageDiffCmd) -> Result<(), Error> {
+    let is_json = match t.format.as_str() {
+        "text" => false,
+        "json" => true,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `text` or `json`)"
+            ))));
+        }
+    };
+
+    let report = crate::run::triage_diff::run(&crate::run::triage_diff::TriageDiffArgs {
+        baseline_dir: t.baseline,
+        candidate_dir: t.candidate,
+        auto_triage: t.auto_triage,
+        min_cluster_size: t.min_cluster_size,
+        top: t.top,
+        output: t.output,
+        format: t.format,
+        fail_on_regression: t.fail_on_regression,
+    })?;
+
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", crate::run::triage_diff::render_text(&report, t.top));
+    }
+
+    Ok(())
 }
 
 fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {

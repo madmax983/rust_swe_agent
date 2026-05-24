@@ -473,6 +473,8 @@ pub enum BenchCmd {
     Watch(WatchCmd),
     /// Cluster unresolved sweep failures into ranked actionable groups.
     Triage(TriageCmd),
+    /// Diff failure-cluster composition between two sweeps.
+    TriageDiff(TriageDiffCmd),
     /// Aggregate shell-command frequency and cost by outcome bucket.
     CommandStats(CommandStatsCmd),
     /// Search every trajectory in a sweep for a regex pattern (zero-cost: reads only on-disk artifacts).
@@ -1762,6 +1764,41 @@ pub struct TriageCmd {
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct TriageDiffCmd {
+    /// Baseline sweep directory produced by `bench swebench` and scored by `bench evaluate`.
+    #[arg(long)]
+    pub baseline: PathBuf,
+
+    /// Candidate sweep directory produced by `bench swebench` and scored by `bench evaluate`.
+    #[arg(long)]
+    pub candidate: PathBuf,
+
+    /// Run `bench triage` on baseline and/or candidate sweeps if triage.json is missing.
+    #[arg(long = "auto-triage", default_value_t = false)]
+    pub auto_triage: bool,
+
+    /// Filter delta output to clusters with count >= k on either baseline or candidate.
+    #[arg(long, default_value_t = 1)]
+    pub min_cluster_size: usize,
+
+    /// Number of ranked clusters to print in text mode.
+    #[arg(long, default_value_t = 10)]
+    pub top: usize,
+
+    /// Output path for triage-diff.json. Defaults to `triage-diff.json` in candidate sweep dir.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Fail with exit code 1 if the regression set is non-empty.
+    #[arg(long = "fail-on-regression", default_value_t = false)]
+    pub fail_on_regression: bool,
 }
 
 #[derive(Debug, Args)]

@@ -333,6 +333,7 @@ a valid trajectory in hand:
   pass@k, and compare regression gates.
 - [`bench triage`](docs/spec-triage.md): deterministic unresolved-failure
   clustering, ranked stdout tables, and the `triage.json` schema.
+- [`bench triage-diff`](docs/spec-triage-diff.md): diff failure-cluster composition between two sweeps.
 - [`bench command-stats`](docs/spec-command-stats.md): shell-command frequency
   and cost aggregated by outcome bucket, delta view for resolved-vs-unresolved
   comparison, and the `command-stats.json` schema.
