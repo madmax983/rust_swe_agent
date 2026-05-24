@@ -919,12 +919,13 @@ fn run_rehearsal_eval(
                         traj_path.display()
                     ))
                 })?;
-                let traj_val = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-                    Error::Trajectory(format!(
-                        "Failed to parse trajectory file {} during rehearsal: {e}",
-                        traj_path.display()
-                    ))
-                })?;
+                let traj_val =
+                    serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
+                        Error::Trajectory(format!(
+                            "Failed to parse trajectory file {} during rehearsal: {e}",
+                            traj_path.display()
+                        ))
+                    })?;
 
                 if patch_path.exists() {
                     let metadata = std::fs::metadata(&patch_path)?;

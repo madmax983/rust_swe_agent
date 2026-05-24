@@ -742,7 +742,11 @@ async fn test_rehearsal_fails_on_corrupted_trajectory() {
             "tests_run_before_submit": false
         }]
     });
-    std::fs::write(sweep_dir.join("results.json"), serde_json::to_string(&sweep_results).unwrap()).unwrap();
+    std::fs::write(
+        sweep_dir.join("results.json"),
+        serde_json::to_string(&sweep_results).unwrap(),
+    )
+    .unwrap();
 
     let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
         sweep_dir,
@@ -762,4 +766,3 @@ async fn test_rehearsal_fails_on_corrupted_trajectory() {
     let err_msg = eval_res.err().unwrap().to_string();
     assert!(err_msg.contains("Failed to parse trajectory file"));
 }
-

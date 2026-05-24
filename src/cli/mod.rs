@@ -1249,7 +1249,8 @@ async fn run_forecast_from_cmd(
 ) -> Result<crate::run::forecast::ForecastOutcome, Error> {
     if s.rehearse {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
-            "rehearsal mode cannot be used with forecast-first; forecast projects real sweep costs".to_owned()
+            "rehearsal mode cannot be used with forecast-first; forecast projects real sweep costs"
+                .to_owned(),
         )));
     }
     s.github_pr.open_prs = false;

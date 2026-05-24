@@ -183,8 +183,6 @@ pub enum InteractiveMode {
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
 
-
-
     let resolved_skills = crate::skills::resolve_for_task(
         &args.config.root.skills,
         &args.task,
@@ -195,22 +193,6 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         args.deterministic_responses,
         args.deterministic_usage_per_call.clone(),
     );
-    let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
-    if args.read_only
-        && !args.allow_mcp_in_read_only
-        && !args.config.root.agent.mcp_servers.is_empty()
-    {
-        return Err(Error::Config(ConfigError::Invalid(
-            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
-        )));
-    }
-    let tool_providers = crate::tool::discover_mcp_servers(
-        env.as_ref(),
-        &args.config.root.agent.mcp_servers,
-        args.config.root.agent.tool_hook_timeout_secs,
-        args.cancellation.clone(),
-    )
-    .await?;
 
     // Bring up the SSE server first so any client that connects right
     // after CLI startup catches the `run_started` event the builder
@@ -460,6 +442,23 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
 
         return Ok(());
     }
+
+    let env = build_env(&args.config, args.local_workdir.as_ref()).await?;
+    if args.read_only
+        && !args.allow_mcp_in_read_only
+        && !args.config.root.agent.mcp_servers.is_empty()
+    {
+        return Err(Error::Config(ConfigError::Invalid(
+            "--read-only blocks MCP servers unless --allow-mcp-in-read-only is set".into(),
+        )));
+    }
+    let tool_providers = crate::tool::discover_mcp_servers(
+        env.as_ref(),
+        &args.config.root.agent.mcp_servers,
+        args.config.root.agent.tool_hook_timeout_secs,
+        args.cancellation.clone(),
+    )
+    .await?;
 
     let mut agent: DefaultAgent = DefaultAgentBuilder {
         config: args.config.clone(),
