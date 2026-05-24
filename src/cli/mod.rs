@@ -2491,13 +2491,16 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "ipynb"
+    ) {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/ipynb), not `{}`",
             i.format
         ))));
     }
@@ -2548,7 +2551,8 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/ipynb)"
+                .into(),
         ))
     })?;
     let traj_path =
@@ -2570,6 +2574,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "ipynb" => inspect_export_ipynb(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -2611,7 +2616,24 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(feature = "ipynb-export")]
+#[allow(clippy::unnecessary_wraps)]
+fn inspect_export_ipynb(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{IpynbExporter, TrajectoryExporter};
+    Ok(IpynbExporter::export(traj))
+}
+
+#[cfg(not(feature = "ipynb-export"))]
+fn inspect_export_ipynb(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format ipynb requires the `ipynb-export` Cargo feature; \
+         rebuild with `--features ipynb-export`"
+            .into(),
+    )))
+}
+
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
@@ -2627,6 +2649,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
@@ -2642,6 +2665,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))

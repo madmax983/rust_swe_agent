@@ -341,3 +341,84 @@ mod tests {
         assert!(html.contains("Hello user"));
     }
 }
+
+#[cfg(feature = "ipynb-export")]
+pub struct IpynbExporter;
+
+#[cfg(feature = "ipynb-export")]
+impl TrajectoryExporter for IpynbExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use std::collections::BTreeMap;
+        let redactor = Redactor::default_enabled();
+        let mut cells = Vec::new();
+
+        let mut header_lines = vec!["# Trajectory Export\n".to_string()];
+        if let Some(task) = &trajectory.info.task {
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            header_lines.push(format!("**Task:** {task}\n\n"));
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+            header_lines.push(format!("**Outcome:** {outcome}\n\n"));
+        }
+
+        let mut header_cell = BTreeMap::new();
+        header_cell.insert("cell_type".to_string(), serde_json::json!("markdown"));
+        header_cell.insert("metadata".to_string(), serde_json::json!({}));
+        header_cell.insert("source".to_string(), serde_json::json!(header_lines));
+        cells.push(header_cell);
+
+        for msg in &trajectory.messages {
+            let role_title = match msg.role.as_str() {
+                "system" => "System",
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                other => other,
+            };
+            let content_redacted = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let mut lines = vec![format!("### {role_title}\n\n")];
+            for line in content_redacted.lines() {
+                lines.push(format!("{line}\n"));
+            }
+
+            let mut cell = BTreeMap::new();
+            cell.insert("cell_type".to_string(), serde_json::json!("markdown"));
+            cell.insert("metadata".to_string(), serde_json::json!({}));
+            cell.insert("source".to_string(), serde_json::json!(lines));
+            cells.push(cell);
+        }
+
+        let mut notebook = BTreeMap::new();
+        notebook.insert("cells".to_string(), serde_json::json!(cells));
+        notebook.insert("metadata".to_string(), serde_json::json!({}));
+        notebook.insert("nbformat".to_string(), serde_json::json!(4));
+        notebook.insert("nbformat_minor".to_string(), serde_json::json!(5));
+
+        serde_json::to_string_pretty(&notebook).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod ipynb_tests {
+    use super::*;
+    use crate::model::Message;
+
+    #[cfg(feature = "ipynb-export")]
+    #[test]
+    fn test_ipynb_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::user("Hello agent"));
+
+        let ipynb = IpynbExporter::export(&t);
+
+        assert!(ipynb.contains("\"nbformat\": 4"));
+        assert!(ipynb.contains("Trajectory Export"));
+        assert!(ipynb.contains("Add a feature"));
+        assert!(ipynb.contains("submitted"));
+        assert!(ipynb.contains("Hello agent"));
+    }
+}
