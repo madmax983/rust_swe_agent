@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod behavior;
+pub mod bisect;
 pub mod budget_fit;
 pub mod bundle;
 pub mod cache_stats;

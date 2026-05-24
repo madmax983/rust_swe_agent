@@ -109,6 +109,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
             args::BenchCmd::Power(p) => bench_power(&p),
             args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
+            args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4102,6 +4103,10 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
+    crate::run::bisect::run(&b).await
 }
 
 fn parse_dataset_source_stats(
