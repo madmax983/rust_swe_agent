@@ -138,6 +138,8 @@ fn make_mini_args(
         resume_from: None,
         interactive_mode: InteractiveMode::Off,
         trace_id: None,
+        event_log: None,
+        event_log_instance_id: None,
         webhook_url,
         webhook_headers,
         local_workdir: None,

@@ -923,64 +923,67 @@ mod tests {
     #[test]
     fn resolve_endpoint_prefers_cli_flag() {
         let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(Some("http://cli-host:4318"));
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
-        // CLI flag is a base URL; /v1/traces is appended.
-        assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/traces"));
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+            ],
+            || {
+                let ep = resolve_endpoint(Some("http://cli-host:4318"));
+                // CLI flag is a base URL; /v1/traces is appended.
+                assert_eq!(ep.as_deref(), Some("http://cli-host:4318/v1/traces"));
+            },
+        );
     }
 
     #[test]
     fn resolve_endpoint_falls_back_to_env_var() {
         let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(None);
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
-        // Generic env var is a base URL; /v1/traces is appended.
-        assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/traces"));
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://env-host:4318")),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+            ],
+            || {
+                let ep = resolve_endpoint(None);
+                // Generic env var is a base URL; /v1/traces is appended.
+                assert_eq!(ep.as_deref(), Some("http://env-host:4318/v1/traces"));
+            },
+        );
     }
 
     #[test]
     fn resolve_endpoint_traces_env_var_used_as_full_url() {
         let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-            std::env::set_var(
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-                "http://traces-host:4318/v1/traces",
-            );
-        }
-        let ep = resolve_endpoint(None);
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        // Trace-specific env var is a full URL; used as-is without appending.
-        assert_eq!(ep.as_deref(), Some("http://traces-host:4318/v1/traces"));
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", None),
+                (
+                    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                    Some("http://traces-host:4318/v1/traces"),
+                ),
+            ],
+            || {
+                let ep = resolve_endpoint(None);
+                // Trace-specific env var is a full URL; used as-is without appending.
+                assert_eq!(ep.as_deref(), Some("http://traces-host:4318/v1/traces"));
+            },
+        );
     }
 
     #[test]
     fn resolve_endpoint_returns_none_when_unset() {
         let _guard = env_lock();
-        // SAFETY: serialized by ENV_LOCK; no other thread mutates this var.
-        unsafe {
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-        }
-        let ep = resolve_endpoint(None);
-        assert!(ep.is_none());
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", None::<&str>),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None::<&str>),
+            ],
+            || {
+                let ep = resolve_endpoint(None);
+                assert!(ep.is_none());
+            },
+        );
     }
 
     #[test]
