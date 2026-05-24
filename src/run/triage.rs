@@ -167,10 +167,10 @@ impl ClusterAccumulator {
 }
 
 #[derive(Debug, Clone)]
-struct TerminalSignals {
-    assistant_message: String,
-    bash_exit_code: Option<i32>,
-    stderr_line: String,
+pub struct TerminalSignals {
+    pub assistant_message: String,
+    pub bash_exit_code: Option<i32>,
+    pub stderr_line: String,
 }
 
 /// Normalize one textual signature component.
@@ -378,9 +378,9 @@ fn build_report(args: &TriageArgs) -> Result<TriageReport, Error> {
     })
 }
 
-fn candidate_instance_ids(
+pub fn candidate_instance_ids<S: std::hash::BuildHasher>(
     evaluation: crate::run::evaluate::EvaluationResults,
-    instances: &HashMap<String, InstanceResult>,
+    instances: &HashMap<String, InstanceResult, S>,
 ) -> BTreeSet<String> {
     let mut candidate_ids: BTreeSet<String> = evaluation
         .instances
@@ -499,7 +499,7 @@ fn cluster_from_accumulator(acc: &ClusterAccumulator) -> TriageCluster {
     }
 }
 
-fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
+pub fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
     let text = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     classify_json_value(&value, ArtifactKind::Trajectory, path.display().to_string())
@@ -507,7 +507,7 @@ fn load_trajectory(path: &Path) -> Result<Trajectory, Error> {
     serde_json::from_value(value).map_err(Into::into)
 }
 
-fn terminal_signals(trajectory: &Trajectory) -> TerminalSignals {
+pub fn terminal_signals(trajectory: &Trajectory) -> TerminalSignals {
     let assistant_message = trajectory
         .messages
         .iter()
@@ -542,7 +542,7 @@ fn terminal_signals(trajectory: &Trajectory) -> TerminalSignals {
     }
 }
 
-fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
+pub fn resolve_trajectory_path(sweep: &Path, instance_id: &str) -> Option<PathBuf> {
     let nested = sweep.join(instance_id).join("trajectory.json");
     if nested.exists() {
         return Some(nested);
@@ -573,7 +573,7 @@ fn path_to_forward_slashes(path: &Path) -> String {
         .join("/")
 }
 
-fn failure_label(c: FailureCategory) -> &'static str {
+pub fn failure_label(c: FailureCategory) -> &'static str {
     match c {
         FailureCategory::EnvSetup => "env_setup",
         FailureCategory::ModelApi => "model_api",
@@ -601,7 +601,7 @@ fn message_tail(message: &str, max_chars: usize) -> String {
     message.chars().skip(len - max_chars).collect()
 }
 
-fn truncate_chars(s: &str, max_chars: usize) -> String {
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
     let mut iter = s.chars();
     let mut out: String = iter.by_ref().take(max_chars).collect();
     if iter.next().is_some() {
