@@ -3079,8 +3079,8 @@ fn resolve_harness_manifest() -> HarnessManifest {
 fn resolve_harness_manifest_for_dir(cwd: Option<&Path>) -> HarnessManifest {
     let name = env!("CARGO_PKG_NAME").to_owned();
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    let sha_res = run_git(cwd, &["rev-parse", "HEAD"], false);
-    let status_res = run_git(cwd, &["status", "--porcelain"], true);
+    let sha_res = run_git(cwd, &["rev-parse", "HEAD"], GitEmptyOutput::Deny);
+    let status_res = run_git(cwd, &["status", "--porcelain"], GitEmptyOutput::Allow);
     let sha = sha_res.as_ref().ok().cloned();
     let dirty = status_res.as_ref().ok().map(|s| !s.trim().is_empty());
     let git_resolution = match (&sha_res, &status_res) {
@@ -3098,7 +3098,13 @@ fn resolve_harness_manifest_for_dir(cwd: Option<&Path>) -> HarnessManifest {
     }
 }
 
-fn run_git(cwd: Option<&Path>, args: &[&str], allow_empty: bool) -> Result<String, String> {
+#[derive(Clone, Copy)]
+enum GitEmptyOutput {
+    Allow,
+    Deny,
+}
+
+fn run_git(cwd: Option<&Path>, args: &[&str], allow_empty: GitEmptyOutput) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -3111,7 +3117,7 @@ fn run_git(cwd: Option<&Path>, args: &[&str], allow_empty: bool) -> Result<Strin
     }
     let text = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
     let trimmed = text.trim().to_owned();
-    if trimmed.is_empty() && !allow_empty {
+    if trimmed.is_empty() && matches!(allow_empty, GitEmptyOutput::Deny) {
         return Err("empty output".into());
     }
     Ok(trimmed)
