@@ -89,16 +89,24 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     let baseline_unresolved = candidate_instance_ids(baseline_eval, &baseline_sweep.instances);
     let candidate_unresolved = candidate_instance_ids(candidate_eval, &candidate_sweep.instances);
 
-    // Helper to verify if an existing triage report is canonical (unfiltered)
-    let is_canonical = |report: &TriageReport, total_unresolved: usize| -> bool {
-        report.totals.unclustered_instances == 0 && report.totals.instances == total_unresolved
+    // Helper to verify if an existing triage report is canonical (unfiltered) and up-to-date (matching unresolved set)
+    let is_canonical = |report: &TriageReport, unresolved_ids: &BTreeSet<String>| -> bool {
+        if report.totals.unclustered_instances != 0 || report.totals.instances != unresolved_ids.len() {
+            return false;
+        }
+        let report_ids: BTreeSet<String> = report
+            .clusters
+            .iter()
+            .flat_map(|c| c.instance_ids.iter().cloned())
+            .collect();
+        &report_ids == unresolved_ids
     };
 
     // 2. Load or generate baseline triage report
     let baseline_triage_path = args.baseline_dir.join("triage.json");
     let baseline_report: TriageReport = if baseline_triage_path.exists() {
         let report: TriageReport = serde_json::from_reader(std::fs::File::open(&baseline_triage_path)?)?;
-        if is_canonical(&report, baseline_unresolved.len()) {
+        if is_canonical(&report, &baseline_unresolved) {
             report
         } else {
             if !args.auto_triage {
@@ -134,7 +142,7 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     let candidate_triage_path = args.candidate_dir.join("triage.json");
     let candidate_report: TriageReport = if candidate_triage_path.exists() {
         let report: TriageReport = serde_json::from_reader(std::fs::File::open(&candidate_triage_path)?)?;
-        if is_canonical(&report, candidate_unresolved.len()) {
+        if is_canonical(&report, &candidate_unresolved) {
             report
         } else {
             if !args.auto_triage {

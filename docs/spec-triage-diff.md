@@ -19,12 +19,12 @@ Options:
 | `--top <n>` | `10` | Number of entries to print in text lists/tables. |
 | `--output <path>` | `triage-diff.json` in candidate sweep dir | Output path for the JSON report. |
 | `--format text\|json` | `text` | Output format: `text` or `json` (stdout). |
-| `--fail-on-regression` | `false` | Make the command exit with non-zero code `1` when the regression set is non-empty. |
+| `--fail-on-regression` | `false` | Make the command exit with non-zero code `6` when the regression set is non-empty. |
 
 Exit behavior:
 
 - `0`: Success, regardless of whether candidate resolved rate is better, worse, or identical.
-- `1`: When `--fail-on-regression` is enabled and regressions are detected.
+- `6`: When `--fail-on-regression` is enabled and regressions are detected (corresponds to `ExitCode::RegressionGateFailure`).
 - Non-zero: Missing sweeps, missing `triage.json` artifacts when `--auto-triage` is false, or invalid arguments.
 
 ## Inputs
