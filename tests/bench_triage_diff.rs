@@ -157,6 +157,10 @@ fn triage_diff_fail_on_regression_flag() {
         !output.status.success(),
         "should have failed with regression set non-empty"
     );
+    assert_eq!(output.status.code().unwrap(), 6, "Expected exit code 6 (RegressionGateFailure)");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("=== bench triage-diff ==="), "Output should still be printed before exiting");
+    assert!(stdout.contains("resolved-1"), "Output should contain the regression instance");
 }
 
 #[test]
@@ -344,3 +348,79 @@ fn mutate_candidate_win_and_regression(sweep: &Path) {
     )
     .unwrap();
 }
+
+#[test]
+fn triage_diff_filtered_triage_json_errors_unless_auto_triage() {
+    let baseline = tempfile::tempdir().unwrap();
+    let candidate = tempfile::tempdir().unwrap();
+    copy_triage_fixture_sweep(baseline.path());
+    copy_triage_fixture_sweep(candidate.path());
+
+    // Generate partial/filtered triage.json by running triage with --min-cluster-size 9999
+    // This will result in 0 clustered instances and some unclustered instances, making it non-canonical!
+    let output_triage = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "triage",
+            "--sweep",
+            baseline.path().to_str().unwrap(),
+            "--min-cluster-size",
+            "9999",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_triage.status.success());
+
+    // Generate normal/canonical triage for candidate
+    run_triage(candidate.path());
+
+    // Run triage-diff WITHOUT --auto-triage: should fail because baseline triage.json is not canonical (filtered)!
+    let output = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "triage-diff",
+            "--baseline",
+            baseline.path().to_str().unwrap(),
+            "--candidate",
+            candidate.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "should have failed due to filtered/partial triage.json"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("filtered or partial"), "Stderr did not contain expected warning: {}", stderr);
+
+    // Run WITH --auto-triage: should succeed because it automatically regenerates the canonical report!
+    let output_auto = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "triage-diff",
+            "--baseline",
+            baseline.path().to_str().unwrap(),
+            "--candidate",
+            candidate.path().to_str().unwrap(),
+            "--auto-triage",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output_auto.status.success(),
+        "should have successfully auto-triaged and re-run canonically\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output_auto.stdout),
+        String::from_utf8_lossy(&output_auto.stderr)
+    );
+}
+

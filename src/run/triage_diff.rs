@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
 use crate::run::triage::{
-    candidate_instance_ids, failure_label, load_trajectory, resolve_trajectory_path,
-    terminal_signals, FailureSignature, TriageArgs, TriageCluster, TriageReport,
+    candidate_instance_ids, extract_instance_signature, resolve_trajectory_path, TriageArgs,
+    TriageCluster, TriageReport,
 };
 
 #[derive(Debug, Clone)]
@@ -68,45 +68,7 @@ pub struct TriageDiffReport {
 }
 
 pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
-    // 1. Check/generate baseline triage.json
-    let baseline_triage_path = args.baseline_dir.join("triage.json");
-    if !baseline_triage_path.exists() {
-        if !args.auto_triage {
-            return Err(Error::Trajectory(format!(
-                "Run `bench triage --sweep {}` first, or pass `--auto-triage`.",
-                args.baseline_dir.display()
-            )));
-        }
-        crate::run::triage::run(&TriageArgs {
-            sweep_dir: args.baseline_dir.clone(),
-            bucket: None,
-            min_cluster_size: 1,
-            top: 10,
-        })?;
-    }
-
-    // 2. Check/generate candidate triage.json
-    let candidate_triage_path = args.candidate_dir.join("triage.json");
-    if !candidate_triage_path.exists() {
-        if !args.auto_triage {
-            return Err(Error::Trajectory(format!(
-                "Run `bench triage --sweep {}` first, or pass `--auto-triage`.",
-                args.candidate_dir.display()
-            )));
-        }
-        crate::run::triage::run(&TriageArgs {
-            sweep_dir: args.candidate_dir.clone(),
-            bucket: None,
-            min_cluster_size: 1,
-            top: 10,
-        })?;
-    }
-
-    // 3. Load triage reports
-    let baseline_report: TriageReport = serde_json::from_reader(std::fs::File::open(&baseline_triage_path)?)?;
-    let candidate_report: TriageReport = serde_json::from_reader(std::fs::File::open(&candidate_triage_path)?)?;
-
-    // 4. Load full sweeps to determine accurate resolved/unresolved status per instance
+    // 1. Load full sweeps to determine accurate resolved/unresolved status per instance
     let baseline_sweep = load_sweep(&args.baseline_dir)?;
     let baseline_eval = load_evaluation_results_checked(&args.baseline_dir)?.ok_or_else(|| {
         Error::Trajectory(format!(
@@ -126,6 +88,83 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     // Use triage candidate logic to determine exactly what failed
     let baseline_unresolved = candidate_instance_ids(baseline_eval, &baseline_sweep.instances);
     let candidate_unresolved = candidate_instance_ids(candidate_eval, &candidate_sweep.instances);
+
+    // Helper to verify if an existing triage report is canonical (unfiltered)
+    let is_canonical = |report: &TriageReport, total_unresolved: usize| -> bool {
+        report.totals.unclustered_instances == 0 && report.totals.instances == total_unresolved
+    };
+
+    // 2. Load or generate baseline triage report
+    let baseline_triage_path = args.baseline_dir.join("triage.json");
+    let baseline_report: TriageReport = if baseline_triage_path.exists() {
+        let report: TriageReport = serde_json::from_reader(std::fs::File::open(&baseline_triage_path)?)?;
+        if is_canonical(&report, baseline_unresolved.len()) {
+            report
+        } else {
+            if !args.auto_triage {
+                return Err(Error::Trajectory(format!(
+                    "Existing triage.json at {} is filtered or partial. Run `bench triage --sweep {}` without filters first, or pass `--auto-triage`.",
+                    args.baseline_dir.display(),
+                    args.baseline_dir.display()
+                )));
+            }
+            crate::run::triage::run(&TriageArgs {
+                sweep_dir: args.baseline_dir.clone(),
+                bucket: None,
+                min_cluster_size: 1,
+                top: 10,
+            })?
+        }
+    } else {
+        if !args.auto_triage {
+            return Err(Error::Trajectory(format!(
+                "Run `bench triage --sweep {}` first, or pass `--auto-triage`.",
+                args.baseline_dir.display()
+            )));
+        }
+        crate::run::triage::run(&TriageArgs {
+            sweep_dir: args.baseline_dir.clone(),
+            bucket: None,
+            min_cluster_size: 1,
+            top: 10,
+        })?
+    };
+
+    // 3. Load or generate candidate triage report
+    let candidate_triage_path = args.candidate_dir.join("triage.json");
+    let candidate_report: TriageReport = if candidate_triage_path.exists() {
+        let report: TriageReport = serde_json::from_reader(std::fs::File::open(&candidate_triage_path)?)?;
+        if is_canonical(&report, candidate_unresolved.len()) {
+            report
+        } else {
+            if !args.auto_triage {
+                return Err(Error::Trajectory(format!(
+                    "Existing triage.json at {} is filtered or partial. Run `bench triage --sweep {}` without filters first, or pass `--auto-triage`.",
+                    args.candidate_dir.display(),
+                    args.candidate_dir.display()
+                )));
+            }
+            crate::run::triage::run(&TriageArgs {
+                sweep_dir: args.candidate_dir.clone(),
+                bucket: None,
+                min_cluster_size: 1,
+                top: 10,
+            })?
+        }
+    } else {
+        if !args.auto_triage {
+            return Err(Error::Trajectory(format!(
+                "Run `bench triage --sweep {}` first, or pass `--auto-triage`.",
+                args.candidate_dir.display()
+            )));
+        }
+        crate::run::triage::run(&TriageArgs {
+            sweep_dir: args.candidate_dir.clone(),
+            bucket: None,
+            min_cluster_size: 1,
+            top: 10,
+        })?
+    };
 
     // Maps to look up clusters by id
     let baseline_clusters_map: HashMap<String, &TriageCluster> = baseline_report
@@ -263,23 +302,15 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
         if let Some(info) = candidate_inst_to_cluster_info.get(id) {
             Ok(info.clone())
         } else if let Some(traj_path) = resolve_trajectory_path(&args.candidate_dir, id) {
-            let trajectory = load_trajectory(&traj_path)?;
             let instance = candidate_sweep.instances.get(id).ok_or_else(|| {
                 Error::Trajectory(format!("instance {id} not found in candidate sweep"))
             })?;
-            let failure_cat = instance
-                .failure_category
-                .or(trajectory.info.failure_category)
-                .unwrap_or(crate::trajectory::FailureCategory::Unknown);
-            let category_label = failure_label(failure_cat).to_owned();
-            let signals = terminal_signals(&trajectory);
-            let signature = FailureSignature::from_parts(
-                &category_label,
-                &signals.assistant_message,
-                signals.bash_exit_code,
-                &signals.stderr_line,
-            );
-            Ok((signature.cluster_id(), category_label, signature.summary()))
+            let signature = extract_instance_signature(instance, &traj_path)?;
+            Ok((
+                signature.cluster_id(),
+                signature.failure_category().to_owned(),
+                signature.summary(),
+            ))
         } else {
             Ok(("unknown".to_owned(), "unknown".to_owned(), "Trajectory not found".to_owned()))
         }
@@ -289,23 +320,15 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
         if let Some(info) = baseline_inst_to_cluster_info.get(id) {
             Ok(info.clone())
         } else if let Some(traj_path) = resolve_trajectory_path(&args.baseline_dir, id) {
-            let trajectory = load_trajectory(&traj_path)?;
             let instance = baseline_sweep.instances.get(id).ok_or_else(|| {
                 Error::Trajectory(format!("instance {id} not found in baseline sweep"))
             })?;
-            let failure_cat = instance
-                .failure_category
-                .or(trajectory.info.failure_category)
-                .unwrap_or(crate::trajectory::FailureCategory::Unknown);
-            let category_label = failure_label(failure_cat).to_owned();
-            let signals = terminal_signals(&trajectory);
-            let signature = FailureSignature::from_parts(
-                &category_label,
-                &signals.assistant_message,
-                signals.bash_exit_code,
-                &signals.stderr_line,
-            );
-            Ok((signature.cluster_id(), category_label, signature.summary()))
+            let signature = extract_instance_signature(instance, &traj_path)?;
+            Ok((
+                signature.cluster_id(),
+                signature.failure_category().to_owned(),
+                signature.summary(),
+            ))
         } else {
             Ok(("unknown".to_owned(), "unknown".to_owned(), "Trajectory not found".to_owned()))
         }
@@ -392,14 +415,6 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     let file = std::fs::File::create(output_path)?;
     serde_json::to_writer_pretty(file, &report)?;
 
-    // Handle `--fail-on-regression` exit gate
-    if args.fail_on_regression && !report.regression_instances.is_empty() {
-        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "Triage diff contains {} regression cluster(s).",
-            report.regression_instances.len()
-        ))));
-    }
-
     Ok(report)
 }
 
@@ -420,13 +435,17 @@ pub fn render_text(report: &TriageDiffReport, top: usize) -> String {
         out.push_str("None\n");
     } else {
         out.push_str("Grouped by candidate-side failure cluster:\n");
-        for group in &report.regression_instances {
+        let len = report.regression_instances.len();
+        for group in report.regression_instances.iter().take(top) {
             let _ = writeln!(
                 out,
                 "- {}  {:<14}  \"{}\"",
                 group.cluster_id, group.failure_category, group.signature_summary
             );
             let _ = writeln!(out, "  Instances: {:?}", group.instance_ids);
+        }
+        if len > top {
+            let _ = writeln!(out, "... and {} more regression cluster(s)", len - top);
         }
     }
     out.push('\n');
@@ -437,13 +456,17 @@ pub fn render_text(report: &TriageDiffReport, top: usize) -> String {
         out.push_str("None\n");
     } else {
         out.push_str("Grouped by baseline-side failure cluster:\n");
-        for group in &report.win_instances {
+        let len = report.win_instances.len();
+        for group in report.win_instances.iter().take(top) {
             let _ = writeln!(
                 out,
                 "- {}  {:<14}  \"{}\"",
                 group.cluster_id, group.failure_category, group.signature_summary
             );
             let _ = writeln!(out, "  Instances: {:?}", group.instance_ids);
+        }
+        if len > top {
+            let _ = writeln!(out, "... and {} more win cluster(s)", len - top);
         }
     }
     out.push('\n');

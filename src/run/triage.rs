@@ -119,7 +119,32 @@ impl FailureSignature {
             SUMMARY_MAX_CHARS,
         )
     }
+
+    #[must_use]
+    pub fn failure_category(&self) -> &str {
+        &self.failure_category
+    }
 }
+
+pub fn extract_instance_signature(
+    instance: &InstanceResult,
+    trajectory_path: &Path,
+) -> Result<FailureSignature, Error> {
+    let trajectory = load_trajectory(trajectory_path)?;
+    let failure_category = instance
+        .failure_category
+        .or(trajectory.info.failure_category)
+        .unwrap_or(FailureCategory::Unknown);
+    let category_label = failure_label(failure_category).to_owned();
+    let signals = terminal_signals(&trajectory);
+    Ok(FailureSignature::from_parts(
+        &category_label,
+        &signals.assistant_message,
+        signals.bash_exit_code,
+        &signals.stderr_line,
+    ))
+}
+
 
 #[derive(Debug, Clone)]
 struct ClusterMember {
@@ -415,27 +440,14 @@ fn build_accumulators(
                     "bench triage: trajectory not found for unresolved instance `{instance_id}`"
                 ))
             })?;
-        let trajectory = load_trajectory(&trajectory_path)?;
-        let failure_category = instance
-            .failure_category
-            .or(trajectory.info.failure_category)
-            .unwrap_or(FailureCategory::Unknown);
-        let category_label = failure_label(failure_category).to_owned();
+        let signature = extract_instance_signature(instance, &trajectory_path)?;
         if args
             .bucket
             .as_deref()
-            .is_some_and(|bucket| bucket != category_label)
+            .is_some_and(|bucket| bucket != signature.failure_category())
         {
             continue;
         }
-
-        let signals = terminal_signals(&trajectory);
-        let signature = FailureSignature::from_parts(
-            &category_label,
-            &signals.assistant_message,
-            signals.bash_exit_code,
-            &signals.stderr_line,
-        );
         let key = signature.stable_key();
         let rel_path = relative_path_string(&args.sweep_dir, &trajectory_path);
         let member = ClusterMember {

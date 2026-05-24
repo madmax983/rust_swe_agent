@@ -3346,6 +3346,16 @@ fn bench_triage_diff(t: args::TriageDiffCmd) -> Result<(), Error> {
         print!("{}", crate::run::triage_diff::render_text(&report, t.top));
     }
 
+    if t.fail_on_regression && !report.regression_instances.is_empty() {
+        exit_with_outcome(
+            ExitCode::RegressionGateFailure,
+            &format!(
+                "Triage diff contains {} regression cluster(s).",
+                report.regression_instances.len()
+            ),
+        );
+    }
+
     Ok(())
 }
 
