@@ -880,3 +880,29 @@ async fn test_rehearsal_fails_on_missing_trajectory() {
     let err_msg = eval_res.err().unwrap().to_string();
     assert!(err_msg.contains("does not exist during rehearsal evaluation"));
 }
+
+#[tokio::test]
+async fn test_rehearsal_rejects_empty_terminal_path_segment() {
+    use clap::Parser as _;
+    use maxwells_daemon::cli::{Cli, Command};
+
+    let args = vec![
+        "max".to_string(),
+        "bench".to_string(),
+        "swebench".to_string(),
+        "--rehearse".to_string(),
+        "--dataset-path".to_string(),
+        "dummy.jsonl".to_string(),
+        "--output".to_string(),
+        ".".to_string(), // terminal-less path segment
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+    if let Command::Bench { cmd } = cli.command {
+        if let maxwells_daemon::cli::args::BenchCmd::Swebench(s) = *cmd {
+            let res = maxwells_daemon::cli::bench_swebench(*s).await;
+            assert!(res.is_err());
+            let err_msg = res.unwrap_err().to_string();
+            assert!(err_msg.contains("rehearsal output path must contain a terminal path segment"));
+        }
+    }
+}

@@ -933,13 +933,17 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     let mut sweep_cmd = s;
 
     if sweep_cmd.rehearse {
-        if let Some(file_name) = sweep_cmd.output.file_name() {
-            let name_str = file_name.to_string_lossy();
-            if !name_str.ends_with(".rehearsal") {
-                let mut new_name = file_name.to_owned();
-                new_name.push(".rehearsal");
-                sweep_cmd.output.set_file_name(new_name);
-            }
+        let file_name = sweep_cmd.output.file_name().ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(
+                "rehearsal output path must contain a terminal path segment (cannot be '.', '..', or '/')"
+                    .to_owned(),
+            ))
+        })?;
+        let name_str = file_name.to_string_lossy();
+        if !name_str.ends_with(".rehearsal") {
+            let mut new_name = file_name.to_owned();
+            new_name.push(".rehearsal");
+            sweep_cmd.output.set_file_name(new_name);
         }
         sweep_cmd.github_pr.open_prs = false;
         sweep_cmd.github_pr.github_pr_dry_run = false;
