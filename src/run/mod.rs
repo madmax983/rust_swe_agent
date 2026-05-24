@@ -43,4 +43,5 @@ pub mod tool_ablation;
 pub mod tool_coverage;
 pub mod trajectory_diff;
 pub mod triage;
+pub mod triage_diff;
 pub mod watch;
