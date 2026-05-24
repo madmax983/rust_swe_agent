@@ -157,10 +157,20 @@ fn triage_diff_fail_on_regression_flag() {
         !output.status.success(),
         "should have failed with regression set non-empty"
     );
-    assert_eq!(output.status.code().unwrap(), 6, "Expected exit code 6 (RegressionGateFailure)");
+    assert_eq!(
+        output.status.code().unwrap(),
+        6,
+        "Expected exit code 6 (RegressionGateFailure)"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("=== bench triage-diff ==="), "Output should still be printed before exiting");
-    assert!(stdout.contains("resolved-1"), "Output should contain the regression instance");
+    assert!(
+        stdout.contains("=== bench triage-diff ==="),
+        "Output should still be printed before exiting"
+    );
+    assert!(
+        stdout.contains("resolved-1"),
+        "Output should contain the regression instance"
+    );
 }
 
 #[test]
@@ -396,7 +406,10 @@ fn triage_diff_filtered_triage_json_errors_unless_auto_triage() {
         "should have failed due to filtered/partial triage.json"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("filtered or partial"), "Stderr did not contain expected warning: {}", stderr);
+    assert!(
+        stderr.contains("filtered or partial"),
+        "Stderr did not contain expected warning: {stderr}"
+    );
 
     // Run WITH --auto-triage: should succeed because it automatically regenerates the canonical report!
     let output_auto = Command::new(binary_path())
@@ -423,4 +436,3 @@ fn triage_diff_filtered_triage_json_errors_unless_auto_triage() {
         String::from_utf8_lossy(&output_auto.stderr)
     );
 }
-

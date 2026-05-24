@@ -1,6 +1,10 @@
 //! `bench triage-diff`: diff failure-cluster composition between two sweeps.
 
-#![allow(clippy::too_many_lines, clippy::cast_possible_wrap, clippy::cast_precision_loss)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss
+)]
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -11,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
 use crate::run::triage::{
-    candidate_instance_ids, extract_instance_signature, resolve_trajectory_path, TriageArgs,
-    TriageCluster, TriageReport,
+    TriageArgs, TriageCluster, TriageReport, candidate_instance_ids, extract_instance_signature,
+    resolve_trajectory_path,
 };
 
 #[derive(Debug, Clone)]
@@ -70,20 +74,24 @@ pub struct TriageDiffReport {
 pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     // 1. Load full sweeps to determine accurate resolved/unresolved status per instance
     let baseline_sweep = load_sweep(&args.baseline_dir)?;
-    let baseline_eval = load_evaluation_results_checked(&args.baseline_dir)?.ok_or_else(|| {
-        Error::Trajectory(format!(
-            "missing evaluation.json in baseline sweep {}",
-            args.baseline_dir.display()
-        ))
-    })?.results;
+    let baseline_eval = load_evaluation_results_checked(&args.baseline_dir)?
+        .ok_or_else(|| {
+            Error::Trajectory(format!(
+                "missing evaluation.json in baseline sweep {}",
+                args.baseline_dir.display()
+            ))
+        })?
+        .results;
 
     let candidate_sweep = load_sweep(&args.candidate_dir)?;
-    let candidate_eval = load_evaluation_results_checked(&args.candidate_dir)?.ok_or_else(|| {
-        Error::Trajectory(format!(
-            "missing evaluation.json in candidate sweep {}",
-            args.candidate_dir.display()
-        ))
-    })?.results;
+    let candidate_eval = load_evaluation_results_checked(&args.candidate_dir)?
+        .ok_or_else(|| {
+            Error::Trajectory(format!(
+                "missing evaluation.json in candidate sweep {}",
+                args.candidate_dir.display()
+            ))
+        })?
+        .results;
 
     // Use triage candidate logic to determine exactly what failed
     let baseline_unresolved = candidate_instance_ids(baseline_eval, &baseline_sweep.instances);
@@ -91,7 +99,9 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
 
     // Helper to verify if an existing triage report is canonical (unfiltered) and up-to-date (matching unresolved set)
     let is_canonical = |report: &TriageReport, unresolved_ids: &BTreeSet<String>| -> bool {
-        if report.totals.unclustered_instances != 0 || report.totals.instances != unresolved_ids.len() {
+        if report.totals.unclustered_instances != 0
+            || report.totals.instances != unresolved_ids.len()
+        {
             return false;
         }
         let report_ids: BTreeSet<String> = report
@@ -105,7 +115,8 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     // 2. Load or generate baseline triage report
     let baseline_triage_path = args.baseline_dir.join("triage.json");
     let baseline_report: TriageReport = if baseline_triage_path.exists() {
-        let report: TriageReport = serde_json::from_reader(std::fs::File::open(&baseline_triage_path)?)?;
+        let report: TriageReport =
+            serde_json::from_reader(std::fs::File::open(&baseline_triage_path)?)?;
         if is_canonical(&report, &baseline_unresolved) {
             report
         } else {
@@ -141,7 +152,8 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     // 3. Load or generate candidate triage report
     let candidate_triage_path = args.candidate_dir.join("triage.json");
     let candidate_report: TriageReport = if candidate_triage_path.exists() {
-        let report: TriageReport = serde_json::from_reader(std::fs::File::open(&candidate_triage_path)?)?;
+        let report: TriageReport =
+            serde_json::from_reader(std::fs::File::open(&candidate_triage_path)?)?;
         if is_canonical(&report, &candidate_unresolved) {
             report
         } else {
@@ -194,8 +206,12 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
     // 5. Generate Cluster Deltas
     let mut cluster_deltas = Vec::new();
     for id in all_cluster_ids {
-        let baseline_count = baseline_clusters_map.get(&id).map_or(0, |c| c.instance_count);
-        let candidate_count = candidate_clusters_map.get(&id).map_or(0, |c| c.instance_count);
+        let baseline_count = baseline_clusters_map
+            .get(&id)
+            .map_or(0, |c| c.instance_count);
+        let candidate_count = candidate_clusters_map
+            .get(&id)
+            .map_or(0, |c| c.instance_count);
 
         // Apply `--min-cluster-size` filter (surfaces if baseline OR candidate count >= k)
         if baseline_count < args.min_cluster_size && candidate_count < args.min_cluster_size {
@@ -209,7 +225,8 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
             Some((delta as f64 / baseline_count as f64) * 100.0)
         };
 
-        let (failure_category, signature_summary) = if let Some(c) = candidate_clusters_map.get(&id) {
+        let (failure_category, signature_summary) = if let Some(c) = candidate_clusters_map.get(&id)
+        {
             (c.failure_category.clone(), c.signature_summary.clone())
         } else if let Some(c) = baseline_clusters_map.get(&id) {
             (c.failure_category.clone(), c.signature_summary.clone())
@@ -320,7 +337,11 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
                 signature.summary(),
             ))
         } else {
-            Ok(("unknown".to_owned(), "unknown".to_owned(), "Trajectory not found".to_owned()))
+            Ok((
+                "unknown".to_owned(),
+                "unknown".to_owned(),
+                "Trajectory not found".to_owned(),
+            ))
         }
     };
 
@@ -338,7 +359,11 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
                 signature.summary(),
             ))
         } else {
-            Ok(("unknown".to_owned(), "unknown".to_owned(), "Trajectory not found".to_owned()))
+            Ok((
+                "unknown".to_owned(),
+                "unknown".to_owned(),
+                "Trajectory not found".to_owned(),
+            ))
         }
     };
 
@@ -427,9 +452,9 @@ pub fn run(args: &TriageDiffArgs) -> Result<TriageDiffReport, Error> {
 }
 
 pub fn render_text(report: &TriageDiffReport, top: usize) -> String {
+    use comfy_table::Table;
     use comfy_table::modifiers::UTF8_ROUND_CORNERS;
     use comfy_table::presets::UTF8_FULL;
-    use comfy_table::Table;
 
     let mut out = String::new();
     out.push_str("\n=== bench triage-diff ===\n");

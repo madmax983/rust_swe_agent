@@ -145,7 +145,6 @@ pub fn extract_instance_signature(
     ))
 }
 
-
 #[derive(Debug, Clone)]
 struct ClusterMember {
     instance_id: String,
