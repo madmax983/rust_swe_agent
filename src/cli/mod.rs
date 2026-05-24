@@ -2476,7 +2476,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
         if i.output.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/finetune)".into(),
             )));
         }
         let format = parse_trajectory_diff_format(&i.format)?;
@@ -2491,13 +2491,16 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "finetune"
+    ) {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/finetune), not `{}`",
             i.format
         ))));
     }
@@ -2507,7 +2510,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, `mermaid`, or `finetune`)"
             ))));
         }
     };
@@ -2548,7 +2551,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/finetune)".into(),
         ))
     })?;
     let traj_path =
@@ -2570,6 +2573,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "finetune" => inspect_export_finetune(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -2611,6 +2615,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "html-export")]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
@@ -2626,6 +2631,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
     )))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "csv-export")]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
@@ -2641,6 +2647,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
     )))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(feature = "mermaid-export")]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
@@ -2652,6 +2659,22 @@ fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<Strin
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
          rebuild with `--features mermaid-export`"
+            .into(),
+    )))
+}
+
+#[allow(clippy::unnecessary_wraps)]
+#[cfg(feature = "finetune-export")]
+fn inspect_export_finetune(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{FinetuneExporter, TrajectoryExporter};
+    Ok(FinetuneExporter::export(traj))
+}
+
+#[cfg(not(feature = "finetune-export"))]
+fn inspect_export_finetune(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format finetune requires the `finetune-export` Cargo feature; \
+         rebuild with `--features finetune-export`"
             .into(),
     )))
 }

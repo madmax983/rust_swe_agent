@@ -341,3 +341,67 @@ mod tests {
         assert!(html.contains("Hello user"));
     }
 }
+
+#[cfg(feature = "finetune-export")]
+pub struct FinetuneExporter;
+
+#[cfg(feature = "finetune-export")]
+impl TrajectoryExporter for FinetuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut messages = Vec::new();
+
+        for msg in &trajectory.messages {
+            let role = match msg.role.as_str() {
+                "system" => "system",
+                "assistant" => "assistant",
+                "tool" => "tool",
+                _ => "user",
+            };
+
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let msg_obj = serde_json::json!({
+                "role": role,
+                "content": content
+            });
+            messages.push(msg_obj);
+        }
+
+        let out = serde_json::json!({
+            "messages": messages
+        });
+
+        serde_json::to_string(&out).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod finetune_tests {
+    use super::*;
+    use crate::model::Message;
+    use crate::trajectory::outcome;
+
+    #[cfg(feature = "finetune-export")]
+    #[test]
+    fn test_finetune_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let finetune = FinetuneExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&finetune).unwrap();
+
+        let msgs = parsed.get("messages").unwrap().as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].get("role").unwrap().as_str().unwrap(), "system");
+        assert_eq!(
+            msgs[0].get("content").unwrap().as_str().unwrap(),
+            "System prompt"
+        );
+    }
+}
