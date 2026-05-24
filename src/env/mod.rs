@@ -14,10 +14,10 @@ use tokio::sync::watch;
 use crate::error::EnvError;
 
 #[cfg(feature = "chaos")]
-pub mod chaos;
+pub(crate) mod chaos;
 #[cfg(feature = "docker")]
-pub mod docker;
-pub mod local;
+pub(crate) mod docker;
+pub(crate) mod local;
 
 #[cfg(feature = "chaos")]
 pub use chaos::ChaosEnvironment;

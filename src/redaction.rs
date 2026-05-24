@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::config::RedactionCfg;
 use crate::stream::{StreamEvent, StreamSink};
 
-pub mod surface {
+pub(crate) mod surface {
     pub const TRAJECTORY: &str = "trajectory";
     pub const MODEL_OBSERVATION: &str = "model_observation";
     pub const STREAM: &str = "stream";

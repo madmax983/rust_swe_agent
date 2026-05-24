@@ -55,7 +55,7 @@ pub const DEFAULT_PARALLEL: usize = 4;
 /// category dominates at or above the configured share threshold and the minimum
 /// sample count has been reached, the check returns `Some(category)` and the
 /// sweep halts gracefully.
-pub mod circuit_breaker {
+pub(crate) mod circuit_breaker {
     use crate::trajectory::FailureCategory;
 
     /// An entry in the completion log fed to the circuit breaker.
