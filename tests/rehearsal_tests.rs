@@ -906,3 +906,313 @@ async fn test_rehearsal_rejects_empty_terminal_path_segment() {
         }
     }
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn test_rehearsal_fails_on_malformed_trajectory_schema() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Create a dummy sweep output dir with a trajectory JSON that lacks info block
+    let sweep_dir = work.path().join("sweep");
+    let inst_dir = sweep_dir.join("inst-1");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    std::fs::write(
+        inst_dir.join("run-1.traj.json"),
+        "{\"trajectory_format\": \"1.3\"}",
+    )
+    .unwrap();
+    std::fs::write(inst_dir.join("run-1.patch"), "some diff\n").unwrap();
+
+    // Setup results.json
+    let sweep_results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 1,
+            "resolved_count": 1,
+            "pass_at_1": true,
+            "tests_run_before_submit": false
+        }]
+    });
+    std::fs::write(
+        sweep_dir.join("results.json"),
+        serde_json::to_string(&sweep_results).unwrap(),
+    )
+    .unwrap();
+
+    let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir,
+        dataset_path: None,
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::Rehearsal,
+        timeout_per_instance_secs: 60,
+        parallel: 1,
+        sb_subset: "".to_owned(),
+        sb_split: "test".to_owned(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
+        cost_attribution: true,
+    };
+
+    let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
+    assert!(eval_res.is_err());
+    let err_msg = eval_res.err().unwrap().to_string();
+    assert!(err_msg.contains("missing field `info`"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn test_rehearsal_fails_on_missing_trajectory_outcome() {
+    let work = tempfile::tempdir().unwrap();
+
+    // Create a dummy sweep output dir with a trajectory JSON that lacks outcome in info block
+    let sweep_dir = work.path().join("sweep");
+    let inst_dir = sweep_dir.join("inst-1");
+    std::fs::create_dir_all(&inst_dir).unwrap();
+    std::fs::write(
+        inst_dir.join("run-1.traj.json"),
+        "{\"trajectory_format\": \"1.3\", \"info\": { \"task\": \"noop\" }, \"messages\": []}",
+    )
+    .unwrap();
+    std::fs::write(inst_dir.join("run-1.patch"), "some diff\n").unwrap();
+
+    // Setup results.json
+    let sweep_results = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 1,
+            "resolved_count": 1,
+            "pass_at_1": true,
+            "tests_run_before_submit": false
+        }]
+    });
+    std::fs::write(
+        sweep_dir.join("results.json"),
+        serde_json::to_string(&sweep_results).unwrap(),
+    )
+    .unwrap();
+
+    let eval_args = maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir,
+        dataset_path: None,
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::Rehearsal,
+        timeout_per_instance_secs: 60,
+        parallel: 1,
+        sb_subset: "".to_owned(),
+        sb_split: "test".to_owned(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::default_axes(),
+        cost_attribution: true,
+    };
+
+    let eval_res = maxwells_daemon::run::evaluate::run(&eval_args);
+    assert!(eval_res.is_err());
+    let err_msg = eval_res.err().unwrap().to_string();
+    assert!(err_msg.contains("info.outcome is missing or null"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn test_rehearsal_drift_resolved_count_without_evaluation() {
+    let work = tempfile::tempdir().unwrap();
+    let base_dir = work.path().join("base_cmp");
+    let cand_dir = work.path().join("cand_cmp");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+
+    // Base results.json has resolved_count = 3
+    let base_sweep = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 3,
+            "resolved_count": 3,
+            "pass_at_1": true,
+            "tests_run_before_submit": false
+        }]
+    });
+
+    // Candidate has resolved_count = 1
+    let cand_sweep = serde_json::json!({
+        "total": 1,
+        "sweep_status": "complete",
+        "completed": 1,
+        "submitted": 1,
+        "submitted_with_tests": 0,
+        "skipped": 0,
+        "errored": 0,
+        "failures_by_category": {},
+        "budget_halted": 0,
+        "with_patch": 1,
+        "patch_empty": 0,
+        "patch_apply_invalid": 0,
+        "github_pr_failures": 0,
+        "total_prompt_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_creation_tokens": 0,
+        "total_completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "cache_hit_rate": 0.0,
+        "retries": 0,
+        "retried_instances": 0,
+        "pass_at_k": 0.0,
+        "filter_spec": {},
+        "total_fallbacks": 0,
+        "model_mix": {},
+        "partial": 0,
+        "span_export_dropped": 0,
+        "instances": [{
+            "instance_id": "inst-1",
+            "exit_reason": "submitted",
+            "outcome": "submitted",
+            "steps": 1,
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "completion_tokens": 0,
+            "duration_secs": 0.0,
+            "patch_present": true,
+            "non_empty_patch": true,
+            "attempts": 1,
+            "retry_reasons": [],
+            "runs": 3,
+            "resolved_count": 1,
+            "pass_at_1": false,
+            "tests_run_before_submit": false
+        }]
+    });
+
+    std::fs::write(
+        base_dir.join("results.json"),
+        serde_json::to_string(&base_sweep).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        cand_dir.join("results.json"),
+        serde_json::to_string(&cand_sweep).unwrap(),
+    )
+    .unwrap();
+
+    let cmp_res = maxwells_daemon::cli::compare_rehearsals(&base_dir, &cand_dir);
+    assert!(cmp_res.is_err());
+    let err_msg = cmp_res.err().unwrap().to_string();
+    assert!(err_msg.contains("Drift/regression comparison failed: regressions detected."));
+}

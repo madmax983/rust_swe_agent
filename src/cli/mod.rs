@@ -1057,6 +1057,12 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     }
 
     if is_rehearsal && !dry_run {
+        if skip_evaluator {
+            let stale_eval = output_dir.join("evaluation.json");
+            if stale_eval.exists() {
+                std::fs::remove_file(&stale_eval)?;
+            }
+        }
         if !skip_evaluator {
             let eval_backend = match eval_backend_str.to_lowercase().as_str() {
                 "none" => crate::run::evaluate::EvaluateBackend::None,
@@ -4177,6 +4183,29 @@ pub fn compare_rehearsals(
                         regressions.push(format!(
                             "Instance {id} failed to submit in candidate (outcome: {:?}).",
                             cand_inst.outcome
+                        ));
+                    }
+                }
+                if base_inst.resolved_count != cand_inst.resolved_count {
+                    drift_messages.push(format!(
+                        "Instance {id} results resolved count changed from {} to {}",
+                        base_inst.resolved_count, cand_inst.resolved_count
+                    ));
+                    if base_inst.resolved_count > cand_inst.resolved_count {
+                        regressions.push(format!(
+                            "Instance {id} results resolved count regressed from {} to {} in candidate.",
+                            base_inst.resolved_count, cand_inst.resolved_count
+                        ));
+                    }
+                }
+                if base_inst.pass_at_1 != cand_inst.pass_at_1 {
+                    drift_messages.push(format!(
+                        "Instance {id} results pass@1 status changed from {} to {}",
+                        base_inst.pass_at_1, cand_inst.pass_at_1
+                    ));
+                    if base_inst.pass_at_1 && !cand_inst.pass_at_1 {
+                        regressions.push(format!(
+                            "Instance {id} results pass@1 regressed from true to false in candidate."
                         ));
                     }
                 }

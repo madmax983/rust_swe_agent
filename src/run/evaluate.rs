@@ -924,21 +924,26 @@ fn run_rehearsal_eval(
                     traj_path.display()
                 ))
             })?;
-            let traj_val = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
+            let traj: crate::trajectory::Trajectory =
+                serde_json::from_str(&content).map_err(|e| {
+                    Error::Trajectory(format!(
+                        "Failed to parse trajectory file {} during rehearsal: {e}",
+                        traj_path.display()
+                    ))
+                })?;
+
+            let outcome = traj.info.outcome.as_deref().ok_or_else(|| {
                 Error::Trajectory(format!(
-                    "Failed to parse trajectory file {} during rehearsal: {e}",
+                    "Trajectory file {} info.outcome is missing or null during rehearsal",
                     traj_path.display()
                 ))
             })?;
+            let partial = traj.info.partial;
 
             if patch_path.exists() {
                 let metadata = std::fs::metadata(&patch_path)?;
-                if metadata.len() > 0 {
-                    let outcome = traj_val["info"]["outcome"].as_str();
-                    let partial = traj_val["info"]["partial"].as_bool().unwrap_or(false);
-                    if outcome == Some("submitted") && !partial {
-                        run_resolved = true;
-                    }
+                if metadata.len() > 0 && outcome == "submitted" && !partial {
+                    run_resolved = true;
                 }
             }
 
