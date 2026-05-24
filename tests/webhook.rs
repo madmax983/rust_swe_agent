@@ -140,6 +140,8 @@ fn make_mini_args(
         trace_id: None,
         webhook_url,
         webhook_headers,
+        event_log: None,
+        event_log_instance_id: None,
         local_workdir: None,
         read_only: false,
         allow_mcp_in_read_only: false,

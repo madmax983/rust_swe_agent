@@ -53,6 +53,8 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+pub struct JsonExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -191,6 +193,38 @@ impl TrajectoryExporter for HtmlExporter {
 
         html.push_str("</body>\n</html>");
         html
+    }
+}
+
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+
+        let mut messages = Vec::new();
+        for msg in &trajectory.messages {
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            messages.push(serde_json::json!({
+                "role": msg.role,
+                "content": content
+            }));
+        }
+
+        let mut export_obj = serde_json::Map::new();
+        if let Some(task) = &trajectory.info.task {
+            export_obj.insert(
+                "task".to_string(),
+                serde_json::Value::String(redactor.redact_text(task, surface::EXPORT).text),
+            );
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            export_obj.insert(
+                "outcome".to_string(),
+                serde_json::Value::String(redactor.redact_text(outcome, surface::EXPORT).text),
+            );
+        }
+        export_obj.insert("messages".to_string(), serde_json::Value::Array(messages));
+
+        serde_json::to_string_pretty(&export_obj).unwrap_or_default()
     }
 }
 
@@ -338,6 +372,28 @@ mod tests {
         assert!(html.contains("Add a feature"));
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
+
         assert!(html.contains("Hello user"));
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let json = JsonExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["task"], "Add a feature");
+        assert_eq!(parsed["outcome"], "submitted");
+        assert_eq!(parsed["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(parsed["messages"][0]["role"], "system");
+        assert_eq!(parsed["messages"][0]["content"], "System prompt");
     }
 }

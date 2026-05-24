@@ -2396,7 +2396,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "json-export"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -2453,7 +2456,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/json-export)".into(),
         ))
     })?;
     let traj_path =
@@ -2472,9 +2475,15 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
             use crate::trajectory::export::{MarkdownExporter, TrajectoryExporter};
             MarkdownExporter::export(&traj)
         }
+
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "json-export" => {
+            use crate::trajectory::export::{JsonExporter, TrajectoryExporter};
+            JsonExporter::export(&traj)
+        }
+
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -2517,6 +2526,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
 }
 
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
@@ -2532,6 +2542,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
@@ -2547,6 +2558,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))
