@@ -11,6 +11,14 @@ use crate::error::Error;
 /// Recompute sweep-wide aggregates and reconcile with results.json and evaluation.json.
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &AuditCmd) -> Result<(), Error> {
+    let log_msg = |msg: &str| {
+        if args.format == "json" {
+            eprintln!("{msg}");
+        } else {
+            println!("{msg}");
+        }
+    };
+
     let results_path = args.sweep.join("results.json");
     if !results_path.exists() {
         return Err(Error::Audit(format!(
@@ -32,11 +40,6 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
 
     // Recursively collect all *.traj.json and trajectory.json files
     let all_trajectories = collect_trajectories_on_disk(&args.sweep)?;
-    if all_trajectories.is_empty() {
-        return Err(Error::Audit(
-            "No trajectories found in sweep directory".to_string(),
-        ));
-    }
 
     // Map files to (instance_id, run_index) with deduplication (preferring nested paths)
     let mut instances_runs: HashMap<String, BTreeMap<u32, PathBuf>> = HashMap::new();
@@ -48,11 +51,26 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                 .get(&run_index)
                 .cloned();
             if let Some(existing_path) = existing {
-                if path.components().count() > existing_path.components().count() {
+                let current_count = path.components().count();
+                let existing_count = existing_path.components().count();
+                if current_count > existing_count {
                     instances_runs
                         .entry(inst_id)
                         .or_default()
                         .insert(run_index, path.clone());
+                } else if current_count == existing_count {
+                    // Explicitly prefer run-1.traj.json over trajectory.json if they have same depth
+                    let current_file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let existing_file = existing_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    if current_file.contains("run-1") && existing_file.contains("trajectory.json") {
+                        instances_runs
+                            .entry(inst_id)
+                            .or_default()
+                            .insert(run_index, path.clone());
+                    }
                 }
             } else {
                 instances_runs
@@ -90,10 +108,13 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                 instance_exit_reasons.insert(id.to_string(), exit_reason.to_string());
                 results_outcomes.insert(id.to_string(), outcome.to_string());
 
-                let expected_runs = inst
+                let mut expected_runs = inst
                     .get("runs")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(1);
+                if expected_runs == 0 {
+                    expected_runs = 1;
+                }
                 instance_expected_runs.insert(id.to_string(), expected_runs);
 
                 if exit_reason == "budget_halt"
@@ -116,7 +137,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
     for inst_id in &traj_instances {
         if !results_instances.contains(inst_id) {
             let msg = format!("audit:orphan:trajectory:{inst_id}");
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -129,7 +150,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                 continue;
             }
             let msg = format!("audit:missing:trajectory:{inst_id}");
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -138,6 +159,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
     // Bijective checks: Trajectories vs Evaluation (supporting legacy sb-cli format)
     let mut eval_instances = HashSet::new();
     let mut eval_resolved = HashMap::new();
+    let mut is_legacy_format = false;
     if let Some(eval) = &evaluation {
         if let Some(instances) = eval.get("instances").and_then(serde_json::Value::as_array) {
             for inst in instances {
@@ -152,6 +174,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             }
         } else {
             // Support legacy sb-cli resolved_ids / submitted_ids structure
+            is_legacy_format = true;
             if let Some(resolved_ids) = eval
                 .get("resolved_ids")
                 .and_then(serde_json::Value::as_array)
@@ -177,9 +200,9 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         }
 
         for inst_id in &traj_instances {
-            if !eval_instances.contains(inst_id) {
+            if !is_legacy_format && !eval_instances.contains(inst_id) {
                 let msg = format!("audit:orphan:evaluation:{inst_id}");
-                println!("{msg}");
+                log_msg(&msg);
                 divergences.push(msg);
                 failed = true;
             }
@@ -191,7 +214,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                     continue;
                 }
                 let msg = format!("audit:missing:evaluation:{inst_id}");
-                println!("{msg}");
+                log_msg(&msg);
                 divergences.push(msg);
                 failed = true;
             }
@@ -199,16 +222,42 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
     }
 
     // Validate rerun trajectory slot completeness per instance
+    #[allow(clippy::cast_possible_truncation)]
     for (inst_id, runs) in &instances_runs {
         if let Some(&expected_runs) = instance_expected_runs.get(inst_id) {
-            let actual_runs = runs.len() as u64;
-            if actual_runs != expected_runs {
-                let msg = format!(
-                    "audit:mismatch:instance:runs:{inst_id} expected={expected_runs} actual={actual_runs}"
-                );
-                println!("{msg}");
-                divergences.push(msg);
-                failed = true;
+            let is_exempt = budget_halted_or_skipped_results.contains(inst_id);
+            if is_exempt {
+                // If exempt, we just verify that all keys present are contiguous from 1
+                let actual_count = runs.len() as u32;
+                for r in 1..=actual_count {
+                    if !runs.contains_key(&r) {
+                        let msg =
+                            format!("audit:mismatch:instance:runs:{inst_id} missing run index {r}");
+                        log_msg(&msg);
+                        divergences.push(msg);
+                        failed = true;
+                    }
+                }
+            } else {
+                // If not exempt, we require all indices 1..=expected_runs to be present
+                for r in 1..=(expected_runs as u32) {
+                    if !runs.contains_key(&r) {
+                        let msg =
+                            format!("audit:mismatch:instance:runs:{inst_id} missing run index {r}");
+                        log_msg(&msg);
+                        divergences.push(msg);
+                        failed = true;
+                    }
+                }
+                let actual_runs = runs.len() as u64;
+                if actual_runs != expected_runs {
+                    let msg = format!(
+                        "audit:mismatch:instance:runs:{inst_id} expected={expected_runs} actual={actual_runs}"
+                    );
+                    log_msg(&msg);
+                    divergences.push(msg);
+                    failed = true;
+                }
             }
         }
     }
@@ -310,7 +359,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                         } else if !has_partial_tokens {
                             has_partial_tokens = true;
                             let msg = "audit:partial:trajectory:token_usage".to_string();
-                            println!("{msg}");
+                            log_msg(&msg);
                             divergences.push(msg);
                         }
 
@@ -358,7 +407,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
 
     if has_partial_durations {
         let msg = "audit:partial:trajectory:duration_secs".to_string();
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
     }
 
@@ -377,7 +426,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         let msg = format!(
             "audit:mismatch:sweep:total_cost_usd expected={expected_cost} actual={recomputed_total_cost}"
         );
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
         failed = true;
     }
@@ -404,7 +453,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         let msg = format!(
             "audit:mismatch:sweep:submitted expected={expected_submitted} actual={recomputed_submitted}"
         );
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
         failed = true;
     }
@@ -412,7 +461,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         let msg = format!(
             "audit:mismatch:sweep:errored expected={expected_errored} actual={recomputed_errored}"
         );
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
         failed = true;
     }
@@ -420,7 +469,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         let msg = format!(
             "audit:mismatch:sweep:skipped expected={expected_skipped} actual={recomputed_skipped}"
         );
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
         failed = true;
     }
@@ -428,7 +477,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         let msg = format!(
             "audit:mismatch:sweep:budget_halted expected={expected_budget_halted} actual={recomputed_budget_halted}"
         );
-        println!("{msg}");
+        log_msg(&msg);
         divergences.push(msg);
         failed = true;
     }
@@ -461,7 +510,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             let msg = format!(
                 "audit:mismatch:sweep:total_input_tokens expected={expected_input_tokens} actual={recomputed_prompt_tokens}"
             );
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -469,7 +518,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             let msg = format!(
                 "audit:mismatch:sweep:total_cache_read_tokens expected={expected_cache_read_tokens} actual={recomputed_cache_read_tokens}"
             );
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -477,7 +526,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             let msg = format!(
                 "audit:mismatch:sweep:total_cache_creation_tokens expected={expected_cache_creation_tokens} actual={recomputed_cache_creation_tokens}"
             );
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -485,7 +534,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             let msg = format!(
                 "audit:mismatch:sweep:total_completion_tokens expected={expected_completion_tokens} actual={recomputed_completion_tokens}"
             );
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
@@ -516,7 +565,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                 }
                 if !has_submitted_run {
                     let msg = format!("audit:contradiction:instance:{inst_id}");
-                    println!("{msg}");
+                    log_msg(&msg);
                     divergences.push(msg);
                     failed = true;
                 }
@@ -541,7 +590,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                         let msg = format!(
                             "audit:mismatch:instance:duration_secs:{id} expected={expected_dur} actual={actual_dur}"
                         );
-                        println!("{msg}");
+                        log_msg(&msg);
                         divergences.push(msg);
                         failed = true;
                     }
@@ -584,18 +633,18 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
             if actual != expected {
                 let msg =
                     format!("audit:mismatch:dataset:sha256 expected={expected} actual={actual}");
-                println!("{msg}");
+                log_msg(&msg);
                 divergences.push(msg);
                 failed = true;
             }
         } else {
             let msg = "audit:mismatch:dataset:sha256:expected_missing".to_string();
-            println!("{msg}");
+            log_msg(&msg);
             divergences.push(msg);
             failed = true;
         }
     } else {
-        println!("audit:dataset:skipped");
+        log_msg("audit:dataset:skipped");
     }
 
     let overall_pass_fail = if failed { "fail" } else { "pass" };
