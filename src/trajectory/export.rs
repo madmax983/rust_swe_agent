@@ -47,7 +47,6 @@ pub struct MarkdownExporter;
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
-
 #[cfg(feature = "finetune-export")]
 pub struct FinetuneExporter;
 
@@ -328,7 +327,6 @@ mod tests {
         assert!(csv.contains("assistant,\"Hello \"\"user\"\"\""));
     }
 
-
     #[allow(clippy::unwrap_used)]
     #[cfg(feature = "finetune-export")]
     #[test]
@@ -347,7 +345,10 @@ mod tests {
         let msgs = parsed.get("messages").unwrap().as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].get("role").unwrap().as_str().unwrap(), "system");
-        assert_eq!(msgs[0].get("content").unwrap().as_str().unwrap(), "System prompt");
+        assert_eq!(
+            msgs[0].get("content").unwrap().as_str().unwrap(),
+            "System prompt"
+        );
     }
 
     #[cfg(feature = "mermaid-export")]

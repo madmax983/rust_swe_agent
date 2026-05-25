@@ -2491,7 +2491,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid" | "finetune") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "finetune"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -4896,13 +4899,15 @@ mod tests {
         }
     }
 
-
     #[allow(clippy::unwrap_used)]
     #[cfg(not(feature = "finetune-export"))]
     #[test]
     fn test_finetune_export_missing_feature() {
         let t = crate::trajectory::Trajectory::new();
         let err = super::inspect_export_finetune(&t).unwrap_err();
-        assert!(err.to_string().contains("requires the `finetune-export` Cargo feature"));
+        assert!(
+            err.to_string()
+                .contains("requires the `finetune-export` Cargo feature")
+        );
     }
 }
