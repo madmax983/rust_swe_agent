@@ -53,10 +53,29 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
 
     // Parse instances from results.json
     let mut results_instances = HashSet::new();
+    let mut budget_halted_or_skipped_results = HashSet::new();
+    let mut instance_exit_reasons = HashMap::new();
     if let Some(instances) = results.get("instances").and_then(|i| i.as_array()) {
         for inst in instances {
             if let Some(id) = inst.get("instance_id").and_then(|id| id.as_str()) {
                 results_instances.insert(id.to_string());
+
+                let exit_reason = inst
+                    .get("exit_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let outcome = inst.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
+                instance_exit_reasons.insert(id.to_string(), exit_reason.to_string());
+
+                if exit_reason == "budget_halt"
+                    || exit_reason == "budget_halted"
+                    || outcome == "budget_halted"
+                    || outcome == "skipped"
+                    || exit_reason == "skipped"
+                    || exit_reason == "skipped_resume"
+                {
+                    budget_halted_or_skipped_results.insert(id.to_string());
+                }
             }
         }
     }
@@ -76,6 +95,10 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
 
     for inst_id in &results_instances {
         if !traj_instances.contains(inst_id) {
+            // Exempt if it was budget halted or skipped before starting
+            if budget_halted_or_skipped_results.contains(inst_id) {
+                continue;
+            }
             let msg = format!("audit:missing:trajectory:{inst_id}");
             println!("{msg}");
             divergences.push(msg);
@@ -128,18 +151,38 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
     let mut has_partial_tokens = false;
     let mut has_partial_durations = false;
 
-    let mut instance_outcomes = HashMap::new();
     let mut instance_durations = HashMap::new();
 
+    let mut recomputed_submitted = 0;
+    let mut recomputed_errored = 0;
+    let mut recomputed_skipped = 0;
+    let mut recomputed_budget_halted = 0;
+
     for (inst_id, runs) in &instances_runs {
-        // Find outcome from run with highest run_index (latest attempt)
-        if let Some(latest_run) = runs.iter().max_by_key(|r| r.0) {
-            let path = &latest_run.1;
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(val) = serde_json::from_str::<Value>(&content) {
-                    if let Some(info) = val.get("info") {
-                        if let Some(outcome) = info.get("outcome").and_then(|o| o.as_str()) {
-                            instance_outcomes.insert(inst_id.clone(), outcome.to_string());
+        // Compute outcomes based on skipped_resume semantics or active runs
+        if instance_exit_reasons
+            .get(inst_id)
+            .map(std::string::String::as_str)
+            == Some("skipped_resume")
+        {
+            recomputed_skipped += 1;
+        } else {
+            // Count outcomes from all runs of this instance
+            for (_run_index, path) in runs {
+                if let Ok(content) = fs::read_to_string(path) {
+                    if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                        if let Some(info) = val.get("info") {
+                            if let Some(outcome) = info.get("outcome").and_then(|o| o.as_str()) {
+                                match outcome {
+                                    "submitted" => recomputed_submitted += 1,
+                                    "errored" | "error" => recomputed_errored += 1,
+                                    "skipped" => recomputed_skipped += 1,
+                                    "budget_halted" | "budget_halt" => {
+                                        recomputed_budget_halted += 1
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                 }
@@ -220,10 +263,15 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         divergences.push(msg);
     }
 
-    // Reconcile Cost
+    // Reconcile Cost (Reconcile against actual_cost_usd when available)
     let expected_cost = results
-        .get("total_cost_usd")
+        .get("actual_cost_usd")
         .and_then(serde_json::Value::as_f64)
+        .or_else(|| {
+            results
+                .get("total_cost_usd")
+                .and_then(serde_json::Value::as_f64)
+        })
         .unwrap_or(0.0);
 
     if (recomputed_total_cost - expected_cost).abs() > args.cost_tolerance_usd {
@@ -236,21 +284,6 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
     }
 
     // Reconcile Outcomes
-    let mut recomputed_submitted = 0;
-    let mut recomputed_errored = 0;
-    let mut recomputed_skipped = 0;
-    let mut recomputed_budget_halted = 0;
-
-    for outcome in instance_outcomes.values() {
-        match outcome.as_str() {
-            "submitted" => recomputed_submitted += 1,
-            "errored" | "error" => recomputed_errored += 1,
-            "skipped" => recomputed_skipped += 1,
-            "budget_halted" | "budget_halt" => recomputed_budget_halted += 1,
-            _ => {}
-        }
-    }
-
     let expected_submitted = results
         .get("submitted")
         .and_then(serde_json::Value::as_u64)
@@ -301,11 +334,16 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         failed = true;
     }
 
-    // Reconcile Tokens
+    // Reconcile Tokens (supports total_prompt_tokens legacy alias)
     if !has_partial_tokens {
         let expected_input_tokens = results
             .get("total_input_tokens")
             .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                results
+                    .get("total_prompt_tokens")
+                    .and_then(serde_json::Value::as_u64)
+            })
             .unwrap_or(0);
         let expected_cache_read_tokens = results
             .get("total_cache_read_tokens")
@@ -354,17 +392,34 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
         }
     }
 
-    // Contradiction checks
+    // Contradiction checks (rerun-aware checking if ANY run had outcome "submitted")
     if evaluation.is_some() {
         for (inst_id, &resolved) in &eval_resolved {
             if resolved {
-                if let Some(outcome) = instance_outcomes.get(inst_id) {
-                    if outcome != "submitted" {
-                        let msg = format!("audit:contradiction:instance:{inst_id}");
-                        println!("{msg}");
-                        divergences.push(msg);
-                        failed = true;
+                let mut has_submitted_run = false;
+                if let Some(runs) = instances_runs.get(inst_id) {
+                    for (_run_index, path) in runs {
+                        if let Ok(content) = fs::read_to_string(path) {
+                            if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                                if let Some(info) = val.get("info") {
+                                    if let Some(outcome) =
+                                        info.get("outcome").and_then(|o| o.as_str())
+                                    {
+                                        if outcome == "submitted" {
+                                            has_submitted_run = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
+                }
+                if !has_submitted_run {
+                    let msg = format!("audit:contradiction:instance:{inst_id}");
+                    println!("{msg}");
+                    divergences.push(msg);
+                    failed = true;
                 }
             }
         }
