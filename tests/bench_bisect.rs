@@ -8,7 +8,8 @@
     clippy::float_cmp,
     clippy::map_unwrap_or,
     clippy::unnecessary_map_or,
-    clippy::redundant_closure_for_method_calls
+    clippy::redundant_closure_for_method_calls,
+    clippy::too_many_lines
 )]
 
 use std::fs;
@@ -413,4 +414,155 @@ fn bisect_resume_loads_existing_results_and_bypasses_evaluation() {
     assert!(visited_strs.contains(&"c4"), "should record c4 visited");
     assert!(visited_strs.contains(&"c6"), "should record c6 visited");
     assert!(visited_strs.contains(&"c5"), "should record c5 visited");
+}
+
+#[test]
+fn bisect_resume_fails_on_parameter_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let good_dir = tmp.path().join("good_sweep");
+    let bad_dir = tmp.path().join("bad_sweep");
+    create_mock_sweep_results(&good_dir, "good_sha_123");
+    create_mock_sweep_results(&bad_dir, "bad_sha_456");
+
+    let bisect_json_path = tmp.path().join("bisect.json");
+
+    // Pre-populate bisect.json state with smoke_instances = 5, smoke_seed = 123, etc.
+    let initial_state = serde_json::json!({
+        "schema_version": "1.0.0",
+        "good_sha": "good_sha_123",
+        "bad_sha": "bad_sha_456",
+        "commits_visited": [],
+        "per_commit": {},
+        "suspect_commit": null,
+        "total_cost": 0.0,
+        "total_wallclock": 0.0,
+        "cache_reuse_count": 0,
+        "schema_breaks": [],
+        "outcome": null,
+        "smoke_instances": 5,
+        "smoke_seed": 123,
+        "smoke_model": "claude-3-haiku-20240307",
+        "regression_margin": 0.20
+    });
+    fs::write(
+        &bisect_json_path,
+        serde_json::to_string_pretty(&initial_state).unwrap(),
+    )
+    .unwrap();
+
+    // 1. Mismatch on smoke-instances
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "10", // mismatch
+        "--smoke-seed",
+        "123",
+        "--smoke-model",
+        "claude-3-haiku-20240307",
+        "--regression-margin",
+        "0.20",
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: smoke_instances"),
+        "expected smoke_instances error but got:\n{stderr}"
+    );
+
+    // 2. Mismatch on smoke-seed
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "5",
+        "--smoke-seed",
+        "999", // mismatch
+        "--smoke-model",
+        "claude-3-haiku-20240307",
+        "--regression-margin",
+        "0.20",
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: smoke_seed"),
+        "expected smoke_seed error but got:\n{stderr}"
+    );
+
+    // 3. Mismatch on smoke-model
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "5",
+        "--smoke-seed",
+        "123",
+        "--smoke-model",
+        "gpt-4o-mini", // mismatch
+        "--regression-margin",
+        "0.20",
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: smoke_model"),
+        "expected smoke_model error but got:\n{stderr}"
+    );
+
+    // 4. Mismatch on regression-margin
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "5",
+        "--smoke-seed",
+        "123",
+        "--smoke-model",
+        "claude-3-haiku-20240307",
+        "--regression-margin",
+        "0.10", // mismatch
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: regression_margin"),
+        "expected regression_margin error but got:\n{stderr}"
+    );
 }

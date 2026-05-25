@@ -40,6 +40,14 @@ pub struct BisectState {
     pub cache_reuse_count: usize,
     pub schema_breaks: Vec<String>,
     pub outcome: Option<String>,
+    #[serde(default)]
+    pub smoke_instances: usize,
+    #[serde(default)]
+    pub smoke_seed: Option<u64>,
+    #[serde(default)]
+    pub smoke_model: Option<String>,
+    #[serde(default)]
+    pub regression_margin: Option<f64>,
 }
 
 impl Default for BisectState {
@@ -56,6 +64,10 @@ impl Default for BisectState {
             cache_reuse_count: 0,
             schema_breaks: Vec::new(),
             outcome: None,
+            smoke_instances: 0,
+            smoke_seed: None,
+            smoke_model: None,
+            regression_margin: None,
         }
     }
 }
@@ -256,6 +268,31 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     };
     let _restore_guard = GitRestoreGuard { original_head };
 
+    // Load good sweep dataset properties for reproducible subset selection
+    let good_sweep = load_sweep_results(&args.good)?;
+    let manifest = good_sweep.manifest.as_ref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "Good sweep is missing manifest".to_owned(),
+        ))
+    })?;
+
+    // Derive stable seed if not provided
+    let smoke_seed = args.smoke_seed.unwrap_or_else(|| {
+        let hash = hash_manifest(manifest);
+        parse_hex_seed(&hash)
+    });
+
+    let smoke_model = args.smoke_model.clone().unwrap_or_else(|| {
+        let name = manifest.model.name.to_ascii_lowercase();
+        if name.starts_with("claude") || name.contains("anthropic") {
+            "claude-3-haiku-20240307".to_owned()
+        } else if name.starts_with("gpt") || name.contains("openai") {
+            "gpt-4o-mini".to_owned()
+        } else {
+            "claude-3-haiku-20240307".to_owned()
+        }
+    });
+
     // 3. Load good/bad or resume state
     let mut state = BisectState::default();
     if let Some(ref resume_path) = args.resume {
@@ -265,27 +302,54 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                 resume_path.display()
             );
             let content = std::fs::read_to_string(resume_path).map_err(Error::Io)?;
-            state = serde_json::from_str(&content).map_err(Error::Json)?;
+            let loaded: BisectState = serde_json::from_str(&content).map_err(Error::Json)?;
+
+            // Validate parameter compatibility on resume!
+            if loaded.smoke_instances > 0 && loaded.smoke_instances != args.smoke_instances {
+                return Err(Error::Preflight(format!(
+                    "Resume parameter mismatch: smoke_instances in state ({}) differs from requested ({})",
+                    loaded.smoke_instances, args.smoke_instances
+                )));
+            }
+            if let Some(state_seed) = loaded.smoke_seed {
+                if state_seed != smoke_seed {
+                    return Err(Error::Preflight(format!(
+                        "Resume parameter mismatch: smoke_seed in state ({}) differs from effective seed ({})",
+                        state_seed, smoke_seed
+                    )));
+                }
+            }
+            if let Some(ref state_model) = loaded.smoke_model {
+                if state_model != &smoke_model {
+                    return Err(Error::Preflight(format!(
+                        "Resume parameter mismatch: smoke_model in state ({:?}) differs from effective model ({:?})",
+                        state_model, smoke_model
+                    )));
+                }
+            }
+            if let Some(state_margin) = loaded.regression_margin {
+                if (state_margin - args.regression_margin).abs() > 1e-5 {
+                    return Err(Error::Preflight(format!(
+                        "Resume parameter mismatch: regression_margin in state ({:.2}) differs from requested ({:.2})",
+                        state_margin, args.regression_margin
+                    )));
+                }
+            }
+
+            state = loaded;
         } else {
             println!(
                 "[bisect] Starting new bisect run, output will be written to: {}",
                 resume_path.display()
             );
-            let good_sweep = load_sweep_results(&args.good)?;
             let bad_sweep = load_sweep_results(&args.bad)?;
-
-            let good_manifest = good_sweep.manifest.ok_or_else(|| {
-                Error::Config(crate::error::ConfigError::Invalid(
-                    "Good sweep directory results.json is missing 'manifest'".to_owned(),
-                ))
-            })?;
             let bad_manifest = bad_sweep.manifest.ok_or_else(|| {
                 Error::Config(crate::error::ConfigError::Invalid(
                     "Bad sweep directory results.json is missing 'manifest'".to_owned(),
                 ))
             })?;
 
-            let good_sha = good_manifest.harness.git_sha.ok_or_else(|| {
+            let good_sha = manifest.harness.git_sha.clone().ok_or_else(|| {
                 Error::Config(crate::error::ConfigError::Invalid(
                     "Good sweep manifest is missing harness git_sha".to_owned(),
                 ))
@@ -300,21 +364,14 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
             state.bad_sha = bad_sha;
         }
     } else {
-        let good_sweep = load_sweep_results(&args.good)?;
         let bad_sweep = load_sweep_results(&args.bad)?;
-
-        let good_manifest = good_sweep.manifest.ok_or_else(|| {
-            Error::Config(crate::error::ConfigError::Invalid(
-                "Good sweep directory results.json is missing 'manifest'".to_owned(),
-            ))
-        })?;
         let bad_manifest = bad_sweep.manifest.ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(
                 "Bad sweep directory results.json is missing 'manifest'".to_owned(),
             ))
         })?;
 
-        let good_sha = good_manifest.harness.git_sha.ok_or_else(|| {
+        let good_sha = manifest.harness.git_sha.clone().ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(
                 "Good sweep manifest is missing harness git_sha".to_owned(),
             ))
@@ -380,20 +437,6 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
         commit_list.len()
     );
 
-    // Load good sweep dataset properties for reproducible subset selection
-    let good_sweep = load_sweep_results(&args.good)?;
-    let manifest = good_sweep.manifest.as_ref().ok_or_else(|| {
-        Error::Config(crate::error::ConfigError::Invalid(
-            "Good sweep is missing manifest".to_owned(),
-        ))
-    })?;
-
-    // Derive stable seed if not provided
-    let smoke_seed = args.smoke_seed.unwrap_or_else(|| {
-        let hash = hash_manifest(manifest);
-        parse_hex_seed(&hash)
-    });
-
     // Select N smoke instances reproducibly
     let mut all_instances: Vec<String> = good_sweep
         .instances
@@ -423,11 +466,6 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
 
     let good_schema = load_schema_version_from_results_json(&args.good).unwrap_or((1u16, 10u16));
 
-    let smoke_model = args.smoke_model.clone().unwrap_or_else(|| {
-        crate::config::Config::defaults()
-            .map_or_else(|_| "claude-opus-4-7".to_owned(), |c| c.root.model.name)
-    });
-
     let good_resolved_count = if good_sweep.instances.is_empty() {
         good_sweep.submitted
     } else {
@@ -435,18 +473,26 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
             .instances
             .iter()
             .filter(|inst| {
-                inst.resolved_count > 0
-                    || (inst.outcome.as_deref() == Some("submitted")
-                        && inst.failure_category.is_none())
+                smoke_instances_subset.contains(&inst.instance_id)
+                    && (inst.resolved_count > 0
+                        || (inst.outcome.as_deref() == Some("submitted")
+                            && inst.failure_category.is_none()))
             })
             .count()
     };
 
-    let good_resolved_rate = if good_sweep.total > 0 {
+    let good_resolved_rate = if !smoke_instances_subset.is_empty() {
+        good_resolved_count as f64 / smoke_instances_subset.len() as f64
+    } else if good_sweep.total > 0 {
         good_resolved_count as f64 / good_sweep.total as f64
     } else {
         1.0
     };
+
+    state.smoke_instances = args.smoke_instances;
+    state.smoke_seed = Some(smoke_seed);
+    state.smoke_model = Some(smoke_model.clone());
+    state.regression_margin = Some(args.regression_margin);
     println!(
         "[bisect] Good resolved rate: {:.2}%",
         good_resolved_rate * 100.0
@@ -672,15 +718,10 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
             let mut cmd = Command::new(&target_binary_path);
             cmd.arg("bench").arg("swebench");
 
-            let ds_manifest = &manifest.dataset;
-            if ds_manifest.source_kind == "named" {
-                cmd.arg("--dataset")
-                    .arg(ds_manifest.alias.as_deref().unwrap_or("lite"));
-                if let Some(ref split) = ds_manifest.split {
-                    cmd.arg("--split").arg(split);
-                }
-            } else {
-                cmd.arg("--dataset-path").arg(&ds_manifest.path);
+            cmd.arg("--dataset-path").arg(&manifest.dataset.path);
+
+            if let Some(first_config) = manifest.config.overlay_paths.first() {
+                cmd.arg("--config").arg(first_config);
             }
 
             cmd.arg("--instance-ids")
