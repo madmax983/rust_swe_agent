@@ -566,3 +566,149 @@ fn bisect_resume_fails_on_parameter_mismatch() {
         "expected regression_margin error but got:\n{stderr}"
     );
 }
+
+#[test]
+fn bisect_resume_fails_on_good_bad_sha_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let good_dir = tmp.path().join("good_sweep");
+    let bad_dir = tmp.path().join("bad_sweep");
+    create_mock_sweep_results(&good_dir, "good_sha_123");
+    create_mock_sweep_results(&bad_dir, "bad_sha_456");
+
+    let bisect_json_path = tmp.path().join("bisect.json");
+
+    // 1. Mismatch on good_sha
+    let initial_state_good_mismatch = serde_json::json!({
+        "schema_version": "1.0.0",
+        "good_sha": "different_good_sha", // mismatch
+        "bad_sha": "bad_sha_456",
+        "commits_visited": [],
+        "per_commit": {},
+        "suspect_commit": null,
+        "total_cost": 0.0,
+        "total_wallclock": 0.0,
+        "cache_reuse_count": 0,
+        "schema_breaks": [],
+        "outcome": null,
+        "smoke_instances": 5,
+        "smoke_seed": 123,
+        "smoke_model": "claude-3-haiku-20240307",
+        "regression_margin": 0.20
+    });
+    fs::write(
+        &bisect_json_path,
+        serde_json::to_string_pretty(&initial_state_good_mismatch).unwrap(),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "5",
+        "--smoke-seed",
+        "123",
+        "--smoke-model",
+        "claude-3-haiku-20240307",
+        "--regression-margin",
+        "0.20",
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: good_sha"),
+        "expected good_sha mismatch but got:\n{stderr}"
+    );
+
+    // 2. Mismatch on bad_sha
+    let initial_state_bad_mismatch = serde_json::json!({
+        "schema_version": "1.0.0",
+        "good_sha": "good_sha_123",
+        "bad_sha": "different_bad_sha", // mismatch
+        "commits_visited": [],
+        "per_commit": {},
+        "suspect_commit": null,
+        "total_cost": 0.0,
+        "total_wallclock": 0.0,
+        "cache_reuse_count": 0,
+        "schema_breaks": [],
+        "outcome": null,
+        "smoke_instances": 5,
+        "smoke_seed": 123,
+        "smoke_model": "claude-3-haiku-20240307",
+        "regression_margin": 0.20
+    });
+    fs::write(
+        &bisect_json_path,
+        serde_json::to_string_pretty(&initial_state_bad_mismatch).unwrap(),
+    )
+    .unwrap();
+
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+        "--resume",
+        bisect_json_path.to_str().unwrap(),
+        "--smoke-instances",
+        "5",
+        "--smoke-seed",
+        "123",
+        "--smoke-model",
+        "claude-3-haiku-20240307",
+        "--regression-margin",
+        "0.20",
+    ]);
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume parameter mismatch: bad_sha"),
+        "expected bad_sha mismatch but got:\n{stderr}"
+    );
+}
+
+#[test]
+fn bisect_fails_on_empty_range() {
+    let tmp = tempfile::tempdir().unwrap();
+    let good_dir = tmp.path().join("good_sweep");
+    let bad_dir = tmp.path().join("bad_sweep");
+    create_mock_sweep_results(&good_dir, "good_sha_123");
+    create_mock_sweep_results(&bad_dir, "bad_sha_456");
+
+    let mut cmd = Command::new(binary_path());
+    cmd.args([
+        "bench",
+        "bisect",
+        "--good",
+        good_dir.to_str().unwrap(),
+        "--bad",
+        bad_dir.to_str().unwrap(),
+    ]);
+
+    cmd.env("MAX_BISECT_TEST_ENV", "1");
+    // Empty commits range mocked
+    cmd.env("MAX_BISECT_MOCK_COMMITS", "");
+
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No commits found in the range"),
+        "expected empty range error but got:\n{stderr}"
+    );
+}

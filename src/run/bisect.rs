@@ -75,18 +75,49 @@ impl Default for BisectState {
 /// A Drop guard to restore the original branch/HEAD commit when exiting
 struct GitRestoreGuard {
     original_head: String,
+    active: bool,
+}
+
+impl GitRestoreGuard {
+    fn new(original_head: String) -> Self {
+        Self {
+            original_head,
+            active: true,
+        }
+    }
+
+    fn defuse(&mut self) {
+        self.active = false;
+    }
 }
 
 impl Drop for GitRestoreGuard {
     fn drop(&mut self) {
-        if !self.original_head.is_empty() {
+        if self.active && !self.original_head.is_empty() {
             println!(
                 "[bisect] Restoring original Git HEAD: {}",
                 self.original_head
             );
-            let _ = Command::new("git")
+            match Command::new("git")
                 .args(["checkout", "-f", &self.original_head])
-                .output();
+                .output()
+            {
+                Ok(out) => {
+                    if !out.status.success() {
+                        eprintln!(
+                            "[bisect] WARNING: Failed to restore original Git HEAD (exit {}): {}",
+                            out.status,
+                            String::from_utf8_lossy(&out.stderr).trim()
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[bisect] WARNING: Failed to execute git checkout to restore HEAD: {}",
+                        e
+                    );
+                }
+            }
         }
     }
 }
@@ -115,10 +146,36 @@ fn get_current_git_head() -> Result<String, Error> {
 }
 
 fn is_git_working_tree_clean() -> bool {
-    Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .is_ok_and(|o| o.status.success() && o.stdout.is_empty())
+    if let Ok(o) = Command::new("git").args(["status", "--porcelain"]).output() {
+        if !o.status.success() {
+            return false;
+        }
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Untracked or modified files.
+            // If they are known output files (bisect.json or under runs/), we ignore them.
+            let path_part = if trimmed.len() > 3 {
+                &trimmed[3..]
+            } else {
+                trimmed
+            };
+            let normalized = path_part.replace('\\', "/");
+            if normalized == "bisect.json"
+                || normalized.starts_with("runs/")
+                || normalized.starts_with("runs/bisect_smoke/")
+            {
+                continue;
+            }
+            return false;
+        }
+        true
+    } else {
+        false
+    }
 }
 
 fn load_sweep_results(dir: &Path) -> Result<SweepResults, Error> {
@@ -226,11 +283,14 @@ fn read_current_schema_version_from_file(artifact_file_path: &Path) -> Option<(u
 fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error> {
     let path = dir.join("results.json");
     if !path.exists() {
-        return Ok((1u16, 10u16));
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Sweep results file not found at {}",
+            path.display()
+        ))));
     }
     let file = std::fs::File::open(&path).map_err(Error::Io)?;
     let v: serde_json::Value =
-        serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_default();
+        serde_json::from_reader(std::io::BufReader::new(file)).map_err(Error::Json)?;
     if let Some(schema) = v.get("schema_version") {
         if let (Some(major), Some(minor)) = (
             schema.get("major").and_then(serde_json::Value::as_u64),
@@ -239,7 +299,9 @@ fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error
             return Ok((major as u16, minor as u16));
         }
     }
-    Ok((1u16, 10u16))
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "results.json is missing valid schema_version".to_owned(),
+    )))
 }
 
 #[allow(
@@ -252,7 +314,8 @@ fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error
 )]
 pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     // 1. If not clean, refuse to run (to prevent data loss on checkout)
-    let is_test = std::env::var("MAX_BISECT_TEST_ENV").is_ok();
+    // 1. If not clean, refuse to run (to prevent data loss on checkout)
+    let is_test = cfg!(debug_assertions) && std::env::var("MAX_BISECT_TEST_ENV").is_ok();
     if !is_test && !is_git_working_tree_clean() {
         return Err(Error::Preflight(
             "Git working tree is dirty; commit or stash changes before running bench bisect"
@@ -266,13 +329,31 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     } else {
         get_current_git_head()?
     };
-    let _restore_guard = GitRestoreGuard { original_head };
+    let mut restore_guard = GitRestoreGuard::new(original_head.clone());
 
     // Load good sweep dataset properties for reproducible subset selection
     let good_sweep = load_sweep_results(&args.good)?;
     let manifest = good_sweep.manifest.as_ref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
             "Good sweep is missing manifest".to_owned(),
+        ))
+    })?;
+
+    let bad_sweep = load_sweep_results(&args.bad)?;
+    let bad_manifest = bad_sweep.manifest.as_ref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "Bad sweep is missing manifest".to_owned(),
+        ))
+    })?;
+
+    let good_sha = manifest.harness.git_sha.clone().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "Good sweep manifest is missing harness git_sha".to_owned(),
+        ))
+    })?;
+    let bad_sha = bad_manifest.harness.git_sha.clone().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "Bad sweep manifest is missing harness git_sha".to_owned(),
         ))
     })?;
 
@@ -335,6 +416,18 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                     )));
                 }
             }
+            if !loaded.good_sha.is_empty() && loaded.good_sha != good_sha {
+                return Err(Error::Preflight(format!(
+                    "Resume parameter mismatch: good_sha in state ({}) differs from good sweep manifest SHA ({})",
+                    loaded.good_sha, good_sha
+                )));
+            }
+            if !loaded.bad_sha.is_empty() && loaded.bad_sha != bad_sha {
+                return Err(Error::Preflight(format!(
+                    "Resume parameter mismatch: bad_sha in state ({}) differs from bad sweep manifest SHA ({})",
+                    loaded.bad_sha, bad_sha
+                )));
+            }
 
             state = loaded;
         } else {
@@ -342,46 +435,10 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                 "[bisect] Starting new bisect run, output will be written to: {}",
                 resume_path.display()
             );
-            let bad_sweep = load_sweep_results(&args.bad)?;
-            let bad_manifest = bad_sweep.manifest.ok_or_else(|| {
-                Error::Config(crate::error::ConfigError::Invalid(
-                    "Bad sweep directory results.json is missing 'manifest'".to_owned(),
-                ))
-            })?;
-
-            let good_sha = manifest.harness.git_sha.clone().ok_or_else(|| {
-                Error::Config(crate::error::ConfigError::Invalid(
-                    "Good sweep manifest is missing harness git_sha".to_owned(),
-                ))
-            })?;
-            let bad_sha = bad_manifest.harness.git_sha.ok_or_else(|| {
-                Error::Config(crate::error::ConfigError::Invalid(
-                    "Bad sweep manifest is missing harness git_sha".to_owned(),
-                ))
-            })?;
-
             state.good_sha = good_sha;
             state.bad_sha = bad_sha;
         }
     } else {
-        let bad_sweep = load_sweep_results(&args.bad)?;
-        let bad_manifest = bad_sweep.manifest.ok_or_else(|| {
-            Error::Config(crate::error::ConfigError::Invalid(
-                "Bad sweep directory results.json is missing 'manifest'".to_owned(),
-            ))
-        })?;
-
-        let good_sha = manifest.harness.git_sha.clone().ok_or_else(|| {
-            Error::Config(crate::error::ConfigError::Invalid(
-                "Good sweep manifest is missing harness git_sha".to_owned(),
-            ))
-        })?;
-        let bad_sha = bad_manifest.harness.git_sha.ok_or_else(|| {
-            Error::Config(crate::error::ConfigError::Invalid(
-                "Bad sweep manifest is missing harness git_sha".to_owned(),
-            ))
-        })?;
-
         state.good_sha = good_sha;
         state.bad_sha = bad_sha;
     }
@@ -394,7 +451,11 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     let commit_list = if is_test {
         // In test environment, the commit list can be passed via env or mocked
         if let Ok(commits_env) = std::env::var("MAX_BISECT_MOCK_COMMITS") {
-            commits_env.split(',').map(str::to_owned).collect()
+            if commits_env.is_empty() {
+                vec![]
+            } else {
+                commits_env.split(',').map(str::to_owned).collect()
+            }
         } else {
             vec![state.good_sha.clone(), state.bad_sha.clone()]
         }
@@ -426,10 +487,10 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     };
 
     if commit_list.is_empty() {
-        println!(
-            "[bisect] No commits in the range. Good and Bad commits might be identical or Good is not an ancestor of Bad."
-        );
-        return Ok(());
+        return Err(Error::Preflight(
+            "No commits found in the range. Good commit might not be an ancestor of Bad commit."
+                .to_owned(),
+        ));
     }
 
     println!(
@@ -464,7 +525,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
         smoke_instances_subset
     );
 
-    let good_schema = load_schema_version_from_results_json(&args.good).unwrap_or((1u16, 10u16));
+    let good_schema = load_schema_version_from_results_json(&args.good)?;
 
     let good_resolved_count = if good_sweep.instances.is_empty() {
         good_sweep.submitted
@@ -848,6 +909,21 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
 
     state.outcome = Some("success".to_owned());
     write_bisect_json(&state, args.resume.as_deref())?;
+
+    if !is_test && !original_head.is_empty() {
+        println!("[bisect] Restoring original Git HEAD: {}", original_head);
+        let restore_out = Command::new("git")
+            .args(["checkout", "-f", &original_head])
+            .output()
+            .map_err(Error::Io)?;
+        if !restore_out.status.success() {
+            return Err(Error::Preflight(format!(
+                "Failed to restore original Git HEAD: {}",
+                String::from_utf8_lossy(&restore_out.stderr).trim()
+            )));
+        }
+    }
+    restore_guard.defuse();
 
     if let Some(ref culprit) = state.suspect_commit {
         println!("[bisect] Identified suspect commit: {}", culprit);
