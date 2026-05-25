@@ -86,6 +86,8 @@ pub enum ExitCode {
     BisectBudgetExhausted = 18,
     /// 19 — `bench bisect` found only trajectory-schema breaks in the remaining search space.
     BisectSchemaBreak = 19,
+    /// 20 — `bench audit` detected a divergence exceeding tolerance or a bijection/evaluator contradiction.
+    AuditFailure = 20,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -126,6 +128,7 @@ impl ExitCode {
             Self::ResumeInvalidPrefix => "resume_invalid_prefix",
             Self::BisectBudgetExhausted => "bisect_budget_exhausted",
             Self::BisectSchemaBreak => "bisect_schema_break",
+            Self::AuditFailure => "audit_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -158,6 +161,7 @@ impl ExitCode {
             Error::AgentStagnation { .. } => Self::AgentStagnation,
             Error::BisectBudgetExhausted => Self::BisectBudgetExhausted,
             Error::BisectSchemaBreak => Self::BisectSchemaBreak,
+            Error::Audit(_) => Self::AuditFailure,
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)
@@ -367,5 +371,11 @@ mod tests {
             ExitCode::BisectSchemaBreak.outcome_class(),
             "bisect_schema_break"
         );
+    }
+
+    #[test]
+    fn audit_failure_exit_code_is_20() {
+        assert_eq!(ExitCode::AuditFailure.as_i32(), 20);
+        assert_eq!(ExitCode::AuditFailure.outcome_class(), "audit_failure");
     }
 }

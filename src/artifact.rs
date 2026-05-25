@@ -62,6 +62,7 @@ pub enum ArtifactKind {
     CacheStatsReport,
     LadderReport,
     SkillsPreview,
+    AuditReport,
 }
 
 impl ArtifactKind {
@@ -81,6 +82,7 @@ impl ArtifactKind {
             Self::CacheStatsReport => "cache_stats_report",
             Self::LadderReport => "ladder_report",
             Self::SkillsPreview => "skills_preview",
+            Self::AuditReport => "audit_report",
         }
     }
 }

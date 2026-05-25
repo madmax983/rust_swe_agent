@@ -54,6 +54,10 @@ pub enum Error {
     /// bench bisect schema break
     #[error("bisect schema break")]
     BisectSchemaBreak,
+
+    /// bench audit failure
+    #[error("audit: {0}")]
+    Audit(String),
 }
 
 #[derive(Debug, Error)]
