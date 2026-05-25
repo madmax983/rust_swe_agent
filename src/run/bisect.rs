@@ -203,6 +203,25 @@ fn read_current_schema_version_from_file(artifact_file_path: &Path) -> Option<(u
     Some((major, minor))
 }
 
+fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error> {
+    let path = dir.join("results.json");
+    if !path.exists() {
+        return Ok((1u16, 10u16));
+    }
+    let file = std::fs::File::open(&path).map_err(Error::Io)?;
+    let v: serde_json::Value =
+        serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_default();
+    if let Some(schema) = v.get("schema_version") {
+        if let (Some(major), Some(minor)) = (
+            schema.get("major").and_then(|x| x.as_u64()),
+            schema.get("minor").and_then(|x| x.as_u64()),
+        ) {
+            return Ok((major as u16, minor as u16));
+        }
+    }
+    Ok((1u16, 10u16))
+}
+
 #[allow(
     clippy::unused_async,
     clippy::too_many_lines,
@@ -317,6 +336,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
         let out = Command::new("git")
             .args([
                 "rev-list",
+                "--first-parent",
                 "--topo-order",
                 "--reverse",
                 &format!("{}..{}", state.good_sha, state.bad_sha),
@@ -392,12 +412,30 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
         smoke_instances_subset
     );
 
-    let smoke_model = args
-        .smoke_model
-        .clone()
-        .unwrap_or_else(|| "free-tier-model".to_owned());
+    let good_schema = load_schema_version_from_results_json(&args.good).unwrap_or((1u16, 10u16));
+
+    let smoke_model = args.smoke_model.clone().unwrap_or_else(|| {
+        crate::config::Config::defaults()
+            .map(|c| c.root.model.name)
+            .unwrap_or_else(|_| "claude-opus-4-7".to_owned())
+    });
+
+    let good_resolved_count = if good_sweep.instances.is_empty() {
+        good_sweep.submitted
+    } else {
+        good_sweep
+            .instances
+            .iter()
+            .filter(|inst| {
+                inst.resolved_count > 0
+                    || (inst.outcome.as_deref() == Some("submitted")
+                        && inst.failure_category.is_none())
+            })
+            .count()
+    };
+
     let good_resolved_rate = if good_sweep.total > 0 {
-        good_sweep.submitted as f64 / good_sweep.total as f64
+        good_resolved_count as f64 / good_sweep.total as f64
     } else {
         1.0
     };
@@ -471,8 +509,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
             state.outcome = Some("schema_break".to_owned());
             // Write partial bisect.json
             write_bisect_json(&state, args.resume.as_deref())?;
-            // Exit with bisect_schema_break (19)
-            std::process::exit(crate::exit_code::ExitCode::BisectSchemaBreak.as_i32());
+            return Err(Error::BisectSchemaBreak);
         }
 
         let candidate_sha = commit_list[candidate_idx].clone();
@@ -521,10 +558,6 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
         }
 
         // Read and verify trajectory schema version
-        let good_schema = good_sweep.manifest.as_ref().map_or((1u16, 10u16), |_m| {
-            // We can read it directly from the results.json header if parsed, or default
-            (1u16, 10u16)
-        });
 
         let artifact_file_path = std::env::current_dir()
             .map_err(Error::Io)?
@@ -662,12 +695,26 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
             smoke_results = load_sweep_results(&smoke_output_dir)?;
         }
 
+        let smoke_resolved_count = if smoke_results.instances.is_empty() {
+            smoke_results.submitted
+        } else {
+            smoke_results
+                .instances
+                .iter()
+                .filter(|inst| {
+                    inst.resolved_count > 0
+                        || (inst.outcome.as_deref() == Some("submitted")
+                            && inst.failure_category.is_none())
+                })
+                .count()
+        };
+
         let cost = smoke_results
             .actual_cost_total_usd()
             .unwrap_or(smoke_results.estimated_cost_usd);
         println!(
             "[bisect] Smoke sweep resolved: {}/{}",
-            smoke_results.submitted, smoke_results.total
+            smoke_resolved_count, smoke_results.total
         );
         println!(
             "[bisect] Smoke sweep cost: ${:.4} USD, wallclock: {:.2}s",
@@ -687,7 +734,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
 
         // Determine if candidate has regressed
         let smoke_resolved_rate = if smoke_results.total > 0 {
-            smoke_results.submitted as f64 / smoke_results.total as f64
+            smoke_resolved_count as f64 / smoke_results.total as f64
         } else {
             0.0
         };
@@ -711,7 +758,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
 
         let commit_res = CommitResult {
             commit_sha: candidate_sha.clone(),
-            resolved: smoke_results.submitted,
+            resolved: smoke_resolved_count,
             errored: smoke_results.errored,
             cost_usd: cost,
             wallclock_secs: duration_secs,
@@ -731,7 +778,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                 );
                 state.outcome = Some("budget_exhausted".to_owned());
                 write_bisect_json(&state, args.resume.as_deref())?;
-                std::process::exit(crate::exit_code::ExitCode::BisectBudgetExhausted.as_i32());
+                return Err(Error::BisectBudgetExhausted);
             }
         }
 

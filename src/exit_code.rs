@@ -156,6 +156,8 @@ impl ExitCode {
                 _ => Self::TaskUnsuccessful,
             },
             Error::AgentStagnation { .. } => Self::AgentStagnation,
+            Error::BisectBudgetExhausted => Self::BisectBudgetExhausted,
+            Error::BisectSchemaBreak => Self::BisectSchemaBreak,
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)
