@@ -115,6 +115,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
+            args::AgentCmd::InteractiveReplay(cmd) => agent_interactive_replay(&cmd).await,
         },
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
@@ -2612,12 +2613,14 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
 }
 
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
 }
 
 #[cfg(not(feature = "html-export"))]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format html requires the `html-export` Cargo feature; \
@@ -2627,12 +2630,14 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
 }
 
 #[cfg(not(feature = "csv-export"))]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format csv requires the `csv-export` Cargo feature; \
@@ -2642,12 +2647,14 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))
 }
 
 #[cfg(not(feature = "mermaid-export"))]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
@@ -4362,6 +4369,11 @@ pub fn compare_rehearsals(
 
     println!("\n✅ No regressions detected between baseline and candidate.");
     Ok(())
+}
+
+async fn agent_interactive_replay(cmd: &args::InteractiveReplayCmd) -> Result<(), Error> {
+    let config = crate::config::Config::defaults()?;
+    crate::run::replay::run_interactive(cmd, config).await
 }
 
 #[cfg(test)]

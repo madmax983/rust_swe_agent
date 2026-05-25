@@ -71,6 +71,8 @@ pub enum AgentCmd {
     },
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
+    /// Interactively replay a trajectory through the ratatui dashboard.
+    InteractiveReplay(InteractiveReplayCmd),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -2216,4 +2218,15 @@ mod tests {
     fn env_type_arg_as_str_docker() {
         assert_eq!(EnvTypeArg::Docker.as_str(), "docker");
     }
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct InteractiveReplayCmd {
+    /// Path to the trajectory JSON file.
+    #[arg(long)]
+    pub trajectory: std::path::PathBuf,
+
+    /// Optional delay in milliseconds between steps to watch it happen.
+    #[arg(long)]
+    pub delay_ms: Option<u64>,
 }

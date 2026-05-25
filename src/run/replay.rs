@@ -543,6 +543,61 @@ async fn build_docker_env(_cfg: &Config) -> Result<Box<dyn Environment>, Error> 
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
+pub async fn run_interactive(
+    args: &crate::cli::args::InteractiveReplayCmd,
+    config: Config,
+) -> Result<(), Error> {
+    // 1. Load original trajectory.
+    let file_content = std::fs::read_to_string(&args.trajectory)?;
+    let orig_trajectory: Trajectory = serde_json::from_str(&file_content).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "Invalid trajectory JSON: {e}"
+        )))
+    })?;
+    let cassette = extract_cassette(&orig_trajectory);
+    if cassette.is_empty() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "No assistant messages found in trajectory to replay".into(),
+        )));
+    }
+    let (responses, _fps, _canonicals) = unzip_cassette(cassette);
+    let task = orig_trajectory.info.task.unwrap_or_default();
+    let model = Arc::new(DeterministicModel::new(responses));
+    let env: Box<dyn Environment> = Box::new(LocalEnvironment::new());
+    let dash_handle = crate::agent::RatatuiDashboard::start()?;
+    let stream = dash_handle.stream_sink();
+    let mut replay_config = config;
+    replay_config.root.agent.detect_stagnation = false;
+    let agent: DefaultAgent = DefaultAgentBuilder {
+        config: replay_config,
+        model,
+        env,
+        task,
+        extra_context: None,
+        renderer: None,
+        stream: Some(stream),
+        resume_from: None,
+        read_only: true, // Prevent actual execution
+    }
+    .build()?;
+
+    let mut interactive_agent = crate::agent::InteractiveAgent::new(agent, false);
+    if let Some(delay) = args.delay_ms {
+        let delay_dur = std::time::Duration::from_millis(delay);
+        while matches!(
+            interactive_agent.step().await?,
+            crate::agent::StepOutcome::Continue
+        ) {
+            tokio::time::sleep(delay_dur).await;
+        }
+    } else {
+        let _ = interactive_agent.run().await?;
+    }
+
+    dash_handle.shutdown().await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -582,6 +637,26 @@ mod tests {
             ],
             fork_lineage: None,
         }
+    }
+
+    #[test]
+    fn interactive_replay_cmd_exists() {
+        let cmd = crate::cli::args::InteractiveReplayCmd {
+            trajectory: std::path::PathBuf::from("foo.json"),
+            delay_ms: Some(100),
+        };
+        assert_eq!(cmd.delay_ms, Some(100));
+    }
+
+    #[tokio::test]
+    async fn interactive_replay_fails_on_missing_file() {
+        let cmd = crate::cli::args::InteractiveReplayCmd {
+            trajectory: std::path::PathBuf::from("does_not_exist.json"),
+            delay_ms: None,
+        };
+        let cfg = crate::config::Config::defaults().unwrap();
+        let res = super::run_interactive(&cmd, cfg).await;
+        assert!(res.is_err());
     }
 
     #[tokio::test]
