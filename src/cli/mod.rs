@@ -2491,10 +2491,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(
-        i.format.as_str(),
-        "markdown" | "html" | "csv" | "mermaid" | "finetune"
-    ) {
+    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid" | "finetune") {
         return bench_inspect_export(i);
     }
 
@@ -2622,6 +2619,7 @@ fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, E
     Ok(HtmlExporter::export(traj))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(not(feature = "html-export"))]
 fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2638,6 +2636,7 @@ fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Er
     Ok(CsvExporter::export(traj))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(not(feature = "csv-export"))]
 fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2654,6 +2653,7 @@ fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String
     Ok(MermaidExporter::export(traj))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(not(feature = "mermaid-export"))]
 fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2670,6 +2670,7 @@ fn inspect_export_finetune(traj: &crate::trajectory::Trajectory) -> Result<Strin
     Ok(FinetuneExporter::export(traj))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(not(feature = "finetune-export"))]
 fn inspect_export_finetune(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -4893,5 +4894,15 @@ mod tests {
             }
             assert_eq!(path, PathBuf::from(expected));
         }
+    }
+
+
+    #[allow(clippy::unwrap_used)]
+    #[cfg(not(feature = "finetune-export"))]
+    #[test]
+    fn test_finetune_export_missing_feature() {
+        let t = crate::trajectory::Trajectory::new();
+        let err = super::inspect_export_finetune(&t).unwrap_err();
+        assert!(err.to_string().contains("requires the `finetune-export` Cargo feature"));
     }
 }
