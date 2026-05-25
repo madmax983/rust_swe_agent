@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "table-export")]
+pub struct TableExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -194,6 +197,62 @@ impl TrajectoryExporter for HtmlExporter {
     }
 }
 
+#[cfg(feature = "table-export")]
+impl TrajectoryExporter for TableExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        let mut table = comfy_table::Table::new();
+        table
+            .load_preset(comfy_table::presets::UTF8_FULL)
+            .set_header(vec!["Role", "Cost", "Latency (ms)", "Content Snippet"]);
+
+        for msg in &trajectory.messages {
+            let role = msg.role.as_str();
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            let cost = msg.extra.cost.map_or_else(|| "-".to_string(), |u| format!("{u}"));
+
+            let latency = msg
+                .extra
+                .model_latency_ms
+                .map_or_else(|| "-".to_string(), |l| format!("{l}"));
+
+            let snippet = if content.len() > 50 {
+                let mut s = content.chars().take(47).collect::<String>();
+                s.push_str("...");
+                s
+            } else {
+                content.clone()
+            };
+            let snippet = snippet.replace('\n', " ");
+
+            table.add_row(vec![
+                role,
+                cost.as_str(),
+                latency.as_str(),
+                snippet.as_str(),
+            ]);
+        }
+
+        let mut out = String::new();
+        if let Some(task) = &trajectory.info.task {
+            let _ = writeln!(
+                out,
+                "Task: {}",
+                redactor.redact_text(task, surface::EXPORT).text
+            );
+        }
+        if let Some(outcome) = &trajectory.info.outcome {
+            let _ = writeln!(
+                out,
+                "Outcome: {}",
+                redactor.redact_text(outcome, surface::EXPORT).text
+            );
+        }
+        let _ = write!(out, "\n{table}");
+        out
+    }
+}
+
 #[cfg(feature = "mermaid-export")]
 impl TrajectoryExporter for MermaidExporter {
     fn export(trajectory: &Trajectory) -> String {
@@ -319,6 +378,25 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "table-export")]
+    #[test]
+    fn test_table_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let table_out = TableExporter::export(&t);
+
+        assert!(table_out.contains("Task: Add a feature"));
+        assert!(table_out.contains("Outcome: submitted"));
+        assert!(table_out.contains("System prompt"));
+        assert!(table_out.contains("Hello agent Multi-line"));
     }
 
     #[cfg(feature = "html-export")]
