@@ -66,3 +66,6 @@ pub use trajectory::{
     FORMAT_VERSION, FailureCategory, FallbackSummary, MessageRecord, TestInvocation, TokenUsage,
     Trajectory, TrajectoryInfo, VerificationCheck, VerificationResult, verification_status,
 };
+
+#[cfg(test)]
+mod redaction_proptest;
