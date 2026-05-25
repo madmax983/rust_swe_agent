@@ -1,3 +1,10 @@
+#![allow(
+    clippy::uninlined_format_args,
+    clippy::needless_borrows_for_generic_args,
+    clippy::branches_sharing_code,
+    clippy::assigning_clones
+)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -203,6 +210,7 @@ fn read_current_schema_version_from_file(artifact_file_path: &Path) -> Option<(u
     Some((major, minor))
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error> {
     let path = dir.join("results.json");
     if !path.exists() {
@@ -213,8 +221,8 @@ fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error
         serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_default();
     if let Some(schema) = v.get("schema_version") {
         if let (Some(major), Some(minor)) = (
-            schema.get("major").and_then(|x| x.as_u64()),
-            schema.get("minor").and_then(|x| x.as_u64()),
+            schema.get("major").and_then(serde_json::Value::as_u64),
+            schema.get("minor").and_then(serde_json::Value::as_u64),
         ) {
             return Ok((major as u16, minor as u16));
         }
@@ -227,7 +235,8 @@ fn load_schema_version_from_results_json(dir: &Path) -> Result<(u16, u16), Error
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
 )]
 pub async fn run(args: &BisectCmd) -> Result<(), Error> {
     // 1. If not clean, refuse to run (to prevent data loss on checkout)
@@ -416,8 +425,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
 
     let smoke_model = args.smoke_model.clone().unwrap_or_else(|| {
         crate::config::Config::defaults()
-            .map(|c| c.root.model.name)
-            .unwrap_or_else(|_| "claude-opus-4-7".to_owned())
+            .map_or_else(|_| "claude-opus-4-7".to_owned(), |c| c.root.model.name)
     });
 
     let good_resolved_count = if good_sweep.instances.is_empty() {
@@ -474,7 +482,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                     let is_marked_break = state
                         .per_commit
                         .get(sha)
-                        .map_or(false, |r| r.status == "schema_break");
+                        .is_some_and(|r| r.status == "schema_break");
                     if !is_marked_break {
                         candidate_idx = cand;
                         found_valid = true;
@@ -489,7 +497,7 @@ pub async fn run(args: &BisectCmd) -> Result<(), Error> {
                     let is_marked_break = state
                         .per_commit
                         .get(sha)
-                        .map_or(false, |r| r.status == "schema_break");
+                        .is_some_and(|r| r.status == "schema_break");
                     if !is_marked_break {
                         candidate_idx = cand;
                         found_valid = true;
