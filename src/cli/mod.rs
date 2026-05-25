@@ -109,6 +109,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
             args::BenchCmd::Power(p) => bench_power(&p),
             args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
+            args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -2612,6 +2613,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
 }
 
 #[cfg(feature = "html-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_html(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{HtmlExporter, TrajectoryExporter};
     Ok(HtmlExporter::export(traj))
@@ -2627,6 +2629,7 @@ fn inspect_export_html(_traj: &crate::trajectory::Trajectory) -> Result<String, 
 }
 
 #[cfg(feature = "csv-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_csv(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{CsvExporter, TrajectoryExporter};
     Ok(CsvExporter::export(traj))
@@ -2642,6 +2645,7 @@ fn inspect_export_csv(_traj: &crate::trajectory::Trajectory) -> Result<String, E
 }
 
 #[cfg(feature = "mermaid-export")]
+#[allow(clippy::unnecessary_wraps)]
 fn inspect_export_mermaid(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
     use crate::trajectory::export::{MermaidExporter, TrajectoryExporter};
     Ok(MermaidExporter::export(traj))
@@ -4102,6 +4106,10 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
+    crate::run::bisect::run(&b).await
 }
 
 fn parse_dataset_source_stats(

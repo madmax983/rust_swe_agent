@@ -1977,7 +1977,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             set.spawn(async move {
                 RunSlotResult::new(
                     run.run_index,
-                    run_one(run.inst, run.run_index, params).await,
+                    Box::pin(run_one(run.inst, run.run_index, params)).await,
                 )
             });
         };

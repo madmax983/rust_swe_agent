@@ -46,6 +46,14 @@ pub enum Error {
     /// Preflight gate failure (e.g. config drift with --fail-on-change).
     #[error("{0}")]
     Preflight(String),
+
+    /// bench bisect budget exhausted
+    #[error("bisect budget exhausted")]
+    BisectBudgetExhausted,
+
+    /// bench bisect schema break
+    #[error("bisect schema break")]
+    BisectSchemaBreak,
 }
 
 #[derive(Debug, Error)]

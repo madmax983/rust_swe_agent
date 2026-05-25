@@ -82,6 +82,10 @@ pub enum ExitCode {
     /// 17 — `mini --resume` target trajectory is structurally invalid for resume;
     /// the message sequence is empty, too short, or ends in a partial assistant turn.
     ResumeInvalidPrefix = 17,
+    /// 18 — `bench bisect` budget exhausted before identifying the regressing commit.
+    BisectBudgetExhausted = 18,
+    /// 19 — `bench bisect` found only trajectory-schema breaks in the remaining search space.
+    BisectSchemaBreak = 19,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -120,6 +124,8 @@ impl ExitCode {
             Self::ResumeAlreadyTerminal => "resume_already_terminal",
             Self::ResumeManifestMissing => "resume_manifest_missing",
             Self::ResumeInvalidPrefix => "resume_invalid_prefix",
+            Self::BisectBudgetExhausted => "bisect_budget_exhausted",
+            Self::BisectSchemaBreak => "bisect_schema_break",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
@@ -150,6 +156,8 @@ impl ExitCode {
                 _ => Self::TaskUnsuccessful,
             },
             Error::AgentStagnation { .. } => Self::AgentStagnation,
+            Error::BisectBudgetExhausted => Self::BisectBudgetExhausted,
+            Error::BisectSchemaBreak => Self::BisectSchemaBreak,
             Error::Template(_)
             | Error::Trajectory(_)
             | Error::Github(_)
@@ -340,6 +348,24 @@ mod tests {
         assert_eq!(
             ExitCode::ResumeInvalidPrefix.outcome_class(),
             "resume_invalid_prefix"
+        );
+    }
+
+    #[test]
+    fn bisect_budget_exhausted_exit_code_is_18() {
+        assert_eq!(ExitCode::BisectBudgetExhausted.as_i32(), 18);
+        assert_eq!(
+            ExitCode::BisectBudgetExhausted.outcome_class(),
+            "bisect_budget_exhausted"
+        );
+    }
+
+    #[test]
+    fn bisect_schema_break_exit_code_is_19() {
+        assert_eq!(ExitCode::BisectSchemaBreak.as_i32(), 19);
+        assert_eq!(
+            ExitCode::BisectSchemaBreak.outcome_class(),
+            "bisect_schema_break"
         );
     }
 }
