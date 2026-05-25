@@ -12,6 +12,19 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// The `Renderer` struct wraps a `minijinja::Environment` and provides methods
+/// to render templates with a given context.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::template::Renderer;
+/// use minijinja::context;
+///
+/// let renderer = Renderer::new();
+/// let output = renderer.render_with("Hello, {{ name }}!", context!(name => "World")).unwrap();
+/// assert_eq!(output, "Hello, World!");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +36,15 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` instance with a default environment.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    ///
+    /// let renderer = Renderer::new();
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,13 +65,43 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Render a template string against a `minijinja::Value` context.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let renderer = Renderer::new();
+    /// let output = renderer.render_with("Hello, {{ name }}!", context!(name => "World")).unwrap();
+    /// assert_eq!(output, "Hello, World!");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
 }
 
-/// Build a context with the keys mini-swe-agent conventionally exposes:
-/// `task`, `output`, `returncode`, plus arbitrary extras.
+/// Builds a rendering context specifically formatted for tool observations.
+///
+/// This context exposes conventional keys expected by agent prompt templates:
+/// - `task`: (Not explicitly added here, but conventionally merged later)
+/// - `output`: The stdout/stderr from the tool execution.
+/// - `returncode`: The exit code of the tool process.
+/// - `extras`: A map of arbitrary additional variables.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::template::{Renderer, observation_context};
+/// use std::collections::BTreeMap;
+///
+/// let renderer = Renderer::new();
+/// let extras = BTreeMap::new();
+/// let ctx = observation_context("Success", 0, &extras);
+/// let output = renderer.render_with("Exit: {{ returncode }}, Out: {{ output }}", ctx).unwrap();
+/// assert_eq!(output, "Exit: 0, Out: Success");
+/// ```
 pub fn observation_context(
     output: &str,
     returncode: i32,
@@ -59,7 +111,20 @@ pub fn observation_context(
     context!(output => output, returncode => returncode, extras => extras_val)
 }
 
-/// Small helper — used by `InteractiveAgent` status strings and banners.
+/// Renders a simple template string using a list of string variable pairs.
+///
+/// This provides a quick way to render templates without building complex `minijinja::Value` contexts.
+/// It disables auto-escaping and treats variables as raw strings, making it suitable for CLI
+/// banners and simple status messages.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::template::render_simple;
+///
+/// let output = render_simple("Status: {{ status }}", &[("status", "OK")]).unwrap();
+/// assert_eq!(output, "Status: OK");
+/// ```
 pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error> {
     let mut env = Environment::new();
     env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -68,7 +133,10 @@ pub fn render_simple(tmpl: &str, vars: &[(&str, &str)]) -> Result<String, Error>
         .map_err(Into::into)
 }
 
-/// Keep `Arc<Renderer>` cheap in hot paths.
+/// A shared, reference-counted pointer to a `Renderer`.
+///
+/// Use `SharedRenderer` to cheaply clone and share the `Renderer` across multiple threads
+/// or contexts, as creating a new `minijinja::Environment` can be expensive.
 pub type SharedRenderer = Arc<Renderer>;
 
 #[cfg(test)]
