@@ -268,54 +268,92 @@ pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Er
 
 /// Render the report in human-readable text form.
 pub fn format_text(report: &RenderOnlyReport) -> String {
-    let mut sections = vec![
-        "=== render-only preview (no model call made) ===".to_owned(),
-        format!("Model: {}", report.model),
-        format!("Mode: {}", report.mode),
-    ];
+    use comfy_table::Table;
+    use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+    use comfy_table::presets::UTF8_FULL;
+    use std::fmt::Write as _;
 
+    let mut out = String::new();
+    out.push_str("\n=== render-only preview (no model call made) ===\n\n");
+
+    let mut meta_table = Table::new();
+    meta_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    meta_table.add_row(vec!["Model", &report.model.as_str()]);
+    meta_table.add_row(vec!["Mode", &report.mode.as_str()]);
     if let Some(ref wd) = report.local_workdir {
-        sections.push(format!("Local workdir: {wd}"));
+        meta_table.add_row(vec!["Local workdir", wd.as_str()]);
     }
+    let _ = writeln!(out, "{meta_table}\n");
 
-    sections.extend(vec![
-        format!("--- System message ---\n{}", report.system_message),
-        format!(
-            "--- User message (instance prompt) ---\n{}",
-            report.user_message
-        ),
-    ]);
+    out.push_str("--- System message ---\n");
+    let _ = writeln!(out, "{}\n", report.system_message);
 
-    let mut tools_lines = vec!["--- Registered tools ---".to_owned()];
+    out.push_str("--- User message (instance prompt) ---\n");
+    let _ = writeln!(out, "{}\n", report.user_message);
+
+    out.push_str("--- Registered tools ---\n");
+    let mut tools_table = Table::new();
+    tools_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    tools_table.set_header(vec!["Name", "Description"]);
     for t in &report.tools {
-        tools_lines.push(format!("  {}: {}", t.name, t.description));
+        tools_table.add_row(vec![t.name.as_str(), t.description.as_str()]);
     }
-    sections.push(tools_lines.join("\n"));
+    let _ = writeln!(out, "{tools_table}\n");
 
-    let mut hook_lines = vec!["--- Hook configuration ---".to_owned()];
+    out.push_str("--- Hook configuration ---\n");
     if report.hooks.pre_tool_use.is_empty() && report.hooks.post_tool_use.is_empty() {
-        hook_lines.push("  (no hooks configured)".to_owned());
+        out.push_str("  (no hooks configured)\n\n");
     } else {
+        let mut hooks_table = Table::new();
+        hooks_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS);
+        hooks_table.set_header(vec!["Phase", "Name", "Command"]);
         for h in &report.hooks.pre_tool_use {
-            hook_lines.push(format!("  PreToolUse [{}]: {}", h.name, h.command));
+            hooks_table.add_row(vec!["PreToolUse", h.name.as_str(), h.command.as_str()]);
         }
         for h in &report.hooks.post_tool_use {
-            hook_lines.push(format!("  PostToolUse [{}]: {}", h.name, h.command));
+            hooks_table.add_row(vec!["PostToolUse", h.name.as_str(), h.command.as_str()]);
         }
+        let _ = writeln!(out, "{hooks_table}\n");
     }
-    sections.push(hook_lines.join("\n"));
 
-    sections.push(format!(
-        "--- Token estimate ---\ninitial_prompt_tokens: {} ({:.2}% of {}-token context window)",
-        report.initial_prompt_tokens, report.context_window_pct, report.context_window_tokens
-    ));
+    out.push_str("--- Token estimate ---\n");
+    let mut token_table = Table::new();
+    token_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    token_table.add_row(vec![
+        "Initial Prompt Tokens",
+        &report.initial_prompt_tokens.to_string(),
+    ]);
+    token_table.add_row(vec![
+        "Context Window",
+        &format!("{} tokens", report.context_window_tokens),
+    ]);
+    token_table.add_row(vec![
+        "Consumption",
+        &format!("{:.2}%", report.context_window_pct),
+    ]);
+    let _ = writeln!(out, "{token_table}\n");
 
-    sections.push(format!(
-        "--- Upper-bound cost ---\n${:.6} USD\nNote: {}",
-        report.upper_bound_cost.usd, report.upper_bound_cost.caveat
-    ));
+    out.push_str("--- Upper-bound cost ---\n");
+    let mut cost_table = Table::new();
+    cost_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS);
+    cost_table.add_row(vec![
+        "Estimated Cost",
+        &format!("${:.6} USD", report.upper_bound_cost.usd),
+    ]);
+    cost_table.add_row(vec!["Note", report.upper_bound_cost.caveat.as_str()]);
+    let _ = writeln!(out, "{cost_table}\n");
 
-    sections.join("\n\n") + "\n"
+    out
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
