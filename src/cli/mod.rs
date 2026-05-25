@@ -110,6 +110,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Power(p) => bench_power(&p),
             args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
             args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
+            args::BenchCmd::Audit(a) => bench_audit(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4110,6 +4111,11 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
 
 async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
     crate::run::bisect::run(&b).await
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
+    crate::run::audit::run(&a)
 }
 
 fn parse_dataset_source_stats(

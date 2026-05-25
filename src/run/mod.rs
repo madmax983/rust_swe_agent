@@ -1,6 +1,7 @@
 //! Runners: thin glue that wires (config + model + env + agent) together
 //! and writes trajectories to disk.
 
+pub mod audit;
 pub mod behavior;
 pub mod bisect;
 pub mod budget_fit;

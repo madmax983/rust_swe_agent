@@ -522,6 +522,8 @@ pub enum BenchCmd {
     DatasetStats(DatasetStatsCmd),
     /// Identify the commit that introduced a resolved-rate regression.
     Bisect(BisectCmd),
+    /// Re-derive and verify sweep aggregates against trajectories.
+    Audit(AuditCmd),
 }
 
 /// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.
@@ -614,6 +616,30 @@ pub struct BisectCmd {
     /// Path to a bisect.json file to resume a previously interrupted run.
     #[arg(long)]
     pub resume: Option<PathBuf>,
+}
+
+/// `bench audit` — re-derive and verify sweep aggregates against trajectories.
+#[derive(Debug, Args, Clone)]
+pub struct AuditCmd {
+    /// Path to a completed sweep directory or extracted bench bundle directory.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Local dataset file to verify the recorded manifest hash.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// USD tolerance for cost reconciliation.
+    #[arg(long, default_value_t = 0.0001)]
+    pub cost_tolerance_usd: f64,
+
+    /// Seconds tolerance for wall-clock reconciliation.
+    #[arg(long, default_value_t = 1.0)]
+    pub wallclock_tolerance_secs: f64,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// `bench power` — statistical power, sample size, or MDE calculations.
