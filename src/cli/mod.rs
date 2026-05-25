@@ -3365,7 +3365,8 @@ fn bench_triage_diff(t: args::TriageDiffCmd) -> Result<(), Error> {
 
 fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
     if let Some(archive) = b.verify {
-        let report = crate::run::bundle::verify_bundle(&archive).map_err(bundle_error_to_error)?;
+        let report =
+            crate::run::bundle::verify_bundle(&archive)?;
         if report.problems.is_empty() {
             println!("bundle:ok");
             return Ok(());
@@ -3406,7 +3407,7 @@ fn bench_bundle(b: args::BundleCmd) -> Result<(), Error> {
                 "bundle redaction retriggered",
             );
         }
-        Err(err) => Err(bundle_error_to_error(err)),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -3880,21 +3881,6 @@ fn retry_swebench_args(
         sb_split: None,
         eval_timeout_secs: None,
     })
-}
-
-fn bundle_error_to_error(err: crate::run::bundle::BundleError) -> Error {
-    match err {
-        crate::run::bundle::BundleError::MissingSource(message)
-        | crate::run::bundle::BundleError::Schema(message)
-        | crate::run::bundle::BundleError::InvalidArchive(message) => {
-            Error::Config(crate::error::ConfigError::Invalid(message))
-        }
-        crate::run::bundle::BundleError::Io(err) => Error::Io(err),
-        crate::run::bundle::BundleError::Json(err) => Error::Json(err),
-        crate::run::bundle::BundleError::RedactionRetrigger { path } => Error::Config(
-            crate::error::ConfigError::Invalid(format!("redaction:retrigger:{path}")),
-        ),
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

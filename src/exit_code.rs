@@ -162,7 +162,8 @@ impl ExitCode {
             | Error::Trajectory(_)
             | Error::Github(_)
             | Error::Io(_)
-            | Error::Json(_) => Self::InternalError,
+            | Error::Json(_)
+            | Error::Bundle(_) => Self::InternalError,
         }
     }
 

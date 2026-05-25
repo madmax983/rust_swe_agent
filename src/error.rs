@@ -6,6 +6,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
+    Bundle(#[from] crate::run::bundle::BundleError),
+
+    #[error(transparent)]
     Model(#[from] ModelError),
 
     #[error(transparent)]
