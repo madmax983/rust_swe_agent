@@ -178,7 +178,7 @@ pub fn run(args: &AuditCmd) -> Result<(), Error> {
                                     "errored" | "error" => recomputed_errored += 1,
                                     "skipped" => recomputed_skipped += 1,
                                     "budget_halted" | "budget_halt" => {
-                                        recomputed_budget_halted += 1
+                                        recomputed_budget_halted += 1;
                                     }
                                     _ => {}
                                 }
