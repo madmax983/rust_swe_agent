@@ -369,7 +369,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
                 "Either --baseline-rate or --from-sweep must be provided".to_string(),
             )));
         }
-        _ => unreachable!(),
+        (Some(_), Some(_)) => { return Err(Error::Config(crate::error::ConfigError::Usage("Cannot specify both explicit value and path".to_string()))); }
     };
 
     if cmd.delta.is_none() && cmd.n.is_none() {
@@ -544,7 +544,7 @@ pub fn run(cmd: &PowerCmd) -> Result<PowerReport, Error> {
             Some(point_cost / target_n)
         }
         (None, None) => None,
-        _ => unreachable!(),
+        (Some(_), Some(_)) => { return Err(Error::Config(crate::error::ConfigError::Usage("Cannot specify both explicit value and path".to_string()))); }
     };
 
     let total_cost = if let Some(c) = cost_per_instance {
@@ -660,4 +660,59 @@ pub fn render_text(report: &PowerReport) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::args::{PowerCmd};
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_baseline_rate_and_from_sweep_mutually_exclusive() {
+        let cmd = PowerCmd {
+            baseline_rate: Some(0.5),
+            delta: Some(0.1),
+            n: None,
+            from_sweep: Some(PathBuf::from("test")),
+            alpha: 0.05,
+            power: 0.8,
+            one_sided: false,
+            arms: 2,
+            cost_per_instance: None,
+            from_forecast: None,
+            format: "text".to_string(),
+        };
+        let result = run(&cmd);
+        assert!(result.is_err());
+        if let Err(crate::error::Error::Config(crate::error::ConfigError::Usage(msg))) = result {
+            assert_eq!(msg, "Cannot specify both explicit value and path");
+        } else {
+            panic!("Expected ConfigError::Usage");
+        }
+    }
+
+    #[test]
+    fn test_cost_per_instance_and_from_forecast_mutually_exclusive() {
+        let cmd = PowerCmd {
+            baseline_rate: Some(0.5),
+            delta: Some(0.1),
+            n: None,
+            from_sweep: None,
+            alpha: 0.05,
+            power: 0.8,
+            one_sided: false,
+            arms: 2,
+            cost_per_instance: Some(10.0),
+            from_forecast: Some(PathBuf::from("test")),
+            format: "text".to_string(),
+        };
+        let result = run(&cmd);
+        assert!(result.is_err());
+        if let Err(crate::error::Error::Config(crate::error::ConfigError::Usage(msg))) = result {
+            assert_eq!(msg, "Cannot specify both explicit value and path");
+        } else {
+            panic!("Expected ConfigError::Usage");
+        }
+    }
 }
