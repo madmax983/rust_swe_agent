@@ -97,16 +97,13 @@ mod tests {
 
     #[test]
     fn env_global_is_available() {
-        // Safe because tests are single-threaded per tokio::test? No — use
-        // a var we set directly here. But std::env::set_var is unsafe in
-        // multi-threaded contexts; use an already-present var instead.
-        let r = Renderer::new();
-        // PATH is virtually always set in CI.
-        let out = r
-            .render_with("{{ env.PATH is defined }}", context!())
-            .unwrap();
-        // Depending on platform PATH may be absent; accept either outcome.
-        assert!(out == "true" || out == "false");
+        temp_env::with_var("CARGO_PKG_NAME", Some("maxwells-daemon"), || {
+            let r = Renderer::new();
+            let out = r
+                .render_with("{{ env.CARGO_PKG_NAME }}", context!())
+                .unwrap();
+            assert_eq!(out, "maxwells-daemon");
+        });
     }
 
     #[test]

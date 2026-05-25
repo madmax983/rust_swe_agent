@@ -3,7 +3,7 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn parse_repo_from_instance_id_never_crashes(s in "\\PC*") {
+    fn parse_repo_does_not_panic(s in "\\PC*") {
         let _ = parse_repo_from_instance_id(&s);
     }
 }

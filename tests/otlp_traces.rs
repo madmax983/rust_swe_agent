@@ -311,7 +311,7 @@ async fn no_otlp_traffic_when_endpoint_unset() {
     // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
     let _guard = env_var_lock();
     // Also ensure both OTLP env vars are unset.
-    // SAFETY: test-only, single-threaded context.
+    // SAFETY: Protected by ENV_VAR_MUTEX across all tests mutating these.
     unsafe {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
@@ -621,7 +621,7 @@ async fn env_var_activates_otlp_tracing() {
     // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
     let _guard = env_var_lock();
     // Set env var to a dead endpoint.
-    // SAFETY: test-only, single-threaded context.
+    // SAFETY: Protected by ENV_VAR_MUTEX across all tests mutating these.
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1");
     }
@@ -684,7 +684,7 @@ async fn env_var_activates_otlp_tracing() {
     let results = run(args).await.unwrap();
 
     // Unset for subsequent tests.
-    // SAFETY: test-only, single-threaded context.
+    // SAFETY: Protected by ENV_VAR_MUTEX across all tests mutating these.
     unsafe {
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
     }
