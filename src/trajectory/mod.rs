@@ -606,11 +606,20 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Lineage metadata for trajectories that were forked or resumed from a prior state.
+///
+/// This structure tracks the provenance of a trajectory, allowing the system to link
+/// a newly spawned instance back to the exact checkpoint of the parent it originated from.
 pub struct ForkLineage {
+    /// The filesystem path to the original sweep directory that contains the parent.
     pub parent_sweep_path: String,
+    /// The unique identifier of the original instance this run was forked from.
     pub parent_instance_id: String,
+    /// A cryptographic hash of the parent's trajectory file to guarantee reproducibility.
     pub parent_trajectory_sha256: String,
+    /// The step number at which this fork diverged from the parent's timeline.
     pub fork_step: u32,
+    /// Any configuration overrides applied specifically to this fork (e.g., changes to temperature or model).
     pub tail_overrides: std::collections::BTreeMap<String, serde_json::Value>,
 }
 

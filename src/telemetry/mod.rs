@@ -74,32 +74,64 @@ fn now_unix_nanos() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Span data collected for the root sweep span.
+/// Telemetry payload capturing the aggregate stats of an entire benchmark sweep.
+///
+/// This span acts as the parent trace for all individual instances run within
+/// a single batch execution. It provides a high-level overview of cost, success
+/// rate, and environment metadata.
 pub struct SweepSpanData {
+    /// The unique identifier for this sweep execution.
     pub sweep_id: String,
+    /// The name or path of the dataset evaluated.
     pub dataset: String,
+    /// The primary AI model used during this sweep.
     pub model: String,
+    /// Total number of task instances attempted.
     pub instance_count: u64,
+    /// Number of instances successfully resolved.
     pub resolved_count: u64,
+    /// Total aggregate API cost incurred across all instances.
     pub total_cost_usd: f64,
+    /// The version of the maxwells-daemon harness running this sweep.
     pub harness_version: String,
+    /// The active git commit hash of the daemon at runtime, if available.
     pub git_sha: Option<String>,
+    /// System time when the sweep started (in nanoseconds since UNIX epoch).
     pub start_nanos: u64,
+    /// System time when the sweep completed (in nanoseconds since UNIX epoch).
     pub end_nanos: u64,
 }
 
 /// Span data for one instance run.
+/// Telemetry payload capturing the execution details of a single SWE-bench instance.
+///
+/// An instance span is a child of the `SweepSpanData` and serves as the parent
+/// for all fine-grained `ModelCallSpanData` and `ToolCallSpanData` events that
+/// occur while attempting to solve the specific repository task.
 pub struct InstanceSpanData {
+    /// The OTel trace ID associating this instance with its parent sweep.
     pub trace_id: TraceId,
+    /// The OTel span ID of the parent sweep.
     pub sweep_span_id: SpanId,
+    /// The unique identifier of the task being evaluated (e.g., `django__django-1234`).
     pub instance_id: String,
+    /// The target repository name.
     pub repo: String,
+    /// The final resolution status of this instance (e.g., `resolved`, `failed`, `errored`).
     pub outcome: String,
+    /// Total API cost incurred while attempting this specific instance.
     pub cost_usd: f64,
+    /// The number of agent action steps taken.
     pub step_count: u64,
+    /// The size of the final generated git patch in bytes.
     pub final_patch_bytes: u64,
+    /// System time when the instance execution started (in nanoseconds).
     pub start_nanos: u64,
+    /// System time when the instance execution completed (in nanoseconds).
     pub end_nanos: u64,
+    /// A collection of all LLM API invocations made during this instance's execution.
     pub model_calls: Vec<ModelCallSpanData>,
+    /// A collection of all tool/command executions performed by the agent.
     pub tool_calls: Vec<ToolCallSpanData>,
 }
 
@@ -107,15 +139,25 @@ pub struct InstanceSpanData {
 ///
 /// Sensitive trajectory content (raw prompts, observations) is explicitly
 /// excluded; only numeric telemetry and non-sensitive metadata are recorded.
+/// Telemetry payload recording a single interaction with an LLM provider.
 pub struct ModelCallSpanData {
+    /// The specific model identifier used for this API call.
     pub model: String,
+    /// The number of tokens sent in the prompt.
     pub prompt_tokens: u64,
+    /// The number of tokens received in the model's response.
     pub completion_tokens: u64,
+    /// The number of prompt tokens successfully read from the provider's context cache.
     pub cache_read_tokens: u64,
+    /// The number of tokens written to the provider's context cache during this request.
     pub cache_creation_tokens: u64,
+    /// The wall-clock duration of the API call in milliseconds.
     pub latency_ms: u64,
+    /// The reason the model stopped generating (e.g., `stop`, `length`, `tool_calls`).
     pub finish_reason: String,
+    /// System time when the API request was initiated (in nanoseconds).
     pub start_nanos: u64,
+    /// System time when the API response was fully received (in nanoseconds).
     pub end_nanos: u64,
 }
 
@@ -123,13 +165,21 @@ pub struct ModelCallSpanData {
 ///
 /// `observation_bytes` is the byte length; the actual content is not recorded
 /// in spans to keep sensitive output out of the observability pipeline.
+/// Telemetry payload recording the execution of a single agent tool or command.
 pub struct ToolCallSpanData {
+    /// The name of the tool invoked (e.g., `bash`, `str_replace`).
     pub tool_name: String,
+    /// The system exit code returned by the tool execution (0 typically indicates success).
     pub exit_code: i32,
+    /// The length of the stdout/stderr output returned by the tool, in bytes.
     pub observation_bytes: u64,
+    /// The wall-clock duration of the tool execution in milliseconds.
     pub duration_ms: u64,
+    /// Indicates whether the tool output exceeded size limits and was truncated before returning to the model.
     pub truncated: bool,
+    /// System time when the tool execution started (in nanoseconds).
     pub start_nanos: u64,
+    /// System time when the tool execution completed (in nanoseconds).
     pub end_nanos: u64,
 }
 

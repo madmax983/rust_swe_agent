@@ -12,6 +12,23 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// A lightweight, thread-safe template rendering engine.
+///
+/// It disables HTML auto-escaping by default, making it ideal for rendering
+/// shell scripts, CLI prompts, and raw system configurations without mangling
+/// special characters (like `<`, `>`, and `&`). It also exposes process environment
+/// variables to the template context via the global `env` object.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::template::Renderer;
+/// use minijinja::context;
+///
+/// let renderer = Renderer::new();
+/// let output = renderer.render_with("Hello, {{ name }}!", context!(name => "World")).unwrap();
+/// assert_eq!(output, "Hello, World!");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +40,20 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Creates a new template `Renderer` instance.
+    ///
+    /// The initialization process does two key things to tailor the environment for CLI apps:
+    /// 1. Disables `AutoEscape` so raw strings (such as `&&` or `<`) are kept intact.
+    /// 2. Binds the current process environment variables to a global `env` context.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    ///
+    /// // A renderer is ready to use immediately.
+    /// let r = Renderer::new();
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -37,12 +68,41 @@ impl Renderer {
     /// Render a template string against a context value that serializes to
     /// a map. The `context!` macro from `minijinja` is the recommended way
     /// to build ad-hoc contexts at call sites.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    /// use std::collections::BTreeMap;
+    ///
+    /// let r = Renderer::new();
+    /// let mut map = BTreeMap::new();
+    /// map.insert("status", "OK");
+    /// let out = r.render_str("System is {{ status }}", &map).unwrap();
+    /// assert_eq!(out, "System is OK");
+    /// ```
     pub fn render_str<T: Serialize>(&self, tmpl: &str, ctx: &T) -> Result<String, Error> {
         self.env
             .render_str(tmpl, Value::from_serialize(ctx))
             .map_err(Into::into)
     }
 
+    /// Renders a template string using a pre-constructed `minijinja::Value` context.
+    ///
+    /// This method is designed to be used alongside the `minijinja::context!` macro
+    /// for highly dynamic or deeply nested contexts where creating a custom struct is
+    /// cumbersome. It provides a direct pipeline into the jinja engine.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let r = Renderer::new();
+    /// let result = r.render_with("User is {{ user }}", context!(user => "alice")).unwrap();
+    /// assert_eq!(result, "User is alice");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
