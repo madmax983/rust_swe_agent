@@ -536,6 +536,8 @@ pub enum BenchCmd {
     FailureDigest(FailureDigestCmd),
     /// Quantify evaluator-side verdict noise by replaying the evaluator N times per patch.
     EvalFlake(EvalFlakeCmd),
+    /// Attach persistent operator triage tags and notes to SWE-bench instances.
+    Annotate(AnnotateCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -2341,6 +2343,83 @@ pub struct ForkCmd {
     /// Allow forking from a parent trajectory that has no stored input fingerprints.
     #[arg(long, default_value_t = false)]
     pub allow_unfingerprinted: bool,
+}
+
+// ── bench annotate ────────────────────────────────────────────────────────────
+
+/// `bench annotate add` — append an annotation record for a SWE-bench instance.
+#[derive(Debug, Args, Clone)]
+pub struct AnnotateAddCmd {
+    /// SWE-bench instance ID to annotate (e.g. `pytest__pytest-7234`).
+    #[arg(value_name = "INSTANCE_ID")]
+    pub instance_id: String,
+
+    /// Tag to attach. Repeatable. Format: `^[a-z0-9][a-z0-9-]{0,31}$`.
+    #[arg(long, required = true, value_name = "TAG")]
+    pub tag: Vec<String>,
+
+    /// Optional freeform note (max 1024 chars). Passed through the secret-redaction pipeline before writing to disk.
+    #[arg(long, value_name = "TEXT")]
+    pub note: Option<String>,
+
+    /// Path to the annotation store JSON file. Defaults to `./annotations.json`.
+    /// Overrides the `BENCH_ANNOTATIONS_PATH` env var when set.
+    #[arg(long, value_name = "PATH")]
+    pub store: Option<PathBuf>,
+}
+
+/// `bench annotate list` — print existing annotations.
+#[derive(Debug, Args, Clone)]
+pub struct AnnotateListCmd {
+    /// Filter to a specific instance ID.
+    #[arg(long, value_name = "INSTANCE_ID")]
+    pub instance: Option<String>,
+
+    /// Filter by tag value.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Path to the annotation store JSON file. Defaults to `./annotations.json`.
+    #[arg(long, value_name = "PATH")]
+    pub store: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+/// `bench annotate rm` — remove annotation records.
+#[derive(Debug, Args, Clone)]
+pub struct AnnotateRmCmd {
+    /// SWE-bench instance ID whose annotations should be removed.
+    #[arg(value_name = "INSTANCE_ID")]
+    pub instance_id: String,
+
+    /// Remove only this tag. When omitted, removes all tags for the instance.
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Path to the annotation store JSON file. Defaults to `./annotations.json`.
+    #[arg(long, value_name = "PATH")]
+    pub store: Option<PathBuf>,
+}
+
+/// `bench annotate` subcommands.
+#[derive(Debug, Subcommand, Clone)]
+pub enum AnnotateSubCmd {
+    /// Append an annotation record for a SWE-bench instance.
+    Add(AnnotateAddCmd),
+    /// Print existing annotations, optionally filtered by instance or tag.
+    List(AnnotateListCmd),
+    /// Remove annotation records for an instance.
+    Rm(AnnotateRmCmd),
+}
+
+/// `bench annotate` — persistent operator triage notes across sweeps.
+#[derive(Debug, Args, Clone)]
+pub struct AnnotateCmd {
+    #[command(subcommand)]
+    pub cmd: AnnotateSubCmd,
 }
 
 #[cfg(test)]

@@ -113,6 +113,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Audit(a) => bench_audit(a),
             args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
             args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
+            args::BenchCmd::Annotate(a) => bench_annotate(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -2249,7 +2250,65 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
 
     print!("{}", render_summary(&report));
 
+    // Surface annotation diff when the original sweep has annotations.json.
+    // Scope the diff to replayed instances so partial runs (--filter/--limit)
+    // don't report skipped-instance annotations as false drift.
+    render_reproduce_annotation_diff(&r.from, &r.output, &replayed_ids);
+
     Ok(())
+}
+
+/// Compare annotations between original and replay sweep directories.
+/// Best-effort — prints a warning when annotations differ; silent on errors.
+fn render_reproduce_annotation_diff(
+    from: &std::path::Path,
+    output: &std::path::Path,
+    replayed_ids: &std::collections::HashSet<&str>,
+) {
+    use crate::annotation::{AnnotationStore, DEFAULT_STORE_FILENAME};
+    let orig_path = from.join(DEFAULT_STORE_FILENAME);
+    let replay_path = output.join(DEFAULT_STORE_FILENAME);
+
+    if !orig_path.is_file() {
+        return;
+    }
+
+    let Ok(orig) = AnnotationStore::load_or_default(&orig_path) else {
+        return;
+    };
+    let Ok(replay) = AnnotationStore::load_or_default(&replay_path) else {
+        return;
+    };
+
+    if orig.list(None, None).is_empty() && replay.list(None, None).is_empty() {
+        return;
+    }
+
+    let (mut only_orig, mut only_replay) =
+        crate::run::annotate::diff_annotation_stores(&orig, &replay);
+
+    // For partial replays, suppress false-drift signals from skipped instances.
+    if !replayed_ids.is_empty() {
+        only_orig.retain(|(iid, _)| replayed_ids.contains(iid.as_str()));
+        only_replay.retain(|(iid, _)| replayed_ids.contains(iid.as_str()));
+    }
+
+    if only_orig.is_empty() && only_replay.is_empty() {
+        eprintln!("reproduce: annotations match between original and replay sweeps");
+        return;
+    }
+
+    eprintln!(
+        "reproduce: annotation diff — {} annotation(s) only in original, {} only in replay",
+        only_orig.len(),
+        only_replay.len()
+    );
+    for (iid, tag) in &only_orig {
+        eprintln!("  - original only: {iid} [{tag}]");
+    }
+    for (iid, tag) in &only_replay {
+        eprintln!("  + replay only:   {iid} [{tag}]");
+    }
 }
 
 /// Build a current-environment manifest for drift comparison by cloning the
@@ -4220,6 +4279,61 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
         serde_json::to_string_pretty(&report).map_err(Error::Json)?
     );
     Ok(())
+}
+
+fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
+    use crate::run::annotate::{
+        AnnotateAddArgs, AnnotateListArgs, AnnotateRmArgs, render_add_text, render_list_text,
+        render_rm_text, run_add, run_list, run_rm,
+    };
+    match a.cmd {
+        args::AnnotateSubCmd::Add(cmd) => {
+            let args = AnnotateAddArgs {
+                instance_id: cmd.instance_id,
+                tags: cmd.tag,
+                note: cmd.note,
+                store: cmd.store,
+            };
+            let report = run_add(&args)?;
+            eprint!("{}", render_add_text(&report));
+            Ok(())
+        }
+        args::AnnotateSubCmd::List(cmd) => {
+            let args = AnnotateListArgs {
+                instance: cmd.instance,
+                tag: cmd.tag,
+                store: cmd.store,
+            };
+            let report = run_list(&args)?;
+            match cmd.format.as_str() {
+                "json" => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(Error::Json)?
+                    );
+                }
+                "text" => {
+                    print!("{}", render_list_text(&report));
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
+                }
+            }
+            Ok(())
+        }
+        args::AnnotateSubCmd::Rm(cmd) => {
+            let args = AnnotateRmArgs {
+                instance_id: cmd.instance_id,
+                tag: cmd.tag,
+                store: cmd.store,
+            };
+            let report = run_rm(&args)?;
+            eprint!("{}", render_rm_text(&report));
+            Ok(())
+        }
+    }
 }
 
 fn parse_dataset_source_stats(
