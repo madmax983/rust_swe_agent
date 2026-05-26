@@ -225,11 +225,11 @@ pub struct CompareReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling_drift: Option<SamplingDriftSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub baseline_test_only_resolved_rate: Option<f32>,
+    pub baseline_test_only_resolved_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub candidate_test_only_resolved_rate: Option<f32>,
+    pub candidate_test_only_resolved_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_only_resolved_rate_delta: Option<f32>,
+    pub test_only_resolved_rate_delta: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

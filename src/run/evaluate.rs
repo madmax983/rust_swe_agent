@@ -245,7 +245,7 @@ pub struct EvaluationResults {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission_class_rollup: Option<SubmissionClassRollup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_only_resolved_rate: Option<f32>,
+    pub test_only_resolved_rate: Option<f64>,
 }
 
 /// p50 / p95 of each wall-clock stage measured across every trajectory in
@@ -696,7 +696,7 @@ fn attach_patch_stats(
 }
 
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (SubmissionClassRollup, f32) {
+fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (SubmissionClassRollup, f64) {
     let mut total_submitted = 0;
     let mut total_resolved = 0;
 
@@ -795,7 +795,7 @@ fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (Submissio
     let test_only_resolved_rate = if total_resolved == 0 {
         0.0
     } else {
-        test_only_res as f32 / total_resolved as f32
+        f64::from(test_only_res) / f64::from(total_resolved)
     };
 
     (
