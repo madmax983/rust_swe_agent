@@ -348,7 +348,8 @@ fn load_triage_cluster_label(sweep_dir: &Path, instance_id: &str) -> Option<Stri
     report.clusters.iter().find_map(|cluster| {
         cluster
             .instance_ids
-            .contains(&instance_id.to_owned())
+            .iter()
+            .any(|id| id == instance_id)
             .then(|| {
                 format!(
                     "{} [{}]: {}",
@@ -400,10 +401,11 @@ fn excerpt_head_tail(text: &str, max_chars: usize) -> String {
     if len <= max_chars {
         return text.to_owned();
     }
-    let each_half = max_chars / 2;
-    let head: String = text.chars().take(each_half).collect();
+    let head_len = max_chars / 2;
+    let tail_len = max_chars - head_len;
+    let head: String = text.chars().take(head_len).collect();
     let elided = len - max_chars;
-    let tail_start = len - each_half;
+    let tail_start = len - tail_len;
     let tail: String = text.chars().skip(tail_start).collect();
     format!("{head}\n... [{elided} chars elided] ...\n{tail}")
 }

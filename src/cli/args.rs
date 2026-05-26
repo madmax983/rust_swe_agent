@@ -543,7 +543,7 @@ pub struct FailureDigestCmd {
     pub instance: Option<String>,
 
     /// Output format: `markdown` (default) or `json`.
-    #[arg(long, default_value = "markdown")]
+    #[arg(long, default_value = "markdown", value_parser = ["markdown", "json"])]
     pub format: String,
 
     /// Maximum characters for the markdown output (default: 8000).
