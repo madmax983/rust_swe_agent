@@ -5,6 +5,7 @@
 //! first user message, tool list, hook config — along with a token estimate
 //! and an upper-bound cost projection. No outbound network connection is made.
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
@@ -268,54 +269,88 @@ pub fn reject_incompatible_flags(flags: &IncompatibleFlags<'_>) -> Result<(), Er
 
 /// Render the report in human-readable text form.
 pub fn format_text(report: &RenderOnlyReport) -> String {
-    let mut sections = vec![
-        "=== render-only preview (no model call made) ===".to_owned(),
-        format!("Model: {}", report.model),
-        format!("Mode: {}", report.mode),
-    ];
+    let mut out = String::new();
+    out.push_str("=== render-only preview (no model call made) ===\n\n");
 
+    let mut overview_table = Table::new();
+    overview_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Property", "Value"])
+        .add_row(vec!["Model", &report.model])
+        .add_row(vec!["Mode", &report.mode]);
     if let Some(ref wd) = report.local_workdir {
-        sections.push(format!("Local workdir: {wd}"));
+        overview_table.add_row(vec!["Local workdir", wd]);
     }
+    out.push_str(&overview_table.to_string());
+    out.push_str("\n\n");
 
-    sections.extend(vec![
-        format!("--- System message ---\n{}", report.system_message),
-        format!(
-            "--- User message (instance prompt) ---\n{}",
-            report.user_message
-        ),
-    ]);
+    out.push_str("--- System message ---\n");
+    out.push_str(&report.system_message);
+    out.push_str("\n\n--- User message (instance prompt) ---\n");
+    out.push_str(&report.user_message);
+    out.push_str("\n\n--- Registered tools ---\n");
 
-    let mut tools_lines = vec!["--- Registered tools ---".to_owned()];
-    for t in &report.tools {
-        tools_lines.push(format!("  {}: {}", t.name, t.description));
-    }
-    sections.push(tools_lines.join("\n"));
-
-    let mut hook_lines = vec!["--- Hook configuration ---".to_owned()];
-    if report.hooks.pre_tool_use.is_empty() && report.hooks.post_tool_use.is_empty() {
-        hook_lines.push("  (no hooks configured)".to_owned());
+    if report.tools.is_empty() {
+        out.push_str("  (no tools registered)\n");
     } else {
+        let mut tools_table = Table::new();
+        tools_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Tool", "Description"]);
+        for t in &report.tools {
+            tools_table.add_row(vec![&t.name, &t.description]);
+        }
+        out.push_str(&tools_table.to_string());
+        out.push('\n');
+    }
+
+    out.push_str("\n--- Hook configuration ---\n");
+    if report.hooks.pre_tool_use.is_empty() && report.hooks.post_tool_use.is_empty() {
+        out.push_str("  (no hooks configured)\n");
+    } else {
+        let mut hooks_table = Table::new();
+        hooks_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Phase", "Name", "Command"]);
         for h in &report.hooks.pre_tool_use {
-            hook_lines.push(format!("  PreToolUse [{}]: {}", h.name, h.command));
+            hooks_table.add_row(vec!["PreToolUse", &h.name, &h.command]);
         }
         for h in &report.hooks.post_tool_use {
-            hook_lines.push(format!("  PostToolUse [{}]: {}", h.name, h.command));
+            hooks_table.add_row(vec!["PostToolUse", &h.name, &h.command]);
         }
+        out.push_str(&hooks_table.to_string());
+        out.push('\n');
     }
-    sections.push(hook_lines.join("\n"));
 
-    sections.push(format!(
-        "--- Token estimate ---\ninitial_prompt_tokens: {} ({:.2}% of {}-token context window)",
-        report.initial_prompt_tokens, report.context_window_pct, report.context_window_tokens
-    ));
+    out.push_str("\n--- Estimates ---\n");
+    let mut estimates_table = Table::new();
+    estimates_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Value"])
+        .add_row(vec![
+            "Initial Prompt Tokens",
+            &format!(
+                "{} ({:.2}% of {}-token window)",
+                report.initial_prompt_tokens,
+                report.context_window_pct,
+                report.context_window_tokens
+            ),
+        ])
+        .add_row(vec![
+            "Upper-bound Cost (USD)",
+            &format!(
+                "${:.6}\nNote: {}",
+                report.upper_bound_cost.usd, report.upper_bound_cost.caveat
+            ),
+        ]);
+    out.push_str(&estimates_table.to_string());
+    out.push('\n');
 
-    sections.push(format!(
-        "--- Upper-bound cost ---\n${:.6} USD\nNote: {}",
-        report.upper_bound_cost.usd, report.upper_bound_cost.caveat
-    ));
-
-    sections.join("\n\n") + "\n"
+    out
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -549,7 +584,7 @@ mod tests {
         assert!(text.contains("System message"));
         assert!(text.contains("User message"));
         assert!(text.contains("Registered tools"));
-        assert!(text.contains("Token estimate"));
-        assert!(text.contains("Upper-bound cost"));
+        assert!(text.contains("Estimates"));
+        assert!(text.contains("Upper-bound Cost"));
     }
 }

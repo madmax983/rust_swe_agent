@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 use crate::config::Config;
 use crate::redaction::Redactor;
 
@@ -660,78 +662,119 @@ pub fn is_risky(preview: &EnvPreview) -> bool {
 /// This is the same output that `agent env preview` (text mode) writes to
 /// stdout. Extracted here so it can be unit-tested independently of the CLI.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn format_preview_text(preview: &EnvPreview) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "=== Agent Environment Preview ===");
-    let _ = writeln!(out, "env_type:       {}", preview.env_type);
-    let _ = writeln!(out, "host_paths:     {}", preview.host_paths.join(", "));
-    let _ = writeln!(out, "network_egress: {}", preview.network_egress);
+
+    let mut overview_table = Table::new();
+    overview_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Property", "Value"])
+        .add_row(vec!["env_type", &preview.env_type])
+        .add_row(vec!["host_paths", &preview.host_paths.join(", ")])
+        .add_row(vec!["network_egress", &preview.network_egress]);
+    let _ = writeln!(out, "{overview_table}");
     let _ = writeln!(out);
+
     let _ = writeln!(out, "--- Hooks ---");
     if preview.hooks.pre_tool_use.is_empty() && preview.hooks.post_tool_use.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
+        let mut hooks_table = Table::new();
+        hooks_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Type", "Name", "Command"]);
         for h in &preview.hooks.pre_tool_use {
-            let _ = writeln!(out, "  PreToolUse  [{}]: {}", h.name, h.command);
+            hooks_table.add_row(vec!["PreToolUse", &h.name, &h.command]);
         }
         for h in &preview.hooks.post_tool_use {
-            let _ = writeln!(out, "  PostToolUse [{}]: {}", h.name, h.command);
+            hooks_table.add_row(vec!["PostToolUse", &h.name, &h.command]);
         }
+        let _ = writeln!(out, "{hooks_table}");
     }
     let _ = writeln!(out);
+
     let _ = writeln!(out, "--- MCP Servers ---");
     if preview.mcp_servers.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
+        let mut mcp_table = Table::new();
+        mcp_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Name", "Command", "Status"]);
         for m in &preview.mcp_servers {
             let flag = if m.outside_workdir {
-                " [OUTSIDE WORKDIR]"
+                "OUTSIDE WORKDIR"
             } else {
-                ""
+                "OK"
             };
-            let _ = writeln!(out, "  {}: {}{}", m.name, m.command, flag);
+            mcp_table.add_row(vec![&m.name, &m.command, &flag.to_string()]);
         }
+        let _ = writeln!(out, "{mcp_table}");
     }
     let _ = writeln!(out);
+
     let _ = writeln!(out, "--- Env Vars (sensitive) ---");
     if preview.env_vars.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
+        let mut env_table = Table::new();
+        env_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Name", "Value"]);
         for ev in &preview.env_vars {
-            let _ = writeln!(out, "  {}: {}", ev.name, ev.value_or_redacted);
+            env_table.add_row(vec![&ev.name, &ev.value_or_redacted]);
         }
+        let _ = writeln!(out, "{env_table}");
     }
     let _ = writeln!(out);
+
     let _ = writeln!(out, "--- Policy ---");
-    let _ = writeln!(out, "  profile:     {}", preview.policy.profile);
-    let _ = writeln!(
-        out,
-        "  extra_deny:  {}",
-        if preview.policy.extra_deny.is_empty() {
-            "(none)".to_owned()
-        } else {
-            preview.policy.extra_deny.join(", ")
-        }
-    );
-    let _ = writeln!(
-        out,
-        "  extra_allow: {}",
-        if preview.policy.extra_allow.is_empty() {
-            "(none)".to_owned()
-        } else {
-            preview.policy.extra_allow.join(", ")
-        }
-    );
+    let extra_deny_str = if preview.policy.extra_deny.is_empty() {
+        "(none)".to_owned()
+    } else {
+        preview.policy.extra_deny.join(", ")
+    };
+    let extra_allow_str = if preview.policy.extra_allow.is_empty() {
+        "(none)".to_owned()
+    } else {
+        preview.policy.extra_allow.join(", ")
+    };
+
+    let mut policy_table = Table::new();
+    policy_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Profile", "Extra Deny", "Extra Allow"])
+        .add_row(vec![
+            &preview.policy.profile,
+            &extra_deny_str,
+            &extra_allow_str,
+        ]);
+    let _ = writeln!(out, "{policy_table}");
     let _ = writeln!(out);
+
     if preview.findings.is_empty() {
         let _ = writeln!(out, "--- Findings: CLEAN ---");
     } else {
         let _ = writeln!(out, "--- Findings ---");
+        let mut findings_table = Table::new();
+        findings_table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Severity", "Message"]);
         for f in &preview.findings {
-            let _ = writeln!(out, "  [{}] {}", f.severity.to_uppercase(), f.message);
+            findings_table.add_row(vec![&f.severity.to_uppercase(), &f.message]);
         }
+        let _ = writeln!(out, "{findings_table}");
     }
+
     out
 }
 
