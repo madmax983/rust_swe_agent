@@ -4215,7 +4215,10 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
         summary.dominant_disagrees_with_sweep_count,
     );
     eprintln!("eval-flake: total_cost_usd=0.00 (evaluator wallclock only)");
-    println!("{}", serde_json::to_string_pretty(&report).map_err(Error::Json)?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(Error::Json)?
+    );
     Ok(())
 }
 

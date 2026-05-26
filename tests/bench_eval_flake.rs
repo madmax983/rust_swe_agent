@@ -81,8 +81,16 @@ fn flaky_instance_detected_with_correct_rate() {
     std::fs::create_dir_all(&sweep).unwrap();
 
     write_sweep_results(&sweep, &[("inst-flaky", true), ("inst-stable", true)]);
-    write_patch(&sweep, "inst-flaky", "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n");
-    write_patch(&sweep, "inst-stable", "--- a/y.py\n+++ b/y.py\n@@ -1 +1 @@\n-a\n+b\n");
+    write_patch(
+        &sweep,
+        "inst-flaky",
+        "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    write_patch(
+        &sweep,
+        "inst-stable",
+        "--- a/y.py\n+++ b/y.py\n@@ -1 +1 @@\n-a\n+b\n",
+    );
 
     // inst-flaky alternates: resolved, unresolved, resolved
     // inst-stable: always resolved
@@ -110,7 +118,9 @@ fn flaky_instance_detected_with_correct_rate() {
         output: None,
         concurrency: 1,
     };
-    let stub = EvalFlakeStubConfig { verdicts: stub_verdicts };
+    let stub = EvalFlakeStubConfig {
+        verdicts: stub_verdicts,
+    };
     let report = run_with_stub(&args, &stub).unwrap();
 
     let flaky = report
@@ -153,7 +163,11 @@ fn total_cost_usd_is_zero() {
     std::fs::create_dir_all(&sweep).unwrap();
 
     write_sweep_results(&sweep, &[("inst-a", true)]);
-    write_patch(&sweep, "inst-a", "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n");
+    write_patch(
+        &sweep,
+        "inst-a",
+        "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+    );
 
     let mut stubs: HashMap<String, Vec<InstanceVerdictStub>> = HashMap::new();
     stubs.insert(
@@ -184,7 +198,11 @@ fn artifact_written_to_sweep_dir() {
     std::fs::create_dir_all(&sweep).unwrap();
 
     write_sweep_results(&sweep, &[("inst-a", true)]);
-    write_patch(&sweep, "inst-a", "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n");
+    write_patch(
+        &sweep,
+        "inst-a",
+        "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+    );
 
     let mut stubs: HashMap<String, Vec<InstanceVerdictStub>> = HashMap::new();
     stubs.insert(
@@ -205,7 +223,10 @@ fn artifact_written_to_sweep_dir() {
     run_with_stub(&args, &stub).unwrap();
 
     let artifact_path = sweep.join("eval-flake.json");
-    assert!(artifact_path.exists(), "eval-flake.json must be written to sweep dir");
+    assert!(
+        artifact_path.exists(),
+        "eval-flake.json must be written to sweep dir"
+    );
 
     let content = std::fs::read_to_string(&artifact_path).unwrap();
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -223,7 +244,11 @@ fn errored_instances_without_patch_skipped() {
 
     // inst-no-patch has no patch file and is marked errored
     write_sweep_results(&sweep, &[("inst-patched", true), ("inst-no-patch", false)]);
-    write_patch(&sweep, "inst-patched", "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n");
+    write_patch(
+        &sweep,
+        "inst-patched",
+        "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+    );
     // deliberately don't write patch for inst-no-patch
 
     let mut stubs: HashMap<String, Vec<InstanceVerdictStub>> = HashMap::new();
@@ -263,8 +288,16 @@ fn dominant_disagrees_with_sweep_count_correct() {
     // inst-a: sweep said resolved, dominant verdict is unresolved (2 of 3)
     // inst-b: sweep said resolved, dominant verdict is resolved (always resolved)
     write_sweep_results(&sweep, &[("inst-a", true), ("inst-b", true)]);
-    write_patch(&sweep, "inst-a", "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n");
-    write_patch(&sweep, "inst-b", "--- a/g.py\n+++ b/g.py\n@@ -1 +1 @@\n-a\n+b\n");
+    write_patch(
+        &sweep,
+        "inst-a",
+        "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+    );
+    write_patch(
+        &sweep,
+        "inst-b",
+        "--- a/g.py\n+++ b/g.py\n@@ -1 +1 @@\n-a\n+b\n",
+    );
 
     let mut stubs: HashMap<String, Vec<InstanceVerdictStub>> = HashMap::new();
     stubs.insert(
@@ -333,7 +366,11 @@ fn compare_excludes_flaky_instances_from_mcnemar() {
     );
 
     // Write eval-flake.json flagging inst-flaky
-    write_patch(&flake_dir, "inst-flaky", "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n");
+    write_patch(
+        &flake_dir,
+        "inst-flaky",
+        "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+    );
     let mut stubs: HashMap<String, Vec<InstanceVerdictStub>> = HashMap::new();
     stubs.insert(
         "inst-flaky".into(),
@@ -354,8 +391,8 @@ fn compare_excludes_flaky_instances_from_mcnemar() {
     run_with_stub(&flake_args, &stub).unwrap();
     let flake_report_path = flake_dir.join("eval-flake.json");
 
-    let compare_report = maxwells_daemon::run::compare::compute(
-        &maxwells_daemon::run::compare::CompareArgs {
+    let compare_report =
+        maxwells_daemon::run::compare::compute(&maxwells_daemon::run::compare::CompareArgs {
             baseline: base,
             candidate: cand,
             format: maxwells_daemon::run::compare::CompareFormat::Text,
@@ -369,19 +406,16 @@ fn compare_excludes_flaky_instances_from_mcnemar() {
             regression_significance: None,
             allow_underpowered: true,
             flake_report: Some(flake_report_path),
-        },
-    )
-    .unwrap();
+        })
+        .unwrap();
 
     // inst-flaky excluded → paired instances = 3 (inst-a, inst-b, inst-c)
     assert_eq!(
-        compare_report.resolved_rate_significance.paired_n,
-        3,
+        compare_report.resolved_rate_significance.paired_n, 3,
         "paired_n must exclude the flaky instance"
     );
     assert_eq!(
-        compare_report.flaky_instances_excluded,
-        1,
+        compare_report.flaky_instances_excluded, 1,
         "must record exactly 1 flaky exclusion"
     );
     let table = compare_report.human_table();
@@ -432,8 +466,8 @@ fn compare_all_flaky_exits_usage_error() {
     run_with_stub(&flake_args, &stub).unwrap();
     let flake_report_path = flake_dir.join("eval-flake.json");
 
-    let result = maxwells_daemon::run::compare::compute(
-        &maxwells_daemon::run::compare::CompareArgs {
+    let result =
+        maxwells_daemon::run::compare::compute(&maxwells_daemon::run::compare::CompareArgs {
             baseline: base,
             candidate: cand,
             format: maxwells_daemon::run::compare::CompareFormat::Text,
@@ -447,13 +481,12 @@ fn compare_all_flaky_exits_usage_error() {
             regression_significance: None,
             allow_underpowered: true,
             flake_report: Some(flake_report_path),
-        },
-    );
+        });
 
     match result {
-        Err(maxwells_daemon::error::Error::Config(
-            maxwells_daemon::error::ConfigError::Usage(msg),
-        )) => {
+        Err(maxwells_daemon::error::Error::Config(maxwells_daemon::error::ConfigError::Usage(
+            msg,
+        ))) => {
             assert!(
                 msg.contains("flak"),
                 "error message must mention flake; got: {msg}"

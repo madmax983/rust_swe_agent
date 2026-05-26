@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::error::Error;
-use crate::run::evaluate::{BreakdownSelection, EvaluateArgs, EvaluateBackend, EvalExitReason};
 use crate::run::compare::load_sweep;
+use crate::run::evaluate::{BreakdownSelection, EvalExitReason, EvaluateArgs, EvaluateBackend};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -419,8 +419,10 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
     }
 
     // Collect verdicts per instance across replays.
-    let mut all_verdicts: HashMap<String, Vec<Verdict>> =
-        patchable.iter().map(|id| (id.clone(), Vec::new())).collect();
+    let mut all_verdicts: HashMap<String, Vec<Verdict>> = patchable
+        .iter()
+        .map(|id| (id.clone(), Vec::new()))
+        .collect();
 
     for replay_idx in 0..args.replays {
         tracing::info!(
@@ -549,11 +551,7 @@ mod tests {
                 vec![Verdict::Resolved, Verdict::Unresolved],
                 None,
             ),
-            build_instance_result(
-                "b".into(),
-                vec![Verdict::Resolved, Verdict::Resolved],
-                None,
-            ),
+            build_instance_result("b".into(), vec![Verdict::Resolved, Verdict::Resolved], None),
         ];
         let summary = build_summary(&instances, 2);
         assert_eq!(summary.flaky_count, 1);

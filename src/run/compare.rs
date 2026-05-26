@@ -1487,7 +1487,9 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         // Count paired instances that are flaky (present in both sweeps and flaky).
         let paired_flaky = flaky
             .iter()
-            .filter(|id| baseline.instances.contains_key(*id) && candidate.instances.contains_key(*id))
+            .filter(|id| {
+                baseline.instances.contains_key(*id) && candidate.instances.contains_key(*id)
+            })
             .count();
         // Degenerate: all paired instances are flaky — caller gets UsageError.
         let paired_n = baseline
