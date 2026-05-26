@@ -2251,14 +2251,20 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
     print!("{}", render_summary(&report));
 
     // Surface annotation diff when the original sweep has annotations.json.
-    render_reproduce_annotation_diff(&r.from, &r.output);
+    // Scope the diff to replayed instances so partial runs (--filter/--limit)
+    // don't report skipped-instance annotations as false drift.
+    render_reproduce_annotation_diff(&r.from, &r.output, &replayed_ids);
 
     Ok(())
 }
 
 /// Compare annotations between original and replay sweep directories.
 /// Best-effort — prints a warning when annotations differ; silent on errors.
-fn render_reproduce_annotation_diff(from: &std::path::Path, output: &std::path::Path) {
+fn render_reproduce_annotation_diff(
+    from: &std::path::Path,
+    output: &std::path::Path,
+    replayed_ids: &std::collections::HashSet<&str>,
+) {
     use crate::annotation::{AnnotationStore, DEFAULT_STORE_FILENAME};
     let orig_path = from.join(DEFAULT_STORE_FILENAME);
     let replay_path = output.join(DEFAULT_STORE_FILENAME);
@@ -2278,7 +2284,12 @@ fn render_reproduce_annotation_diff(from: &std::path::Path, output: &std::path::
         return;
     }
 
-    let (only_orig, only_replay) = crate::run::annotate::diff_annotation_stores(&orig, &replay);
+    let (mut only_orig, only_replay) = crate::run::annotate::diff_annotation_stores(&orig, &replay);
+
+    // For partial replays, suppress false-drift signals from skipped instances.
+    if !replayed_ids.is_empty() {
+        only_orig.retain(|(iid, _)| replayed_ids.contains(iid.as_str()));
+    }
 
     if only_orig.is_empty() && only_replay.is_empty() {
         eprintln!("reproduce: annotations match between original and replay sweeps");
@@ -4299,8 +4310,13 @@ fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
                         serde_json::to_string_pretty(&report).map_err(Error::Json)?
                     );
                 }
-                _ => {
+                "text" => {
                     print!("{}", render_list_text(&report));
+                }
+                other => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "--format '{other}' is not valid; use 'text' or 'json'"
+                    ))));
                 }
             }
             Ok(())

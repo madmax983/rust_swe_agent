@@ -182,6 +182,17 @@ impl AnnotationStore {
             .unwrap_or_default()
     }
 
+    /// Remove all instances not in `keep`; used by `bench bundle --instance` to
+    /// scope the exported annotations file to the requested subset.
+    pub fn retain_instances(&mut self, keep: &std::collections::BTreeSet<String>) {
+        self.data.instances.retain(|k, _| keep.contains(k));
+    }
+
+    /// Serialize the store to pretty-printed JSON bytes without writing to disk.
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_string_pretty(&self.data).map(String::into_bytes)
+    }
+
     /// Atomically write the store to `path` (write-temp-then-rename).
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         // Ensure parent directory exists.

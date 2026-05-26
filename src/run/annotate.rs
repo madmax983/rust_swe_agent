@@ -67,6 +67,21 @@ pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
         ));
     }
 
+    // Validate note length on the raw input so redaction marker expansion
+    // cannot turn a compliant note into a rejected one.
+    if let Some(n) = args.note.as_deref() {
+        let len = n.chars().count();
+        if len > crate::annotation::NOTE_MAX_CHARS {
+            return Err(crate::error::Error::Config(
+                crate::error::ConfigError::Invalid(format!(
+                    "annotations: note is {len} chars; maximum is {}; \
+                     truncate or shorten the note before adding",
+                    crate::annotation::NOTE_MAX_CHARS
+                )),
+            ));
+        }
+    }
+
     let store_path = resolve_store_path(args.store.as_deref());
     let redactor = Redactor::default_enabled();
 

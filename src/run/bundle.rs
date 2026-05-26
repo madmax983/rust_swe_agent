@@ -300,13 +300,29 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
     }
     files.extend(patch_files);
 
-    // Include annotations.json when present in the sweep dir (best-effort;
-    // a missing file is silently skipped, not an error).
+    // Include annotations.json when present in the sweep dir.  For
+    // instance-scoped bundles, filter to only the requested instance so
+    // unrelated operator notes are not leaked.
     let annotations_src = args
         .sweep_dir
         .join(crate::annotation::DEFAULT_STORE_FILENAME);
     if annotations_src.is_file() {
-        let ann_bytes = normalized_text_file(&annotations_src, &normalizer)?;
+        let ann_bytes = if args.instance.is_some() {
+            match crate::annotation::AnnotationStore::load_or_default(&annotations_src) {
+                Ok(mut store) => {
+                    store.retain_instances(&included_set);
+                    match store.to_json_bytes() {
+                        Ok(b) => normalizer
+                            .normalize_text(&String::from_utf8_lossy(&b))
+                            .into_bytes(),
+                        Err(_) => normalized_text_file(&annotations_src, &normalizer)?,
+                    }
+                }
+                Err(_) => normalized_text_file(&annotations_src, &normalizer)?,
+            }
+        } else {
+            normalized_text_file(&annotations_src, &normalizer)?
+        };
         strict_redaction_check("annotations.json", &ann_bytes, &redactor)?;
         files.push(workspace.prepare_bytes("annotations.json", ann_bytes)?);
     }
