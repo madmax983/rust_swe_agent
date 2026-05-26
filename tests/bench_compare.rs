@@ -3353,7 +3353,11 @@ fn evaluate_rehearsal_for_patch_stats(dir: &Path) {
 }
 
 #[test]
-#[allow(clippy::too_many_lines, clippy::uninlined_format_args, clippy::float_cmp)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::float_cmp
+)]
 fn compare_test_only_resolved_rate_ci_gating_and_reporting() {
     let baseline_dir = tempfile::tempdir().unwrap();
     let candidate_dir = tempfile::tempdir().unwrap();
