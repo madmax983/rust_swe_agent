@@ -8,7 +8,7 @@
 //!   4. Summary text names the exclusion count explicitly.
 //!   5. Degenerate case: all paired instances flaky exits with UsageError (2).
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,14 +27,10 @@ fn write_sweep_results(dir: &std::path::Path, instances: &[(&str, bool)]) -> Pat
     let mut rows = String::new();
     for (id, resolved) in instances {
         let outcome = if *resolved { "submitted" } else { "error" };
-        let resolved_count = if *resolved { 1 } else { 0 };
+        let resolved_count = i32::from(*resolved);
         writeln!(
             rows,
-            r#"{{"instance_id":"{id}","exit_reason":"{outcome}","outcome":"{outcome}","failure_category":null,"steps":4,"cost_usd":0.01,"prompt_tokens":100,"cache_read_tokens":0,"cache_creation_tokens":0,"completion_tokens":50,"duration_secs":5.0,"error":null,"github_pr_error":null,"patch_present":{pp},"non_empty_patch":{pp},"attempts":1,"retry_reasons":[],"runs":1,"resolved_count":{resolved_count},"pass_at_1":{pp},"tests_run_before_submit":false,"last_tests_passed":null,"fallback_count":null,"final_model":null,"retry_id":null,"previous_failure_category":null,"trace_id":null}}"#,
-            id = id,
-            outcome = outcome,
-            pp = resolved,
-            resolved_count = resolved_count,
+            r#"{{"instance_id":"{id}","exit_reason":"{outcome}","outcome":"{outcome}","failure_category":null,"steps":4,"cost_usd":0.01,"prompt_tokens":100,"cache_read_tokens":0,"cache_creation_tokens":0,"completion_tokens":50,"duration_secs":5.0,"error":null,"github_pr_error":null,"patch_present":{resolved},"non_empty_patch":{resolved},"attempts":1,"retry_reasons":[],"runs":1,"resolved_count":{resolved_count},"pass_at_1":{resolved},"tests_run_before_submit":false,"last_tests_passed":null,"fallback_count":null,"final_model":null,"retry_id":null,"previous_failure_category":null,"trace_id":null}}"#,
         )
         .unwrap();
     }
@@ -113,7 +109,7 @@ fn flaky_instance_detected_with_correct_rate() {
     );
 
     let args = EvalFlakeArgs {
-        sweep_dir: sweep.clone(),
+        sweep_dir: sweep,
         replays: 3,
         output: None,
         concurrency: 1,

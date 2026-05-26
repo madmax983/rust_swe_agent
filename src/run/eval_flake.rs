@@ -492,6 +492,7 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
 // ── Unit tests for aggregation logic ──────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
