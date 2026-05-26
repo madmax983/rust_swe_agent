@@ -305,21 +305,67 @@ fn parse_unified_diff(text: &str) -> ParsedPatch {
     parsed
 }
 
-fn parse_diff_git_file(line: &str) -> Option<String> {
-    let mut parts = line.split_whitespace();
-    if parts.next()? != "diff" || parts.next()? != "--git" {
-        return None;
+fn extract_git_diff_path(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start();
+    if s.starts_with('"') {
+        let chars = s.char_indices().skip(1);
+        let mut escaped = false;
+        for (idx, c) in chars {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                let content = &s[1..idx];
+                let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
+                return Some((unescaped, &s[idx + 1..]));
+            }
+        }
+        None
+    } else if let Some(idx) = s.find(char::is_whitespace) {
+        Some((s[..idx].to_string(), &s[idx..]))
+    } else if !s.is_empty() {
+        Some((s.to_string(), ""))
+    } else {
+        None
     }
-    let old = parts.next()?;
-    let new = parts.next()?;
+}
+
+fn parse_git_diff_paths(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+    let (a, remainder) = extract_git_diff_path(rest)?;
+    let (b, _) = extract_git_diff_path(remainder)?;
+    Some((a, b))
+}
+
+fn parse_diff_git_file(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("diff --git ")?;
+    let (old, new) = parse_git_diff_paths(rest)?;
     let selected = if new == "/dev/null" { old } else { new };
-    Some(strip_diff_prefix(selected))
+    Some(strip_diff_prefix(&selected))
 }
 
 fn parse_file_marker(line: &str, prefix: &str) -> Option<String> {
-    line.strip_prefix(prefix)
-        .and_then(|rest| rest.split_whitespace().next())
-        .map(strip_diff_prefix)
+    let rest = line.strip_prefix(prefix)?;
+    let rest = rest.trim_start();
+    if rest.starts_with('"') {
+        let chars = rest.char_indices().skip(1);
+        let mut escaped = false;
+        for (idx, c) in chars {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                let content = &rest[1..idx];
+                let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
+                return Some(strip_diff_prefix(&unescaped));
+            }
+        }
+        None
+    } else {
+        rest.split_whitespace().next().map(strip_diff_prefix)
+    }
 }
 
 fn strip_diff_prefix(path: &str) -> String {
@@ -449,6 +495,11 @@ lock_or_generated_files = []
         let patch_empty = "";
         let stats = score_patch(patch_empty, &classifiers, None);
         assert_eq!(stats.submission_class, Some(SubmissionClass::Empty));
+
+        // 6. Test-only patch with spaced and quoted filename
+        let patch_quoted = "diff --git \"a/tests/test foo.rs\" \"b/tests/test foo.rs\"\n--- \"a/tests/test foo.rs\"\n+++ \"b/tests/test foo.rs\"\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_quoted, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
 
         Ok(())
     }

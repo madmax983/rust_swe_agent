@@ -1821,8 +1821,15 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             );
         }
         match report.candidate_test_only_resolved_rate {
-            Some(cand_rate) =>
-            {
+            Some(cand_rate) => {
+                if !cand_rate.is_finite() || !(0.0..=1.0).contains(&cand_rate) {
+                    exit_with_outcome(
+                        ExitCode::UsageError,
+                        &format!(
+                            "compare: candidate test-only resolved rate ({cand_rate}) is invalid (must be a finite float between 0.0 and 1.0)"
+                        ),
+                    );
+                }
                 #[allow(clippy::cast_possible_truncation)]
                 if cand_rate > max_rate as f32 {
                     tracing::error!(

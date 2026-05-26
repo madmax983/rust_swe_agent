@@ -3570,4 +3570,33 @@ fn compare_test_only_resolved_rate_ci_gating_and_reporting() {
         "expected usage error (exit code 2) because candidate has no evaluation.json/test-only metrics; stderr: {}",
         String::from_utf8_lossy(&out_missing.stderr)
     );
+
+    // 12. Verify invalid candidate metric fails closed (exit code 2)
+    let invalid_cand_dir = tempfile::tempdir().unwrap();
+    write_results(invalid_cand_dir.path(), vec![submitted("inst-1")]);
+    let eval_json_content = r#"{"instances":[],"test_only_resolved_rate":1.5}"#;
+    std::fs::write(
+        invalid_cand_dir.path().join("evaluation.json"),
+        eval_json_content,
+    )
+    .unwrap();
+    let out_invalid = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            invalid_cand_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "0.50",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_invalid.status.code(),
+        Some(2),
+        "expected usage error (exit code 2) because candidate rate (1.5) is invalid; stderr: {}",
+        String::from_utf8_lossy(&out_invalid.stderr)
+    );
 }
