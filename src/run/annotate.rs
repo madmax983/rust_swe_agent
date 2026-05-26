@@ -204,3 +204,30 @@ pub fn load_tags_best_effort(instance_id: &str, store_path: Option<&std::path::P
         Err(_) => Vec::new(),
     }
 }
+
+/// Diff two annotation stores; returns `(only_in_left, only_in_right)` as
+/// `(instance_id, tag)` pairs.  Used by `bench reproduce` to surface
+/// annotation drift.
+#[must_use]
+pub fn diff_annotation_stores(
+    left: &AnnotationStore,
+    right: &AnnotationStore,
+) -> (
+    Vec<(String, String)>,
+    Vec<(String, String)>,
+) {
+    let left_set: std::collections::BTreeSet<(String, String)> = left
+        .list(None, None)
+        .into_iter()
+        .map(|a| (a.instance_id, a.tag))
+        .collect();
+    let right_set: std::collections::BTreeSet<(String, String)> = right
+        .list(None, None)
+        .into_iter()
+        .map(|a| (a.instance_id, a.tag))
+        .collect();
+
+    let only_left = left_set.difference(&right_set).cloned().collect();
+    let only_right = right_set.difference(&left_set).cloned().collect();
+    (only_left, only_right)
+}

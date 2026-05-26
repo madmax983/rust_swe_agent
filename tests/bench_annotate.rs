@@ -18,6 +18,7 @@ use std::path::Path;
 use std::process::Command;
 
 use maxwells_daemon::annotation::{AnnotationStore, TAG_REGEX};
+use maxwells_daemon::run::annotate::diff_annotation_stores;
 
 mod support;
 use support::binary_path;
@@ -814,6 +815,56 @@ fn bundle_succeeds_without_annotations() {
         "bench bundle should succeed without annotations: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ── AC: bench reproduce annotation diff ──────────────────────────────────────
+
+#[test]
+fn reproduce_annotation_diff_detects_only_in_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let orig_path = dir.path().join("orig.json");
+    let replay_path = dir.path().join("replay.json");
+
+    let mut orig = AnnotationStore::load_or_default(&orig_path).unwrap();
+    orig.add("pytest__pytest-7234", "evaluator-flake", Some("known issue")).unwrap();
+    orig.save(&orig_path).unwrap();
+
+    let replay = AnnotationStore::load_or_default(&replay_path).unwrap();
+
+    let (only_orig, only_replay) = diff_annotation_stores(&orig, &replay);
+    assert_eq!(only_orig.len(), 1);
+    assert!(only_orig.iter().any(|(id, tag)| id == "pytest__pytest-7234" && tag == "evaluator-flake"));
+    assert!(only_replay.is_empty());
+}
+
+#[test]
+fn reproduce_annotation_diff_detects_only_in_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let orig_path = dir.path().join("orig.json");
+    let replay_path = dir.path().join("replay.json");
+
+    let orig = AnnotationStore::load_or_default(&orig_path).unwrap();
+    let mut replay = AnnotationStore::load_or_default(&replay_path).unwrap();
+    replay.add("pytest__pytest-7234", "new-tag", None).unwrap();
+    replay.save(&replay_path).unwrap();
+
+    let (only_orig, only_replay) = diff_annotation_stores(&orig, &replay);
+    assert!(only_orig.is_empty());
+    assert_eq!(only_replay.len(), 1);
+}
+
+#[test]
+fn reproduce_annotation_diff_empty_when_same() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let mut store = AnnotationStore::load_or_default(&path).unwrap();
+    store.add("id1", "tag1", None).unwrap();
+    store.save(&path).unwrap();
+
+    let orig = AnnotationStore::load_or_default(&path).unwrap();
+    let replay = AnnotationStore::load_or_default(&path).unwrap();
+    let (only_orig, only_replay) = diff_annotation_stores(&orig, &replay);
+    assert!(only_orig.is_empty() && only_replay.is_empty());
 }
 
 // ── AC: zero network / model calls ────────────────────────────────────────────

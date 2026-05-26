@@ -2250,7 +2250,55 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
 
     print!("{}", render_summary(&report));
 
+    // Surface annotation diff when the original sweep has annotations.json.
+    render_reproduce_annotation_diff(&r.from, &r.output);
+
     Ok(())
+}
+
+/// Compare annotations between original and replay sweep directories.
+/// Best-effort — prints a warning when annotations differ; silent on errors.
+fn render_reproduce_annotation_diff(from: &std::path::Path, output: &std::path::Path) {
+    use crate::annotation::{AnnotationStore, DEFAULT_STORE_FILENAME};
+    let orig_path = from.join(DEFAULT_STORE_FILENAME);
+    let replay_path = output.join(DEFAULT_STORE_FILENAME);
+
+    if !orig_path.is_file() && !replay_path.is_file() {
+        return;
+    }
+
+    let orig = match AnnotationStore::load_or_default(&orig_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let replay = match AnnotationStore::load_or_default(&replay_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    if orig.list(None, None).is_empty() && replay.list(None, None).is_empty() {
+        return;
+    }
+
+    let (only_orig, only_replay) =
+        crate::run::annotate::diff_annotation_stores(&orig, &replay);
+
+    if only_orig.is_empty() && only_replay.is_empty() {
+        eprintln!("reproduce: annotations match between original and replay sweeps");
+        return;
+    }
+
+    eprintln!(
+        "reproduce: annotation diff — {} annotation(s) only in original, {} only in replay",
+        only_orig.len(),
+        only_replay.len()
+    );
+    for (iid, tag) in &only_orig {
+        eprintln!("  - original only: {iid} [{tag}]");
+    }
+    for (iid, tag) in &only_replay {
+        eprintln!("  + replay only:   {iid} [{tag}]");
+    }
 }
 
 /// Build a current-environment manifest for drift comparison by cloning the
