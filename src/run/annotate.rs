@@ -70,9 +70,10 @@ pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
     let store_path = resolve_store_path(args.store.as_deref());
     let redactor = Redactor::default_enabled();
 
-    let redacted_note = args.note.as_deref().map(|n| {
-        redactor.redact_text(n, surface::EXPORT).text
-    });
+    let redacted_note = args
+        .note
+        .as_deref()
+        .map(|n| redactor.redact_text(n, surface::EXPORT).text);
 
     let mut store = AnnotationStore::load_or_default(&store_path)?;
     for tag in &args.tags {
@@ -101,9 +102,13 @@ pub fn run_rm(args: &AnnotateRmArgs) -> Result<AnnotateRmReport, Error> {
     let store_path = resolve_store_path(args.store.as_deref());
     let mut store = AnnotationStore::load_or_default(&store_path)?;
 
-    let before = store.list(Some(&args.instance_id), args.tag.as_deref()).len();
+    let before = store
+        .list(Some(&args.instance_id), args.tag.as_deref())
+        .len();
     store.remove(&args.instance_id, args.tag.as_deref());
-    let after = store.list(Some(&args.instance_id), args.tag.as_deref()).len();
+    let after = store
+        .list(Some(&args.instance_id), args.tag.as_deref())
+        .len();
     let removed_count = before.saturating_sub(after);
 
     store.save(&store_path)?;
@@ -187,7 +192,10 @@ pub fn render_rm_text(report: &AnnotateRmReport) -> String {
 /// Load annotations for an instance from the default or given store path.
 /// Returns an empty vec on any error (best-effort; never blocks callers).
 #[must_use]
-pub fn load_annotations_best_effort(instance_id: &str, store_path: Option<&std::path::Path>) -> Vec<Annotation> {
+pub fn load_annotations_best_effort(
+    instance_id: &str,
+    store_path: Option<&std::path::Path>,
+) -> Vec<Annotation> {
     let path = resolve_store_path(store_path);
     match AnnotationStore::load_or_default(&path) {
         Ok(store) => store.list(Some(instance_id), None),
@@ -197,7 +205,10 @@ pub fn load_annotations_best_effort(instance_id: &str, store_path: Option<&std::
 
 /// Load compact tag list for one instance. Best-effort; returns empty on error.
 #[must_use]
-pub fn load_tags_best_effort(instance_id: &str, store_path: Option<&std::path::Path>) -> Vec<String> {
+pub fn load_tags_best_effort(
+    instance_id: &str,
+    store_path: Option<&std::path::Path>,
+) -> Vec<String> {
     let path = resolve_store_path(store_path);
     match AnnotationStore::load_or_default(&path) {
         Ok(store) => store.tags_for(instance_id),
@@ -205,17 +216,14 @@ pub fn load_tags_best_effort(instance_id: &str, store_path: Option<&std::path::P
     }
 }
 
+/// `(instance_id, tag)` pair lists for the diff result.
+type AnnotationDiff = (Vec<(String, String)>, Vec<(String, String)>);
+
 /// Diff two annotation stores; returns `(only_in_left, only_in_right)` as
 /// `(instance_id, tag)` pairs.  Used by `bench reproduce` to surface
 /// annotation drift.
 #[must_use]
-pub fn diff_annotation_stores(
-    left: &AnnotationStore,
-    right: &AnnotationStore,
-) -> (
-    Vec<(String, String)>,
-    Vec<(String, String)>,
-) {
+pub fn diff_annotation_stores(left: &AnnotationStore, right: &AnnotationStore) -> AnnotationDiff {
     let left_set: std::collections::BTreeSet<(String, String)> = left
         .list(None, None)
         .into_iter()

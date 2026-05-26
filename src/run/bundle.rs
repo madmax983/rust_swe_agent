@@ -302,7 +302,9 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
 
     // Include annotations.json when present in the sweep dir (best-effort;
     // a missing file is silently skipped, not an error).
-    let annotations_src = args.sweep_dir.join(crate::annotation::DEFAULT_STORE_FILENAME);
+    let annotations_src = args
+        .sweep_dir
+        .join(crate::annotation::DEFAULT_STORE_FILENAME);
     if annotations_src.is_file() {
         let ann_bytes = normalized_text_file(&annotations_src, &normalizer)?;
         strict_redaction_check("annotations.json", &ann_bytes, &redactor)?;

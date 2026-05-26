@@ -302,8 +302,7 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     }
 
     // Load operator annotations (best-effort; never blocks if store is missing).
-    report.annotations =
-        crate::run::annotate::load_annotations_best_effort(&instance_id, None);
+    report.annotations = crate::run::annotate::load_annotations_best_effort(&instance_id, None);
 
     Ok(InspectOutput::Instance(Box::new(report)))
 }

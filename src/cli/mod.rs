@@ -2267,21 +2267,18 @@ fn render_reproduce_annotation_diff(from: &std::path::Path, output: &std::path::
         return;
     }
 
-    let orig = match AnnotationStore::load_or_default(&orig_path) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(orig) = AnnotationStore::load_or_default(&orig_path) else {
+        return;
     };
-    let replay = match AnnotationStore::load_or_default(&replay_path) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(replay) = AnnotationStore::load_or_default(&replay_path) else {
+        return;
     };
 
     if orig.list(None, None).is_empty() && replay.list(None, None).is_empty() {
         return;
     }
 
-    let (only_orig, only_replay) =
-        crate::run::annotate::diff_annotation_stores(&orig, &replay);
+    let (only_orig, only_replay) = crate::run::annotate::diff_annotation_stores(&orig, &replay);
 
     if only_orig.is_empty() && only_replay.is_empty() {
         eprintln!("reproduce: annotations match between original and replay sweeps");

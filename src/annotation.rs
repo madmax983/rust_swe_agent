@@ -102,24 +102,25 @@ impl AnnotationStore {
     /// Add (or update) an annotation record for `(instance_id, tag)`.
     ///
     /// Validates the tag format and note length before mutating.
-    pub fn add(
-        &mut self,
-        instance_id: &str,
-        tag: &str,
-        note: Option<&str>,
-    ) -> Result<(), Error> {
+    pub fn add(&mut self, instance_id: &str, tag: &str, note: Option<&str>) -> Result<(), Error> {
         validate_tag(tag)?;
         if let Some(n) = note {
             validate_note(n)?;
         }
 
         let now = utc_now_rfc3339();
-        let instance_map = self.data.instances.entry(instance_id.to_owned()).or_default();
-        let entry = instance_map.entry(tag.to_owned()).or_insert_with(|| StoreEntry {
-            note: None,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        });
+        let instance_map = self
+            .data
+            .instances
+            .entry(instance_id.to_owned())
+            .or_default();
+        let entry = instance_map
+            .entry(tag.to_owned())
+            .or_insert_with(|| StoreEntry {
+                note: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            });
         entry.note = note.map(str::to_owned);
         entry.updated_at = now;
         Ok(())
@@ -145,11 +146,7 @@ impl AnnotationStore {
 
     /// List annotations, optionally filtered by `instance_id` and/or `tag`.
     #[must_use]
-    pub fn list(
-        &self,
-        instance_id: Option<&str>,
-        tag_filter: Option<&str>,
-    ) -> Vec<Annotation> {
+    pub fn list(&self, instance_id: Option<&str>, tag_filter: Option<&str>) -> Vec<Annotation> {
         let mut results = Vec::new();
         for (iid, tags) in &self.data.instances {
             if let Some(filter) = instance_id {
@@ -223,6 +220,7 @@ fn validate_note(note: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::expect_used)]
 fn tag_regex() -> &'static regex::Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -232,9 +230,9 @@ fn tag_regex() -> &'static regex::Regex {
 // ── atomic write ─────────────────────────────────────────────────────────────
 
 fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let parent = dest.parent().unwrap_or(Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     use std::io::Write as _;
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
     tmp.flush()?;
     tmp.persist(dest).map_err(|e| Error::Io(e.error))?;
@@ -249,6 +247,8 @@ fn utc_now_rfc3339() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
