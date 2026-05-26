@@ -3230,12 +3230,11 @@ fn bench_stagnation_report(s: args::StagnationReportCmd) -> Result<(), Error> {
                 "stagnation-report: {e}"
             )))
         })?;
-    let report = crate::run::stagnation_report::run(
-        &crate::run::stagnation_report::StagnationReportArgs {
+    let report =
+        crate::run::stagnation_report::run(&crate::run::stagnation_report::StagnationReportArgs {
             sweep: s.sweep,
             format,
-        },
-    )?;
+        })?;
     match format {
         crate::run::stagnation_report::StagnationReportFormat::Text => {
             print!("{}", crate::run::stagnation_report::render_text(&report));

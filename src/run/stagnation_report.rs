@@ -41,9 +41,7 @@ impl std::str::FromStr for StagnationReportFormat {
         match s {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
-            other => Err(format!(
-                "unknown format `{other}` (expected text|json)"
-            )),
+            other => Err(format!("unknown format `{other}` (expected text|json)")),
         }
     }
 }
@@ -113,13 +111,10 @@ pub struct StagnationReport {
 
 pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
     let sweep = load_sweep(&args.sweep).map_err(|e| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "stagnation-report: failed to load sweep `{}`: {e}",
-                args.sweep.display()
-            ),
-        ))
+        Error::Io(std::io::Error::other(format!(
+            "stagnation-report: failed to load sweep `{}`: {e}",
+            args.sweep.display()
+        )))
     })?;
 
     // Try to determine step_limit from sweep manifest's resolved config TOML.
@@ -140,9 +135,7 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
         if !matches!(ir.failure_category, Some(FailureCategory::AgentStagnation)) {
             continue;
         }
-        if let Some(row) =
-            try_build_instance_row(instance_id, &args.sweep, step_limit, &redactor)
-        {
+        if let Some(row) = try_build_instance_row(instance_id, &args.sweep, step_limit, &redactor) {
             rows.push(row);
         }
     }
@@ -158,8 +151,7 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
 
     let halted_count = rows.len();
     let total_usd_burned_before_halt: f64 = rows.iter().map(|r| r.budget_burned_usd).sum();
-    let total_usd_saved_estimate: f64 =
-        rows.iter().filter_map(|r| r.usd_saved_estimate).sum();
+    let total_usd_saved_estimate: f64 = rows.iter().filter_map(|r| r.usd_saved_estimate).sum();
 
     Ok(StagnationReport {
         sweep_path: args.sweep.display().to_string(),
@@ -287,9 +279,10 @@ fn try_build_instance_row(
     let canonical_redacted = redactor.redact_text(&canonical_raw, surface::EXPORT).text;
     let canonical_action = truncate_action(&canonical_redacted);
 
-    let halt_step = traj.info.steps.unwrap_or_else(|| {
-        stag.step_indices.iter().copied().max().unwrap_or(0)
-    });
+    let halt_step = traj
+        .info
+        .steps
+        .unwrap_or_else(|| stag.step_indices.iter().copied().max().unwrap_or(0));
 
     let budget_burned_usd = traj
         .info
