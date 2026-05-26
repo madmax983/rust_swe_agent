@@ -187,6 +187,10 @@ pub struct InspectReport {
     /// Present only when `--flake-report` is set and the instance appears in the report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flake_data: Option<InspectFlakeData>,
+    /// Operator triage annotations for this instance loaded from the annotation store.
+    /// Empty when the store is missing or the instance has no annotations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<crate::annotation::Annotation>,
 }
 
 /// Flake data for a single instance surfaced by `bench inspect --flake-report`.
@@ -296,6 +300,10 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
             }
         }
     }
+
+    // Load operator annotations (best-effort; never blocks if store is missing).
+    report.annotations =
+        crate::run::annotate::load_annotations_best_effort(&instance_id, None);
 
     Ok(InspectOutput::Instance(Box::new(report)))
 }
@@ -418,6 +426,7 @@ fn build_instance_report(
                 trace_id: None,
                 fork_lineage: None,
                 flake_data: None,
+                annotations: Vec::new(),
             });
         }
     };
@@ -506,6 +515,7 @@ fn build_instance_report(
         trace_id: traj.info.trace_id,
         fork_lineage: traj.fork_lineage,
         flake_data: None,
+        annotations: Vec::new(),
     })
 }
 
@@ -950,6 +960,19 @@ fn render_instance_text(report: &InspectReport) -> String {
     }
     for w in &report.warnings {
         let _ = writeln!(s, "warning:          {w}");
+    }
+
+    // Operator notes: displayed above the trajectory dump when annotations exist.
+    if !report.annotations.is_empty() {
+        s.push_str("\n=== Operator notes ===\n");
+        for ann in &report.annotations {
+            let note_part = ann
+                .note
+                .as_deref()
+                .map_or_else(String::new, |n| format!(" — {n}"));
+            let _ = writeln!(s, "  [{}]{note_part}", ann.tag);
+        }
+        s.push('\n');
     }
 
     for step in &report.steps {

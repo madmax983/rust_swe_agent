@@ -113,6 +113,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Audit(a) => bench_audit(a),
             args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
             args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
+            args::BenchCmd::Annotate(a) => bench_annotate(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4220,6 +4221,56 @@ fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
         serde_json::to_string_pretty(&report).map_err(Error::Json)?
     );
     Ok(())
+}
+
+fn bench_annotate(a: args::AnnotateCmd) -> Result<(), Error> {
+    use crate::run::annotate::{
+        AnnotateAddArgs, AnnotateListArgs, AnnotateRmArgs, render_add_text, render_list_text,
+        render_rm_text, run_add, run_list, run_rm,
+    };
+    match a.cmd {
+        args::AnnotateSubCmd::Add(cmd) => {
+            let args = AnnotateAddArgs {
+                instance_id: cmd.instance_id,
+                tags: cmd.tag,
+                note: cmd.note,
+                store: cmd.store,
+            };
+            let report = run_add(&args)?;
+            eprint!("{}", render_add_text(&report));
+            Ok(())
+        }
+        args::AnnotateSubCmd::List(cmd) => {
+            let args = AnnotateListArgs {
+                instance: cmd.instance,
+                tag: cmd.tag,
+                store: cmd.store,
+            };
+            let report = run_list(&args)?;
+            match cmd.format.as_str() {
+                "json" => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(Error::Json)?
+                    );
+                }
+                _ => {
+                    print!("{}", render_list_text(&report));
+                }
+            }
+            Ok(())
+        }
+        args::AnnotateSubCmd::Rm(cmd) => {
+            let args = AnnotateRmArgs {
+                instance_id: cmd.instance_id,
+                tag: cmd.tag,
+                store: cmd.store,
+            };
+            let report = run_rm(&args)?;
+            eprint!("{}", render_rm_text(&report));
+            Ok(())
+        }
+    }
 }
 
 fn parse_dataset_source_stats(

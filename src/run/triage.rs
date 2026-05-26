@@ -325,6 +325,7 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
             "total_usd",
             "% unresolved cost",
             "exemplar_instance_id",
+            "annotations",
             "signature_summary",
         ]);
 
@@ -334,6 +335,8 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
         } else {
             0.0
         };
+        // Best-effort annotation lookup for exemplar instance.
+        let annotations = compact_annotation_tags(&cluster.exemplar_instance_id);
         table.add_row(vec![
             (idx + 1).to_string(),
             cluster.failure_category.clone(),
@@ -341,6 +344,7 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
             format!("{:.4}", cluster.total_cost_usd),
             format!("{share:.1}"),
             cluster.exemplar_instance_id.clone(),
+            annotations,
             truncate_chars(&cluster.signature_summary, 96),
         ]);
     }
@@ -348,6 +352,11 @@ pub fn render_text(report: &TriageReport, top: usize) -> String {
     out.push_str(&table.to_string());
     out.push('\n');
     out
+}
+
+/// Load compact tag list for an instance (best-effort; empty string on any error).
+fn compact_annotation_tags(instance_id: &str) -> String {
+    crate::run::annotate::load_tags_best_effort(instance_id, None).join(",")
 }
 
 fn build_report(args: &TriageArgs) -> Result<TriageReport, Error> {
