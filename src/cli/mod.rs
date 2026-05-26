@@ -2494,7 +2494,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "json"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -2573,6 +2576,10 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "json" => {
+            use crate::trajectory::export::{JsonExporter, TrajectoryExporter};
+            JsonExporter::export(&traj)
+        }
         _ => unreachable!("dispatch guarded by caller"),
     };
 

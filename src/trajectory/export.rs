@@ -53,7 +53,18 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+/// Transforms a [`Trajectory`] into a JSON document.
+///
+/// Note: This exporter formats the full trajectory structure as minified or pretty JSON.
+pub struct JsonExporter;
+
 use std::fmt::Write;
+
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        serde_json::to_string_pretty(trajectory).unwrap_or_else(|_| "{}".to_string())
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -247,6 +258,7 @@ impl TrajectoryExporter for MermaidExporter {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::model::Message;
     use crate::trajectory::outcome;
@@ -339,5 +351,26 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+
+        let json_str = JsonExporter::export(&t);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["info"]["task"].as_str().unwrap(), "Add a feature");
+        assert_eq!(parsed["info"]["outcome"].as_str().unwrap(), "submitted");
+        assert_eq!(parsed["messages"][0]["role"].as_str().unwrap(), "system");
+        assert_eq!(
+            parsed["messages"][0]["content"].as_str().unwrap(),
+            "System prompt"
+        );
     }
 }
