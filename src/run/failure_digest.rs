@@ -100,33 +100,42 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
         };
 
     let patch_status = derive_patch_status(instance);
-    let patch_apply_stderr = if patch_status == PatchStatus::InvalidDiff {
+    let patch_apply_stderr_raw = if patch_status == PatchStatus::InvalidDiff {
         instance.error.clone()
     } else {
         None
     };
 
-    let triage_cluster_label = load_triage_cluster_label(&args.sweep_dir, &instance_id);
+    let triage_cluster_label_raw = load_triage_cluster_label(&args.sweep_dir, &instance_id);
 
     let redactor = Redactor::default_enabled();
     let ast_out = redactor.redact_text(&last_assistant_message, surface::INSPECT);
     let stderr_out = redactor.redact_text(&last_tool_stderr, surface::INSPECT);
     let stdout_out = redactor.redact_text(&last_tool_stdout, surface::INSPECT);
+    let patch_err_out = patch_apply_stderr_raw
+        .as_deref()
+        .map(|s| redactor.redact_text(s, surface::INSPECT));
+    let triage_out = triage_cluster_label_raw
+        .as_deref()
+        .map(|s| redactor.redact_text(s, surface::INSPECT));
 
     let last_assistant_message = ast_out.text;
     let last_tool_stderr = stderr_out.text;
     let last_tool_stdout = stdout_out.text;
-    let redacted = ast_out.redacted || stderr_out.redacted || stdout_out.redacted;
+    let patch_apply_stderr = patch_err_out.as_ref().map(|o| o.text.clone());
+    let triage_cluster_label = triage_out.as_ref().map(|o| o.text.clone());
+    let redacted = ast_out.redacted
+        || stderr_out.redacted
+        || stdout_out.redacted
+        || patch_err_out.as_ref().is_some_and(|o| o.redacted)
+        || triage_out.as_ref().is_some_and(|o| o.redacted);
 
-    if redactor
-        .configured_literal_leak(&last_assistant_message)
-        .is_some()
-        || redactor
-            .configured_literal_leak(&last_tool_stderr)
-            .is_some()
-        || redactor
-            .configured_literal_leak(&last_tool_stdout)
-            .is_some()
+    let leak_in = |text: &str| redactor.configured_literal_leak(text).is_some();
+    if leak_in(&last_assistant_message)
+        || leak_in(&last_tool_stderr)
+        || leak_in(&last_tool_stdout)
+        || patch_apply_stderr.as_deref().is_some_and(leak_in)
+        || triage_cluster_label.as_deref().is_some_and(leak_in)
     {
         return Err(Error::Trajectory(
             "failure-digest: redaction failure — configured secret literal present in digest output"
