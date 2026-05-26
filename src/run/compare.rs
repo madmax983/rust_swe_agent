@@ -59,6 +59,10 @@ pub struct CompareArgs {
     /// sample is underpowered. Without this flag, gating exits non-zero
     /// whenever the test is underpowered.
     pub allow_underpowered: bool,
+    /// Optional path to an `eval-flake.json` artifact. When set, instances
+    /// flagged `is_flaky=true` are excluded from both the resolved-rate delta
+    /// and the McNemar paired significance test.
+    pub flake_report: Option<PathBuf>,
 }
 
 /// Per-task transition between baseline and candidate. `pass` prefers
@@ -230,6 +234,11 @@ pub struct CompareReport {
     pub candidate_test_only_resolved_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_only_resolved_rate_delta: Option<f64>,
+    /// Number of flaky instances excluded from the significance test and delta
+    /// computation when `--flake-report` is provided. Zero when no flake report
+    /// was loaded or when no flaky instances were found in the paired overlap.
+    #[serde(default)]
+    pub flaky_instances_excluded: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -423,6 +432,16 @@ impl CompareReport {
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
         write_sampling_drift_section(&mut s, self.sampling_drift.as_ref());
+        if self.flaky_instances_excluded > 0 {
+            let n = self.flaky_instances_excluded;
+            let paired = self.resolved_rate_significance.paired_n;
+            let _ = writeln!(
+                s,
+                "\n{n} flaky instance{s} excluded; {paired} paired instance{ps} used in significance test",
+                s = if n == 1 { "" } else { "s" },
+                ps = if paired == 1 { "" } else { "s" },
+            );
+        }
         s
     }
 }
@@ -1460,6 +1479,57 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let candidate_eval_results = candidate_eval.as_ref().map(|loaded| &loaded.results);
     let baseline_resolved_override = baseline_eval_results.map(resolved_overrides_from_eval);
     let candidate_resolved_override = candidate_eval_results.map(resolved_overrides_from_eval);
+
+    // Load flake report and compute the excluded instance set.
+    let (flaky_ids, flaky_instances_excluded) = if let Some(ref flake_path) = args.flake_report {
+        let flake = crate::run::eval_flake::EvalFlakeReport::load(flake_path)?;
+        let flaky = flake.flaky_ids();
+        // Count paired instances that are flaky (present in both sweeps and flaky).
+        let paired_flaky = flaky
+            .iter()
+            .filter(|id| baseline.instances.contains_key(*id) && candidate.instances.contains_key(*id))
+            .count();
+        // Degenerate: all paired instances are flaky — caller gets UsageError.
+        let paired_n = baseline
+            .instances
+            .keys()
+            .filter(|id| candidate.instances.contains_key(*id))
+            .count();
+        let non_flaky_paired = paired_n.saturating_sub(paired_flaky);
+        if non_flaky_paired == 0 && paired_n > 0 {
+            return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+                "compare: all {paired_flaky} paired instance(s) are flagged flaky in the flake report; \
+                 no instances remain for the significance test. \
+                 Provide a sweep with non-flaky instances or omit --flake-report.",
+            ))));
+        }
+        (flaky, paired_flaky)
+    } else {
+        (std::collections::HashSet::new(), 0)
+    };
+
+    // Filter instance maps to exclude flaky instances from delta + significance.
+    let filtered_baseline: HashMap<String, InstanceResult> = if flaky_ids.is_empty() {
+        baseline.instances.clone()
+    } else {
+        baseline
+            .instances
+            .iter()
+            .filter(|(id, _)| !flaky_ids.contains(*id))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+    let filtered_candidate: HashMap<String, InstanceResult> = if flaky_ids.is_empty() {
+        candidate.instances.clone()
+    } else {
+        candidate
+            .instances
+            .iter()
+            .filter(|(id, _)| !flaky_ids.contains(*id))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+
     let artifact_warnings = artifact_warning_lines(
         &baseline,
         &candidate,
@@ -1469,8 +1539,8 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let mut report = diff_with_overrides(
         &args.baseline,
         &args.candidate,
-        &baseline.instances,
-        &candidate.instances,
+        &filtered_baseline,
+        &filtered_candidate,
         baseline_resolved_override.as_ref(),
         candidate_resolved_override.as_ref(),
         DiffContext {
@@ -1489,6 +1559,7 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             candidate_model_name,
         },
     );
+    report.flaky_instances_excluded = flaky_instances_excluded;
     report.subset_warnings = subset_warnings(
         baseline.filter_spec.as_ref(),
         candidate.filter_spec.as_ref(),
@@ -1852,6 +1923,7 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         baseline_test_only_resolved_rate: None,
         candidate_test_only_resolved_rate: None,
         test_only_resolved_rate_delta: None,
+        flaky_instances_excluded: 0,
     }
 }
 
@@ -3495,6 +3567,7 @@ mod tests {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
         assert_eq!(r.regressions.len(), 1);
@@ -3918,6 +3991,7 @@ mod tests {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 1);
@@ -3967,6 +4041,7 @@ mod tests {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
         assert_eq!(r.baseline_resolved, 10);

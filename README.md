@@ -378,6 +378,10 @@ a valid trajectory in hand:
   two-proportion z-tests.
 - [`bench dataset-stats`](docs/spec-dataset-stats.md): zero-cost preflight to
   preview and analyze dataset composition offline before running a sweep.
+- [`bench eval-flake`](docs/spec-eval-flake.md): quantify evaluator-side verdict
+  noise by replaying the evaluator N times per patch on a completed sweep.
+  Produces `eval-flake.json`; pair with `bench compare --flake-report` to
+  exclude flaky instances from significance testing and get honest published deltas.
 
 ## Nightly E2E smoke
 

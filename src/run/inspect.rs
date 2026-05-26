@@ -37,6 +37,10 @@ pub struct InspectArgs {
     /// When true, load PASS_TO_PASS / FAIL_TO_PASS from the sweep's dataset.jsonl
     /// and add them to the report.
     pub show_expected: bool,
+    /// Optional path to an `eval-flake.json`. When set and the instance is
+    /// present in the flake report, the verdict vector and flake_rate are
+    /// rendered in the human-readable output.
+    pub flake_report: Option<std::path::PathBuf>,
 }
 
 /// Failing tests from the evaluator, or an explanation of why names are unavailable.
@@ -179,6 +183,21 @@ pub struct InspectReport {
     /// Metadata recording how this trajectory was forked from a parent run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_lineage: Option<crate::trajectory::ForkLineage>,
+    /// Evaluator flake data for this instance from `eval-flake.json`.
+    /// Present only when `--flake-report` is set and the instance appears in the report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flake_data: Option<InspectFlakeData>,
+}
+
+/// Flake data for a single instance surfaced by `bench inspect --flake-report`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InspectFlakeData {
+    pub is_flaky: bool,
+    pub flake_rate: f32,
+    /// Verdict sequence across replays.
+    pub verdicts: Vec<crate::run::eval_flake::Verdict>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dominant_verdict: Option<crate::run::eval_flake::Verdict>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -252,13 +271,32 @@ pub fn run(args: &InspectArgs) -> Result<InspectOutput, Error> {
     } else {
         None
     };
-    let report = build_instance_report(
+    let mut report = build_instance_report(
         &args.sweep,
         &instance_id,
         args.full,
         evaluation_overrides.as_ref(),
         dataset_instance.as_ref(),
     )?;
+
+    // Load flake data when --flake-report is provided.
+    if let Some(ref flake_path) = args.flake_report {
+        if let Ok(flake_report) = crate::run::eval_flake::EvalFlakeReport::load(flake_path) {
+            if let Some(inst) = flake_report
+                .instances
+                .iter()
+                .find(|i| i.instance_id == instance_id)
+            {
+                report.flake_data = Some(InspectFlakeData {
+                    is_flaky: inst.is_flaky,
+                    flake_rate: inst.flake_rate,
+                    verdicts: inst.verdicts.clone(),
+                    dominant_verdict: inst.dominant_verdict,
+                });
+            }
+        }
+    }
+
     Ok(InspectOutput::Instance(Box::new(report)))
 }
 
@@ -379,6 +417,7 @@ fn build_instance_report(
                 partial_reason: None,
                 trace_id: None,
                 fork_lineage: None,
+                flake_data: None,
             });
         }
     };
@@ -466,6 +505,7 @@ fn build_instance_report(
         partial_reason: traj.info.partial_reason,
         trace_id: traj.info.trace_id,
         fork_lineage: traj.fork_lineage,
+        flake_data: None,
     })
 }
 
@@ -888,6 +928,24 @@ fn render_instance_text(report: &InspectReport) -> String {
             s,
             "                  tail_overrides={}",
             serde_json::to_string(&lineage.tail_overrides).unwrap_or_default()
+        );
+    }
+    if let Some(fd) = &report.flake_data {
+        let verdict_labels: Vec<&str> = fd
+            .verdicts
+            .iter()
+            .map(|v| match v {
+                crate::run::eval_flake::Verdict::Resolved => "resolved",
+                crate::run::eval_flake::Verdict::Unresolved => "unresolved",
+                crate::run::eval_flake::Verdict::Errored => "errored",
+            })
+            .collect();
+        let _ = writeln!(
+            s,
+            "eval_flake:       is_flaky={} flake_rate={:.3} verdicts=[{}]",
+            fd.is_flaky,
+            fd.flake_rate,
+            verdict_labels.join(", ")
         );
     }
     for w in &report.warnings {
@@ -1472,6 +1530,7 @@ mod tests {
             filter: None,
             full: false,
             show_expected: false,
+            flake_report: None,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);
@@ -1516,6 +1575,7 @@ mod tests {
             filter: None,
             full: false,
             show_expected: false,
+            flake_report: None,
         };
         let output = run(&args).unwrap();
         if let InspectOutput::Instance(report) = &output {
@@ -1575,6 +1635,7 @@ mod tests {
             filter: None,
             full: false,
             show_expected: false,
+            flake_report: None,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);
@@ -1652,6 +1713,7 @@ mod tests {
             filter: None,
             full: false,
             show_expected: false,
+            flake_report: None,
         };
         let output = run(&args).unwrap();
         let text = render_text(&output);

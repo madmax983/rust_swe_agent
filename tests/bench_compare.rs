@@ -855,6 +855,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
     assert_eq!(
@@ -881,6 +882,7 @@ fn compare_treats_wallclock_timeout_as_ordinary_failure_transition() {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
     assert_eq!(
@@ -1516,6 +1518,7 @@ fn compare_uses_manifest_model_for_fallback_cost_repricing() {
             min_significance: None,
             regression_significance: None,
             allow_underpowered: false,
+            flake_report: None,
         })
         .unwrap();
 

@@ -114,6 +114,7 @@ fn baseline_compare_report(args: &ReportArgs) -> Result<Option<CompareReport>, E
         min_significance: None,
         regression_significance: None,
         allow_underpowered: false,
+        flake_report: None,
     })?;
     Ok(Some(report))
 }

@@ -15,6 +15,7 @@ pub mod dataset;
 pub mod dataset_stats;
 pub mod diff_config;
 pub mod env_preview;
+pub mod eval_flake;
 pub mod evaluate;
 pub mod evaluator_selftest;
 pub mod failure_digest;
