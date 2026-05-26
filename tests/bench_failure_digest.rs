@@ -70,7 +70,10 @@ fn digest_errored_instance_contains_cost_and_steps() {
     assert!(out.status.success());
 
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("2.50") || stdout.contains("2.5"), "cost missing: {stdout}");
+    assert!(
+        stdout.contains("2.50") || stdout.contains("2.5"),
+        "cost missing: {stdout}"
+    );
     assert!(stdout.contains('5'), "step count missing: {stdout}");
 }
 
@@ -192,12 +195,7 @@ fn digest_multi_instance_without_flag_exits_nonzero_naming_candidates() {
 #[test]
 fn digest_multi_instance_with_flag_selects_specific_instance() {
     let sweep = fixture_path("sweep-multi");
-    let out = run_failure_digest(&[
-        "--sweep",
-        sweep.to_str().unwrap(),
-        "--instance",
-        "error-2",
-    ]);
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--instance", "error-2"]);
 
     assert!(
         out.status.success(),
@@ -378,7 +376,7 @@ fn digest_redacts_sensitive_env_var_from_tool_stderr() {
         "raw secret must not appear in digest output: {stdout}"
     );
     assert!(
-        stdout.to_lowercase().contains("redacted") || stdout.contains("["),
+        stdout.to_lowercase().contains("redacted") || stdout.contains('['),
         "output should contain redaction marker: {stdout}"
     );
 }
@@ -388,12 +386,7 @@ fn digest_redacts_sensitive_env_var_from_tool_stderr() {
 #[test]
 fn digest_json_format_is_schema_versioned_and_stable() {
     let sweep = fixture_path("sweep-single-errored");
-    let out = run_failure_digest(&[
-        "--sweep",
-        sweep.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--format", "json"]);
 
     assert!(
         out.status.success(),
@@ -449,10 +442,7 @@ fn digest_json_format_is_schema_versioned_and_stable() {
             json["instance_id"], golden["instance_id"],
             "instance_id must be stable"
         );
-        assert_eq!(
-            json["outcome"], golden["outcome"],
-            "outcome must be stable"
-        );
+        assert_eq!(json["outcome"], golden["outcome"], "outcome must be stable");
         assert_eq!(
             json["failure_category"], golden["failure_category"],
             "failure_category must be stable"
@@ -475,12 +465,7 @@ fn digest_json_format_is_schema_versioned_and_stable() {
 fn digest_max_chars_truncation_preserves_headline_and_triage_footer() {
     let sweep = fixture_path("sweep-step-limit");
     // Use a small max-chars to force truncation
-    let out = run_failure_digest(&[
-        "--sweep",
-        sweep.to_str().unwrap(),
-        "--max-chars",
-        "300",
-    ]);
+    let out = run_failure_digest(&["--sweep", sweep.to_str().unwrap(), "--max-chars", "300"]);
 
     assert!(
         out.status.success(),

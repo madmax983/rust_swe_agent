@@ -121,8 +121,12 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
     if redactor
         .configured_literal_leak(&last_assistant_message)
         .is_some()
-        || redactor.configured_literal_leak(&last_tool_stderr).is_some()
-        || redactor.configured_literal_leak(&last_tool_stdout).is_some()
+        || redactor
+            .configured_literal_leak(&last_tool_stderr)
+            .is_some()
+        || redactor
+            .configured_literal_leak(&last_tool_stdout)
+            .is_some()
     {
         return Err(Error::Trajectory(
             "failure-digest: redaction failure — configured secret literal present in digest output"
@@ -134,7 +138,9 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
         schema_version: "1.0".into(),
         instance_id,
         outcome: instance.outcome.clone().unwrap_or_else(|| "unknown".into()),
-        failure_category: instance.failure_category.map(|c| failure_label(c).to_owned()),
+        failure_category: instance
+            .failure_category
+            .map(|c| failure_label(c).to_owned()),
         total_cost_usd: instance.actual_cost_usd(),
         step_count: instance.steps,
         task_duration_secs: instance.duration_secs,
@@ -158,8 +164,7 @@ pub fn render_markdown(digest: &FailureDigest, max_chars: usize) -> String {
         .as_deref()
         .unwrap_or("no triage available.");
 
-    let is_submitted =
-        digest.outcome == "submitted" && digest.failure_category.is_none();
+    let is_submitted = digest.outcome == "submitted" && digest.failure_category.is_none();
 
     if is_submitted {
         let mut out = String::new();
@@ -304,9 +309,8 @@ fn extract_terminal_signals(path: &Path) -> Result<(String, String, String), Err
             .and_then(|v| serde_json::from_value::<RunResult>(v.clone()).ok())
     });
 
-    let (stderr, stdout) = last_run.map_or((String::new(), String::new()), |r| {
-        (r.stderr, r.stdout)
-    });
+    let (stderr, stdout) =
+        last_run.map_or((String::new(), String::new()), |r| (r.stderr, r.stdout));
 
     Ok((last_assistant, stderr, stdout))
 }
@@ -333,12 +337,15 @@ fn load_triage_cluster_label(sweep_dir: &Path, instance_id: &str) -> Option<Stri
     let text = std::fs::read_to_string(&triage_path).ok()?;
     let report: TriageReport = serde_json::from_str(&text).ok()?;
     report.clusters.iter().find_map(|cluster| {
-        cluster.instance_ids.contains(&instance_id.to_owned()).then(|| {
-            format!(
-                "{} [{}]: {}",
-                cluster.failure_category, cluster.cluster_id, cluster.signature_summary
-            )
-        })
+        cluster
+            .instance_ids
+            .contains(&instance_id.to_owned())
+            .then(|| {
+                format!(
+                    "{} [{}]: {}",
+                    cluster.failure_category, cluster.cluster_id, cluster.signature_summary
+                )
+            })
     })
 }
 
