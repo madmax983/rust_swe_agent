@@ -9,6 +9,27 @@ use crate::error::{ConfigError, Error};
 
 const DEFAULT_CLASSIFIERS_TOML: &str = include_str!("../../data/patch_classifiers.toml");
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmissionClass {
+    ProdOnly,
+    Mixed,
+    TestOnly,
+    Empty,
+}
+
+impl SubmissionClass {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ProdOnly => "prod_only",
+            Self::Mixed => "mixed",
+            Self::TestOnly => "test_only",
+            Self::Empty => "empty",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PatchStats {
     pub files_changed: u32,
@@ -24,6 +45,8 @@ pub struct PatchStats {
     pub gold_lines_overlap: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gold_size_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_class: Option<SubmissionClass>,
 }
 
 impl PatchStats {
@@ -53,10 +76,12 @@ impl PatchClassifiers {
         })
     }
 
+    pub fn is_test_file(&self, file: &str) -> bool {
+        self.test_files.iter().any(|glob| glob.matches(file))
+    }
+
     fn touches_test_file(&self, files: &BTreeSet<String>) -> bool {
-        files
-            .iter()
-            .any(|file| self.test_files.iter().any(|glob| glob.matches(file)))
+        files.iter().any(|file| self.is_test_file(file))
     }
 
     fn touches_lock_or_generated(&self, files: &BTreeSet<String>) -> bool {
@@ -168,6 +193,23 @@ pub fn score_patch(
     gold_patch: Option<&str>,
 ) -> PatchStats {
     let parsed = parse_unified_diff(patch_text);
+    let submission_class = if parsed.hunks == 0 {
+        SubmissionClass::Empty
+    } else {
+        let test_count = parsed
+            .files
+            .iter()
+            .filter(|f| classifiers.is_test_file(f))
+            .count();
+        if test_count == parsed.files.len() {
+            SubmissionClass::TestOnly
+        } else if test_count == 0 {
+            SubmissionClass::ProdOnly
+        } else {
+            SubmissionClass::Mixed
+        }
+    };
+
     let mut stats = PatchStats {
         files_changed: saturating_u32(parsed.files.len()),
         hunks: parsed.hunks,
@@ -179,6 +221,7 @@ pub fn score_patch(
         gold_files_iou: None,
         gold_lines_overlap: None,
         gold_size_ratio: None,
+        submission_class: Some(submission_class),
     };
 
     if let Some(gold) = gold_patch {
@@ -368,6 +411,40 @@ lock_or_generated_files = ["**/*.snap"]
             None,
         );
         assert!(stats.touches_lock_or_generated);
+        Ok(())
+    }
+
+    #[test]
+    fn test_submission_class_scoring() -> Result<(), Error> {
+        use super::SubmissionClass;
+
+        let classifiers = PatchClassifiers::from_toml_str(
+            r#"
+test_files = ["tests/**/*.rs", "src/test_helpers.rs"]
+lock_or_generated_files = []
+"#,
+        )?;
+
+        // 1. Prod only patch
+        let patch_prod = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_prod, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::ProdOnly));
+
+        // 2. Test only patch
+        let patch_test = "diff --git a/tests/test_lib.rs b/tests/test_lib.rs\n--- a/tests/test_lib.rs\n+++ b/tests/test_lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_test, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
+
+        // 3. Mixed patch
+        let patch_mixed = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/tests/test_lib.rs b/tests/test_lib.rs\n--- a/tests/test_lib.rs\n+++ b/tests/test_lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_mixed, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::Mixed));
+
+        // 4. Empty patch (zero hunks)
+        let patch_empty = "diff --git a/src/lib.rs b/src/lib.rs\n";
+        let stats = score_patch(patch_empty, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::Empty));
+
         Ok(())
     }
 }

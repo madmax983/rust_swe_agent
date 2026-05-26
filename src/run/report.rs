@@ -281,6 +281,23 @@ fn md_topline(
         Some(ml) => writeln!(buf, "| Mean lines changed (resolved) | {ml:.1} |").ok(),
         None => writeln!(buf, "| Mean lines changed (resolved) | {NO_EVAL_MSG} |").ok(),
     };
+    if eval.is_some() {
+        let rollup = eval.and_then(|e| e.submission_class_rollup.as_ref());
+        let test_only_count = rollup.map_or(0, |r| r.test_only.resolved_count);
+        let total_resolved = rollup.map_or(0, |r| r.total_resolved);
+        let rate = if total_resolved == 0 {
+            0.0
+        } else {
+            (f64::from(test_only_count) / f64::from(total_resolved)) * 100.0
+        };
+        writeln!(
+            buf,
+            "| test-only resolved | {test_only_count} of {total_resolved} ({rate:.2}%) |"
+        )
+        .ok();
+    } else {
+        writeln!(buf, "| test-only resolved | {NO_EVAL_MSG} |").ok();
+    }
     writeln!(buf).ok();
 }
 
@@ -637,7 +654,14 @@ fn md_to_html(md: &str) -> String {
     close_blockquote(&mut buf, &mut in_blockquote);
     writeln!(buf, "</body>").ok();
     writeln!(buf, "</html>").ok();
-    buf
+    let mut html = buf;
+    if html.contains("<td>test-only resolved</td>") {
+        html = html.replace(
+            "<td>test-only resolved</td>",
+            "<td>test-only resolved <span style=\"cursor:help;\" title=\"test-only resolved patches may indicate eval gaming\">ℹ️</span> <a href=\"docs/spec-evaluation.md\" target=\"_blank\">[doc]</a></td>"
+        );
+    }
+    html
 }
 
 fn close_table(buf: &mut String, in_table: &mut bool) {

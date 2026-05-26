@@ -3327,3 +3327,183 @@ fn test_compare_appends_diff_config_hint() {
         "expected stdout to contain the bench diff-config hint; got:\n{stdout}"
     );
 }
+
+fn evaluate_rehearsal_for_patch_stats(dir: &Path) {
+    let out = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            dir.to_str().unwrap(),
+            "--backend",
+            "rehearsal",
+            "--breakdown",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "evaluate failed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn compare_test_only_resolved_rate_ci_gating_and_reporting() {
+    let baseline_dir = tempfile::tempdir().unwrap();
+    let candidate_dir = tempfile::tempdir().unwrap();
+
+    // 1. Synthesize baseline sweep: 10 instances, all resolved with prod_only patches
+    let mut baseline_results = vec![];
+    for i in 1..=10 {
+        let instance_id = format!("inst-{}", i);
+        write_run_traj(baseline_dir.path(), &instance_id, 1, None, Some(0.01));
+
+        let patch = "diff --git a/src/foo.rs b/src/foo.rs\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,1 +1,2 @@\n existing line\n+added prod line\n";
+        write_run_patch(baseline_dir.path(), &instance_id, patch);
+
+        baseline_results.push(submitted(&instance_id));
+    }
+    write_results(baseline_dir.path(), baseline_results);
+
+    // 2. Synthesize candidate sweep: 10 instances, all resolved. 2 test-only patches, 8 prod-only patches.
+    let mut candidate_results = vec![];
+    for i in 1..=10 {
+        let instance_id = format!("inst-{}", i);
+        write_run_traj(candidate_dir.path(), &instance_id, 1, None, Some(0.01));
+
+        let patch = if i <= 2 {
+            "diff --git a/tests/test_foo.rs b/tests/test_foo.rs\n--- a/tests/test_foo.rs\n+++ b/tests/test_foo.rs\n@@ -1,1 +1,2 @@\n existing line\n+added test line\n"
+        } else {
+            "diff --git a/src/foo.rs b/src/foo.rs\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,1 +1,2 @@\n existing line\n+added prod line\n"
+        };
+        write_run_patch(candidate_dir.path(), &instance_id, patch);
+
+        candidate_results.push(submitted(&instance_id));
+    }
+    write_results(candidate_dir.path(), candidate_results);
+
+    // 3. Run bench evaluate on baseline & candidate
+    evaluate_rehearsal_for_patch_stats(baseline_dir.path());
+    evaluate_rehearsal_for_patch_stats(candidate_dir.path());
+
+    // 4. Assert evaluation outputs have correct test_only_resolved_rate
+    let eval_json = std::fs::read_to_string(baseline_dir.path().join("evaluation.json")).unwrap();
+    let v_base: serde_json::Value = serde_json::from_str(&eval_json).unwrap();
+    assert_eq!(v_base["test_only_resolved_rate"].as_f64().unwrap(), 0.0);
+
+    let eval_json_cand =
+        std::fs::read_to_string(candidate_dir.path().join("evaluation.json")).unwrap();
+    let v_cand: serde_json::Value = serde_json::from_str(&eval_json_cand).unwrap();
+    assert_eq!(v_cand["test_only_resolved_rate"].as_f64().unwrap(), 0.20);
+
+    // 5. Test bench compare Gating: threshold 0.10 should fail (exit code 21)
+    let out_fail = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "0.10",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_fail.status.code(),
+        Some(21),
+        "expected gate failure (exit code 21) because candidate rate (0.20) > threshold (0.10); stderr: {}",
+        String::from_utf8_lossy(&out_fail.stderr)
+    );
+
+    // 6. Test bench compare Gating: threshold 0.30 should succeed (exit code 0)
+    let out_pass = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "0.30",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out_pass.status.success(),
+        "expected gate success because candidate rate (0.20) <= threshold (0.30); stderr: {}",
+        String::from_utf8_lossy(&out_pass.stderr)
+    );
+
+    // 7. Verify human output in stdout contains delta rendering
+    let stdout = String::from_utf8_lossy(&out_pass.stdout);
+    assert!(
+        stdout.contains("Test-only resolved: 0.0% -> 20.0% (+20.0pp)")
+            || stdout.contains("Test-only resolved: 0% -> 20% (+20pp)"),
+        "expected stdout to contain test-only resolved rate delta, got:\n{stdout}"
+    );
+
+    // 8. Verify bench report output contains correct MD rendering
+    let report_md_path = candidate_dir.path().join("report.md");
+    let out_report = Command::new(binary_path())
+        .args([
+            "bench",
+            "report",
+            "--sweep",
+            candidate_dir.path().to_str().unwrap(),
+            "--output",
+            report_md_path.to_str().unwrap(),
+            "--format",
+            "markdown",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out_report.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out_report.stderr)
+    );
+
+    let report_md = std::fs::read_to_string(&report_md_path).unwrap();
+    assert!(
+        report_md.contains("test-only resolved"),
+        "expected report.md to contain trust signal table row; got:\n{report_md}"
+    );
+    assert!(
+        report_md.contains("2 of 10") && report_md.contains("20.00%"),
+        "expected report.md to contain correct percentage; got:\n{report_md}"
+    );
+
+    let report_html_path = candidate_dir.path().join("report.html");
+    let out_report_html = Command::new(binary_path())
+        .args([
+            "bench",
+            "report",
+            "--sweep",
+            candidate_dir.path().to_str().unwrap(),
+            "--output",
+            report_html_path.to_str().unwrap(),
+            "--format",
+            "html",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out_report_html.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out_report_html.stderr)
+    );
+
+    let report_html = std::fs::read_to_string(&report_html_path).unwrap();
+    assert!(
+        report_html.contains("ℹ️") && report_html.contains("docs/spec-evaluation.md"),
+        "expected report.html to contain interactive tooltip and doc link; got:\n{report_html}"
+    );
+}

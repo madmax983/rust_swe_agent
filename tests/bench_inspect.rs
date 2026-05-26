@@ -2377,3 +2377,147 @@ fn format_mermaid_produces_sequence_diagram() {
         "expected mermaid sequence diagram:\n{stdout}"
     );
 }
+
+#[test]
+fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let instance_id = "inst-test-only";
+
+    // Write a trajectory with outcome = "submitted"
+    let mut t = maxwells_daemon::trajectory::Trajectory::new();
+    t.info.outcome = Some(maxwells_daemon::trajectory::outcome::SUBMITTED.to_owned());
+    std::fs::create_dir_all(sweep_dir.path().join(instance_id)).unwrap();
+    std::fs::write(
+        sweep_dir.path().join(instance_id).join("run-1.traj.json"),
+        serde_json::to_string_pretty(&t).unwrap(),
+    )
+    .unwrap();
+
+    // Write a test-only patch
+    let patch = "diff --git a/tests/test_foo.rs b/tests/test_foo.rs\n--- a/tests/test_foo.rs\n+++ b/tests/test_foo.rs\n@@ -1,1 +1,2 @@\n existing line\n+added test line\n";
+    let patch_path =
+        maxwells_daemon::run::swebench::patch_path_for_run(sweep_dir.path(), instance_id, 1);
+    std::fs::create_dir_all(patch_path.parent().unwrap()).unwrap();
+    std::fs::write(patch_path, patch).unwrap();
+
+    // Write results.json
+    let results = maxwells_daemon::run::swebench::SweepResults {
+        total: 1,
+        sweep_status: "complete".to_owned(),
+        cancelled_at: None,
+        cancel_deadline_at: None,
+        cancel_exit_code: None,
+        completed: 1,
+        in_flight_at_cancel: 0,
+        not_started: 0,
+        submitted: 1,
+        submitted_with_tests: 0,
+        skipped: 0,
+        errored: 0,
+        failures_by_category: std::collections::BTreeMap::new(),
+        budget_halted: 0,
+        with_patch: 1,
+        patch_empty: 0,
+        patch_apply_invalid: 0,
+        github_pr_failures: 0,
+        total_prompt_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_cache_creation_tokens: 0,
+        total_completion_tokens: 0,
+        estimated_cost_usd: 0.0,
+        actual_cost_usd: None,
+        actual_cost_source: None,
+        baseline_cost_usd: None,
+        baseline_cost_model: None,
+        cache_hit_rate: 0.0,
+        retries: 0,
+        retried_instances: 0,
+        pass_at_k: 0.0,
+        filter_spec: Default::default(),
+        manifest: None,
+        instances: vec![maxwells_daemon::run::swebench::InstanceResult {
+            instance_id: instance_id.to_owned(),
+            exit_reason: "submitted".to_owned(),
+            outcome: Some("submitted".to_owned()),
+            failure_category: None,
+            steps: Some(1),
+            cost_usd: Some(0.0),
+            prompt_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            completion_tokens: Some(0),
+            duration_secs: Some(0.0),
+            error: None,
+            github_pr_error: None,
+            patch_present: true,
+            non_empty_patch: true,
+            attempts: 1,
+            retry_reasons: vec![],
+            runs: 1,
+            resolved_count: 1,
+            pass_at_1: true,
+            tests_run_before_submit: false,
+            last_tests_passed: None,
+            fallback_count: None,
+            final_model: None,
+            retry_id: None,
+            previous_failure_category: None,
+            trace_id: None,
+        }],
+        rate_limit_events: None,
+        total_fallbacks: 0,
+        model_mix: std::collections::BTreeMap::new(),
+        systemic_halt_category: None,
+        cost_limit_usd: None,
+        retry_history: vec![],
+        partial: 0,
+        span_export_dropped: 0,
+    };
+    std::fs::write(
+        sweep_dir.path().join("results.json"),
+        serde_json::to_string(&results).unwrap(),
+    )
+    .unwrap();
+
+    // Run evaluate none so evaluation.json contains patch_stats with submission_class
+    let out_eval = Command::new(binary_path())
+        .args([
+            "bench",
+            "evaluate",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--backend",
+            "none",
+            "--breakdown",
+            "none",
+            "--cost-attribution",
+            "off",
+        ])
+        .output()
+        .unwrap();
+    assert!(out_eval.status.success());
+
+    // Run inspect
+    let out_inspect = Command::new(binary_path())
+        .args([
+            "bench",
+            "inspect",
+            "--sweep",
+            sweep_dir.path().to_str().unwrap(),
+            "--instance",
+            instance_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(out_inspect.status.success());
+    let stdout = String::from_utf8_lossy(&out_inspect.stdout);
+
+    assert!(
+        stdout.contains("submission_class: test_only"),
+        "expected stdout to contain submission class; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("warning: patch touches only test files (may indicate eval gaming)"),
+        "expected stdout to contain eval gaming warning; got:\n{stdout}"
+    );
+}

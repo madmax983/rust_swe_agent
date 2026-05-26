@@ -1813,6 +1813,25 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             );
         }
     }
+    if let Some(max_rate) = c.max_test_only_resolved_rate {
+        if let Some(cand_rate) = report.candidate_test_only_resolved_rate {
+            if f64::from(cand_rate) > max_rate {
+                tracing::error!(
+                    max_rate = max_rate,
+                    candidate_rate = cand_rate,
+                    "compare: candidate test-only resolved rate exceeds --max-test-only-resolved-rate threshold"
+                );
+                exit_with_outcome(
+                    ExitCode::EvalGamingGateFailure,
+                    &format!(
+                        "compare: candidate test-only resolved rate ({:.2}%) exceeds --max-test-only-resolved-rate={:.2}%",
+                        cand_rate * 100.0,
+                        max_rate * 100.0
+                    ),
+                );
+            }
+        }
+    }
     apply_significance_gates(
         &report,
         c.min_significance,

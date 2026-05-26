@@ -475,12 +475,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
             patch_stats: None,
             patch_error_log: None,
         }],
-        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
-        breakdown: vec![],
-        cost_attribution: vec![],
-        model_mix_summary: vec![],
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     };
     let base_eval_json = serde_json::to_string(&base_eval_res).unwrap();
 
@@ -489,12 +484,7 @@ async fn test_rehearsal_empty_patch_and_missing_eval_comparisons() {
 
     let cand_eval_res = maxwells_daemon::run::evaluate::EvaluationResults {
         instances: vec![],
-        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
-        breakdown: vec![],
-        cost_attribution: vec![],
-        model_mix_summary: vec![],
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     };
     let cand_eval_json = serde_json::to_string(&cand_eval_res).unwrap();
 
@@ -638,12 +628,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             patch_stats: None,
             patch_error_log: None,
         }],
-        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
-        breakdown: vec![],
-        cost_attribution: vec![],
-        model_mix_summary: vec![],
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     };
     let base_eval_json = serde_json::to_string(&base_eval_res).unwrap();
 
@@ -662,12 +647,7 @@ async fn test_rehearsal_drift_resolved_count_and_pass_at_1() {
             patch_stats: None,
             patch_error_log: None,
         }],
-        behavioral: maxwells_daemon::run::evaluate::BehavioralMetrics::default(),
-        breakdown: vec![],
-        cost_attribution: vec![],
-        model_mix_summary: vec![],
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     };
     let cand_eval_json = serde_json::to_string(&cand_eval_res).unwrap();
 

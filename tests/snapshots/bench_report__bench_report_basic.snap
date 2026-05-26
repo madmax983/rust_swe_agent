@@ -30,6 +30,7 @@ expression: content
 | Total cost USD | $0.3000 |
 | $/resolved instance | $0.1500 |
 | Mean lines changed (resolved) | _no evaluation data — run `bench evaluate` to populate_ |
+| test-only resolved | _no evaluation data — run `bench evaluate` to populate_ |
 
 ## Failure Mix
 
