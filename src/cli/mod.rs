@@ -2269,7 +2269,7 @@ fn render_reproduce_annotation_diff(
     let orig_path = from.join(DEFAULT_STORE_FILENAME);
     let replay_path = output.join(DEFAULT_STORE_FILENAME);
 
-    if !orig_path.is_file() && !replay_path.is_file() {
+    if !orig_path.is_file() {
         return;
     }
 
