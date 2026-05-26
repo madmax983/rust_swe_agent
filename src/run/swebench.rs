@@ -4373,6 +4373,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch,
+            no_step_persist: false,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

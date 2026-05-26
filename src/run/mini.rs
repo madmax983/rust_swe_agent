@@ -160,6 +160,9 @@ pub struct MiniArgs {
     pub read_only: bool,
     pub allow_mcp_in_read_only: bool,
     pub rehearsal_gold_patch: Option<String>,
+    /// When `true`, disables per-step atomic checkpoint writes (AC6 opt-out).
+    /// Default is `false` (checkpointing enabled).
+    pub no_step_persist: bool,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -497,9 +500,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let traj_path = args
         .output_dir
         .join(format!("{}.traj.json", args.trajectory_name));
-    // Enable per-turn checkpointing to the trajectory path so interruptions
-    // don't discard all in-flight progress.
-    agent.checkpoint_path = Some(traj_path.clone());
+    // Enable per-turn checkpointing unless the caller explicitly opts out.
+    if !args.no_step_persist {
+        agent.checkpoint_path = Some(traj_path.clone());
+    }
 
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
@@ -2080,6 +2084,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
@@ -2180,6 +2185,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
@@ -2275,6 +2281,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
