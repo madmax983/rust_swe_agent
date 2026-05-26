@@ -117,6 +117,31 @@ pub enum EvaluateBackend {
     Rehearsal,
 }
 
+impl std::fmt::Display for EvaluateBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SbCli => write!(f, "sb-cli"),
+            Self::None => write!(f, "none"),
+            Self::Rehearsal => write!(f, "rehearsal"),
+        }
+    }
+}
+
+impl std::str::FromStr for EvaluateBackend {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "sb-cli" | "sbcli" => Ok(Self::SbCli),
+            "none" => Ok(Self::None),
+            "rehearsal" => Ok(Self::Rehearsal),
+            other => Err(crate::error::Error::Config(crate::error::ConfigError::Invalid(
+                format!("unknown evaluator backend `{other}` (expected `sb-cli`, `none`, or `rehearsal`)")
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EvaluateArgs {
     pub sweep_dir: PathBuf,

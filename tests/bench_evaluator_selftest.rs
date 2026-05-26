@@ -49,7 +49,7 @@ fn make_args(dataset_path: PathBuf, output_dir: PathBuf) -> SelftestArgs {
         sample: None,
         seed: None,
         format: "text".into(),
-        backend: "none".into(),
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::None,
         sb_subset: "swe-bench-m".into(),
         sb_split: "dev".into(),
         timeout_per_instance: 600,

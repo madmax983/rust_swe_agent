@@ -1071,16 +1071,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
             }
         }
         if !skip_evaluator {
-            let eval_backend = match eval_backend_str.to_lowercase().as_str() {
-                "none" => crate::run::evaluate::EvaluateBackend::None,
-                "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
-                "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
-                other => {
-                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                        "unknown --eval-backend {other} (expected sb-cli, none, or rehearsal)"
-                    ))));
-                }
-            };
+            let eval_backend: crate::run::evaluate::EvaluateBackend = eval_backend_str.parse()?;
 
             let actual_dataset_path = if let Some(path) = dataset_path_opt {
                 Some(path)
@@ -2022,16 +2013,7 @@ fn cleanup_cmd() -> Result<(), Error> {
 }
 
 fn bench_evaluate(e: args::EvaluateCmd) -> Result<(), Error> {
-    let backend = match e.backend.as_str() {
-        "sb-cli" => crate::run::evaluate::EvaluateBackend::SbCli,
-        "none" => crate::run::evaluate::EvaluateBackend::None,
-        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --backend `{other}` (expected `sb-cli`, `none`, or `rehearsal`)"
-            ))));
-        }
-    };
+    let backend: crate::run::evaluate::EvaluateBackend = e.backend.parse()?;
 
     let breakdown = parse_breakdown_selection(&e.breakdown, true)?;
     let args = crate::run::evaluate::EvaluateArgs {
@@ -3191,16 +3173,7 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
         }
     };
 
-    let eval_backend = match c.eval_backend.to_lowercase().as_str() {
-        "sb-cli" | "sbcli" => crate::run::evaluate::EvaluateBackend::SbCli,
-        "none" => crate::run::evaluate::EvaluateBackend::None,
-        "rehearsal" => crate::run::evaluate::EvaluateBackend::Rehearsal,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --eval-backend `{other}`; expected `sb-cli` or `rehearsal`"
-            ))));
-        }
-    };
+    let eval_backend: crate::run::evaluate::EvaluateBackend = c.eval_backend.parse()?;
 
     let cascade_args = crate::run::cascade::CascadeArgs {
         config_path: c.config,
@@ -3554,7 +3527,7 @@ fn bench_evaluator_selftest(s: args::EvaluatorSelftestCmd) -> Result<(), Error> 
         sample: s.sample,
         seed: s.seed,
         format: s.format,
-        backend: s.backend,
+        backend: s.backend.parse()?,
         sb_subset: s.sb_subset,
         sb_split: s.sb_split,
         timeout_per_instance: s.timeout_per_instance,

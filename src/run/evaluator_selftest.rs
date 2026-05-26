@@ -46,7 +46,7 @@ pub struct SelftestArgs {
     pub format: String,
     /// Evaluation backend: `"none"` (presence check) or `"sb-cli"` (real
     /// evaluator pipeline, same code path as `bench evaluate`).
-    pub backend: String,
+    pub backend: EvaluateBackend,
     /// SWE-bench subset for the `sb-cli` backend (e.g. `"swe-bench-m"`).
     pub sb_subset: String,
     /// SWE-bench split for the `sb-cli` backend (e.g. `"dev"`).
@@ -138,9 +138,10 @@ const EXIT_REASON_EVALUATOR_FAILED: &str = "evaluator_failed";
 /// structured result plus a pre-rendered stdout string.
 #[allow(clippy::needless_pass_by_value)]
 pub fn run(args: SelftestArgs) -> SelftestResult {
+
     assert!(
-        args.backend == "none" || args.backend == "sb-cli",
-        "unknown --backend {:?}: accepted values are `none` and `sb-cli`",
+        matches!(args.backend, EvaluateBackend::None) || matches!(args.backend, EvaluateBackend::SbCli),
+        "unknown --backend {}: accepted values are `none` and `sb-cli`",
         args.backend
     );
     assert!(
@@ -157,7 +158,7 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
 
     let selected = select_instances(all_instances, &args);
 
-    let mut instance_results: Vec<SelftestInstanceResult> = if args.backend == "sb-cli" {
+    let mut instance_results: Vec<SelftestInstanceResult> = if matches!(args.backend, EvaluateBackend::SbCli) {
         evaluate_via_sb_cli(&selected, &args)
     } else {
         selected.iter().map(evaluate_gold_patch_none).collect()
@@ -174,7 +175,7 @@ pub fn run(args: SelftestArgs) -> SelftestResult {
         dataset_sha256: dataset_sha,
         harness_git_sha: current_git_sha(),
         timestamp_utc: utc_now_iso8601(),
-        evaluator_backend: args.backend.clone(),
+        evaluator_backend: args.backend.to_string(),
         instances: instance_results,
         totals,
     };
