@@ -91,7 +91,17 @@ pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
 pub fn run_list(args: &AnnotateListArgs) -> Result<AnnotateListReport, Error> {
     let store_path = resolve_store_path(args.store.as_deref());
     let store = AnnotationStore::load_or_default(&store_path)?;
-    let annotations = store.list(args.instance.as_deref(), args.tag.as_deref());
+    let redactor = Redactor::default_enabled();
+    let annotations = store
+        .list(args.instance.as_deref(), args.tag.as_deref())
+        .into_iter()
+        .map(|mut ann| {
+            ann.note = ann
+                .note
+                .map(|n| redactor.redact_text(&n, surface::EXPORT).text);
+            ann
+        })
+        .collect();
     Ok(AnnotateListReport {
         store_path,
         annotations,
@@ -111,7 +121,9 @@ pub fn run_rm(args: &AnnotateRmArgs) -> Result<AnnotateRmReport, Error> {
         .len();
     let removed_count = before.saturating_sub(after);
 
-    store.save(&store_path)?;
+    if removed_count > 0 {
+        store.save(&store_path)?;
+    }
 
     Ok(AnnotateRmReport {
         store_path,
