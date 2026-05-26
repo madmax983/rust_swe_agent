@@ -2515,14 +2515,20 @@ index 8a1218a..24c5735 100644\n\
         );
         let traj_json = std::fs::read_to_string(&traj_path).unwrap();
         let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        // Cancelled runs are terminal records (partial=false) — they have a
+        // definitive exit_reason rather than a mid-run checkpoint flag. Setting
+        // partial=true on cancelled runs would break swebench resume prefilter,
+        // bundle.rs, and tail.rs which treat partial=true as "resumable mid-run
+        // checkpoint only". The partial field is omitted when false
+        // (skip_serializing_if = "is_false"), so unwrap_or(false) is correct.
         assert!(
-            traj["info"]["partial"].as_bool().unwrap_or(false),
-            "cancelled run must leave partial=true in trajectory"
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "cancelled run must leave partial=false in final trajectory"
         );
         assert_eq!(
-            traj["info"]["partial_reason"].as_str(),
+            traj["info"]["exit_reason"].as_str(),
             Some("cancelled"),
-            "cancelled run must have partial_reason='cancelled'"
+            "cancelled run must have exit_reason='cancelled'"
         );
     }
 
