@@ -107,7 +107,25 @@ impl AnnotationStore {
         if let Some(n) = note {
             validate_note(n)?;
         }
+        self.upsert(instance_id, tag, note);
+        Ok(())
+    }
 
+    /// Like [`add`][Self::add] but skips note-length validation.  For callers
+    /// that have already validated the raw user input before applying
+    /// transformations (e.g. redaction) that may expand the text.
+    pub(crate) fn add_skip_note_validation(
+        &mut self,
+        instance_id: &str,
+        tag: &str,
+        note: Option<&str>,
+    ) -> Result<(), Error> {
+        validate_tag(tag)?;
+        self.upsert(instance_id, tag, note);
+        Ok(())
+    }
+
+    fn upsert(&mut self, instance_id: &str, tag: &str, note: Option<&str>) {
         let now = utc_now_rfc3339();
         let instance_map = self
             .data
@@ -123,7 +141,6 @@ impl AnnotationStore {
             });
         entry.note = note.map(str::to_owned);
         entry.updated_at = now;
-        Ok(())
     }
 
     /// Remove annotation(s) for `instance_id`.  If `tag` is `Some`, remove

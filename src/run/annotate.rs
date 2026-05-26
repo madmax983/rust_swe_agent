@@ -92,7 +92,7 @@ pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
 
     let mut store = AnnotationStore::load_or_default(&store_path)?;
     for tag in &args.tags {
-        store.add(&args.instance_id, tag, redacted_note.as_deref())?;
+        store.add_skip_note_validation(&args.instance_id, tag, redacted_note.as_deref())?;
     }
     store.save(&store_path)?;
 

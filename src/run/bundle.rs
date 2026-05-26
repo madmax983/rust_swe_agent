@@ -307,24 +307,27 @@ pub fn create_bundle(args: &BundleCreateArgs) -> Result<BundleCreateReport, Bund
         .sweep_dir
         .join(crate::annotation::DEFAULT_STORE_FILENAME);
     if annotations_src.is_file() {
-        let ann_bytes = if args.instance.is_some() {
-            match crate::annotation::AnnotationStore::load_or_default(&annotations_src) {
-                Ok(mut store) => {
-                    store.retain_instances(&included_set);
-                    match store.to_json_bytes() {
-                        Ok(b) => normalizer
-                            .normalize_text(&String::from_utf8_lossy(&b))
-                            .into_bytes(),
-                        Err(_) => normalized_text_file(&annotations_src, &normalizer)?,
-                    }
+        if args.instance.is_some() {
+            // Instance-scoped bundle: filter to requested instance only.
+            // On any parse/serialization error, omit rather than leak other
+            // instances' annotations.
+            if let Ok(mut store) =
+                crate::annotation::AnnotationStore::load_or_default(&annotations_src)
+            {
+                store.retain_instances(&included_set);
+                if let Ok(b) = store.to_json_bytes() {
+                    let ann_bytes = normalizer
+                        .normalize_text(&String::from_utf8_lossy(&b))
+                        .into_bytes();
+                    strict_redaction_check("annotations.json", &ann_bytes, &redactor)?;
+                    files.push(workspace.prepare_bytes("annotations.json", ann_bytes)?);
                 }
-                Err(_) => normalized_text_file(&annotations_src, &normalizer)?,
             }
         } else {
-            normalized_text_file(&annotations_src, &normalizer)?
-        };
-        strict_redaction_check("annotations.json", &ann_bytes, &redactor)?;
-        files.push(workspace.prepare_bytes("annotations.json", ann_bytes)?);
+            let ann_bytes = normalized_text_file(&annotations_src, &normalizer)?;
+            strict_redaction_check("annotations.json", &ann_bytes, &redactor)?;
+            files.push(workspace.prepare_bytes("annotations.json", ann_bytes)?);
+        }
     }
 
     let file_entries = files

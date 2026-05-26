@@ -2284,11 +2284,13 @@ fn render_reproduce_annotation_diff(
         return;
     }
 
-    let (mut only_orig, only_replay) = crate::run::annotate::diff_annotation_stores(&orig, &replay);
+    let (mut only_orig, mut only_replay) =
+        crate::run::annotate::diff_annotation_stores(&orig, &replay);
 
     // For partial replays, suppress false-drift signals from skipped instances.
     if !replayed_ids.is_empty() {
         only_orig.retain(|(iid, _)| replayed_ids.contains(iid.as_str()));
+        only_replay.retain(|(iid, _)| replayed_ids.contains(iid.as_str()));
     }
 
     if only_orig.is_empty() && only_replay.is_empty() {
