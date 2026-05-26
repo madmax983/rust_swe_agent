@@ -111,6 +111,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
             args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
             args::BenchCmd::Audit(a) => bench_audit(a),
+            args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -4116,6 +4117,38 @@ async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
 #[allow(clippy::needless_pass_by_value)]
 fn bench_audit(a: args::AuditCmd) -> Result<(), Error> {
     crate::run::audit::run(&a)
+}
+
+fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
+    let format = match f.format.as_str() {
+        "markdown" => crate::run::failure_digest::DigestFormat::Markdown,
+        "json" => crate::run::failure_digest::DigestFormat::Json,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown --format `{other}` (expected `markdown` or `json`)"
+            ))));
+        }
+    };
+    let max_chars = f.max_chars;
+    let digest = crate::run::failure_digest::run(&crate::run::failure_digest::FailureDigestArgs {
+        sweep_dir: f.sweep,
+        instance: f.instance,
+        format,
+        max_chars,
+    })?;
+    match format {
+        crate::run::failure_digest::DigestFormat::Markdown => {
+            print!(
+                "{}",
+                crate::run::failure_digest::render_markdown(&digest, max_chars)
+            );
+            Ok(())
+        }
+        crate::run::failure_digest::DigestFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&digest)?);
+            Ok(())
+        }
+    }
 }
 
 fn parse_dataset_source_stats(

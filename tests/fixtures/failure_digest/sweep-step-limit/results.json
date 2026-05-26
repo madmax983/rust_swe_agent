@@ -1,0 +1,30 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "total": 1,
+  "submitted": 0,
+  "skipped": 0,
+  "errored": 1,
+  "total_cost_usd": 3.0,
+  "instances": [
+    {
+      "instance_id": "step-1",
+      "exit_reason": "error",
+      "outcome": "step_limit_reached",
+      "failure_category": "step_limit",
+      "cost_usd": 3.0,
+      "steps": 100,
+      "duration_secs": 120.0,
+      "patch_present": false,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}

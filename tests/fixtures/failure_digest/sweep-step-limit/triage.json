@@ -1,0 +1,22 @@
+{
+  "sweep": "sweep-step-limit",
+  "generated_at": "2026-01-01T00:00:00Z",
+  "clusters": [
+    {
+      "cluster_id": "aabbccdd11223344",
+      "failure_category": "step_limit",
+      "signature_summary": "assistant=\"still working\" exit=1 stderr=\"step limit reached\"",
+      "instance_count": 1,
+      "total_cost_usd": 3.0,
+      "exemplar_instance_id": "step-1",
+      "exemplar_trajectory_path": "step-1.traj.json",
+      "instance_ids": ["step-1"]
+    }
+  ],
+  "totals": {
+    "clusters": 1,
+    "instances": 1,
+    "unclustered_instances": 0,
+    "unresolved_cost_usd": 3.0
+  }
+}

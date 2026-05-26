@@ -108,6 +108,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Generate failure digest
+        id: digest
+        if: failure() && github.event_name == 'schedule'
+        run: |
+          digest_md=""
+          if "${GITHUB_WORKSPACE}/target/release/max" bench failure-digest \
+              --sweep "${GITHUB_WORKSPACE}/runs" \
+              --format markdown \
+              --max-chars 8000 \
+              > /tmp/failure-digest.md 2>/tmp/failure-digest-err.txt; then
+            digest_md=$(cat /tmp/failure-digest.md)
+          else
+            digest_err=$(cat /tmp/failure-digest-err.txt 2>/dev/null || echo "unknown error")
+            digest_md="> ⚠️ failure-digest unavailable: ${digest_err}"
+          fi
+          # Export digest for the next step (unique delimiter avoids collision with digest content)
+          delimiter="DIGEST_EOF_$(openssl rand -hex 8)"
+          {
+            echo "digest_md<<${delimiter}"
+            echo "${digest_md}"
+            echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Open issue on scheduled failure
         if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@v7
@@ -115,6 +138,7 @@ jobs:
           INSTANCE_ID: ${{ steps.fetch.outputs.instance_id }}
           REPO_SLUG: ${{ steps.fetch.outputs.repo }}
           BASE_COMMIT: ${{ steps.fetch.outputs.base_commit }}
+          FAILURE_DIGEST: ${{ steps.digest.outputs.digest_md }}
         with:
           script: |
             const today = new Date().toISOString().slice(0, 10);
@@ -122,8 +146,9 @@ jobs:
             const instance = process.env.INSTANCE_ID || "(fetch failed)";
             const repoSlug = process.env.REPO_SLUG || "(unknown)";
             const baseCommit = process.env.BASE_COMMIT || "(unknown)";
+            const failureDigest = process.env.FAILURE_DIGEST || "";
             const title = `Nightly SWE-bench smoke failed (${today})`;
-            const body = [
+            const metadataLines = [
               `The nightly OpenRouter free-tier SWE-bench smoke run failed.`,
               ``,
               `- Workflow run: ${runUrl}`,
@@ -135,7 +160,11 @@ jobs:
               `artifacts on the run page.`,
               ``,
               `_Auto-filed by .github/workflows/swe-bench-nightly.yml._`,
-            ].join("\n");
+            ];
+            const digestSection = failureDigest
+              ? [``, `## Failure digest`, ``, failureDigest]
+              : [];
+            const body = [...metadataLines, ...digestSection].join("\n");
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

@@ -1,0 +1,46 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "total": 2,
+  "submitted": 0,
+  "skipped": 0,
+  "errored": 2,
+  "total_cost_usd": 5.0,
+  "instances": [
+    {
+      "instance_id": "error-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "model_parse",
+      "cost_usd": 2.5,
+      "steps": 5,
+      "duration_secs": 42.0,
+      "patch_present": false,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    },
+    {
+      "instance_id": "error-2",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "env_setup",
+      "cost_usd": 2.5,
+      "steps": 2,
+      "duration_secs": 10.0,
+      "patch_present": false,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}
