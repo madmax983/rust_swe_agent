@@ -2379,6 +2379,7 @@ fn format_mermaid_produces_sequence_diagram() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn inspect_displays_submission_class_and_warning_for_test_only_patches() {
     let sweep_dir = tempfile::tempdir().unwrap();
     let instance_id = "inst-test-only";

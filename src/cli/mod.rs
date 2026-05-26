@@ -1720,6 +1720,7 @@ fn parse_verify_checks(
         .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
     if c.inspect_diff.is_some() && c.emit_diff_script.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(

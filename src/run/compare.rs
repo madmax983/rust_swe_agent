@@ -1448,6 +1448,7 @@ fn optional_sum(values: impl Iterator<Item = f64>) -> Option<f64> {
 }
 
 /// Compute a `CompareReport` from two on-disk sweep directories.
+#[allow(clippy::too_many_lines)]
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline = load_sweep(&args.baseline)?;
     let candidate = load_sweep(&args.candidate)?;

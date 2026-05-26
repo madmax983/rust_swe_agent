@@ -695,7 +695,7 @@ fn attach_patch_stats(
     Ok(())
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (SubmissionClassRollup, f32) {
     let mut total_submitted = 0;
     let mut total_resolved = 0;

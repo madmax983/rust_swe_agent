@@ -556,6 +556,7 @@ fn md_baseline_delta(buf: &mut String, report: &CompareReport) {
 
 // ── HTML rendering ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn md_to_html(md: &str) -> String {
     let mut buf = String::new();
     writeln!(buf, "<!DOCTYPE html>").ok();
