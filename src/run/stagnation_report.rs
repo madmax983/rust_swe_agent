@@ -342,24 +342,25 @@ fn truncate_action(s: &str) -> String {
 }
 
 fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
-    // Map fingerprint → (exemplar_action, total_usd, exemplar_ids up to 5).
+    // Map fingerprint → (exemplar_action, total_usd, exemplar_ids up to 5, instance_count).
     // Rows are already ranked by budget_burned descending, so the first instance
     // encountered per fingerprint is the most expensive (good exemplar).
-    let mut by_fp: HashMap<&str, (String, f64, Vec<String>)> = HashMap::new();
+    // Count is accumulated in the same pass to avoid O(N×M) redundant iteration.
+    let mut by_fp: HashMap<&str, (String, f64, Vec<String>, usize)> = HashMap::new();
     for row in rows {
         let entry = by_fp
             .entry(row.fingerprint.as_str())
-            .or_insert_with(|| (row.canonical_action.clone(), 0.0, Vec::new()));
+            .or_insert_with(|| (row.canonical_action.clone(), 0.0, Vec::new(), 0));
         entry.1 += row.budget_burned_usd;
         if entry.2.len() < 5 {
             entry.2.push(row.instance_id.clone());
         }
+        entry.3 += 1;
     }
 
     let mut clusters: Vec<StagnationCluster> = by_fp
         .into_iter()
-        .map(|(fp, (exemplar_action, total_usd, exemplar_ids))| {
-            let instance_count = rows.iter().filter(|r| r.fingerprint == fp).count();
+        .map(|(fp, (exemplar_action, total_usd, exemplar_ids, instance_count))| {
             StagnationCluster {
                 fingerprint: fp.to_owned(),
                 exemplar_action,
@@ -381,7 +382,7 @@ fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
 }
 
 fn parse_step_limit_from_config(config_resolved: &str) -> Option<u32> {
-    let re = regex::Regex::new(r"step_limit\s*=\s*(\d+)").ok()?;
+    let re = regex::Regex::new(r"(?m)^\s*step_limit\s*=\s*(\d+)").ok()?;
     // Take the last match in case of multiple TOML sections overriding the value.
     re.captures_iter(config_resolved)
         .last()
@@ -568,6 +569,16 @@ mod tests {
         );
         assert_eq!(parse_step_limit_from_config("step_limit = 50"), Some(50));
         assert_eq!(parse_step_limit_from_config("no_limit_here"), None);
+        // Anchored regex must not match commented-out lines.
+        assert_eq!(
+            parse_step_limit_from_config("# step_limit = 99\nstep_limit = 20"),
+            Some(20)
+        );
+        // Must not match keys that merely end with step_limit.
+        assert_eq!(
+            parse_step_limit_from_config("max_step_limit = 100"),
+            None
+        );
     }
 
     #[test]
