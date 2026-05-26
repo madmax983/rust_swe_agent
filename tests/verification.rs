@@ -46,6 +46,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
         read_only: false,
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
+        no_step_persist: false,
     }
 }
 

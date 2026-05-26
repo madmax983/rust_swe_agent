@@ -146,6 +146,7 @@ fn make_mini_args(
         rehearsal_gold_patch: None,
         event_log: None,
         event_log_instance_id: None,
+        no_step_persist: false,
     }
 }
 
@@ -537,6 +538,7 @@ async fn webhook_redacts_secrets_before_post() {
         read_only: false,
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
+        no_step_persist: false,
     };
 
     let (run_result, bodies) =

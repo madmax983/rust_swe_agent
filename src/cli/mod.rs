@@ -402,6 +402,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
         rehearsal_gold_patch: None,
+        no_step_persist: m.no_step_persist,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -802,6 +803,7 @@ async fn mini_resume_cmd(
         read_only: m.read_only,
         allow_mcp_in_read_only: m.allow_mcp_in_read_only,
         rehearsal_gold_patch: None,
+        no_step_persist: m.no_step_persist,
     };
     crate::run::mini::run(args).await
 }
@@ -4744,6 +4746,7 @@ mod tests {
             ui: args::UiKind::Stderr,
             webhook_url: None,
             webhook_headers: vec![],
+            no_step_persist: false,
         }
     }
 

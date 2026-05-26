@@ -378,6 +378,14 @@ pub struct MiniCmd {
     /// or `ratatui` (full-screen dashboard).
     #[arg(long, value_enum, default_value_t = UiKind::Stderr)]
     pub ui: UiKind,
+
+    /// Disable per-step atomic trajectory checkpoints (issue #326 opt-out).
+    /// By default, `mini` writes the trajectory after every completed agent
+    /// step so a crash never destroys the full run budget. Pass this flag to
+    /// skip those intermediate writes (useful for benchmarking or pathological
+    /// trajectory-size cases where write overhead matters).
+    #[arg(long, default_value_t = false)]
+    pub no_step_persist: bool,
 }
 
 #[derive(Debug, Args)]

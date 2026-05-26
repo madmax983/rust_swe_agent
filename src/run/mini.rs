@@ -160,6 +160,9 @@ pub struct MiniArgs {
     pub read_only: bool,
     pub allow_mcp_in_read_only: bool,
     pub rehearsal_gold_patch: Option<String>,
+    /// When `true`, disables per-step atomic checkpoint writes (AC6 opt-out).
+    /// Default is `false` (checkpointing enabled).
+    pub no_step_persist: bool,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -497,9 +500,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     let traj_path = args
         .output_dir
         .join(format!("{}.traj.json", args.trajectory_name));
-    // Enable per-turn checkpointing to the trajectory path so interruptions
-    // don't discard all in-flight progress.
-    agent.checkpoint_path = Some(traj_path.clone());
+    // Enable per-turn checkpointing unless the caller explicitly opts out.
+    if !args.no_step_persist {
+        agent.checkpoint_path = Some(traj_path.clone());
+    }
 
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
@@ -1925,8 +1929,9 @@ index 8a1218a..24c5735 100644\n\
 
     #[test]
     fn validate_resume_rejects_cancelled_exit_reason() {
+        // A cancelled run has partial=true (set by finalize_cancelled) but is
+        // still non-resumable because exit_reason is also set.
         let mut traj = make_minimal_partial_traj();
-        traj.info.partial = false;
         traj.info.exit_reason = Some("cancelled".into());
         assert_eq!(
             validate_resume_trajectory(&traj),
@@ -2080,6 +2085,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
@@ -2180,6 +2186,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
@@ -2275,6 +2282,7 @@ index 8a1218a..24c5735 100644\n\
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
+            no_step_persist: false,
         };
 
         run(args).await.unwrap();
@@ -2314,6 +2322,214 @@ index 8a1218a..24c5735 100644\n\
         ) -> Result<crate::env::RunResult, crate::error::EnvError> {
             Err(crate::error::EnvError::CommandFailed(self.message.clone()))
         }
+    }
+
+    // ── AC6 tests: no_step_persist flag controls per-step checkpoint writes ──
+
+    #[tokio::test]
+    async fn no_step_persist_true_completes_normally() {
+        // With no_step_persist=true the traj file is written only once, by
+        // save_pretty at the end. Step 2's bash checks for the file before
+        // that final write happens and must find it absent.
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let traj_path = runs_dir.join("no-persist-test.traj.json");
+        let check_cmd = format!(
+            "test -f '{}' && echo CHECKPOINT_PRESENT || echo CHECKPOINT_ABSENT",
+            traj_path.display()
+        );
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        let args = MiniArgs {
+            task: "say hello".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "no-persist-test".into(),
+            deterministic_responses: Some(vec![
+                "```bash\necho step1\n```".into(),
+                format!("```bash\n{check_cmd}\n```"),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: true,
+        };
+        run(args).await.unwrap();
+
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "final trajectory must not be partial when no_step_persist=true"
+        );
+        assert_eq!(
+            traj["info"]["outcome"].as_str(),
+            Some("submitted"),
+            "run with no_step_persist=true must still submit correctly"
+        );
+        let messages_json = serde_json::to_string(&traj["messages"]).unwrap();
+        assert!(
+            messages_json.contains("CHECKPOINT_ABSENT"),
+            "with no_step_persist=true, no intermediate checkpoint must exist during step 2"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_persist_default_on_final_trajectory_is_not_partial() {
+        // With no_step_persist=false (default), save_partial_atomic is called
+        // after each completed step, writing the traj file with partial=true.
+        // Step 2's bash sees the file already present from step 1's checkpoint.
+        // The final save_pretty then clears partial.
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let traj_path = runs_dir.join("persist-test.traj.json");
+        let check_cmd = format!(
+            "test -f '{}' && echo CHECKPOINT_PRESENT || echo CHECKPOINT_ABSENT",
+            traj_path.display()
+        );
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+        let args = MiniArgs {
+            task: "say hello".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "persist-test".into(),
+            deterministic_responses: Some(vec![
+                "```bash\necho step1\n```".into(),
+                format!("```bash\n{check_cmd}\n```"),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+        };
+        run(args).await.unwrap();
+
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "final trajectory must not be partial (save_pretty clears partial flag)"
+        );
+        assert_eq!(traj["info"]["outcome"].as_str(), Some("submitted"));
+        let messages_json = serde_json::to_string(&traj["messages"]).unwrap();
+        assert!(
+            messages_json.contains("CHECKPOINT_PRESENT"),
+            "with no_step_persist=false, intermediate checkpoint must exist during step 2"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_persist_on_writes_recoverable_partial_on_cancellation() {
+        // Fire cancellation during the run (not pre-fired) so the bash step
+        // has started before the signal arrives. finalize_cancelled stamps
+        // partial=true on the trajectory regardless of which step observes
+        // the signal.
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 20;
+
+        let (tx, rx) = watch::channel(false);
+        let cancel = MiniCancellation::new(rx);
+
+        // Fire cancel during the first bash subprocess I/O yield so that the
+        // agent has begun real work before the signal is detected.
+        tokio::spawn(async move {
+            let _ = tx.send(true);
+        });
+
+        let args = MiniArgs {
+            task: "say hello".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "persist-cancel-test".into(),
+            deterministic_responses: Some(vec![
+                "```bash\necho step1\n```".into(),
+                "```bash\necho step2\n```".into(),
+                "```bash\necho step3\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: Some(cancel),
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+        };
+
+        run(args).await.unwrap();
+
+        let traj_path = runs_dir.join("persist-cancel-test.traj.json");
+        assert!(
+            traj_path.exists(),
+            "trajectory must exist after cancellation"
+        );
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        // Cancelled runs are terminal records (partial=false) — they have a
+        // definitive exit_reason rather than a mid-run checkpoint flag. Setting
+        // partial=true on cancelled runs would break swebench resume prefilter,
+        // bundle.rs, and tail.rs which treat partial=true as "resumable mid-run
+        // checkpoint only". The partial field is omitted when false
+        // (skip_serializing_if = "is_false"), so unwrap_or(false) is correct.
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "cancelled run must leave partial=false in final trajectory"
+        );
+        assert_eq!(
+            traj["info"]["exit_reason"].as_str(),
+            Some("cancelled"),
+            "cancelled run must have exit_reason='cancelled'"
+        );
     }
 
     #[tokio::test]
