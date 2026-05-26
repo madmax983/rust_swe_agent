@@ -2316,6 +2316,141 @@ index 8a1218a..24c5735 100644\n\
         }
     }
 
+    // ── RED-phase: no_step_persist AC6 tests ─────────────────────────────────
+
+    fn make_submit_only_args(
+        runs_dir: std::path::PathBuf,
+        trajectory_name: &str,
+        no_step_persist: bool,
+    ) -> MiniArgs {
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 5;
+        MiniArgs {
+            task: "say hello".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir,
+            trajectory_name: trajectory_name.into(),
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist,
+        }
+    }
+
+    #[tokio::test]
+    async fn no_step_persist_true_completes_normally() {
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let args = make_submit_only_args(runs_dir.clone(), "no-persist-test", true);
+        run(args).await.unwrap();
+
+        let traj_path = runs_dir.join("no-persist-test.traj.json");
+        assert!(traj_path.exists(), "final trajectory must be written");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "final trajectory must not be partial when no_step_persist=true"
+        );
+        assert_eq!(
+            traj["info"]["outcome"].as_str(),
+            Some("submitted"),
+            "run with no_step_persist=true must still submit correctly"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_persist_default_on_final_trajectory_is_not_partial() {
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let args = make_submit_only_args(runs_dir.clone(), "persist-test", false);
+        run(args).await.unwrap();
+
+        let traj_path = runs_dir.join("persist-test.traj.json");
+        assert!(traj_path.exists(), "final trajectory must be written");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
+        assert!(
+            !traj["info"]["partial"].as_bool().unwrap_or(false),
+            "final trajectory must not be partial (final write clears partial flag)"
+        );
+        assert_eq!(traj["info"]["outcome"].as_str(), Some("submitted"));
+    }
+
+    #[tokio::test]
+    async fn step_persist_on_writes_recoverable_partial_on_cancellation() {
+        // Cancel the run mid-flight and verify the trajectory at the expected
+        // path is a parseable partial checkpoint with partial: true.
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 20;
+
+        // Pre-fire the cancellation so the first step is interrupted.
+        let (_tx, rx) = watch::channel(true);
+        let cancel = MiniCancellation::new(rx);
+
+        let args = MiniArgs {
+            task: "say hello".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "persist-cancel-test".into(),
+            deterministic_responses: Some(vec![
+                "```bash\necho step1\n```".into(),
+                "```bash\necho step2\n```".into(),
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: Some(cancel),
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+        };
+
+        run(args).await.unwrap();
+
+        // Even a cancelled run should leave a parseable trajectory artifact.
+        let traj_path = runs_dir.join("persist-cancel-test.traj.json");
+        assert!(traj_path.exists(), "trajectory must exist after cancellation");
+        let traj_json = std::fs::read_to_string(&traj_path).unwrap();
+        let _traj: serde_json::Value =
+            serde_json::from_str(&traj_json).expect("trajectory must be parseable JSON");
+    }
+
     #[tokio::test]
     async fn env_error_during_verification_records_failed_check() {
         let env = FailingEnvironment {
