@@ -1831,8 +1831,8 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
                         ),
                     );
                 }
-                #[allow(clippy::cast_possible_truncation)]
-                if cand_rate > max_rate as f32 {
+                let cand_rate_f64 = (f64::from(cand_rate) * 1_000_000.0).round() / 1_000_000.0;
+                if cand_rate_f64 > max_rate {
                     tracing::error!(
                         max_rate = max_rate,
                         candidate_rate = cand_rate,

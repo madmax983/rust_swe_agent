@@ -305,6 +305,83 @@ fn parse_unified_diff(text: &str) -> ParsedPatch {
     parsed
 }
 
+fn unescape_git_path(s: &str) -> String {
+    let mut result = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'a' => {
+                    result.push(7);
+                    i += 2;
+                }
+                b'b' => {
+                    result.push(8);
+                    i += 2;
+                }
+                b'f' => {
+                    result.push(12);
+                    i += 2;
+                }
+                b'n' => {
+                    result.push(10);
+                    i += 2;
+                }
+                b'r' => {
+                    result.push(13);
+                    i += 2;
+                }
+                b't' => {
+                    result.push(9);
+                    i += 2;
+                }
+                b'v' => {
+                    result.push(11);
+                    i += 2;
+                }
+                b'\\' => {
+                    result.push(b'\\');
+                    i += 2;
+                }
+                b'"' => {
+                    result.push(b'"');
+                    i += 2;
+                }
+                b'?' => {
+                    result.push(b'?');
+                    i += 2;
+                }
+                b'\'' => {
+                    result.push(b'\'');
+                    i += 2;
+                }
+                c @ b'0'..=b'7' => {
+                    let mut val = u32::from(c - b'0');
+                    let mut count = 1;
+                    i += 2;
+                    while count < 3 && i < bytes.len() && (b'0'..=b'7').contains(&bytes[i]) {
+                        val = val * 8 + u32::from(bytes[i] - b'0');
+                        count += 1;
+                        i += 1;
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    result.push(val as u8);
+                }
+                _ => {
+                    result.push(b'\\');
+                    result.push(bytes[i + 1]);
+                    i += 2;
+                }
+            }
+        } else {
+            result.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
 fn extract_git_diff_path(s: &str) -> Option<(String, &str)> {
     let s = s.trim_start();
     if s.starts_with('"') {
@@ -317,7 +394,7 @@ fn extract_git_diff_path(s: &str) -> Option<(String, &str)> {
                 escaped = true;
             } else if c == '"' {
                 let content = &s[1..idx];
-                let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
+                let unescaped = unescape_git_path(content);
                 return Some((unescaped, &s[idx + 1..]));
             }
         }
@@ -358,7 +435,7 @@ fn parse_file_marker(line: &str, prefix: &str) -> Option<String> {
                 escaped = true;
             } else if c == '"' {
                 let content = &rest[1..idx];
-                let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
+                let unescaped = unescape_git_path(content);
                 return Some(strip_diff_prefix(&unescaped));
             }
         }
@@ -499,6 +576,11 @@ lock_or_generated_files = []
         // 6. Test-only patch with spaced and quoted filename
         let patch_quoted = "diff --git \"a/tests/test foo.rs\" \"b/tests/test foo.rs\"\n--- \"a/tests/test foo.rs\"\n+++ \"b/tests/test foo.rs\"\n@@ -1 +1 @@\n-old\n+new\n";
         let stats = score_patch(patch_quoted, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
+
+        // 7. Test-only patch with C-style escaped non-ASCII filename
+        let patch_escaped = "diff --git \"a/tests/test_\\303\\251l\\303\\251gant.rs\" \"b/tests/test_\\303\\251l\\303\\251gant.rs\"\n--- \"a/tests/test_\\303\\251l\\303\\251gant.rs\"\n+++ \"b/tests/test_\\303\\251l\\303\\251gant.rs\"\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_escaped, &classifiers, None);
         assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
 
         Ok(())
