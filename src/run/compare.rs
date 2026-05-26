@@ -1482,10 +1482,10 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
 
     // Load flake report and compute the excluded instance set.
     let (flaky_ids, flaky_instances_excluded) = if let Some(ref flake_path) = args.flake_report {
-        let flake = crate::run::eval_flake::EvalFlakeReport::load(flake_path)?;
-        let flaky = flake.flaky_ids();
+        let flake_report = crate::run::eval_flake::EvalFlakeReport::load(flake_path)?;
+        let flagged_ids = flake_report.flaky_ids();
         // Count paired instances that are flaky (present in both sweeps and flaky).
-        let paired_flaky = flaky
+        let paired_flaky = flagged_ids
             .iter()
             .filter(|id| {
                 baseline.instances.contains_key(*id) && candidate.instances.contains_key(*id)
@@ -1505,7 +1505,7 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
                  Provide a sweep with non-flaky instances or omit --flake-report.",
             ))));
         }
-        (flaky, paired_flaky)
+        (flagged_ids, paired_flaky)
     } else {
         (std::collections::HashSet::new(), 0)
     };

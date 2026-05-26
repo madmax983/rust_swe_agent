@@ -179,7 +179,7 @@ pub fn dominant_verdict(verdicts: &[Verdict]) -> Option<Verdict> {
             Verdict::Errored => counts[2] += 1,
         }
     }
-    let max = *counts.iter().max().unwrap();
+    let max = counts[0].max(counts[1]).max(counts[2]);
     if counts[0] == max {
         Some(Verdict::Resolved)
     } else if counts[1] == max {
@@ -403,7 +403,7 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
             .keys()
             .filter(|id| {
                 let p = args.sweep_dir.join(format!("{id}.patch"));
-                p.exists() && std::fs::metadata(&p).map_or(false, |m| m.len() > 0)
+                p.exists() && std::fs::metadata(&p).is_ok_and(|m| m.len() > 0)
             })
             .cloned()
             .collect();
