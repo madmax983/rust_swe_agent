@@ -447,6 +447,7 @@ fn inspect_report_aggregates_stage_totals() {
         filter: None,
         full: true,
         show_expected: false,
+        flake_report: None,
     };
     let out = maxwells_daemon::run::inspect::run(&args).unwrap();
     let report: &InspectReport = match &out {
@@ -488,6 +489,7 @@ fn legacy_trajectory_inspect_renders_latency_unknown() {
         filter: None,
         full: true,
         show_expected: false,
+        flake_report: None,
     };
     let out = maxwells_daemon::run::inspect::run(&args).unwrap();
     let text = render_text(&out);

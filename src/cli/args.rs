@@ -534,6 +534,8 @@ pub enum BenchCmd {
     Audit(AuditCmd),
     /// Emit a self-contained failure summary for one instance in a completed sweep.
     FailureDigest(FailureDigestCmd),
+    /// Quantify evaluator-side verdict noise by replaying the evaluator N times per patch.
+    EvalFlake(EvalFlakeCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -558,6 +560,28 @@ pub struct FailureDigestCmd {
     /// Truncation preserves the headline and triage cluster footer.
     #[arg(long, default_value_t = 8000)]
     pub max_chars: usize,
+}
+
+/// `bench eval-flake` — quantify evaluator-side verdict noise on a completed sweep.
+#[derive(Debug, Args, Clone)]
+pub struct EvalFlakeCmd {
+    /// Completed sweep directory produced by `bench swebench` (must contain
+    /// per-instance `.patch` files and a `results.json`).
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Number of times to replay the evaluator per instance. Default: 3.
+    #[arg(long, default_value_t = 3)]
+    pub replays: usize,
+
+    /// Output file for the `eval-flake.json` artifact.
+    /// Defaults to `<sweep>/eval-flake.json`.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    /// Maximum parallel evaluator workers. Mirrors `bench evaluate --concurrency`.
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
 }
 
 /// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.
@@ -1356,6 +1380,12 @@ pub struct CompareCmd {
     /// Range: 0.0–1.0. Unset is informational only.
     #[arg(long = "max-test-only-resolved-rate", value_name = "RATE")]
     pub max_test_only_resolved_rate: Option<f64>,
+
+    /// Path to an `eval-flake.json` produced by `bench eval-flake`. When set,
+    /// flaky instances (`is_flaky=true`) are excluded from both the resolved-rate
+    /// delta and the McNemar paired significance test.
+    #[arg(long, value_name = "PATH")]
+    pub flake_report: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1787,6 +1817,13 @@ pub struct InspectCmd {
     /// sweep's dataset.jsonl (requires dataset.jsonl in the sweep directory).
     #[arg(long, default_value_t = false)]
     pub show_expected: bool,
+
+    /// Path to an `eval-flake.json` produced by `bench eval-flake`. When set,
+    /// the instance view renders the verdict vector and flake_rate alongside the
+    /// normal transcript so an operator can see whether they are chasing model
+    /// behavior or evaluator noise.
+    #[arg(long, value_name = "PATH")]
+    pub flake_report: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

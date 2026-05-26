@@ -552,6 +552,7 @@ fn bench_inspect_redacts_legacy_raw_trajectory_and_warns() {
         filter: None,
         full: true,
         show_expected: false,
+        flake_report: None,
     })
     .unwrap();
     let text = maxwells_daemon::run::inspect::render_text(&output);

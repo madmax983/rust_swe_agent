@@ -277,6 +277,7 @@ fn bench_compare_flags_sampling_only_difference() {
         min_significance: None,
         regression_significance: None,
         allow_underpowered: true,
+        flake_report: None,
     };
 
     let report = compare_compute(&args).unwrap();
@@ -530,6 +531,7 @@ fn bench_compare_text_output_includes_sampling_drift() {
         min_significance: None,
         regression_significance: None,
         allow_underpowered: true,
+        flake_report: None,
     };
     let report = compare_compute(&args).unwrap();
     let text = report.human_table();
@@ -661,6 +663,7 @@ fn bench_compare_flags_sampling_presence_vs_absence_as_drift() {
         min_significance: None,
         regression_significance: None,
         allow_underpowered: true,
+        flake_report: None,
     };
     let report = compare_compute(&args).unwrap();
     let drift = report

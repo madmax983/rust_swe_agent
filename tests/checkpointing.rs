@@ -832,6 +832,7 @@ fn bench_inspect_partial_trajectory_shows_banner() {
         filter: None,
         full: false,
         show_expected: false,
+        flake_report: None,
     };
 
     let report = inspect(&args, &InspectFormat::Text).unwrap();

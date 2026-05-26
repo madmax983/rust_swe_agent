@@ -112,6 +112,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
             args::BenchCmd::Audit(a) => bench_audit(a),
             args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
+            args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -1758,6 +1759,7 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         min_significance: c.min_significance,
         regression_significance: c.regression_significance,
         allow_underpowered: c.allow_underpowered,
+        flake_report: c.flake_report.clone(),
     })?;
     match format {
         crate::run::compare::CompareFormat::Text => {
@@ -2569,6 +2571,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         filter: i.filter,
         full: i.full,
         show_expected: i.show_expected,
+        flake_report: i.flake_report,
     })?;
     match format {
         crate::run::inspect::InspectFormat::Text => {
@@ -4193,6 +4196,30 @@ fn bench_failure_digest(f: args::FailureDigestCmd) -> Result<(), Error> {
             Ok(())
         }
     }
+}
+
+fn bench_eval_flake(f: args::EvalFlakeCmd) -> Result<(), Error> {
+    let args = crate::run::eval_flake::EvalFlakeArgs {
+        sweep_dir: f.sweep,
+        replays: f.replays,
+        output: f.output,
+        concurrency: f.concurrency,
+    };
+    let report = crate::run::eval_flake::run(&args)?;
+    let summary = &report.summary;
+    eprintln!(
+        "eval-flake: {} instance(s) evaluated, {} flaky ({:.1}% flake rate), {} disagree with original sweep verdict",
+        summary.instances_evaluated,
+        summary.flaky_count,
+        summary.flaky_rate * 100.0,
+        summary.dominant_disagrees_with_sweep_count,
+    );
+    eprintln!("eval-flake: total_cost_usd=0.00 (evaluator wallclock only)");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(Error::Json)?
+    );
+    Ok(())
 }
 
 fn parse_dataset_source_stats(

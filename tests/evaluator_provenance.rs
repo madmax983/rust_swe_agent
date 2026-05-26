@@ -157,6 +157,7 @@ fn compare_args(baseline: &Path, candidate: &Path) -> CompareArgs {
         min_significance: None,
         regression_significance: None,
         allow_underpowered: false,
+        flake_report: None,
     }
 }
 
@@ -729,6 +730,7 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
         filter: Some("resolved=true".into()),
         full: false,
         show_expected: false,
+        flake_report: None,
     };
 
     let output = maxwells_daemon::run::inspect::run(&args).unwrap();
