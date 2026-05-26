@@ -91,7 +91,7 @@ pub fn run(args: &FailureDigestArgs) -> Result<FailureDigest, Error> {
     let instance = resolve_instance(args, &sweep.instances)?;
     let instance_id = instance.instance_id.clone();
 
-    let traj_path = resolve_trajectory_path(&args.sweep_dir, &instance_id);
+    let traj_path = resolve_terminal_trajectory_path(&args.sweep_dir, &instance_id);
     let (last_assistant_message, last_tool_stderr, last_tool_stdout) =
         if let Some(ref path) = traj_path {
             extract_terminal_signals(path)?
@@ -298,6 +298,39 @@ fn resolve_instance<'a>(
     }
 }
 
+/// Like `resolve_trajectory_path` but prefers the highest-numbered `run-N.traj.json`
+/// so multi-retry sweeps report the terminal attempt rather than the first.
+fn resolve_terminal_trajectory_path(sweep_dir: &Path, instance_id: &str) -> Option<PathBuf> {
+    let instance_dir = sweep_dir.join(instance_id);
+    if instance_dir.is_dir() {
+        let mut best: Option<(u32, PathBuf)> = None;
+        if let Ok(entries) = std::fs::read_dir(&instance_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let n = name
+                    .to_string_lossy()
+                    .strip_prefix("run-")
+                    .and_then(|s| s.strip_suffix(".traj.json"))
+                    .and_then(|s| s.parse::<u32>().ok());
+                if let Some(n) = n {
+                    if best.as_ref().is_none_or(|(bn, _)| n > *bn) {
+                        best = Some((n, entry.path()));
+                    }
+                }
+            }
+        }
+        if let Some((_, path)) = best {
+            return Some(path);
+        }
+        let trajectory = instance_dir.join("trajectory.json");
+        if trajectory.exists() {
+            return Some(trajectory);
+        }
+    }
+    // Flat and bundled layouts have no retry semantics; delegate to shared helper.
+    resolve_trajectory_path(sweep_dir, instance_id)
+}
+
 fn extract_terminal_signals(path: &Path) -> Result<(String, String, String), Error> {
     let trajectory = load_trajectory(path)?;
 
@@ -379,10 +412,8 @@ fn truncate_preserving_ends(
         header.chars().count() + marker.chars().count() + footer_section.chars().count();
 
     if fixed_len >= max_chars {
-        // Extreme budget: just header + truncated footer
-        let budget = max_chars.saturating_sub(header.chars().count() + 3);
-        let foot: String = footer_section.chars().take(budget).collect();
-        return format!("{header}...{foot}");
+        // Budget too small for header+marker+footer: hard-truncate the full text.
+        return text.chars().take(max_chars).collect();
     }
 
     let middle_budget = max_chars - fixed_len;
