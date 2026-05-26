@@ -123,11 +123,12 @@ jobs:
             digest_err=$(cat /tmp/failure-digest-err.txt 2>/dev/null || echo "unknown error")
             digest_md="> ⚠️ failure-digest unavailable: ${digest_err}"
           fi
-          # Export digest for the next step (multiline safe via delimiter)
+          # Export digest for the next step (unique delimiter avoids collision with digest content)
+          delimiter="DIGEST_EOF_$(openssl rand -hex 8)"
           {
-            echo "digest_md<<DIGEST_EOF"
+            echo "digest_md<<${delimiter}"
             echo "${digest_md}"
-            echo "DIGEST_EOF"
+            echo "${delimiter}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Open issue on scheduled failure
