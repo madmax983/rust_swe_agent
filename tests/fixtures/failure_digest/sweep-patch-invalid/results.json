@@ -1,0 +1,31 @@
+{
+  "artifact_kind": "sweep_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "total": 1,
+  "submitted": 0,
+  "skipped": 0,
+  "errored": 1,
+  "total_cost_usd": 1.0,
+  "instances": [
+    {
+      "instance_id": "patch-1",
+      "exit_reason": "error",
+      "outcome": "error",
+      "failure_category": "patch_apply_invalid",
+      "error": "error: patch failed: src/lib.rs:42\nerror: src/lib.rs: patch does not apply",
+      "cost_usd": 1.0,
+      "steps": 10,
+      "duration_secs": 20.0,
+      "patch_present": false,
+      "non_empty_patch": false,
+      "attempts": 1,
+      "runs": 1,
+      "resolved_count": 0,
+      "pass_at_1": false,
+      "tests_run_before_submit": false
+    }
+  ]
+}

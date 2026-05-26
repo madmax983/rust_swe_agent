@@ -1,0 +1,15 @@
+{
+  "failure_category": "model_parse",
+  "instance_id": "error-1",
+  "last_assistant_message": "I tried to parse the model response but failed due to an unexpected format.",
+  "last_tool_stderr": "model parse error: unexpected token at position 42",
+  "last_tool_stdout": "some output here",
+  "outcome": "error",
+  "patch_status": "not_attempted",
+  "redacted": false,
+  "schema_version": "1.0",
+  "step_count": 5,
+  "task_duration_secs": 42.0,
+  "total_cost_usd": 2.5,
+  "triage_cluster_label": null
+}

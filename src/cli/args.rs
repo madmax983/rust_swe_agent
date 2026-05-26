@@ -524,6 +524,32 @@ pub enum BenchCmd {
     Bisect(BisectCmd),
     /// Re-derive and verify sweep aggregates against trajectories.
     Audit(AuditCmd),
+    /// Emit a self-contained failure summary for one instance in a completed sweep.
+    FailureDigest(FailureDigestCmd),
+}
+
+/// `bench failure-digest` — self-contained failure summary for one sweep instance.
+#[derive(Debug, Args, Clone)]
+pub struct FailureDigestCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Target instance ID. When omitted and the sweep contains exactly one
+    /// instance, that instance is used. When the sweep contains more than one
+    /// instance and this flag is omitted, the command exits non-zero and names
+    /// all candidates.
+    #[arg(long)]
+    pub instance: Option<String>,
+
+    /// Output format: `markdown` (default) or `json`.
+    #[arg(long, default_value = "markdown")]
+    pub format: String,
+
+    /// Maximum characters for the markdown output (default: 8000).
+    /// Truncation preserves the headline and triage cluster footer.
+    #[arg(long, default_value_t = 8000)]
+    pub max_chars: usize,
 }
 
 /// `bench dataset-stats` — preview SWE-bench dataset composition pre-sweep.

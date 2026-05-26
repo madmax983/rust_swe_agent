@@ -1,0 +1,37 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "info": {
+    "task": "step-1",
+    "model_name": "fixture-model",
+    "outcome": "step_limit_reached",
+    "failure_category": "step_limit",
+    "total_cost_usd": 3.0,
+    "steps": 100,
+    "duration_secs": 120.0,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Still working on fixing the failing tests. Trying another approach to resolve the issue."
+    },
+    {
+      "role": "user",
+      "content": "observation",
+      "extra": {
+        "run_result": {
+          "stdout": "FAILED test_foo\nFAILED test_bar",
+          "stderr": "tests still failing after 100 steps, step limit reached",
+          "exit_code": 1,
+          "timed_out": false
+        }
+      }
+    }
+  ]
+}

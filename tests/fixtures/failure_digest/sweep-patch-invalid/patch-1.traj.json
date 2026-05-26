@@ -1,0 +1,25 @@
+{
+  "trajectory_format": "mini-swe-agent-1.1",
+  "artifact_kind": "trajectory",
+  "schema_version": {
+    "major": 1,
+    "minor": 4
+  },
+  "info": {
+    "task": "patch-1",
+    "model_name": "fixture-model",
+    "outcome": "error",
+    "failure_category": "patch_apply_invalid",
+    "total_cost_usd": 1.0,
+    "steps": 10,
+    "duration_secs": 20.0,
+    "test_invocations": [],
+    "tests_run_before_submit": false
+  },
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Submitting my patch to fix the issue."
+    }
+  ]
+}
