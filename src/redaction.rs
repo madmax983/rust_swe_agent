@@ -973,4 +973,42 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn should_return_sorted_summary() {
+        let redactor = Redactor::default_enabled();
+        // Redact text on different surfaces with different kinds of sensitive data
+        let _ = redactor.redact_text(
+            "GH_TOKEN=ghp_0123456789ABCDEF0123456789ABCDEF0123",
+            "surface_b",
+        );
+        let _ = redactor.redact_text("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", "surface_a");
+        let _ = redactor.redact_text(
+            "GH_TOKEN=ghp_0123456789ABCDEF0123456789ABCDEF0123",
+            "surface_a",
+        );
+        let _ = redactor.redact_text("API_KEY=my_secret_api_key_12345", "surface_c");
+
+        let summary = redactor.summary();
+        assert!(summary.enabled);
+        assert!(summary.redacted);
+        assert_eq!(summary.counts.len(), 4);
+
+        // Assert ordering: sort_by surface then by kind
+        assert_eq!(summary.counts[0].surface, "surface_a");
+        assert_eq!(summary.counts[0].kind, "api_key");
+        assert_eq!(summary.counts[0].count, 1);
+
+        assert_eq!(summary.counts[1].surface, "surface_a");
+        assert_eq!(summary.counts[1].kind, "env_assignment");
+        assert_eq!(summary.counts[1].count, 1);
+
+        assert_eq!(summary.counts[2].surface, "surface_b");
+        assert_eq!(summary.counts[2].kind, "env_assignment");
+        assert_eq!(summary.counts[2].count, 1);
+
+        assert_eq!(summary.counts[3].surface, "surface_c");
+        assert_eq!(summary.counts[3].kind, "env_assignment");
+        assert_eq!(summary.counts[3].count, 1);
+    }
 }
