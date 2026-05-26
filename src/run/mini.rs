@@ -2452,10 +2452,12 @@ index 8a1218a..24c5735 100644\n\
 
         // Even a cancelled run should leave a parseable trajectory artifact.
         let traj_path = runs_dir.join("persist-cancel-test.traj.json");
-        assert!(traj_path.exists(), "trajectory must exist after cancellation");
+        assert!(
+            traj_path.exists(),
+            "trajectory must exist after cancellation"
+        );
         let traj_json = std::fs::read_to_string(&traj_path).unwrap();
-        let _traj: serde_json::Value =
-            serde_json::from_str(&traj_json).expect("trajectory must be parseable JSON");
+        let _traj: serde_json::Value = serde_json::from_str(&traj_json).unwrap();
     }
 
     #[tokio::test]

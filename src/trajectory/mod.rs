@@ -1115,7 +1115,10 @@ mod tests {
 
         assert!(path.exists(), "final file must exist after atomic write");
         let tmp_path = path.with_extension("partial.tmp");
-        assert!(!tmp_path.exists(), "temp file must be renamed, not left behind");
+        assert!(
+            !tmp_path.exists(),
+            "temp file must be renamed, not left behind"
+        );
     }
 
     #[test]
@@ -1123,12 +1126,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("test.traj.json");
         let traj = Trajectory::new();
-        assert!(!traj.info.partial, "original must not be partial before write");
+        assert!(
+            !traj.info.partial,
+            "original must not be partial before write"
+        );
         assert!(traj.info.partial_reason.is_none());
 
         traj.save_partial_atomic(&path).unwrap();
 
-        assert!(!traj.info.partial, "original must not be mutated by atomic write");
+        assert!(
+            !traj.info.partial,
+            "original must not be mutated by atomic write"
+        );
         assert!(
             traj.info.partial_reason.is_none(),
             "partial_reason must not be mutated by atomic write"
