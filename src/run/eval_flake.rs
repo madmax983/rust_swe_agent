@@ -402,7 +402,7 @@ pub fn run(args: &EvalFlakeArgs) -> Result<EvalFlakeReport, Error> {
             .instances
             .keys()
             .filter(|id| {
-                let p = args.sweep_dir.join(format!("{id}.patch"));
+                let p = crate::run::swebench::existing_patch_path_for_run(&args.sweep_dir, id, 1);
                 p.exists() && std::fs::metadata(&p).is_ok_and(|m| m.len() > 0)
             })
             .cloned()
