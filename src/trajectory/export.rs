@@ -245,6 +245,32 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "junit-export")]
+pub struct JunitExporter;
+
+#[cfg(feature = "junit-export")]
+impl TrajectoryExporter for JunitExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut xml = String::new();
+        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        xml.push_str("<testsuites>\n");
+        xml.push_str("  <testsuite name=\"Trajectory\" tests=\"1\">\n");
+        let task = trajectory.info.task.as_deref().unwrap_or("unknown");
+        let safe_task = task
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        let _ = writeln!(xml, "    <testcase classname=\"AgentRun\" name=\"{safe_task}\">");
+        if trajectory.info.outcome.as_deref() != Some(crate::trajectory::outcome::SUBMITTED) {
+            xml.push_str("      <failure message=\"Agent did not submit successfully\" />\n");
+        }
+        xml.push_str("    </testcase>\n");
+        xml.push_str("  </testsuite>\n</testsuites>");
+        xml
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +365,22 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "junit-export")]
+    #[test]
+    fn test_junit_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+
+        let xml = JunitExporter::export(&t);
+
+        assert!(xml.starts_with("<?xml version=\"1.0\""));
+        assert!(xml.contains("<testsuites>"));
+        assert!(xml.contains("<testcase classname=\"AgentRun\" name=\"Add a feature\">"));
+        assert!(!xml.contains("<failure"));
     }
 }
