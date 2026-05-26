@@ -13,12 +13,14 @@
 //! - Zero network/model calls
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
 
 use std::path::Path;
 use std::process::Command;
 
 use maxwells_daemon::annotation::{AnnotationStore, TAG_REGEX};
 use maxwells_daemon::run::annotate::diff_annotation_stores;
+use maxwells_daemon::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
 
 mod support;
 use support::binary_path;
@@ -37,10 +39,7 @@ fn annotate_add(
     store: Option<&Path>,
 ) -> std::process::Output {
     let mut cmd = Command::new(binary_path());
-    cmd.arg("bench")
-        .arg("annotate")
-        .arg("add")
-        .arg(instance_id);
+    cmd.arg("bench").arg("annotate").arg("add").arg(instance_id);
     for tag in tags {
         cmd.arg("--tag").arg(tag);
     }
@@ -135,7 +134,10 @@ fn annotate_list_help_shows_flags() {
         "list --help should show --instance"
     );
     assert!(stdout.contains("--tag"), "list --help should show --tag");
-    assert!(stdout.contains("--store"), "list --help should show --store");
+    assert!(
+        stdout.contains("--store"),
+        "list --help should show --store"
+    );
 }
 
 #[test]
@@ -191,11 +193,13 @@ fn store_add_and_list_round_trip() {
     let mut store = AnnotationStore::load_or_default(&store_path).unwrap();
 
     store
-        .add("pytest__pytest-7234", "evaluator-flake", Some("known flake"))
+        .add(
+            "pytest__pytest-7234",
+            "evaluator-flake",
+            Some("known flake"),
+        )
         .unwrap();
-    store
-        .add("pytest__pytest-7234", "ignore", None)
-        .unwrap();
+    store.add("pytest__pytest-7234", "ignore", None).unwrap();
     store.save(&store_path).unwrap();
 
     let loaded = AnnotationStore::load_or_default(&store_path).unwrap();
@@ -240,7 +244,10 @@ fn store_note_exactly_1024_accepted() {
     let mut store = AnnotationStore::load_or_default(&store_path).unwrap();
     let exactly_1024 = "x".repeat(1024);
     let result = store.add("id1", "tag1", Some(&exactly_1024));
-    assert!(result.is_ok(), "notes of exactly 1024 chars should be accepted");
+    assert!(
+        result.is_ok(),
+        "notes of exactly 1024 chars should be accepted"
+    );
 }
 
 #[test]
@@ -318,11 +325,7 @@ fn store_last_writer_wins_on_same_tag() {
     let loaded = AnnotationStore::load_or_default(&store_path).unwrap();
     let anns = loaded.list(Some("id1"), None);
     assert_eq!(anns.len(), 1, "same (id, tag) should be deduplicated");
-    assert_eq!(
-        anns[0].note.as_deref(),
-        Some("second"),
-        "last writer wins"
-    );
+    assert_eq!(anns[0].note.as_deref(), Some("second"), "last writer wins");
 }
 
 #[test]
@@ -346,7 +349,13 @@ fn store_timestamps_are_rfc3339() {
 fn cli_annotate_add_creates_store() {
     let dir = tempfile::tempdir().unwrap();
     let store_path = default_store_path(dir.path());
-    let out = annotate_add(dir.path(), "pytest__pytest-7234", &["evaluator-flake"], None, None);
+    let out = annotate_add(
+        dir.path(),
+        "pytest__pytest-7234",
+        &["evaluator-flake"],
+        None,
+        None,
+    );
     assert!(
         out.status.success(),
         "annotate add should exit 0: stderr={}",
@@ -399,10 +408,7 @@ fn cli_annotate_add_multiple_tags() {
 fn cli_annotate_add_invalid_tag_exits_nonzero() {
     let dir = tempfile::tempdir().unwrap();
     let out = annotate_add(dir.path(), "id1", &["BadTag"], None, None);
-    assert!(
-        !out.status.success(),
-        "invalid tag should exit non-zero"
-    );
+    assert!(!out.status.success(), "invalid tag should exit non-zero");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("tag") || stderr.contains("invalid") || stderr.contains("format"),
@@ -457,10 +463,7 @@ fn cli_annotate_add_env_var_store() {
 fn cli_annotate_list_empty_store_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let out = annotate_list(dir.path(), None, None, None);
-    assert!(
-        out.status.success(),
-        "list on missing store should exit 0"
-    );
+    assert!(out.status.success(), "list on missing store should exit 0");
 }
 
 #[test]
@@ -519,7 +522,12 @@ fn cli_annotate_rm_specific_tag() {
         None,
         None,
     );
-    let out = annotate_rm(dir.path(), "pytest__pytest-7234", Some("evaluator-flake"), None);
+    let out = annotate_rm(
+        dir.path(),
+        "pytest__pytest-7234",
+        Some("evaluator-flake"),
+        None,
+    );
     assert!(out.status.success());
 
     let list_out = annotate_list(dir.path(), Some("pytest__pytest-7234"), None, None);
@@ -560,13 +568,7 @@ fn cli_annotate_add_redacts_note_before_writing() {
     let store_path = default_store_path(dir.path());
     // GitHub tokens are redacted by default
     let note_with_secret = "token=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa extra text";
-    let out = annotate_add(
-        dir.path(),
-        "id1",
-        &["tag1"],
-        Some(note_with_secret),
-        None,
-    );
+    let out = annotate_add(dir.path(), "id1", &["tag1"], Some(note_with_secret), None);
     assert!(out.status.success());
     let raw_store = std::fs::read_to_string(&store_path).unwrap();
     assert!(
@@ -655,7 +657,6 @@ fn write_minimal_sweep(dir: &Path, instance_id: &str) {
     .unwrap();
 
     // Write a minimal trajectory
-    use maxwells_daemon::trajectory::{FailureCategory, TokenUsage, Trajectory, outcome};
     let mut t = Trajectory::new();
     t.info.model_name = Some("test-model".into());
     t.info.outcome = Some(outcome::ERROR.into());
@@ -780,15 +781,11 @@ fn bundle_includes_annotations_when_present() {
     let cursor = std::io::Cursor::new(bundle_bytes);
     let gz = flate2::read::GzDecoder::new(cursor);
     let mut archive = tar::Archive::new(gz);
-    let has_annotations = archive
-        .entries()
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .any(|e| e.path().map_or(false, |p| p.to_string_lossy().contains("annotations")));
-    assert!(
-        has_annotations,
-        "bundle should include annotations.json"
-    );
+    let has_annotations = archive.entries().unwrap().filter_map(Result::ok).any(|e| {
+        e.path()
+            .is_ok_and(|p| p.to_string_lossy().contains("annotations"))
+    });
+    assert!(has_annotations, "bundle should include annotations.json");
 }
 
 #[test]
@@ -826,14 +823,23 @@ fn reproduce_annotation_diff_detects_only_in_original() {
     let replay_path = dir.path().join("replay.json");
 
     let mut orig = AnnotationStore::load_or_default(&orig_path).unwrap();
-    orig.add("pytest__pytest-7234", "evaluator-flake", Some("known issue")).unwrap();
+    orig.add(
+        "pytest__pytest-7234",
+        "evaluator-flake",
+        Some("known issue"),
+    )
+    .unwrap();
     orig.save(&orig_path).unwrap();
 
     let replay = AnnotationStore::load_or_default(&replay_path).unwrap();
 
     let (only_orig, only_replay) = diff_annotation_stores(&orig, &replay);
     assert_eq!(only_orig.len(), 1);
-    assert!(only_orig.iter().any(|(id, tag)| id == "pytest__pytest-7234" && tag == "evaluator-flake"));
+    assert!(
+        only_orig
+            .iter()
+            .any(|(id, tag)| id == "pytest__pytest-7234" && tag == "evaluator-flake")
+    );
     assert!(only_replay.is_empty());
 }
 
