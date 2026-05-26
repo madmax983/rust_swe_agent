@@ -1343,6 +1343,11 @@ pub struct CompareCmd {
     /// causes gating flags to exit non-zero.
     #[arg(long, default_value_t = false)]
     pub allow_underpowered: bool,
+
+    /// Exit non-zero when candidate test-only resolved rate exceeds this threshold.
+    /// Range: 0.0–1.0. Unset is informational only.
+    #[arg(long = "max-test-only-resolved-rate", value_name = "RATE")]
+    pub max_test_only_resolved_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Args)]

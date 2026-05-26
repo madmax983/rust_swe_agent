@@ -16,7 +16,8 @@
         "files_changed": 0,
         "hunks": 0,
         "touches_test_files": false,
-        "touches_lock_or_generated": false
+        "touches_lock_or_generated": false,
+        "submission_class": "empty"
       }
     }
   ],
@@ -35,5 +36,30 @@
     "backend": "none",
     "eval_started_at": "2026-01-01T00:00:00Z",
     "eval_ended_at": "2026-01-01T00:00:01Z"
-  }
+  },
+  "submission_class_rollup": {
+    "total_submitted": 1,
+    "total_resolved": 0,
+    "prod_only": {
+      "submitted_count": 0,
+      "resolved_count": 0,
+      "resolved_share_of_class": 0.0
+    },
+    "mixed": {
+      "submitted_count": 0,
+      "resolved_count": 0,
+      "resolved_share_of_class": 0.0
+    },
+    "test_only": {
+      "submitted_count": 0,
+      "resolved_count": 0,
+      "resolved_share_of_class": 0.0
+    },
+    "empty": {
+      "submitted_count": 1,
+      "resolved_count": 0,
+      "resolved_share_of_class": 0.0
+    }
+  },
+  "test_only_resolved_rate": 0.0
 }

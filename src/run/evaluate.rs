@@ -203,7 +203,24 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SubmissionClassStats {
+    pub submitted_count: u32,
+    pub resolved_count: u32,
+    pub resolved_share_of_class: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SubmissionClassRollup {
+    pub total_submitted: u32,
+    pub total_resolved: u32,
+    pub prod_only: SubmissionClassStats,
+    pub mixed: SubmissionClassStats,
+    pub test_only: SubmissionClassStats,
+    pub empty: SubmissionClassStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvaluationResults {
     pub instances: Vec<InstanceEvaluation>,
     #[serde(default)]
@@ -224,6 +241,11 @@ pub struct EvaluationResults {
     /// `None` for artifacts produced before this field was added (legacy).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<EvaluatorProvenance>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_class_rollup: Option<SubmissionClassRollup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_only_resolved_rate: Option<f64>,
 }
 
 /// p50 / p95 of each wall-clock stage measured across every trajectory in
@@ -400,6 +422,9 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         eval_started_at,
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
+    let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
+    eval.submission_class_rollup = Some(rollup);
+    eval.test_only_resolved_rate = Some(test_only_resolved_rate);
     eval.behavioral = build_behavioral_metrics(&eval.instances, &results);
     let run_slots = load_run_slots(&args.sweep_dir, &results)?;
     let (elision_instances, bytes_elided_total, compaction_failed) =
@@ -668,6 +693,122 @@ fn attach_patch_stats(
         ));
     }
     Ok(())
+}
+
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (SubmissionClassRollup, f64) {
+    let mut total_submitted = 0;
+    let mut total_resolved = 0;
+
+    let mut prod_only_sub = 0;
+    let mut prod_only_res = 0;
+
+    let mut mixed_sub = 0;
+    let mut mixed_res = 0;
+
+    let mut test_only_sub = 0;
+    let mut test_only_res = 0;
+
+    let mut empty_sub = 0;
+    let mut empty_res = 0;
+
+    for inst in instances {
+        if inst.eval_exit_reason == EvalExitReason::SkippedNoPatch {
+            continue;
+        }
+        if let Some(stats) = &inst.patch_stats {
+            if let Some(sc) = stats.submission_class {
+                total_submitted += 1;
+                if inst.resolved {
+                    total_resolved += 1;
+                }
+                match sc {
+                    crate::run::patch_stats::SubmissionClass::ProdOnly => {
+                        prod_only_sub += 1;
+                        if inst.resolved {
+                            prod_only_res += 1;
+                        }
+                    }
+                    crate::run::patch_stats::SubmissionClass::Mixed => {
+                        mixed_sub += 1;
+                        if inst.resolved {
+                            mixed_res += 1;
+                        }
+                    }
+                    crate::run::patch_stats::SubmissionClass::TestOnly => {
+                        test_only_sub += 1;
+                        if inst.resolved {
+                            test_only_res += 1;
+                        }
+                    }
+                    crate::run::patch_stats::SubmissionClass::Empty => {
+                        empty_sub += 1;
+                        if inst.resolved {
+                            empty_res += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let prod_only = SubmissionClassStats {
+        submitted_count: prod_only_sub,
+        resolved_count: prod_only_res,
+        resolved_share_of_class: if prod_only_sub == 0 {
+            0.0
+        } else {
+            prod_only_res as f32 / prod_only_sub as f32
+        },
+    };
+
+    let mixed = SubmissionClassStats {
+        submitted_count: mixed_sub,
+        resolved_count: mixed_res,
+        resolved_share_of_class: if mixed_sub == 0 {
+            0.0
+        } else {
+            mixed_res as f32 / mixed_sub as f32
+        },
+    };
+
+    let test_only = SubmissionClassStats {
+        submitted_count: test_only_sub,
+        resolved_count: test_only_res,
+        resolved_share_of_class: if test_only_sub == 0 {
+            0.0
+        } else {
+            test_only_res as f32 / test_only_sub as f32
+        },
+    };
+
+    let empty = SubmissionClassStats {
+        submitted_count: empty_sub,
+        resolved_count: empty_res,
+        resolved_share_of_class: if empty_sub == 0 {
+            0.0
+        } else {
+            empty_res as f32 / empty_sub as f32
+        },
+    };
+
+    let test_only_resolved_rate = if total_resolved == 0 {
+        0.0
+    } else {
+        f64::from(test_only_res) / f64::from(total_resolved)
+    };
+
+    (
+        SubmissionClassRollup {
+            total_submitted,
+            total_resolved,
+            prod_only,
+            mixed,
+            test_only,
+            empty,
+        },
+        test_only_resolved_rate,
+    )
 }
 
 fn load_gold_patches(dataset_path: Option<&Path>) -> Result<HashMap<String, String>, Error> {
@@ -988,12 +1129,7 @@ fn run_rehearsal_eval(
     Ok(EvaluateRunOutput {
         eval: EvaluationResults {
             instances,
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         },
         resolved_by_run,
         effective_run_id: Some("rehearsal-eval".to_owned()),
@@ -1008,12 +1144,7 @@ fn build_none_eval(results: &HashMap<String, InstanceResult>) -> EvaluationResul
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
-        behavioral: BehavioralMetrics::default(),
-        breakdown: Vec::new(),
-        cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     }
 }
 
@@ -1377,12 +1508,7 @@ fn merge_with_results(
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
-        behavioral: BehavioralMetrics::default(),
-        breakdown: Vec::new(),
-        cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     }
 }
 
@@ -1559,12 +1685,7 @@ fn merge_rerun_reports_with_results(
     instances.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     EvaluationResults {
         instances,
-        behavioral: BehavioralMetrics::default(),
-        breakdown: Vec::new(),
-        cost_attribution: Vec::new(),
-        model_mix_summary: Vec::new(),
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     }
 }
 
@@ -2272,12 +2393,7 @@ mod tests {
                 eval_row("tested-fail", false),
                 eval_row("skipped-fail", false),
             ],
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
-            behavioral: BehavioralMetrics::default(),
+            ..Default::default()
         };
         let results = HashMap::from([
             (
@@ -2457,12 +2573,7 @@ mod tests {
         let results = HashMap::from([("a".to_string(), normal), ("b".to_string(), budgeted)]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", true), eval_row("b", false)],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: vec![],
-            cost_attribution: vec![],
-            model_mix_summary: vec![],
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize_with_model(&eval, &results, None);
         assert_eq!(summary.budget_exhausted_excluded, 1);
@@ -2581,12 +2692,7 @@ mod tests {
         let results = HashMap::from([("cached".to_string(), cached)]);
         let eval = EvaluationResults {
             instances: vec![eval_row("cached", true)],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.instances, 1);
@@ -2633,12 +2739,7 @@ mod tests {
         })]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", false)],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -2667,12 +2768,7 @@ mod tests {
                 eval_row("r2", true),
                 eval_row("r3", false),
             ],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         assert_eq!(summary.resolved, 2);
@@ -2690,12 +2786,7 @@ mod tests {
         })]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", false)],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         assert!(
@@ -2720,12 +2811,7 @@ mod tests {
             .collect();
         let eval = EvaluationResults {
             instances: (0..10).map(|i| eval_row(&format!("r{i}"), true)).collect(),
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         assert_f64_eq(summary.cost_per_resolved_usd, 1.0);
@@ -2748,12 +2834,7 @@ mod tests {
         let results = HashMap::from([("a".to_string(), r)]);
         let eval = EvaluationResults {
             instances: vec![eval_row("a", true)],
-            behavioral: BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let summary = summarize(&eval, &results);
         let rendered = render_summary_table(&summary);

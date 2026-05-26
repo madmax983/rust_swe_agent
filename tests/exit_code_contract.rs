@@ -61,6 +61,11 @@ fn killed_code_is_137() {
     assert_eq!(ExitCode::Killed.as_i32(), 137);
 }
 
+#[test]
+fn eval_gaming_gate_failure_code_is_21() {
+    assert_eq!(ExitCode::EvalGamingGateFailure.as_i32(), 21);
+}
+
 // ── outcome_class strings ─────────────────────────────────────────────────────
 
 #[test]
@@ -125,6 +130,14 @@ fn outcome_class_killed() {
     assert_eq!(ExitCode::Killed.outcome_class(), "killed");
 }
 
+#[test]
+fn outcome_class_eval_gaming_gate_failure() {
+    assert_eq!(
+        ExitCode::EvalGamingGateFailure.outcome_class(),
+        "eval_gaming_gate_failure"
+    );
+}
+
 // ── outcome_class and as_i32 agree (no variant maps two different ways) ───────
 
 #[test]
@@ -138,6 +151,7 @@ fn all_variants_have_unique_codes() {
         ExitCode::BudgetHalt,
         ExitCode::RegressionGateFailure,
         ExitCode::VerificationFailure,
+        ExitCode::EvalGamingGateFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
     ];
@@ -159,6 +173,7 @@ fn all_variants_have_unique_outcome_classes() {
         ExitCode::BudgetHalt,
         ExitCode::RegressionGateFailure,
         ExitCode::VerificationFailure,
+        ExitCode::EvalGamingGateFailure,
         ExitCode::Interrupted,
         ExitCode::Killed,
     ];
@@ -420,6 +435,7 @@ fn text_and_numeric_surfaces_agree_for_every_error_variant() {
             "internal_error" => 1,
             "budget_halt" => 5,
             "regression_gate_failure" => 6,
+            "eval_gaming_gate_failure" => 21,
             other => panic!("unexpected class {other} in test table"),
         };
         assert_eq!(

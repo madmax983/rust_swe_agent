@@ -26,6 +26,7 @@ parsing human-oriented output.
 | 15   | `resume_already_terminal` | `mini --resume` target trajectory already has a terminal outcome (`submitted`, `error`, `step_limit_reached`, `budget_exhausted`, `cancelled`, `wallclock_timeout`). Cannot continue a run that already completed. |
 | 16   | `resume_manifest_missing` | `mini --resume` target trajectory is missing required fields (`task` and/or `model_name`). The file may pre-date the run-manifest schema; create a fresh run instead. |
 | 17   | `resume_invalid_prefix` | `mini --resume` target trajectory is structurally invalid for resume: message sequence is empty, too short (fewer than 2 messages), or ends in a partial assistant turn. |
+| 21   | `eval_gaming_gate_failure` | `bench compare --max-test-only-resolved-rate` threshold was exceeded by the candidate sweep. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -66,7 +67,7 @@ coarse sweep-level result.
 | `bench forecast`                | `success`, `usage_error`, `budget_halt`, `internal_error`, `interrupted` |
 | `bench calibrate`               | `success`, `usage_error`, `calibration_optimistic`, `internal_error` |
 | `bench doctor`                  | `success`, `usage_error`, `preflight_failure`, `internal_error` |
-| `bench compare`                 | `success`, `usage_error`, `regression_gate_failure`, `internal_error` |
+| `bench compare`                 | `success`, `usage_error`, `regression_gate_failure`, `eval_gaming_gate_failure`, `internal_error` |
 | `bench evaluate`                | `success`, `usage_error`, `internal_error` |
 | `bench inspect`                 | `success`, `usage_error`, `internal_error` |
 | `bench tail`                    | `success`, `usage_error`, `internal_error` |

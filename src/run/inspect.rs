@@ -980,6 +980,17 @@ fn write_patch_stats_lines(s: &mut String, stats: Option<&PatchStats>) {
             "gold_distance:    files_iou={files_iou:.3} lines_overlap={lines_overlap:.3} size_ratio={size_ratio:.3}"
         );
     }
+    if let Some(sc) = stats.submission_class {
+        if sc != crate::run::patch_stats::SubmissionClass::Empty {
+            let _ = writeln!(s, "submission_class: {}", sc.label());
+        }
+        if sc == crate::run::patch_stats::SubmissionClass::TestOnly {
+            let _ = writeln!(
+                s,
+                "warning: patch touches only test files (may indicate eval gaming)"
+            );
+        }
+    }
 }
 
 fn render_token_summary(

@@ -59,6 +59,19 @@ max bench evaluate \
       "tests_failed": ["..."],
       "eval_exit_reason": "resolved|unresolved|patch_apply_failed|eval_error|skipped_no_patch",
       "eval_log_path": "optional/path/or/url",
+      "patch_stats": {
+        "files_changed": 2,
+        "hunks": 3,
+        "lines_added": 12,
+        "lines_removed": 4,
+        "is_empty": false,
+        "touches_test_files": true,
+        "touches_lock_or_generated": false,
+        "gold_files_iou": 0.5,
+        "gold_lines_overlap": 0.8,
+        "gold_size_ratio": 1.2,
+        "submission_class": "prod_only|mixed|test_only|empty"
+      },
       "patch_error_log": "captured git apply stderr (only when eval_exit_reason == patch_apply_failed; null/absent otherwise)"
     }
   ],
@@ -70,7 +83,32 @@ max bench evaluate \
       "mean_usd": 0.3601,
       "share_pct": 37.42
     }
-  ]
+  ],
+  "submission_class_rollup": {
+    "total_submitted": 10,
+    "total_resolved": 8,
+    "prod_only": {
+      "submitted_count": 6,
+      "resolved_count": 5,
+      "resolved_share_of_class": 0.8333
+    },
+    "mixed": {
+      "submitted_count": 2,
+      "resolved_count": 2,
+      "resolved_share_of_class": 1.0
+    },
+    "test_only": {
+      "submitted_count": 2,
+      "resolved_count": 1,
+      "resolved_share_of_class": 0.5
+    },
+    "empty": {
+      "submitted_count": 0,
+      "resolved_count": 0,
+      "resolved_share_of_class": 0.0
+    }
+  },
+  "test_only_resolved_rate": 0.125
 }
 ```
 
@@ -138,3 +176,20 @@ fully regressed against a baseline that resolved everything.
 Regression gating exits non-zero only when the confidence interval is entirely
 below zero. If the raw delta is negative but the interval crosses zero, the
 report is marked `within_noise: true` and the command exits successfully.
+
+## Eval Gaming & Submission Classification
+
+To protect against "eval gaming" (where an agent or developer gets a "win" or "resolved" result by only altering the test files rather than actually fixing the production bug), `bench evaluate` categorizes each instance's patch and provides sweep-level rollups in `evaluation.json`.
+
+### Patch Submission Classes
+Each patch hunk is evaluated to classify the instance's submission into one of four classes under `patch_stats.submission_class`:
+- `prod_only`: Touches only production files (at least one non-test file, zero test files).
+- `mixed`: Touches both production and test files.
+- `test_only`: Touches only test files (zero prod files modified).
+- `empty`: Has zero hunks (no changes made).
+
+### Rollup & Trust Metrics
+At the root level of `evaluation.json`, we have:
+- `submission_class_rollup`: Aggregated metrics for each class (submitted counts, resolved counts, and resolved share).
+- `test_only_resolved_rate`: The proportion of all resolved instances that were `test_only` submissions. Computed as `test_only.resolved_count / total_resolved`.
+

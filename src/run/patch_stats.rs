@@ -9,6 +9,27 @@ use crate::error::{ConfigError, Error};
 
 const DEFAULT_CLASSIFIERS_TOML: &str = include_str!("../../data/patch_classifiers.toml");
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmissionClass {
+    ProdOnly,
+    Mixed,
+    TestOnly,
+    Empty,
+}
+
+impl SubmissionClass {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ProdOnly => "prod_only",
+            Self::Mixed => "mixed",
+            Self::TestOnly => "test_only",
+            Self::Empty => "empty",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PatchStats {
     pub files_changed: u32,
@@ -24,6 +45,8 @@ pub struct PatchStats {
     pub gold_lines_overlap: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gold_size_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_class: Option<SubmissionClass>,
 }
 
 impl PatchStats {
@@ -53,10 +76,12 @@ impl PatchClassifiers {
         })
     }
 
+    pub fn is_test_file(&self, file: &str) -> bool {
+        self.test_files.iter().any(|glob| glob.matches(file))
+    }
+
     fn touches_test_file(&self, files: &BTreeSet<String>) -> bool {
-        files
-            .iter()
-            .any(|file| self.test_files.iter().any(|glob| glob.matches(file)))
+        files.iter().any(|file| self.is_test_file(file))
     }
 
     fn touches_lock_or_generated(&self, files: &BTreeSet<String>) -> bool {
@@ -168,6 +193,23 @@ pub fn score_patch(
     gold_patch: Option<&str>,
 ) -> PatchStats {
     let parsed = parse_unified_diff(patch_text);
+    let submission_class = if parsed.files.is_empty() {
+        SubmissionClass::Empty
+    } else {
+        let test_count = parsed
+            .files
+            .iter()
+            .filter(|f| classifiers.is_test_file(f))
+            .count();
+        if test_count == parsed.files.len() {
+            SubmissionClass::TestOnly
+        } else if test_count == 0 {
+            SubmissionClass::ProdOnly
+        } else {
+            SubmissionClass::Mixed
+        }
+    };
+
     let mut stats = PatchStats {
         files_changed: saturating_u32(parsed.files.len()),
         hunks: parsed.hunks,
@@ -179,6 +221,7 @@ pub fn score_patch(
         gold_files_iou: None,
         gold_lines_overlap: None,
         gold_size_ratio: None,
+        submission_class: Some(submission_class),
     };
 
     if let Some(gold) = gold_patch {
@@ -262,21 +305,144 @@ fn parse_unified_diff(text: &str) -> ParsedPatch {
     parsed
 }
 
-fn parse_diff_git_file(line: &str) -> Option<String> {
-    let mut parts = line.split_whitespace();
-    if parts.next()? != "diff" || parts.next()? != "--git" {
-        return None;
+fn unescape_git_path(s: &str) -> String {
+    let mut result = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'a' => {
+                    result.push(7);
+                    i += 2;
+                }
+                b'b' => {
+                    result.push(8);
+                    i += 2;
+                }
+                b'f' => {
+                    result.push(12);
+                    i += 2;
+                }
+                b'n' => {
+                    result.push(10);
+                    i += 2;
+                }
+                b'r' => {
+                    result.push(13);
+                    i += 2;
+                }
+                b't' => {
+                    result.push(9);
+                    i += 2;
+                }
+                b'v' => {
+                    result.push(11);
+                    i += 2;
+                }
+                b'\\' => {
+                    result.push(b'\\');
+                    i += 2;
+                }
+                b'"' => {
+                    result.push(b'"');
+                    i += 2;
+                }
+                b'?' => {
+                    result.push(b'?');
+                    i += 2;
+                }
+                b'\'' => {
+                    result.push(b'\'');
+                    i += 2;
+                }
+                c @ b'0'..=b'7' => {
+                    let mut val = u32::from(c - b'0');
+                    let mut count = 1;
+                    i += 2;
+                    while count < 3 && i < bytes.len() && (b'0'..=b'7').contains(&bytes[i]) {
+                        val = val * 8 + u32::from(bytes[i] - b'0');
+                        count += 1;
+                        i += 1;
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    result.push(val as u8);
+                }
+                _ => {
+                    result.push(b'\\');
+                    result.push(bytes[i + 1]);
+                    i += 2;
+                }
+            }
+        } else {
+            result.push(bytes[i]);
+            i += 1;
+        }
     }
-    let old = parts.next()?;
-    let new = parts.next()?;
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn extract_git_diff_path(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start();
+    if s.starts_with('"') {
+        let chars = s.char_indices().skip(1);
+        let mut escaped = false;
+        for (idx, c) in chars {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                let content = &s[1..idx];
+                let unescaped = unescape_git_path(content);
+                return Some((unescaped, &s[idx + 1..]));
+            }
+        }
+        None
+    } else if let Some(idx) = s.find(char::is_whitespace) {
+        Some((s[..idx].to_string(), &s[idx..]))
+    } else if !s.is_empty() {
+        Some((s.to_string(), ""))
+    } else {
+        None
+    }
+}
+
+fn parse_git_diff_paths(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+    let (a, remainder) = extract_git_diff_path(rest)?;
+    let (b, _) = extract_git_diff_path(remainder)?;
+    Some((a, b))
+}
+
+fn parse_diff_git_file(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("diff --git ")?;
+    let (old, new) = parse_git_diff_paths(rest)?;
     let selected = if new == "/dev/null" { old } else { new };
-    Some(strip_diff_prefix(selected))
+    Some(strip_diff_prefix(&selected))
 }
 
 fn parse_file_marker(line: &str, prefix: &str) -> Option<String> {
-    line.strip_prefix(prefix)
-        .and_then(|rest| rest.split_whitespace().next())
-        .map(strip_diff_prefix)
+    let rest = line.strip_prefix(prefix)?;
+    let rest = rest.trim_start();
+    if rest.starts_with('"') {
+        let chars = rest.char_indices().skip(1);
+        let mut escaped = false;
+        for (idx, c) in chars {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                let content = &rest[1..idx];
+                let unescaped = unescape_git_path(content);
+                return Some(strip_diff_prefix(&unescaped));
+            }
+        }
+        None
+    } else {
+        rest.split_whitespace().next().map(strip_diff_prefix)
+    }
 }
 
 fn strip_diff_prefix(path: &str) -> String {
@@ -368,6 +534,55 @@ lock_or_generated_files = ["**/*.snap"]
             None,
         );
         assert!(stats.touches_lock_or_generated);
+        Ok(())
+    }
+
+    #[test]
+    fn test_submission_class_scoring() -> Result<(), Error> {
+        use super::SubmissionClass;
+
+        let classifiers = PatchClassifiers::from_toml_str(
+            r#"
+test_files = ["tests/**/*.rs", "src/test_helpers.rs"]
+lock_or_generated_files = []
+"#,
+        )?;
+
+        // 1. Prod only patch
+        let patch_prod = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_prod, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::ProdOnly));
+
+        // 2. Test only patch
+        let patch_test = "diff --git a/tests/test_lib.rs b/tests/test_lib.rs\n--- a/tests/test_lib.rs\n+++ b/tests/test_lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_test, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
+
+        // 3. Mixed patch
+        let patch_mixed = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/tests/test_lib.rs b/tests/test_lib.rs\n--- a/tests/test_lib.rs\n+++ b/tests/test_lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_mixed, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::Mixed));
+
+        // 4. No hunks but contains files (e.g. rename, mode change, metadata-only)
+        let patch_nonempty = "diff --git a/src/lib.rs b/src/lib.rs\n";
+        let stats = score_patch(patch_nonempty, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::ProdOnly));
+
+        // 5. Completely empty patch (zero files, zero hunks)
+        let patch_empty = "";
+        let stats = score_patch(patch_empty, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::Empty));
+
+        // 6. Test-only patch with spaced and quoted filename
+        let patch_quoted = "diff --git \"a/tests/test foo.rs\" \"b/tests/test foo.rs\"\n--- \"a/tests/test foo.rs\"\n+++ \"b/tests/test foo.rs\"\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_quoted, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
+
+        // 7. Test-only patch with C-style escaped non-ASCII filename
+        let patch_escaped = "diff --git \"a/tests/test_\\303\\251l\\303\\251gant.rs\" \"b/tests/test_\\303\\251l\\303\\251gant.rs\"\n--- \"a/tests/test_\\303\\251l\\303\\251gant.rs\"\n+++ \"b/tests/test_\\303\\251l\\303\\251gant.rs\"\n@@ -1 +1 @@\n-old\n+new\n";
+        let stats = score_patch(patch_escaped, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::TestOnly));
+
         Ok(())
     }
 }

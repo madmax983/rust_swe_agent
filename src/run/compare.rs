@@ -224,6 +224,12 @@ pub struct CompareReport {
     /// when at least one instance pair had loadable trajectories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling_drift: Option<SamplingDriftSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_test_only_resolved_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_test_only_resolved_rate: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_only_resolved_rate_delta: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -459,6 +465,19 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         report.candidate_resolved_rate * 100.0,
         report.resolved_delta_rate * 100.0
     );
+    if let (Some(b), Some(c)) = (
+        report.baseline_test_only_resolved_rate,
+        report.candidate_test_only_resolved_rate,
+    ) {
+        let delta = c - b;
+        let _ = writeln!(
+            s,
+            "Test-only resolved: {:.1}% -> {:.1}% ({:+.1}pp)",
+            b * 100.0,
+            c * 100.0,
+            delta * 100.0
+        );
+    }
     let _ = writeln!(
         s,
         "Tests before submit: {:.2}% -> {:.2}% ({:+.2}pp)",
@@ -1429,6 +1448,7 @@ fn optional_sum(values: impl Iterator<Item = f64>) -> Option<f64> {
 }
 
 /// Compute a `CompareReport` from two on-disk sweep directories.
+#[allow(clippy::too_many_lines)]
 pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
     let baseline = load_sweep(&args.baseline)?;
     let candidate = load_sweep(&args.candidate)?;
@@ -1498,6 +1518,18 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
             patch_stats_aggregates(&eval.results, &candidate.instances)
         });
     apply_patch_stats_aggregates(&mut report, baseline_patch_agg, candidate_patch_agg);
+    let baseline_test_only = baseline_eval
+        .as_ref()
+        .and_then(|loaded| loaded.results.test_only_resolved_rate);
+    let candidate_test_only = candidate_eval
+        .as_ref()
+        .and_then(|loaded| loaded.results.test_only_resolved_rate);
+    report.baseline_test_only_resolved_rate = baseline_test_only;
+    report.candidate_test_only_resolved_rate = candidate_test_only;
+    report.test_only_resolved_rate_delta = match (baseline_test_only, candidate_test_only) {
+        (Some(b), Some(c)) => Some(c - b),
+        _ => None,
+    };
     apply_cost_attribution_delta(
         &mut report,
         CostAttributionContext {
@@ -1817,6 +1849,9 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         evaluator_provenance_warnings: Vec::new(),
         resolved_rate_significance,
         sampling_drift: None,
+        baseline_test_only_resolved_rate: None,
+        candidate_test_only_resolved_rate: None,
+        test_only_resolved_rate_delta: None,
     }
 }
 
@@ -3840,12 +3875,7 @@ mod tests {
                 patch_stats: None,
                 patch_error_log: None,
             }],
-            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         let candidate_eval = crate::run::evaluate::EvaluationResults {
             instances: vec![crate::run::evaluate::InstanceEvaluation {
@@ -3861,12 +3891,7 @@ mod tests {
                 patch_stats: None,
                 patch_error_log: None,
             }],
-            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
 
         std::fs::write(
@@ -3921,12 +3946,7 @@ mod tests {
                 patch_stats: None,
                 patch_error_log: None,
             }],
-            behavioral: crate::run::evaluate::BehavioralMetrics::default(),
-            breakdown: Vec::new(),
-            cost_attribution: Vec::new(),
-            model_mix_summary: Vec::new(),
-            latency_summary: None,
-            provenance: None,
+            ..Default::default()
         };
         std::fs::write(
             crate::run::evaluate::evaluation_path(dir_c.path()),

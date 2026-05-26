@@ -72,12 +72,7 @@ fn minimal_evaluation_results(resolved: bool) -> EvaluationResults {
             patch_stats: None,
             patch_error_log: None,
         }],
-        behavioral: Default::default(),
-        breakdown: vec![],
-        cost_attribution: vec![],
-        model_mix_summary: vec![],
-        latency_summary: None,
-        provenance: None,
+        ..Default::default()
     }
 }
 

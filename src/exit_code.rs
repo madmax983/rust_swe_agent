@@ -88,6 +88,8 @@ pub enum ExitCode {
     BisectSchemaBreak = 19,
     /// 20 — `bench audit` detected a divergence exceeding tolerance or a bijection/evaluator contradiction.
     AuditFailure = 20,
+    /// 21 — `bench compare --max-test-only-resolved-rate` threshold was exceeded.
+    EvalGamingGateFailure = 21,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -129,6 +131,7 @@ impl ExitCode {
             Self::BisectBudgetExhausted => "bisect_budget_exhausted",
             Self::BisectSchemaBreak => "bisect_schema_break",
             Self::AuditFailure => "audit_failure",
+            Self::EvalGamingGateFailure => "eval_gaming_gate_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }
