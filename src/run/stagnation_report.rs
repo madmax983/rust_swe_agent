@@ -465,7 +465,7 @@ struct StagnationRecord {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
 
     fn hash_of(raw: &str) -> String {
