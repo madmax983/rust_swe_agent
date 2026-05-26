@@ -64,6 +64,7 @@ pub enum ArtifactKind {
     SkillsPreview,
     AuditReport,
     EvalFlakeReport,
+    StagnationReport,
 }
 
 impl ArtifactKind {
@@ -85,6 +86,7 @@ impl ArtifactKind {
             Self::SkillsPreview => "skills_preview",
             Self::AuditReport => "audit_report",
             Self::EvalFlakeReport => "eval_flake_report",
+            Self::StagnationReport => "stagnation_report",
         }
     }
 }

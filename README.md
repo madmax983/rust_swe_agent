@@ -382,6 +382,11 @@ a valid trajectory in hand:
   noise by replaying the evaluator N times per patch on a completed sweep.
   Produces `eval-flake.json`; pair with `bench compare --flake-report` to
   exclude flaky instances from significance testing and get honest published deltas.
+- [`bench stagnation-report`](docs/spec-stagnation-report.md): post-hoc
+  cross-sweep aggregation of in-loop stagnation halts — clustered by canonical
+  loop fingerprint, ranked by cost burned, with a conservative USD-saved estimate.
+  Zero-cost (reads only on-disk artifacts); JSON output suitable for CI snapshot
+  diffing to prove prompt changes reduce recurring loops.
 
 ## Nightly E2E smoke
 

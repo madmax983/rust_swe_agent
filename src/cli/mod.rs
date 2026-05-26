@@ -114,6 +114,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
             args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
             args::BenchCmd::Annotate(a) => bench_annotate(a),
+            args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3215,6 +3216,33 @@ fn bench_ladder(l: args::LadderCmd) -> Result<(), Error> {
         }
         crate::run::ladder::LadderFormat::Markdown => {
             print!("{}", crate::run::ladder::render_markdown(&report));
+        }
+    }
+    Ok(())
+}
+
+fn bench_stagnation_report(s: args::StagnationReportCmd) -> Result<(), Error> {
+    let format = s
+        .format
+        .parse::<crate::run::stagnation_report::StagnationReportFormat>()
+        .map_err(|e| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "stagnation-report: {e}"
+            )))
+        })?;
+    let report = crate::run::stagnation_report::run(
+        &crate::run::stagnation_report::StagnationReportArgs {
+            sweep: s.sweep,
+            format,
+        },
+    )?;
+    match format {
+        crate::run::stagnation_report::StagnationReportFormat::Text => {
+            print!("{}", crate::run::stagnation_report::render_text(&report));
+        }
+        crate::run::stagnation_report::StagnationReportFormat::Json => {
+            let json = crate::run::stagnation_report::render_json(&report)?;
+            println!("{json}");
         }
     }
     Ok(())
