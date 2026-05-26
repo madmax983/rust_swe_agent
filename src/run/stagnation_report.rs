@@ -360,15 +360,15 @@ fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
 
     let mut clusters: Vec<StagnationCluster> = by_fp
         .into_iter()
-        .map(|(fp, (exemplar_action, total_usd, exemplar_ids, instance_count))| {
-            StagnationCluster {
+        .map(
+            |(fp, (exemplar_action, total_usd, exemplar_ids, instance_count))| StagnationCluster {
                 fingerprint: fp.to_owned(),
                 exemplar_action,
                 instance_count,
                 total_usd_burned: total_usd,
                 exemplar_instance_ids: exemplar_ids,
-            }
-        })
+            },
+        )
         .collect();
 
     // Rank by instance_count descending, then fingerprint for determinism.
@@ -575,10 +575,7 @@ mod tests {
             Some(20)
         );
         // Must not match keys that merely end with step_limit.
-        assert_eq!(
-            parse_step_limit_from_config("max_step_limit = 100"),
-            None
-        );
+        assert_eq!(parse_step_limit_from_config("max_step_limit = 100"), None);
     }
 
     #[test]
