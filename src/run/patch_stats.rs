@@ -193,7 +193,7 @@ pub fn score_patch(
     gold_patch: Option<&str>,
 ) -> PatchStats {
     let parsed = parse_unified_diff(patch_text);
-    let submission_class = if parsed.hunks == 0 {
+    let submission_class = if parsed.files.is_empty() {
         SubmissionClass::Empty
     } else {
         let test_count = parsed
@@ -440,8 +440,13 @@ lock_or_generated_files = []
         let stats = score_patch(patch_mixed, &classifiers, None);
         assert_eq!(stats.submission_class, Some(SubmissionClass::Mixed));
 
-        // 4. Empty patch (zero hunks)
-        let patch_empty = "diff --git a/src/lib.rs b/src/lib.rs\n";
+        // 4. No hunks but contains files (e.g. rename, mode change, metadata-only)
+        let patch_nonempty = "diff --git a/src/lib.rs b/src/lib.rs\n";
+        let stats = score_patch(patch_nonempty, &classifiers, None);
+        assert_eq!(stats.submission_class, Some(SubmissionClass::ProdOnly));
+
+        // 5. Completely empty patch (zero files, zero hunks)
+        let patch_empty = "";
         let stats = score_patch(patch_empty, &classifiers, None);
         assert_eq!(stats.submission_class, Some(SubmissionClass::Empty));
 

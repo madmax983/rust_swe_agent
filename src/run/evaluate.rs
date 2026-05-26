@@ -713,6 +713,9 @@ fn build_submission_class_rollup(instances: &[InstanceEvaluation]) -> (Submissio
     let mut empty_res = 0;
 
     for inst in instances {
+        if inst.eval_exit_reason == EvalExitReason::SkippedNoPatch {
+            continue;
+        }
         if let Some(stats) = &inst.patch_stats {
             if let Some(sc) = stats.submission_class {
                 total_submitted += 1;

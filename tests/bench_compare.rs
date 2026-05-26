@@ -3506,4 +3506,68 @@ fn compare_test_only_resolved_rate_ci_gating_and_reporting() {
         report_html.contains("ℹ️") && report_html.contains("docs/spec-evaluation.md"),
         "expected report.html to contain interactive tooltip and doc link; got:\n{report_html}"
     );
+
+    // 9. Verify exact boundary value (0.20) does not fail (assert float widening is resolved)
+    let out_exact = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "0.20",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out_exact.status.success(),
+        "expected gate success because candidate rate (0.20) is exactly equal to threshold (0.20), but failed; stderr: {}",
+        String::from_utf8_lossy(&out_exact.stderr)
+    );
+
+    // 10. Verify out-of-bounds rate (e.g. 1.5) fails with ExitCode::UsageError (2)
+    let out_oob = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            candidate_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "1.5",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_oob.status.code(),
+        Some(2),
+        "expected usage error (exit code 2) because 1.5 is out of bounds; stderr: {}",
+        String::from_utf8_lossy(&out_oob.stderr)
+    );
+
+    // 11. Verify missing candidate metric fails closed (exit code 2)
+    let missing_cand_dir = tempfile::tempdir().unwrap();
+    write_results(missing_cand_dir.path(), vec![submitted("inst-1")]);
+    let out_missing = Command::new(binary_path())
+        .args([
+            "bench",
+            "compare",
+            "--baseline",
+            baseline_dir.path().to_str().unwrap(),
+            "--candidate",
+            missing_cand_dir.path().to_str().unwrap(),
+            "--max-test-only-resolved-rate",
+            "0.50",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out_missing.status.code(),
+        Some(2),
+        "expected usage error (exit code 2) because candidate has no evaluation.json/test-only metrics; stderr: {}",
+        String::from_utf8_lossy(&out_missing.stderr)
+    );
 }

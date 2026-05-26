@@ -1814,20 +1814,36 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
         }
     }
     if let Some(max_rate) = c.max_test_only_resolved_rate {
-        if let Some(cand_rate) = report.candidate_test_only_resolved_rate {
-            if f64::from(cand_rate) > max_rate {
-                tracing::error!(
-                    max_rate = max_rate,
-                    candidate_rate = cand_rate,
-                    "compare: candidate test-only resolved rate exceeds --max-test-only-resolved-rate threshold"
-                );
+        if !(0.0..=1.0).contains(&max_rate) {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                "compare: --max-test-only-resolved-rate must be between 0.0 and 1.0",
+            );
+        }
+        match report.candidate_test_only_resolved_rate {
+            Some(cand_rate) =>
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                if cand_rate > max_rate as f32 {
+                    tracing::error!(
+                        max_rate = max_rate,
+                        candidate_rate = cand_rate,
+                        "compare: candidate test-only resolved rate exceeds --max-test-only-resolved-rate threshold"
+                    );
+                    exit_with_outcome(
+                        ExitCode::EvalGamingGateFailure,
+                        &format!(
+                            "compare: candidate test-only resolved rate ({:.2}%) exceeds --max-test-only-resolved-rate={:.2}%",
+                            cand_rate * 100.0,
+                            max_rate * 100.0
+                        ),
+                    );
+                }
+            }
+            None => {
                 exit_with_outcome(
-                    ExitCode::EvalGamingGateFailure,
-                    &format!(
-                        "compare: candidate test-only resolved rate ({:.2}%) exceeds --max-test-only-resolved-rate={:.2}%",
-                        cand_rate * 100.0,
-                        max_rate * 100.0
-                    ),
+                    ExitCode::UsageError,
+                    "compare: candidate evaluation report is missing test-only resolved rate data, required for --max-test-only-resolved-rate gating",
                 );
             }
         }

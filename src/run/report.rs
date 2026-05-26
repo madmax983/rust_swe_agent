@@ -281,10 +281,10 @@ fn md_topline(
         Some(ml) => writeln!(buf, "| Mean lines changed (resolved) | {ml:.1} |").ok(),
         None => writeln!(buf, "| Mean lines changed (resolved) | {NO_EVAL_MSG} |").ok(),
     };
-    if eval.is_some() {
-        let rollup = eval.and_then(|e| e.submission_class_rollup.as_ref());
-        let test_only_count = rollup.map_or(0, |r| r.test_only.resolved_count);
-        let total_resolved = rollup.map_or(0, |r| r.total_resolved);
+    let rollup = eval.and_then(|e| e.submission_class_rollup.as_ref());
+    if let Some(r) = rollup {
+        let test_only_count = r.test_only.resolved_count;
+        let total_resolved = r.total_resolved;
         let rate = if total_resolved == 0 {
             0.0
         } else {
