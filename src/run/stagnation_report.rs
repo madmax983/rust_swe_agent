@@ -73,7 +73,7 @@ pub struct StagnationInstanceRow {
     /// USD cost burned before the halt.
     pub budget_burned_usd: f64,
     /// Estimated USD saved by the early halt. `null` when step_limit unknown.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Always present in JSON (as `null`) so the schema is stable for consumers.
     pub usd_saved_estimate: Option<f64>,
     /// Full 32-char SHA-256 fingerprint used internally for collision-safe
     /// clustering. Not exposed in JSON output.
@@ -163,14 +163,13 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
 
     let halted_count = rows.len();
     let total_usd_burned_before_halt: f64 = rows.iter().map(|r| r.budget_burned_usd).sum();
-    // Remain None when every instance has an unknown estimate (no step_limit in
-    // the manifest). This distinguishes "unknown" from a genuine 0.0 saving.
+    // Key on step_limit directly: if the limit is known we can always produce a
+    // meaningful total (0.0 for an empty or fully-capped sweep), whereas None
+    // means "limit was unavailable so savings are unknown".  Using rows.any()
+    // as a proxy would return None for an empty sweep with a known limit, which
+    // contradicts the stated semantics.
     let total_usd_saved_estimate: Option<f64> =
-        if rows.iter().any(|r| r.usd_saved_estimate.is_some()) {
-            Some(rows.iter().filter_map(|r| r.usd_saved_estimate).sum())
-        } else {
-            None
-        };
+        step_limit.map(|_| rows.iter().filter_map(|r| r.usd_saved_estimate).sum());
 
     Ok(StagnationReport {
         sweep_path: args.sweep.display().to_string(),
@@ -901,11 +900,31 @@ mod tests {
         assert!(value["totals"].is_object());
         assert!(value["totals"]["halted_count"].is_number());
         assert!(value["totals"]["total_usd_burned_before_halt"].is_number());
-        // Empty sweep has no step_limit → total_usd_saved_estimate serialises as null.
-        assert!(
-            value["totals"]["total_usd_saved_estimate"].is_null()
-                || value["totals"]["total_usd_saved_estimate"].is_number()
-        );
+        // Empty sweep has no manifest → total_usd_saved_estimate serialises as null
+        // (field is always present; null means "unknown", not absent).
+        assert!(value["totals"]["total_usd_saved_estimate"].is_null());
+    }
+
+    #[test]
+    fn empty_sweep_with_known_step_limit_has_zero_saved_estimate() {
+        // A sweep that has a manifest (step_limit known) but no stagnation rows
+        // must emit total_usd_saved_estimate = Some(0.0), not None.
+        // This distinguishes "zero savings (genuine result)" from "unknown".
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json_with_step_limit(&[], 50),
+        )
+        .unwrap();
+
+        let report = run_report(sweep);
+        assert_eq!(report.totals.halted_count, 0);
+        let saved = report
+            .totals
+            .total_usd_saved_estimate
+            .expect("step_limit known → savings should be Some");
+        assert!(saved.abs() < f64::EPSILON, "expected 0.0, got {saved}");
     }
 
     #[test]
