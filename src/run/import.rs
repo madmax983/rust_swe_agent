@@ -202,6 +202,7 @@ fn write_patch_file(output_dir: &Path, instance_id: &str, patch: &str) -> Result
 // ── core run function ─────────────────────────────────────────────────────────
 
 /// Run `bench import`.
+#[allow(clippy::too_many_lines)]
 pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     // 1. Read and hash the predictions file.
     let predictions_bytes = std::fs::read(&args.predictions).map_err(|e| {
@@ -236,15 +237,12 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     let mut model_name: Option<String> = None;
 
     for (idx, maybe_rec) in raw_records {
-        let rec = match maybe_rec {
-            Some(r) => r,
-            None => {
-                skip_reasons.push(SkipReason {
-                    record_index: idx,
-                    reason: "record could not be parsed as JSON object".to_owned(),
-                });
-                continue;
-            }
+        let Some(rec) = maybe_rec else {
+            skip_reasons.push(SkipReason {
+                record_index: idx,
+                reason: "record could not be parsed as JSON object".to_owned(),
+            });
+            continue;
         };
 
         let instance_id = match rec.instance_id {
@@ -272,14 +270,12 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         let in_dataset = dataset_ids.contains(&instance_id);
 
         // Validate instance_id against dataset — report but never drop.
-        let error_msg: Option<String> = if !in_dataset {
-            Some(format!(
+        let error_msg: Option<String> = (!in_dataset).then(|| {
+            format!(
                 "instance_id `{instance_id}` not found in dataset {}",
                 args.dataset_path.display()
-            ))
-        } else {
-            None
-        };
+            )
+        });
 
         // Write patch file for non-empty patches.
         if non_empty_patch && error_msg.is_none() {
@@ -382,7 +378,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             base_url: None,
         },
         runtime: RuntimeManifest {
-            started_at_utc: started_at_utc.clone(),
+            started_at_utc,
             finished_at_utc: Some(chrono::Utc::now().to_rfc3339()),
             host_os: std::env::consts::OS.to_owned(),
             resume_mode: false,

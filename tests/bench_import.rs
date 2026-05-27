@@ -11,7 +11,13 @@
 //!   * round-trip: imported sweep + `bench compare` against harness-native fixture
 //!     produces a transition matrix that matches the golden file
 
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    clippy::manual_string_new
+)]
 
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -2,7 +2,7 @@
 //!
 //! Covers the acceptance criteria from issue #264.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
