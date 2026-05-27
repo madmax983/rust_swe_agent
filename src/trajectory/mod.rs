@@ -1273,7 +1273,12 @@ mod tests {
             working_dir: Some("/workspace".into()),
             config_sha256: "deadbeef01234567".into(),
             config_redacted: serde_json::json!({"model": {"name": "claude-opus-4-7"}}),
-            cli_invocation: vec!["bench".into(), "mini".into(), "--task".into(), "hello".into()],
+            cli_invocation: vec![
+                "bench".into(),
+                "mini".into(),
+                "--task".into(),
+                "hello".into(),
+            ],
             extra_context_present: false,
             task_timeout_secs: None,
             step_limit: 50,
@@ -1339,7 +1344,10 @@ mod tests {
             parent_sweep_run_id: None,
         });
         let json = t.to_json_pretty().unwrap();
-        assert!(json.contains("\"manifest\""), "manifest key must appear in JSON");
+        assert!(
+            json.contains("\"manifest\""),
+            "manifest key must appear in JSON"
+        );
         assert!(json.contains("\"harness_binary_version\""));
         assert!(json.contains("\"config_sha256\""));
         assert!(json.contains("\"redaction_policy_id\""));

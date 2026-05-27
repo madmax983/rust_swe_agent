@@ -7,8 +7,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-
-
 use crate::agent::{
     Agent, ConfirmCallback, DefaultAgent, RatatuiDashboardHandle, StderrCliConfirmer,
     default::DefaultAgentBuilder,
@@ -197,15 +195,17 @@ pub enum InteractiveMode {
 fn redaction_policy_id(cfg: &crate::config::RedactionCfg) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(if cfg.enabled { b"enabled:1" as &[u8] } else { b"enabled:0" as &[u8] });
+    h.update(if cfg.enabled {
+        b"enabled:1" as &[u8]
+    } else {
+        b"enabled:0" as &[u8]
+    });
     h.update(b":");
-    h.update(
-        if cfg.unsafe_allow_secret_leaks {
-            b"unsafe:1" as &[u8]
-        } else {
-            b"unsafe:0" as &[u8]
-        },
-    );
+    h.update(if cfg.unsafe_allow_secret_leaks {
+        b"unsafe:1" as &[u8]
+    } else {
+        b"unsafe:0" as &[u8]
+    });
     h.update(format!(":literals_count={}", cfg.secret_literals.len()).as_bytes());
     let mut sorted = cfg.custom_patterns.clone();
     sorted.sort();
@@ -332,10 +332,7 @@ fn build_mini_manifest(
     }
     .to_owned();
 
-    let working_dir = args
-        .local_workdir
-        .as_ref()
-        .map(|p| p.display().to_string());
+    let working_dir = args.local_workdir.as_ref().map(|p| p.display().to_string());
 
     crate::trajectory::MiniProvenanceManifest {
         harness_git_sha,
@@ -2972,8 +2969,14 @@ index 8a1218a..24c5735 100644\n\
         // Timestamps may differ between runs (time passes)
         // We just assert they exist and are different or at least that the field
         // is present (they could be the same if runs complete within the same second)
-        assert!(m1["started_at_utc"].is_string(), "started_at_utc must exist in run1");
-        assert!(m2["started_at_utc"].is_string(), "started_at_utc must exist in run2");
+        assert!(
+            m1["started_at_utc"].is_string(),
+            "started_at_utc must exist in run1"
+        );
+        assert!(
+            m2["started_at_utc"].is_string(),
+            "started_at_utc must exist in run2"
+        );
     }
 
     #[tokio::test]
