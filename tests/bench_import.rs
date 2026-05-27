@@ -662,3 +662,60 @@ fn import_writes_all_preds_jsonl() {
         );
     }
 }
+
+/// `bench triage` must work on an imported sweep without trajectories or
+/// evaluation.json, clustering by failure_category + error field only.
+#[test]
+fn import_triage_without_trajectories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    // Run import
+    let status = Command::new(support::binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            "tests/data/predictions_sample.jsonl",
+            "--dataset-path",
+            "tests/data/dataset_sample.jsonl",
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    // Run triage — should succeed with --format json even without evaluation.json
+    let output = Command::new(support::binary_path())
+        .args(["bench", "triage", "--sweep", out.to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "bench triage on imported sweep should succeed without trajectories: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+
+    // clusters and totals must be present
+    assert!(
+        report["clusters"].is_array(),
+        "triage output must have clusters array"
+    );
+    assert!(
+        report["totals"].is_object(),
+        "triage output must have totals object"
+    );
+
+    // All 4 imported instances are unresolved → all should appear in totals
+    let total_instances = report["totals"]["instances"].as_u64().unwrap_or(0)
+        + report["totals"]["unclustered_instances"].as_u64().unwrap_or(0);
+    assert_eq!(
+        total_instances, 4,
+        "all 4 imported instances should appear in triage totals"
+    );
+}

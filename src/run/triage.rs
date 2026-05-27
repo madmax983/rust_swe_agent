@@ -361,16 +361,39 @@ fn compact_annotation_tags(instance_id: &str) -> String {
 
 fn build_report(args: &TriageArgs) -> Result<TriageReport, Error> {
     let sweep = load_sweep(&args.sweep_dir)?;
-    let evaluation = load_evaluation_results_checked(&args.sweep_dir)?.ok_or_else(|| {
-        Error::Trajectory(format!(
-            "bench triage: missing evaluation.json in {}; run `bench evaluate --sweep {}` first",
-            args.sweep_dir.display(),
-            args.sweep_dir.display()
-        ))
-    })?;
 
-    let candidate_ids = candidate_instance_ids(evaluation.results, &sweep.instances);
-    let accumulators = build_accumulators(args, &sweep.instances, candidate_ids)?;
+    // External imports have no trajectory files and may not yet have evaluation.json
+    // (evaluation is a separate step). Detect this early so we can take a degraded
+    // but still useful path that clusters by failure_category + error field only.
+    let is_external_import =
+        sweep.manifest.as_ref().and_then(|m| m.source.as_deref()) == Some("external_import");
+
+    let candidate_ids = if is_external_import {
+        // Use all unresolved instances from results.json directly; no evaluation
+        // required. Unresolved means pass_at_1 = false (all instances for a
+        // pre-evaluation import).
+        sweep
+            .instances
+            .values()
+            .filter(|inst| inst.resolved_count == 0)
+            .map(|inst| inst.instance_id.clone())
+            .collect::<BTreeSet<String>>()
+    } else {
+        let evaluation = load_evaluation_results_checked(&args.sweep_dir)?.ok_or_else(|| {
+            Error::Trajectory(format!(
+                "bench triage: missing evaluation.json in {}; run `bench evaluate --sweep {}` first",
+                args.sweep_dir.display(),
+                args.sweep_dir.display()
+            ))
+        })?;
+        candidate_instance_ids(evaluation.results, &sweep.instances)
+    };
+
+    let accumulators = if is_external_import {
+        build_accumulators_no_trajectory(args, &sweep.instances, candidate_ids)?
+    } else {
+        build_accumulators(args, &sweep.instances, candidate_ids)?
+    };
 
     let total_candidate_instances = accumulators
         .values()
@@ -461,6 +484,74 @@ fn build_accumulators(
         let member = ClusterMember {
             instance_id,
             trajectory_path: rel_path,
+            cost_usd: instance.actual_cost_usd().unwrap_or(0.0),
+        };
+        accumulators
+            .entry(key)
+            .or_insert_with(|| ClusterAccumulator::new(signature))
+            .push_member(member);
+    }
+    Ok(accumulators)
+}
+
+/// Trajectory-free clustering for external-import sweeps.
+///
+/// Since imported sweeps have no `.traj.json` files, we cannot use terminal
+/// signals (last assistant message, bash exit code, stderr) for clustering.
+/// Instead we synthesize a `FailureSignature` from the instance's
+/// `failure_category` field (if set) and the `error` field (e.g. "unknown
+/// instance_id" annotations).  Instances cluster by patch-presence bucket
+/// when no richer signal is available.
+fn build_accumulators_no_trajectory(
+    args: &TriageArgs,
+    instances: &HashMap<String, InstanceResult>,
+    candidate_ids: BTreeSet<String>,
+) -> Result<BTreeMap<String, ClusterAccumulator>, Error> {
+    let mut accumulators: BTreeMap<String, ClusterAccumulator> = BTreeMap::new();
+    for instance_id in candidate_ids {
+        let instance = instances.get(&instance_id).ok_or_else(|| {
+            Error::Trajectory(format!(
+                "bench triage: instance `{instance_id}` not found in results.json"
+            ))
+        })?;
+
+        // Synthesize a failure category: use the stored field if present,
+        // otherwise distinguish "no patch" from "unknown id" from "generic".
+        let category = instance.failure_category.map_or_else(
+            || {
+                if !instance.non_empty_patch {
+                    "no_patch"
+                } else if instance
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("not found in dataset"))
+                {
+                    "unknown_instance_id"
+                } else {
+                    "unknown"
+                }
+            },
+            failure_label,
+        );
+
+        // Use the error field as the only available signal.
+        let error_signal = instance.error.as_deref().unwrap_or("");
+
+        let signature = FailureSignature::from_parts(category, error_signal, None, "");
+
+        if args
+            .bucket
+            .as_deref()
+            .is_some_and(|bucket| bucket != signature.failure_category())
+        {
+            continue;
+        }
+
+        let key = signature.stable_key();
+        // No trajectory file to point to for external imports.
+        let member = ClusterMember {
+            instance_id,
+            trajectory_path: String::new(),
             cost_usd: instance.actual_cost_usd().unwrap_or(0.0),
         };
         accumulators
