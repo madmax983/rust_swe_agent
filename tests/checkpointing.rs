@@ -572,6 +572,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     };
 
     mini_run(args).await.unwrap();

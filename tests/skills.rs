@@ -462,6 +462,7 @@ paths = ["{skill_path}"]
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     })
     .await
     .unwrap();
@@ -542,6 +543,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     })
     .await
     .unwrap();

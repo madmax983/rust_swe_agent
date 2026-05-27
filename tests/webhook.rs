@@ -147,6 +147,7 @@ fn make_mini_args(
         event_log: None,
         event_log_instance_id: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     }
 }
 
@@ -539,6 +540,7 @@ async fn webhook_redacts_secrets_before_post() {
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     };
 
     let (run_result, bodies) =

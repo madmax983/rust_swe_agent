@@ -1973,6 +1973,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                 trace_id: instance_trace_id,
                 rehearse: args.rehearse,
                 event_log: args.event_log.clone(),
+                parent_sweep_run_id: sweep_id.clone(),
             };
             set.spawn(async move {
                 RunSlotResult::new(
@@ -4222,6 +4223,10 @@ struct RunOneParams {
     rehearse: bool,
     /// Optional append-only JSONL stream target forwarded to mini runs.
     event_log: Option<PathBuf>,
+    /// Stable sweep-level run ID (derived from output_dir + start timestamp).
+    /// Forwarded to each per-instance `mini` run so the per-trajectory
+    /// provenance manifest can record `parent_sweep_run_id`.
+    parent_sweep_run_id: String,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4241,6 +4246,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         ref trace_id,
         rehearse,
         event_log,
+        ref parent_sweep_run_id,
     } = params;
     let id = inst.instance_id.clone();
     let task = inst.problem_statement.clone().unwrap_or_default();
@@ -4374,6 +4380,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch,
             no_step_persist: false,
+            parent_sweep_run_id: Some(parent_sweep_run_id.clone()),
         };
         let run_err = crate::run::mini::run(args).await.err();
 

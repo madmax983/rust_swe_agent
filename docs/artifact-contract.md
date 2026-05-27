@@ -15,7 +15,7 @@ Run artifacts use explicit top-level metadata:
 
 | Kind | File(s) | Required fields | Optional/additive fields |
 | --- | --- | --- | --- |
-| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), extra `info` fields, message `extra` fields |
+| `trajectory` | `*.traj.json`, `<instance>/run-k.traj.json` | `trajectory_format`, `artifact_kind`, `schema_version`, `info`, `messages` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, active `toolset`, `verification_status` (`verified`/`unverified`/`verification_failed`), `verification_results` (array of per-check evidence), `info.manifest` (provenance manifest — see `docs/spec-trajectory.md`), extra `info` fields, message `extra` fields |
 | `sweep_results` | `results.json` | `artifact_kind`, `schema_version`, `total`, `submitted`, `skipped`, `errored`, `failures_by_category`, `instances` | `actual_cost_usd`, `actual_cost_source`, `baseline_cost_usd`, `baseline_cost_model`, manifest, filter spec, token, retry, rate-limit, cancellation fields |
 | `evaluation_results` | `evaluation.json` | `artifact_kind`, `schema_version`, `instances` | behavioral metrics, breakdown rows, cost attribution |
 | `forecast_report` | `bench forecast --format json` | `artifact_kind`, `schema_version`, `calibration`, `per_instance`, `forecast`, `resolution_rate`, `threshold` | `forecast.target_instance_ids` for exact calibration comparability, additional forecast diagnostics |
@@ -45,6 +45,12 @@ Compatibility classes:
 - `unsupported-future`: a version with `major > 1`. Readers fail fast and do not emit resolved-rate, cost, or comparison metrics.
 
 Any future schema change needs either a documented no-bump rationale in the relevant change description or a schema-version bump plus fixture updates under `tests/fixtures/artifact_schema`.
+
+### No-bump change log
+
+| Issue | Change | Rationale |
+|-------|--------|-----------|
+| #329 | Added `info.manifest` (`Option<MiniProvenanceManifest>`) to trajectory | Field is optional (`skip_serializing_if = "is_none"`); absent from pre-#329 trajectories (reads as `None` in new code); silently ignored by all existing `bench inspect`/`tail`/`compare` readers; fully reader-transparent under the major-1 additive policy. |
 
 ## Trajectory `failure_category` values
 

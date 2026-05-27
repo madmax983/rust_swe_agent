@@ -27,6 +27,8 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
             "user.email=t@e.com",
             "-c",
             "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             "init",
@@ -63,6 +65,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     })
     .await;
     assert!(
