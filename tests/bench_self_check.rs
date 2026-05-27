@@ -125,7 +125,10 @@ fn all_resolved_all_tests_passed_precision_recall_brier() {
 
     assert_eq!(report.metrics.precision, Some(1.0), "precision must be 1.0");
     assert_eq!(report.metrics.recall, Some(1.0), "recall must be 1.0");
-    assert_eq!(report.metrics.brier_score, 0.0, "brier score must be 0.0");
+    assert!(
+        (report.metrics.brier_score - 0.0).abs() < 1e-9,
+        "brier score must be 0.0"
+    );
 
     assert!(report.false_positives.is_empty(), "no false positives");
     assert!(report.false_negatives.is_empty(), "no false negatives");
@@ -475,7 +478,7 @@ fn json_output_round_trips_cleanly() {
         roundtripped.confusion.passed_resolved,
         report.confusion.passed_resolved
     );
-    assert_eq!(roundtripped.base_rate, report.base_rate);
+    assert!((roundtripped.base_rate - report.base_rate).abs() < 1e-9);
     assert_eq!(roundtripped.n_excluded_none, report.n_excluded_none);
 }
 
@@ -605,23 +608,21 @@ fn calibration_delta_is_positive_when_precision_exceeds_base_rate() {
         write_trajectory(dir, &format!("tn-{i}"), Some(false));
     }
 
-    let verdicts: Vec<(&str, bool)> = Vec::new();
     // We need stable string refs; build them first
-    let tp_ids: Vec<String> = (0..9).map(|i| format!("tp-{i}")).collect();
-    let tn_ids: Vec<String> = (0..10).map(|i| format!("tn-{i}")).collect();
+    let positive_ids: Vec<String> = (0..9).map(|i| format!("tp-{i}")).collect();
+    let negative_ids: Vec<String> = (0..10).map(|i| format!("tn-{i}")).collect();
 
     let mut pairs: Vec<(String, bool)> = Vec::new();
-    for id in &tp_ids {
+    for id in &positive_ids {
         pairs.push((id.clone(), true));
     }
     pairs.push(("fp-0".to_owned(), false));
-    for id in &tn_ids {
+    for id in &negative_ids {
         pairs.push((id.clone(), false));
     }
 
     let verdict_refs: Vec<(&str, bool)> = pairs.iter().map(|(id, b)| (id.as_str(), *b)).collect();
     write_evaluation_json(dir, &verdict_refs);
-    drop(verdicts);
 
     let report = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -676,8 +677,7 @@ fn perf_300_instances_under_2_seconds() {
 
     assert!(
         elapsed.as_secs() < 2,
-        "300-instance sweep should complete in < 2s, took {:?}",
-        elapsed
+        "300-instance sweep should complete in < 2s, took {elapsed:?}"
     );
 
     let total = report.confusion.passed_resolved

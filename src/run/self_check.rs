@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn round3_rounds_correctly() {
-        assert_eq!(round3(0.0), 0.0);
-        assert_eq!(round3(0.25), 0.25);
+        assert!((round3(0.0) - 0.0).abs() < 1e-9);
+        assert!((round3(0.25) - 0.25).abs() < 1e-9);
         assert!((round3(3.75 / 13.0) - 0.288).abs() < 1e-9);
     }
 }
