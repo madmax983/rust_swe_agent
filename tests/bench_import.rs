@@ -688,7 +688,14 @@ fn import_triage_without_trajectories() {
 
     // Run triage — should succeed with --format json even without evaluation.json
     let output = Command::new(support::binary_path())
-        .args(["bench", "triage", "--sweep", out.to_str().unwrap(), "--format", "json"])
+        .args([
+            "bench",
+            "triage",
+            "--sweep",
+            out.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
         .output()
         .unwrap();
 
@@ -713,7 +720,9 @@ fn import_triage_without_trajectories() {
 
     // All 4 imported instances are unresolved → all should appear in totals
     let total_instances = report["totals"]["instances"].as_u64().unwrap_or(0)
-        + report["totals"]["unclustered_instances"].as_u64().unwrap_or(0);
+        + report["totals"]["unclustered_instances"]
+            .as_u64()
+            .unwrap_or(0);
     assert_eq!(
         total_instances, 4,
         "all 4 imported instances should appear in triage totals"
