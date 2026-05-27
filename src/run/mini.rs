@@ -239,7 +239,7 @@ fn redact_cli_invocation(
         if lower.starts_with("--") && cli_flag_is_sensitive(&arg) {
             if arg.contains('=') {
                 // --flag=value → --flag=<redacted>
-                let key_part = arg.split_once('=').map(|(k, _)| k).unwrap_or(&arg);
+                let key_part = arg.split_once('=').map_or_else(|| arg.as_str(), |(k, _)| k);
                 out.push(format!("{key_part}=<redacted>"));
             } else {
                 out.push(arg);
@@ -312,7 +312,7 @@ fn build_mini_manifest(
     let harness_git_sha = if is_sweep_child {
         Some("inherits:parent_sweep".into())
     } else {
-        git_sha.map(|s| s.into())
+        git_sha
     };
 
     let cfg_sha256 = if is_sweep_child {

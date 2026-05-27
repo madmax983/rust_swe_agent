@@ -484,7 +484,7 @@ const fn is_zero_u64(value: &u64) -> bool {
 /// When invoked from a `bench swebench` sweep, `harness_git_sha` and
 /// `config_sha256` are replaced by the literal string `"inherits:parent_sweep"`
 /// because those values are already pinned in the sweep-level manifest.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MiniProvenanceManifest {
     /// Git SHA of the harness repository at run time. `"inherits:parent_sweep"`
     /// when called from a sweep.
@@ -1352,7 +1352,7 @@ mod tests {
         assert!(json.contains("\"config_sha256\""));
         assert!(json.contains("\"redaction_policy_id\""));
         let back: Trajectory = serde_json::from_str(&json).unwrap();
-        let mf = back.info.manifest.expect("manifest must survive roundtrip");
+        let mf = back.info.manifest.unwrap();
         assert_eq!(mf.model_name, "claude-opus-4-7");
         assert!(mf.deterministic_mode);
     }
