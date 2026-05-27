@@ -50,6 +50,7 @@ fn extract_first_any_block(s: &str) -> Option<String> {
     Some(body[..end].trim_end_matches('\n').to_owned())
 }
 
+#[allow(clippy::question_mark)]
 fn extract_first_registered_tool_block(content: &str, tool_names: &[String]) -> Option<ToolCall> {
     let mut remaining = content;
     while let Some(start) = remaining.find("```") {
