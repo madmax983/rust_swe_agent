@@ -1032,7 +1032,7 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
         "sweep"
     };
     let results =
-        crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)?).await?;
+        Box::pin(crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)?)).await?;
 
     tracing::info!(
         total = results.total,
@@ -1193,7 +1193,7 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
             print_env_preview_text(&preview);
         }
     }
-    let results = crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?).await?;
+    let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?)).await?;
     if output_format != "json" {
         print!("{}", results.summary_table());
     }
@@ -2204,7 +2204,7 @@ async fn bench_reproduce(r: args::ReproduceCmd) -> Result<(), Error> {
         reproduce_swebench_args(&r, &source_manifest, &source_results, &source_manifest_hash)?;
 
     // Run the replay sweep.
-    let replay_results = crate::run::swebench::run(sweep_args).await?;
+    let replay_results = Box::pin(crate::run::swebench::run(sweep_args)).await?;
 
     // For partial replays (--filter / --limit), restrict original instances to
     // those actually present in the replay so skipped instances aren't counted
@@ -3174,7 +3174,7 @@ async fn bench_tool_ablation(t: args::ToolAblationCmd) -> Result<(), Error> {
         install_os_signal_handlers: true,
     };
 
-    let report = crate::run::tool_ablation::run(ablation_args).await?;
+    let report = Box::pin(crate::run::tool_ablation::run(ablation_args)).await?;
     print!(
         "{}",
         crate::run::tool_ablation::render_text_summary(&report)
@@ -3668,7 +3668,7 @@ async fn bench_matrix(m: args::MatrixCmd) -> Result<(), Error> {
         install_os_signal_handlers: true,
     };
 
-    let summary = crate::run::matrix::run(matrix_args).await?;
+    let summary = Box::pin(crate::run::matrix::run(matrix_args)).await?;
 
     let mut table = comfy_table::Table::new();
     table
@@ -3855,7 +3855,7 @@ async fn bench_retry(r: args::RetryCmd) -> Result<(), Error> {
     };
 
     let sweep_args = retry_swebench_args(&r, &original, &ids_csv)?;
-    let retry_results = match crate::run::swebench::run(sweep_args).await {
+    let retry_results = match Box::pin(crate::run::swebench::run(sweep_args)).await {
         Ok(results) => results,
         Err(e) => {
             // Unconditionally restore all archived trajectories/patches so that
