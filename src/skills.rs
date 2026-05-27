@@ -128,7 +128,7 @@ impl SkillRegistry {
         &self,
         request: SkillResolveRequest<'_>,
     ) -> Vec<(SkillActivationReason, &SkillManifest)> {
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::with_capacity(self.manifests.len());
         let mut seen = BTreeSet::new();
         let normalized_task = normalize_search_text(request.task);
         let task_tokens = tokenize(&normalized_task)
@@ -166,7 +166,7 @@ impl SkillRegistry {
             return Ok(ActiveSkillSet::default());
         }
 
-        let mut selected = Vec::new();
+        let mut selected = Vec::with_capacity(request.max_active);
         let mut seen = BTreeSet::new();
         let normalized_task = normalize_search_text(request.task);
         let task_tokens = tokenize(&normalized_task)
