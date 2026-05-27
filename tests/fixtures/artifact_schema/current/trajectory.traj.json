@@ -36,6 +36,56 @@
           "source": "built_in"
         }
       ]
+    },
+    "manifest": {
+      "harness_git_sha": "inherits:parent_sweep",
+      "harness_binary_version": "0.0.0",
+      "started_at_utc": "2026-05-01T00:00:00+00:00",
+      "ended_at_utc": "2026-05-01T00:00:01+00:00",
+      "env_kind": "live",
+      "config_sha256": "inherits:parent_sweep",
+      "config_redacted": {
+        "agent": {
+          "kind": "default",
+          "step_limit": 50,
+          "observation_max_bytes": 100000,
+          "observation_head_ratio": 0.5,
+          "observation_template": "...",
+          "format_error_template": "...",
+          "tool_hook_timeout_secs": 30
+        },
+        "environment": {
+          "kind": "local",
+          "workdir": "/tmp/repo",
+          "timeout_secs": 30
+        },
+        "model": {
+          "name": "claude-opus-4-7",
+          "max_tokens": 4096
+        },
+        "prompts": {
+          "system": "system prompt",
+          "instance": "instance prompt"
+        },
+        "redaction": {
+          "enabled": false,
+          "unsafe_allow_secret_leaks": false
+        },
+        "skills": {
+          "enabled": true,
+          "auto_load": true,
+          "max_active": 5,
+          "paths": []
+        },
+        "sweep": {}
+      },
+      "cli_invocation": ["bench"],
+      "extra_context_present": false,
+      "step_limit": 50,
+      "model_name": "fixture-model",
+      "redaction_policy_id": "sha256:abcdef0123456789",
+      "deterministic_mode": false,
+      "parent_sweep_run_id": "sweep-abc123"
     }
   },
   "messages": [
