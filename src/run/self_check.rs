@@ -8,10 +8,11 @@
 //! * 0 — success
 //! * 2 — `evaluation.json` missing (`Error::Config` → `UsageError`)
 //! * 3 — trajectory predates the `tests_run_before_submit` field added in #46
-//!        (`Error::Preflight` → `PreflightFailure`)
+//!   (`Error::Preflight` → `PreflightFailure`)
 //! * 1 — internal I/O or JSON parse error
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -48,7 +49,7 @@ pub struct SelfCheckArgs {
 /// tests_passed = false |  failed_resolved (FN) | failed_unresolved (TN)
 /// tests_passed = None  |  none_resolved        | none_unresolved
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfusionCounts {
     /// True positives: agent said "passed", evaluator said "resolved".
     pub passed_resolved: u32,
@@ -119,191 +120,202 @@ pub struct SelfCheckReport {
 ///   field introduced in harness issue #46.
 /// * `Error::Io` / `Error::Json` (exit 1) — unexpected I/O or parse failure.
 pub fn run(args: &SelfCheckArgs) -> Result<SelfCheckReport, Error> {
-    // ── 1. Load evaluation.json ───────────────────────────────────────────────
-    let eval_path = args.sweep_dir.join("evaluation.json");
-    if !eval_path.exists() {
-        return Err(Error::Config(ConfigError::Invalid(format!(
-            "evaluation.json not found in {}; run `bench evaluate` first to produce it",
-            args.sweep_dir.display()
-        ))));
-    }
-
-    let eval_text = std::fs::read_to_string(&eval_path)?;
-    let eval_json: serde_json::Value = serde_json::from_str(&eval_text)?;
-
-    let instances = eval_json["instances"].as_array().ok_or_else(|| {
-        Error::Config(ConfigError::Invalid(
-            "evaluation.json is missing the 'instances' array".into(),
-        ))
-    })?;
-
-    // ── 2. Iterate instances ──────────────────────────────────────────────────
-    let mut confusion = ConfusionCounts::default();
-    let mut false_positives: Vec<String> = Vec::new();
-    let mut false_negatives: Vec<String> = Vec::new();
-    let mut brier_sum = 0.0_f64;
+    let instances = load_eval_instances(&args.sweep_dir)?;
     let total = instances.len();
-    let mut total_resolved = 0_u32;
-    let mut by_repo_map: BTreeMap<String, ConfusionCounts> = BTreeMap::new();
+    let mut acc = InstanceAccumulator::default();
 
-    for inst in instances {
+    for inst in &instances {
         let instance_id = inst["instance_id"].as_str().ok_or_else(|| {
             Error::Config(ConfigError::Invalid(
                 "an instance in evaluation.json is missing 'instance_id'".into(),
             ))
         })?;
-
         let resolved = inst["resolved"].as_bool().ok_or_else(|| {
             Error::Config(ConfigError::Invalid(format!(
                 "instance '{instance_id}' in evaluation.json is missing 'resolved'"
             )))
         })?;
 
-        if resolved {
-            total_resolved += 1;
-        }
-
-        // ── 3. Load trajectory and check schema ───────────────────────────────
         let traj_path = find_trajectory_path(&args.sweep_dir, instance_id)?;
-        let (tests_run_field_present, last_tests_passed) = load_trajectory_info(&traj_path)?;
-
-        if !tests_run_field_present {
+        let (schema_ok, last_tests_passed) = load_trajectory_info(&traj_path)?;
+        if !schema_ok {
             return Err(Error::Preflight(format!(
                 "trajectory for '{instance_id}' predates #46: the 'tests_run_before_submit' \
                  field is absent; self-check requires sweeps run with harness ≥ #46"
             )));
         }
 
-        // ── 4. Brier score contribution ───────────────────────────────────────
-        // f_i = agent's implied probability that the patch was correct:
-        //   tests_passed=true  → 1.0
-        //   tests_passed=false → 0.0
-        //   tests_passed=None  → 0.5 (maximum-uncertainty prior)
+        acc.tally(instance_id, resolved, last_tests_passed, args.by_repo);
+    }
+
+    Ok(acc.into_report(total))
+}
+
+/// Load and parse the `instances` array from `<sweep>/evaluation.json`.
+fn load_eval_instances(sweep_dir: &Path) -> Result<Vec<serde_json::Value>, Error> {
+    let eval_path = sweep_dir.join("evaluation.json");
+    if !eval_path.exists() {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "evaluation.json not found in {}; run `bench evaluate` first to produce it",
+            sweep_dir.display()
+        ))));
+    }
+    let text = std::fs::read_to_string(&eval_path)?;
+    let json: serde_json::Value = serde_json::from_str(&text)?;
+    let arr = json["instances"]
+        .as_array()
+        .ok_or_else(|| {
+            Error::Config(ConfigError::Invalid(
+                "evaluation.json is missing the 'instances' array".into(),
+            ))
+        })?
+        .clone();
+    Ok(arr)
+}
+
+/// Mutable accumulator for the per-instance loop in [`run`].
+#[derive(Default)]
+struct InstanceAccumulator {
+    confusion: ConfusionCounts,
+    false_positives: Vec<String>,
+    false_negatives: Vec<String>,
+    brier_sum: f64,
+    total_resolved: u32,
+    by_repo_map: BTreeMap<String, ConfusionCounts>,
+}
+
+impl InstanceAccumulator {
+    /// Record one instance into the accumulator.
+    fn tally(
+        &mut self,
+        instance_id: &str,
+        resolved: bool,
+        last_tests_passed: Option<bool>,
+        track_by_repo: bool,
+    ) {
+        if resolved {
+            self.total_resolved += 1;
+        }
+
+        // Brier: f_i = implied P(correct): true→1, false→0, None→0.5
         let f_i: f64 = match last_tests_passed {
             Some(true) => 1.0,
             Some(false) => 0.0,
             None => 0.5,
         };
-        let y_i: f64 = if resolved { 1.0 } else { 0.0 };
-        brier_sum += (f_i - y_i).powi(2);
+        self.brier_sum += (f_i - if resolved { 1.0 } else { 0.0 }).powi(2);
 
-        // ── 5. Confusion matrix cell ──────────────────────────────────────────
-        let repo_key = parse_repo_from_instance_id(instance_id);
+        // Confusion matrix + FP/FN lists
+        tally_confusion(
+            &mut self.confusion,
+            &mut self.false_positives,
+            &mut self.false_negatives,
+            instance_id,
+            resolved,
+            last_tests_passed,
+        );
 
-        match last_tests_passed {
-            Some(true) => {
-                if resolved {
-                    confusion.passed_resolved += 1;
-                } else {
-                    confusion.passed_unresolved += 1;
-                    false_positives.push(instance_id.to_owned());
-                }
-            }
-            Some(false) => {
-                if resolved {
-                    confusion.failed_resolved += 1;
-                    false_negatives.push(instance_id.to_owned());
-                } else {
-                    confusion.failed_unresolved += 1;
-                }
-            }
-            None => {
-                if resolved {
-                    confusion.none_resolved += 1;
-                } else {
-                    confusion.none_unresolved += 1;
-                }
-            }
-        }
-
-        // ── 6. Per-repo cell (optional) ───────────────────────────────────────
-        if args.by_repo {
-            if let Some(repo) = repo_key {
-                let entry = by_repo_map.entry(repo).or_default();
-                match last_tests_passed {
-                    Some(true) => {
-                        if resolved {
-                            entry.passed_resolved += 1;
-                        } else {
-                            entry.passed_unresolved += 1;
-                        }
-                    }
-                    Some(false) => {
-                        if resolved {
-                            entry.failed_resolved += 1;
-                        } else {
-                            entry.failed_unresolved += 1;
-                        }
-                    }
-                    None => {
-                        if resolved {
-                            entry.none_resolved += 1;
-                        } else {
-                            entry.none_unresolved += 1;
-                        }
-                    }
-                }
+        // Optional per-repo breakdown (counts only — no FP/FN list needed here)
+        if track_by_repo {
+            if let Some(repo) = parse_repo_from_instance_id(instance_id) {
+                tally_confusion_counts(
+                    self.by_repo_map.entry(repo).or_default(),
+                    resolved,
+                    last_tests_passed,
+                );
             }
         }
     }
 
-    // ── 7. Derive aggregate metrics ───────────────────────────────────────────
-    false_positives.sort();
-    false_negatives.sort();
-
-    let tp = f64::from(confusion.passed_resolved);
-    let fp = f64::from(confusion.passed_unresolved);
-    let fn_ = f64::from(confusion.failed_resolved);
-
-    let precision = if tp + fp > 0.0 {
-        Some(tp / (tp + fp))
-    } else {
-        None
-    };
-    let recall = if tp + fn_ > 0.0 {
-        Some(tp / (tp + fn_))
-    } else {
-        None
-    };
-
+    /// Consume the accumulator and produce the final [`SelfCheckReport`].
     #[allow(clippy::cast_precision_loss)]
-    let brier_score = if total > 0 {
-        round3(brier_sum / total as f64)
-    } else {
-        0.0
-    };
+    fn into_report(mut self, total: usize) -> SelfCheckReport {
+        self.false_positives.sort();
+        self.false_negatives.sort();
 
-    #[allow(clippy::cast_precision_loss)]
-    let base_rate = if total > 0 {
-        f64::from(total_resolved) / total as f64
-    } else {
-        0.0
-    };
+        let tp = f64::from(self.confusion.passed_resolved);
+        let fp = f64::from(self.confusion.passed_unresolved);
+        let fn_ = f64::from(self.confusion.failed_resolved);
+        let precision = (tp + fp > 0.0).then(|| tp / (tp + fp));
+        let recall = (tp + fn_ > 0.0).then(|| tp / (tp + fn_));
 
-    let calibration_delta = precision.map(|p| p - base_rate);
-    let n_excluded_none = confusion.none_resolved + confusion.none_unresolved;
+        let brier_score = if total > 0 {
+            round3(self.brier_sum / total as f64)
+        } else {
+            0.0
+        };
+        let base_rate = if total > 0 {
+            f64::from(self.total_resolved) / total as f64
+        } else {
+            0.0
+        };
+        let calibration_delta = precision.map(|p| p - base_rate);
+        let n_excluded_none = self.confusion.none_resolved + self.confusion.none_unresolved;
 
-    let by_repo = if args.by_repo {
-        Some(by_repo_map)
-    } else {
-        None
-    };
+        SelfCheckReport {
+            schema: "bench-self-check/1".to_owned(),
+            confusion: self.confusion,
+            metrics: SelfCheckMetrics {
+                precision,
+                recall,
+                brier_score,
+            },
+            false_positives: self.false_positives,
+            false_negatives: self.false_negatives,
+            base_rate,
+            n_excluded_none,
+            calibration_delta,
+            by_repo: (!self.by_repo_map.is_empty()).then_some(self.by_repo_map),
+        }
+    }
+}
 
-    Ok(SelfCheckReport {
-        schema: "bench-self-check/1".to_owned(),
-        confusion,
-        metrics: SelfCheckMetrics {
-            precision,
-            recall,
-            brier_score,
-        },
-        false_positives,
-        false_negatives,
-        base_rate,
-        n_excluded_none,
-        calibration_delta,
-        by_repo,
-    })
+/// Update a `ConfusionCounts` cell and the FP/FN lists for one instance.
+fn tally_confusion(
+    confusion: &mut ConfusionCounts,
+    false_positives: &mut Vec<String>,
+    false_negatives: &mut Vec<String>,
+    instance_id: &str,
+    resolved: bool,
+    last_tests_passed: Option<bool>,
+) {
+    tally_confusion_counts(confusion, resolved, last_tests_passed);
+    match last_tests_passed {
+        Some(true) if !resolved => false_positives.push(instance_id.to_owned()),
+        Some(false) if resolved => false_negatives.push(instance_id.to_owned()),
+        _ => {}
+    }
+}
+
+/// Update only the `ConfusionCounts` cell (no FP/FN list tracking).
+fn tally_confusion_counts(
+    confusion: &mut ConfusionCounts,
+    resolved: bool,
+    last_tests_passed: Option<bool>,
+) {
+    match last_tests_passed {
+        Some(true) => {
+            if resolved {
+                confusion.passed_resolved += 1;
+            } else {
+                confusion.passed_unresolved += 1;
+            }
+        }
+        Some(false) => {
+            if resolved {
+                confusion.failed_resolved += 1;
+            } else {
+                confusion.failed_unresolved += 1;
+            }
+        }
+        None => {
+            if resolved {
+                confusion.none_resolved += 1;
+            } else {
+                confusion.none_unresolved += 1;
+            }
+        }
+    }
 }
 
 // ── text renderer ─────────────────────────────────────────────────────────────
@@ -320,59 +332,62 @@ pub fn render_text(report: &SelfCheckReport, list_n: usize) -> String {
 
     // ── Confusion matrix ──────────────────────────────────────────────────────
     out.push_str("Confusion Matrix (rows: last_tests_passed, cols: resolved)\n");
-    out.push_str(
-        "                    Resolved  Unresolved\n",
-    );
-    out.push_str(&format!(
-        "  tests passed=true  {:>8}  {:>10}\n",
+    out.push_str("                    Resolved  Unresolved\n");
+    let _ = writeln!(
+        out,
+        "  tests passed=true  {:>8}  {:>10}",
         report.confusion.passed_resolved, report.confusion.passed_unresolved
-    ));
-    out.push_str(&format!(
-        "  tests passed=false {:>8}  {:>10}\n",
+    );
+    let _ = writeln!(
+        out,
+        "  tests passed=false {:>8}  {:>10}",
         report.confusion.failed_resolved, report.confusion.failed_unresolved
-    ));
-    out.push_str(&format!(
-        "  tests passed=None  {:>8}  {:>10}\n",
+    );
+    let _ = writeln!(
+        out,
+        "  tests passed=None  {:>8}  {:>10}",
         report.confusion.none_resolved, report.confusion.none_unresolved
-    ));
+    );
     out.push('\n');
 
     // ── Metrics ───────────────────────────────────────────────────────────────
     out.push_str("Metrics:\n");
     match report.metrics.precision {
-        Some(p) => out.push_str(&format!("  Precision:          {p:.3}\n")),
+        Some(p) => {
+            let _ = writeln!(out, "  Precision:          {p:.3}");
+        }
         None => out.push_str("  Precision:          N/A (no passed rows)\n"),
     }
     match report.metrics.recall {
-        Some(r) => out.push_str(&format!("  Recall:             {r:.3}\n")),
+        Some(r) => {
+            let _ = writeln!(out, "  Recall:             {r:.3}");
+        }
         None => out.push_str("  Recall:             N/A (no resolved rows)\n"),
     }
-    out.push_str(&format!(
-        "  Brier score:        {:.3}\n",
+    let _ = writeln!(
+        out,
+        "  Brier score:        {:.3}",
         report.metrics.brier_score
-    ));
-    out.push_str(&format!(
-        "  Base rate:          {:.3}\n",
-        report.base_rate
-    ));
+    );
+    let _ = writeln!(out, "  Base rate:          {:.3}", report.base_rate);
     match report.calibration_delta {
-        Some(d) => out.push_str(&format!("  Calibration delta:  {d:+.3}\n")),
+        Some(d) => {
+            let _ = writeln!(out, "  Calibration delta:  {d:+.3}");
+        }
         None => out.push_str("  Calibration delta:  N/A\n"),
     }
-    out.push_str(&format!(
-        "  Excluded (None):    {}\n",
-        report.n_excluded_none
-    ));
+    let _ = writeln!(out, "  Excluded (None):    {}", report.n_excluded_none);
     out.push('\n');
 
     // ── False positives ───────────────────────────────────────────────────────
     if list_n > 0 && !report.false_positives.is_empty() {
         let shown = report.false_positives.len().min(list_n);
-        out.push_str(&format!(
-            "False positives (tests_passed=true, resolved=false) — first {shown}:\n"
-        ));
+        let _ = writeln!(
+            out,
+            "False positives (tests_passed=true, resolved=false) — first {shown}:"
+        );
         for id in report.false_positives.iter().take(list_n) {
-            out.push_str(&format!("  {id}\n"));
+            let _ = writeln!(out, "  {id}");
         }
         out.push('\n');
     }
@@ -380,11 +395,12 @@ pub fn render_text(report: &SelfCheckReport, list_n: usize) -> String {
     // ── False negatives ───────────────────────────────────────────────────────
     if list_n > 0 && !report.false_negatives.is_empty() {
         let shown = report.false_negatives.len().min(list_n);
-        out.push_str(&format!(
-            "False negatives (tests_passed=false, resolved=true) — first {shown}:\n"
-        ));
+        let _ = writeln!(
+            out,
+            "False negatives (tests_passed=false, resolved=true) — first {shown}:"
+        );
         for id in report.false_negatives.iter().take(list_n) {
-            out.push_str(&format!("  {id}\n"));
+            let _ = writeln!(out, "  {id}");
         }
         out.push('\n');
     }
@@ -393,15 +409,16 @@ pub fn render_text(report: &SelfCheckReport, list_n: usize) -> String {
     if let Some(by_repo) = &report.by_repo {
         out.push_str("Per-repository breakdown:\n");
         for (repo, c) in by_repo {
-            out.push_str(&format!(
-                "  {repo}: TP={} FP={} FN={} TN={} None+R={} None+U={}\n",
+            let _ = writeln!(
+                out,
+                "  {repo}: TP={} FP={} FN={} TN={} None+R={} None+U={}",
                 c.passed_resolved,
                 c.passed_unresolved,
                 c.failed_resolved,
                 c.failed_unresolved,
                 c.none_resolved,
                 c.none_unresolved
-            ));
+            );
         }
     }
 

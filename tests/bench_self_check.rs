@@ -27,11 +27,7 @@ use maxwells_daemon::run::self_check::{SelfCheckArgs, SelfCheckReport, run as ru
 // ── fixture writers ───────────────────────────────────────────────────────────
 
 /// Write a minimal trajectory JSON with `tests_run_before_submit` present (#46 field).
-fn write_trajectory(
-    dir: &Path,
-    instance_id: &str,
-    last_tests_passed: Option<bool>,
-) {
+fn write_trajectory(dir: &Path, instance_id: &str, last_tests_passed: Option<bool>) {
     let ltp = match last_tests_passed {
         Some(true) => "true",
         Some(false) => "false",
@@ -106,7 +102,10 @@ fn all_resolved_all_tests_passed_precision_recall_brier() {
     for id in &instances {
         write_trajectory(dir, id, Some(true));
     }
-    write_evaluation_json(dir, &instances.iter().map(|id| (*id, true)).collect::<Vec<_>>());
+    write_evaluation_json(
+        dir,
+        &instances.iter().map(|id| (*id, true)).collect::<Vec<_>>(),
+    );
 
     let report = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -146,7 +145,10 @@ fn all_resolved_all_none_brier_and_excluded_count() {
     for id in &instances {
         write_trajectory(dir, id, None);
     }
-    write_evaluation_json(dir, &instances.iter().map(|id| (*id, true)).collect::<Vec<_>>());
+    write_evaluation_json(
+        dir,
+        &instances.iter().map(|id| (*id, true)).collect::<Vec<_>>(),
+    );
 
     let report = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -157,15 +159,10 @@ fn all_resolved_all_none_brier_and_excluded_count() {
     .expect("should succeed");
 
     assert_eq!(
-        report.n_excluded_none,
-        4,
+        report.n_excluded_none, 4,
         "all 4 should be excluded from precision/recall (n_excluded_none)"
     );
-    assert_eq!(
-        report.confusion.none_resolved,
-        4,
-        "all 4 none+resolved"
-    );
+    assert_eq!(report.confusion.none_resolved, 4, "all 4 none+resolved");
 
     // Precision/recall undefined when no passed/failed rows
     assert_eq!(
@@ -344,8 +341,14 @@ fn by_repo_flag_produces_per_repo_breakdown() {
 
     let by_repo = report.by_repo.expect("by_repo must be present");
     assert_eq!(by_repo.len(), 2, "should have 2 repos");
-    assert!(by_repo.contains_key("django/django"), "should have django/django");
-    assert!(by_repo.contains_key("sympy/sympy"), "should have sympy/sympy");
+    assert!(
+        by_repo.contains_key("django/django"),
+        "should have django/django"
+    );
+    assert!(
+        by_repo.contains_key("sympy/sympy"),
+        "should have sympy/sympy"
+    );
 
     let django = &by_repo["django/django"];
     // django__django-10087: passed=true, resolved=true → TP
@@ -376,7 +379,10 @@ fn missing_evaluation_json_returns_config_error() {
         by_repo: false,
     });
 
-    assert!(result.is_err(), "should fail when evaluation.json is missing");
+    assert!(
+        result.is_err(),
+        "should fail when evaluation.json is missing"
+    );
     let err = result.unwrap_err();
     let err_str = err.to_string();
     assert!(
@@ -406,10 +412,7 @@ fn legacy_trajectory_missing_test_field_returns_preflight_error() {
     write_trajectory(dir, "modern-inst", Some(true));
     write_legacy_trajectory(dir, "legacy-inst");
 
-    write_evaluation_json(
-        dir,
-        &[("modern-inst", true), ("legacy-inst", false)],
-    );
+    write_evaluation_json(dir, &[("modern-inst", true), ("legacy-inst", false)]);
 
     let result = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -447,7 +450,10 @@ fn json_output_round_trips_cleanly() {
     write_trajectory(dir, "inst-a", Some(true));
     write_trajectory(dir, "inst-b", Some(false));
     write_trajectory(dir, "inst-c", None);
-    write_evaluation_json(dir, &[("inst-a", true), ("inst-b", false), ("inst-c", true)]);
+    write_evaluation_json(
+        dir,
+        &[("inst-a", true), ("inst-b", false), ("inst-c", true)],
+    );
 
     let report = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -484,7 +490,10 @@ fn confusion_matrix_totals_are_consistent() {
     write_trajectory(dir, "i2", Some(true));
     write_trajectory(dir, "i3", Some(false));
     write_trajectory(dir, "i4", None);
-    write_evaluation_json(dir, &[("i1", true), ("i2", false), ("i3", false), ("i4", true)]);
+    write_evaluation_json(
+        dir,
+        &[("i1", true), ("i2", false), ("i3", false), ("i4", true)],
+    );
 
     let report = run_self_check(&SelfCheckArgs {
         sweep_dir: dir.to_path_buf(),
@@ -651,10 +660,8 @@ fn perf_300_instances_under_2_seconds() {
         verdicts.push((id, i % 2 == 0));
     }
 
-    let verdict_refs: Vec<(&str, bool)> = verdicts
-        .iter()
-        .map(|(id, b)| (id.as_str(), *b))
-        .collect();
+    let verdict_refs: Vec<(&str, bool)> =
+        verdicts.iter().map(|(id, b)| (id.as_str(), *b)).collect();
     write_evaluation_json(dir, &verdict_refs);
 
     let start = Instant::now();

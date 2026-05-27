@@ -3264,10 +3264,7 @@ fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
             );
         }
         "text" => {
-            print!(
-                "{}",
-                crate::run::self_check::render_text(&report, s.list)
-            );
+            print!("{}", crate::run::self_check::render_text(&report, s.list));
         }
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
