@@ -97,7 +97,10 @@ pub struct StagnationCluster {
 pub struct StagnationTotals {
     pub halted_count: usize,
     pub total_usd_burned_before_halt: f64,
-    pub total_usd_saved_estimate: f64,
+    /// `null` when no step_limit was available for the sweep (i.e. all
+    /// per-instance estimates were unknown). Distinguishes "unknown savings"
+    /// from `0.0` which would mean the limit was known and nothing was saved.
+    pub total_usd_saved_estimate: Option<f64>,
 }
 
 /// Full stagnation report returned by [`run`].
@@ -160,7 +163,14 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
 
     let halted_count = rows.len();
     let total_usd_burned_before_halt: f64 = rows.iter().map(|r| r.budget_burned_usd).sum();
-    let total_usd_saved_estimate: f64 = rows.iter().filter_map(|r| r.usd_saved_estimate).sum();
+    // Remain None when every instance has an unknown estimate (no step_limit in
+    // the manifest). This distinguishes "unknown" from a genuine 0.0 saving.
+    let total_usd_saved_estimate: Option<f64> =
+        if rows.iter().any(|r| r.usd_saved_estimate.is_some()) {
+            Some(rows.iter().filter_map(|r| r.usd_saved_estimate).sum())
+        } else {
+            None
+        };
 
     Ok(StagnationReport {
         sweep_path: args.sweep.display().to_string(),
@@ -242,12 +252,14 @@ pub fn render_text(report: &StagnationReport) -> String {
         let _ = writeln!(out, "{ctable}");
     }
 
+    let saved_str = report.totals.total_usd_saved_estimate.map_or_else(
+        || "— estimated saved (step_limit unknown)".into(),
+        |v| format!("${v:.4} estimated saved"),
+    );
     let _ = writeln!(
         out,
-        "Totals: {} halted  ${:.4} burned  ${:.4} estimated saved",
-        report.totals.halted_count,
-        report.totals.total_usd_burned_before_halt,
-        report.totals.total_usd_saved_estimate,
+        "Totals: {} halted  ${:.4} burned  {}",
+        report.totals.halted_count, report.totals.total_usd_burned_before_halt, saved_str,
     );
     out
 }
@@ -656,7 +668,8 @@ mod tests {
         assert!(report.instances.is_empty());
         assert!(report.clusters.is_empty());
         assert!(report.totals.total_usd_burned_before_halt.abs() < f64::EPSILON);
-        assert!(report.totals.total_usd_saved_estimate.abs() < f64::EPSILON);
+        // No instances → no step_limit info → savings unknown (None, not 0.0).
+        assert!(report.totals.total_usd_saved_estimate.is_none());
     }
 
     #[test]
@@ -888,7 +901,11 @@ mod tests {
         assert!(value["totals"].is_object());
         assert!(value["totals"]["halted_count"].is_number());
         assert!(value["totals"]["total_usd_burned_before_halt"].is_number());
-        assert!(value["totals"]["total_usd_saved_estimate"].is_number());
+        // Empty sweep has no step_limit → total_usd_saved_estimate serialises as null.
+        assert!(
+            value["totals"]["total_usd_saved_estimate"].is_null()
+                || value["totals"]["total_usd_saved_estimate"].is_number()
+        );
     }
 
     #[test]
@@ -993,6 +1010,89 @@ mod tests {
             parse_step_limit_from_config("step_limit = 1_0_0"),
             Some(100)
         );
+    }
+
+    #[test]
+    fn total_saved_estimate_is_none_when_step_limit_unknown() {
+        // When the sweep manifest does not provide a step_limit, per-instance
+        // usd_saved_estimate is None and the aggregate total must also be None —
+        // not 0.0 which would be a misleading "zero savings" reading.
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json(&[serde_json::json!({
+                "instance_id": "no-limit",
+                "exit_reason": "error",
+                "failure_category": "agent_stagnation",
+            })]),
+        )
+        .unwrap();
+        std::fs::write(
+            sweep.join("no-limit.traj.json"),
+            stagnation_traj_json("ls", 4, &[1, 2, 3, 4], 4, 0.010),
+        )
+        .unwrap();
+        // No manifest → step_limit unknown.
+        let report = run_report(sweep);
+        assert_eq!(report.totals.halted_count, 1);
+        assert!(report.instances[0].usd_saved_estimate.is_none());
+        assert!(report.totals.total_usd_saved_estimate.is_none());
+    }
+
+    /// Builds a `results.json` string with a minimal embedded manifest whose
+    /// `config.resolved` contains `step_limit = <limit>`.
+    fn results_json_with_step_limit(instances: &[serde_json::Value], step_limit: u32) -> String {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "total": instances.len(),
+            "submitted": 0,
+            "skipped": 0,
+            "errored": instances.len(),
+            "instances": instances,
+            "manifest": {
+                "harness":  { "name": "test", "version": "0.0.0", "git_resolution": "none" },
+                "dataset":  { "path": "test.parquet", "sha256": "abc123", "instance_count": instances.len() },
+                "prompt_template": { "source": "inline", "sha256": "def456" },
+                "config":   { "resolved": format!("step_limit = {step_limit}\n") },
+                "model":    { "name": "test-model", "backend": "test" },
+                "runtime":  { "started_at_utc": "2024-01-01T00:00:00Z", "host_os": "linux" },
+                "cli":      { "argv": ["max", "bench"] },
+            },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn total_saved_estimate_is_some_when_step_limit_known() {
+        // When step_limit can be determined from the manifest's resolved config,
+        // per-instance estimates are Some and the aggregate total must be Some(sum).
+        // halt_step = 10, step_limit = 50 → 40 steps saved
+        // cost = 0.020, mean_per_step = 0.002, saved = 40 * 0.002 = 0.080
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        let instances = [serde_json::json!({
+            "instance_id": "with-limit",
+            "exit_reason": "error",
+            "failure_category": "agent_stagnation",
+        })];
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json_with_step_limit(&instances, 50),
+        )
+        .unwrap();
+        std::fs::write(
+            sweep.join("with-limit.traj.json"),
+            stagnation_traj_json("ls", 4, &[7, 8, 9, 10], 10, 0.020),
+        )
+        .unwrap();
+
+        let report = run_report(sweep);
+        assert_eq!(report.totals.halted_count, 1);
+        let saved = report
+            .totals
+            .total_usd_saved_estimate
+            .expect("should be Some");
+        assert!((saved - 0.080).abs() < 1e-9, "expected ~0.080, got {saved}");
     }
 
     #[test]
