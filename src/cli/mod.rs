@@ -116,6 +116,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Annotate(a) => bench_annotate(a),
             args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
             args::BenchCmd::SelfCheck(s) => bench_self_check(s),
+            args::BenchCmd::Import(i) => bench_import(i),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3270,6 +3271,38 @@ fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                 "bench self-check: --format '{other}' is not valid; use 'text' or 'json'"
             ))));
+        }
+    }
+    Ok(())
+}
+
+fn bench_import(i: args::ImportCmd) -> Result<(), Error> {
+    let format = match i.format.as_str() {
+        "json" => crate::run::import::ImportFormat::Json,
+        "text" => crate::run::import::ImportFormat::Text,
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench import: --format '{other}' is not valid; use 'text' or 'json'"
+            ))));
+        }
+    };
+    let args = crate::run::import::ImportArgs {
+        predictions: i.predictions,
+        dataset_path: i.dataset_path,
+        output: i.output,
+        evaluate: i.evaluate,
+        format,
+    };
+    let summary = crate::run::import::run(&args)?;
+    match format {
+        crate::run::import::ImportFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&summary).map_err(Error::Json)?
+            );
+        }
+        crate::run::import::ImportFormat::Text => {
+            print!("{}", crate::run::import::format_summary_text(&summary));
         }
     }
     Ok(())

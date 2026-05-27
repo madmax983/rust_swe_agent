@@ -986,6 +986,9 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
             argv: case.parallel_arg_style.argv(case.parallel),
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     }
 }

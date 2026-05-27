@@ -1,0 +1,3 @@
+{"instance_id": "django__django-11001", "repo": "django/django", "base_commit": "abc123def456", "problem_statement": "Fix handler routing in base.py"}
+{"instance_id": "django__django-11002", "repo": "django/django", "base_commit": "abc456def789", "problem_statement": "Fix empty patch submission handling"}
+{"instance_id": "django__django-11003", "repo": "django/django", "base_commit": "abc789def012", "problem_statement": "Fix module import ordering"}

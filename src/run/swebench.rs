@@ -608,6 +608,18 @@ pub struct ProvenanceManifest {
     /// Systemic-failure circuit-breaker configuration used for this sweep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreakerManifest>,
+    /// Provenance source: `None` / absent for native harness runs,
+    /// `"external_import"` for sweeps produced by `bench import`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// For `source = "external_import"`: canonical path of the ingested
+    /// predictions file on the local filesystem at import time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_predictions_path: Option<String>,
+    /// For `source = "external_import"`: `sha256:<lowercase-hex>` content
+    /// digest of the predictions file bytes, for reproducibility auditing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_predictions_sha256: Option<String>,
     /// Present only when this sweep was produced by `bench reproduce`.
     /// Points back at the source sweep's manifest for full provenance chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3055,6 +3067,9 @@ fn build_manifest(
             min_samples: args.systemic_failure_min_samples,
             share_pct: args.systemic_failure_share_pct,
         }),
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: args
             .reproduced_from
             .as_ref()

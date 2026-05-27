@@ -359,6 +359,9 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
         },
         cli: CliManifest { argv: vec![] },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
 
