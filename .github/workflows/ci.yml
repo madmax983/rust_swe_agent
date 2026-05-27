@@ -47,7 +47,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "v3"
+          prefix-key: "v4"
       - run: cargo build --all-targets --no-default-features
       - run: cargo test --all-targets --no-default-features
       - run: cargo test --doc --no-default-features
