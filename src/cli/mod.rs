@@ -115,6 +115,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::EvalFlake(f) => bench_eval_flake(f),
             args::BenchCmd::Annotate(a) => bench_annotate(a),
             args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
+            args::BenchCmd::SelfCheck(s) => bench_self_check(s),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3242,6 +3243,36 @@ fn bench_stagnation_report(s: args::StagnationReportCmd) -> Result<(), Error> {
         crate::run::stagnation_report::StagnationReportFormat::Json => {
             let json = crate::run::stagnation_report::render_json(&report)?;
             println!("{json}");
+        }
+    }
+    Ok(())
+}
+
+fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
+    let args = crate::run::self_check::SelfCheckArgs {
+        sweep_dir: s.sweep,
+        format: s.format.clone(),
+        list: s.list,
+        by_repo: s.by_repo,
+    };
+    let report = crate::run::self_check::run(&args)?;
+    match s.format.as_str() {
+        "json" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(Error::Json)?
+            );
+        }
+        "text" => {
+            print!(
+                "{}",
+                crate::run::self_check::render_text(&report, s.list)
+            );
+        }
+        other => {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "bench self-check: --format '{other}' is not valid; use 'text' or 'json'"
+            ))));
         }
     }
     Ok(())

@@ -540,6 +540,8 @@ pub enum BenchCmd {
     Annotate(AnnotateCmd),
     /// Surface looped-action signatures across a sweep (zero-cost: reads only on-disk artifacts).
     StagnationReport(StagnationReportCmd),
+    /// Score agent self-verdict (last_tests_passed) against the evaluator (zero-cost: reads only on-disk artifacts).
+    SelfCheck(SelfCheckCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -980,6 +982,31 @@ pub struct StagnationReportCmd {
     /// JSON emits a stable, schema-versioned artifact suitable for CI snapshot diffing.
     #[arg(long, default_value = "text", value_name = "FMT")]
     pub format: String,
+}
+
+/// `bench self-check` — score agent self-verdict (last_tests_passed) against the evaluator.
+///
+/// Reads existing sweep artifacts (`*.traj.json` + `evaluation.json`) and computes
+/// a 3×2 confusion matrix, precision/recall, Brier score, and calibration delta.
+/// Zero-cost: no model calls, no container calls.
+#[derive(Debug, Args)]
+pub struct SelfCheckCmd {
+    /// Completed sweep directory containing `*.traj.json` files and `evaluation.json`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Show this many false-positive and false-negative instance IDs in text output.
+    /// Set to `0` to suppress those lists.
+    #[arg(long, default_value_t = 10)]
+    pub list: usize,
+
+    /// Show per-repository breakdown in addition to the overall report.
+    #[arg(long, default_value_t = false)]
+    pub by_repo: bool,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.

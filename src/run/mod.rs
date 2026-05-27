@@ -40,6 +40,7 @@ pub mod replay;
 pub mod report;
 pub mod reproduce;
 pub mod retry;
+pub mod self_check;
 pub mod skills_preview;
 pub mod stagnation_report;
 pub mod swebench;
