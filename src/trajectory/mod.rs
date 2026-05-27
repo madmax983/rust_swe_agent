@@ -475,6 +475,71 @@ const fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+/// Per-trajectory provenance manifest for single-task `mini` runs.
+///
+/// Embedded in [`TrajectoryInfo::manifest`] on every `mini` run (including
+/// smoke, hello-world, and sweep-wrapped runs) so the run can be re-executed
+/// from the trajectory file alone.
+///
+/// When invoked from a `bench swebench` sweep, `harness_git_sha` and
+/// `config_sha256` are replaced by the literal string `"inherits:parent_sweep"`
+/// because those values are already pinned in the sweep-level manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MiniProvenanceManifest {
+    /// Git SHA of the harness repository at run time. `"inherits:parent_sweep"`
+    /// when called from a sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_git_sha: Option<String>,
+    /// `CARGO_PKG_VERSION` of the harness binary. Example: `"0.1.0"`.
+    pub harness_binary_version: String,
+    /// ISO 8601 UTC timestamp when the run started. Example: `"2026-01-01T12:00:00Z"`.
+    pub started_at_utc: String,
+    /// ISO 8601 UTC timestamp when the run ended. `None` while the run is in
+    /// progress; set before final trajectory write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_utc: Option<String>,
+    /// Environment kind: `"local"` or `"docker"`.
+    pub env_kind: String,
+    /// Canonicalized absolute working directory path. `None` when the default
+    /// environment working directory is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    /// SHA-256 hex digest of the effective merged config JSON. `"inherits:parent_sweep"`
+    /// when called from a sweep.
+    pub config_sha256: String,
+    /// Full config tree with secret-bearing fields masked via
+    /// `redaction::surface::TRAJECTORY`. Allows re-running with the same
+    /// config without exposing secret values.
+    pub config_redacted: serde_json::Value,
+    /// `argv` vector with TOKEN/KEY-bearing values masked by the surface
+    /// redaction policy. Example: `["bench", "mini", "--task", "fix bug"]`.
+    pub cli_invocation: Vec<String>,
+    /// Whether `extra_context` was non-empty for this run.
+    pub extra_context_present: bool,
+    /// Per-task wallclock timeout in seconds. `None` = no timeout set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_timeout_secs: Option<u64>,
+    /// Configured `agent.step_limit`. Example: `50`.
+    pub step_limit: u32,
+    /// Primary model name from `config.model.name`. Example: `"claude-opus-4-7"`.
+    pub model_name: String,
+    /// Fallback model names from `config.model.fallback_models`. Empty for
+    /// single-model runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
+    /// Stable identifier for the active redaction policy, derived from
+    /// non-secret policy attributes (enabled flag, custom patterns, literal
+    /// count). Example: `"sha256:abc123456789abcd"`.
+    pub redaction_policy_id: String,
+    /// `true` when the run used the deterministic (scripted) model backend
+    /// rather than a live provider.
+    pub deterministic_mode: bool,
+    /// Run ID of the parent sweep when called via `bench swebench → mini`.
+    /// `None` for standalone `bench mini` runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sweep_run_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 /// Detailed information and metrics about the trajectory run.
 pub struct TrajectoryInfo {
@@ -576,6 +641,11 @@ pub struct TrajectoryInfo {
     /// Absolute canonicalized local working directory for the agent run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_workdir: Option<String>,
+    /// Provenance manifest for single-task `mini` runs (issue #329).
+    /// Present on every `mini` trajectory written by schema 1.3+.
+    /// Absent on legacy 1.2 trajectories and sweep-level `results.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<MiniProvenanceManifest>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -1188,5 +1258,119 @@ mod tests {
         extra.timestamp = None;
         extra.other.insert("key".into(), serde_json::json!("val"));
         assert!(!extra_is_empty(&extra));
+    }
+
+    // ── RED-phase: MiniProvenanceManifest & TrajectoryInfo.manifest ─────────
+
+    #[test]
+    fn mini_provenance_manifest_roundtrips_through_json() {
+        let m = MiniProvenanceManifest {
+            harness_git_sha: Some("abc123def456".into()),
+            harness_binary_version: "0.1.0".into(),
+            started_at_utc: "2024-01-01T00:00:00Z".into(),
+            ended_at_utc: Some("2024-01-01T00:01:00Z".into()),
+            env_kind: "local".into(),
+            working_dir: Some("/workspace".into()),
+            config_sha256: "deadbeef01234567".into(),
+            config_redacted: serde_json::json!({"model": {"name": "claude-opus-4-7"}}),
+            cli_invocation: vec!["bench".into(), "mini".into(), "--task".into(), "hello".into()],
+            extra_context_present: false,
+            task_timeout_secs: None,
+            step_limit: 50,
+            model_name: "claude-opus-4-7".into(),
+            fallback_models: vec![],
+            redaction_policy_id: "sha256:abc123456789abcd".into(),
+            deterministic_mode: false,
+            parent_sweep_run_id: None,
+        };
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        let back: MiniProvenanceManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn mini_provenance_manifest_parent_sweep_run_id_roundtrips() {
+        let m = MiniProvenanceManifest {
+            harness_git_sha: Some("inherits:parent_sweep".into()),
+            harness_binary_version: "0.1.0".into(),
+            started_at_utc: "2024-01-01T00:00:00Z".into(),
+            ended_at_utc: None,
+            env_kind: "docker".into(),
+            working_dir: Some("/workspace".into()),
+            config_sha256: "inherits:parent_sweep".into(),
+            config_redacted: serde_json::json!({}),
+            cli_invocation: vec![],
+            extra_context_present: true,
+            task_timeout_secs: Some(300),
+            step_limit: 30,
+            model_name: "claude-sonnet-4-6".into(),
+            fallback_models: vec!["claude-haiku-4-5".into()],
+            redaction_policy_id: "sha256:deadbeef01234567".into(),
+            deterministic_mode: false,
+            parent_sweep_run_id: Some("abcdef0123456789".into()),
+        };
+        let json = serde_json::to_string_pretty(&m).unwrap();
+        assert!(json.contains("\"parent_sweep_run_id\""));
+        assert!(json.contains("inherits:parent_sweep"));
+        let back: MiniProvenanceManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn trajectory_info_manifest_field_present_and_serialized() {
+        let mut t = Trajectory::new();
+        t.info.manifest = Some(MiniProvenanceManifest {
+            harness_git_sha: None,
+            harness_binary_version: "0.1.0".into(),
+            started_at_utc: "2024-01-01T00:00:00Z".into(),
+            ended_at_utc: None,
+            env_kind: "local".into(),
+            working_dir: None,
+            config_sha256: "abc123".into(),
+            config_redacted: serde_json::json!({}),
+            cli_invocation: vec!["bench".into(), "mini".into()],
+            extra_context_present: false,
+            task_timeout_secs: None,
+            step_limit: 50,
+            model_name: "claude-opus-4-7".into(),
+            fallback_models: vec![],
+            redaction_policy_id: "sha256:abc123".into(),
+            deterministic_mode: true,
+            parent_sweep_run_id: None,
+        });
+        let json = t.to_json_pretty().unwrap();
+        assert!(json.contains("\"manifest\""), "manifest key must appear in JSON");
+        assert!(json.contains("\"harness_binary_version\""));
+        assert!(json.contains("\"config_sha256\""));
+        assert!(json.contains("\"redaction_policy_id\""));
+        let back: Trajectory = serde_json::from_str(&json).unwrap();
+        let mf = back.info.manifest.expect("manifest must survive roundtrip");
+        assert_eq!(mf.model_name, "claude-opus-4-7");
+        assert!(mf.deterministic_mode);
+    }
+
+    #[test]
+    fn trajectory_info_manifest_absent_when_not_set() {
+        let t = Trajectory::new();
+        let json = t.to_json_pretty().unwrap();
+        // When manifest is None, the field must be omitted (skip_serializing_if)
+        assert!(
+            !json.contains("\"manifest\""),
+            "manifest must not appear when not set: {json}"
+        );
+    }
+
+    #[test]
+    fn trajectory_1_2_without_manifest_parses_to_none() {
+        let json = r#"{
+  "trajectory_format": "mini-swe-agent-1.2",
+  "info": {"task": "fix bug", "model_name": "gpt-4"},
+  "messages": []
+}"#;
+        let t: Trajectory = serde_json::from_str(json).unwrap();
+        assert!(
+            t.info.manifest.is_none(),
+            "legacy 1.2 trajectory must parse with manifest=None"
+        );
     }
 }

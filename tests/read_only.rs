@@ -63,6 +63,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         allow_mcp_in_read_only: false,
         rehearsal_gold_patch: None,
         no_step_persist: false,
+        parent_sweep_run_id: None,
     })
     .await;
     assert!(

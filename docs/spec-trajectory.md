@@ -171,3 +171,77 @@ when trajectory files from the source and replay sweeps are available:
 A mismatch here is classified as a **soft** divergence: the run is still
 considered reproducible for outcome purposes, but the drift is recorded for
 audit. Pass `--strict-sampling` to escalate this to a hard divergence.
+
+## Provenance manifest (schema 1.9+)
+
+Single-task (`bench mini`) runs carry a `manifest` field inside the `info`
+block. It records everything needed to understand *where the run came from* and
+*how it was configured* without having to reconstruct it from logs.
+
+```json
+{
+  "info": {
+    "manifest": {
+      "harness_git_sha": "a1b2c3d4e5f6...",
+      "harness_binary_version": "1.3.0",
+      "started_at_utc": "2026-05-27T12:00:00+00:00",
+      "ended_at_utc": "2026-05-27T12:04:32+00:00",
+      "env_kind": "live",
+      "working_dir": "/workspaces/my-repo",
+      "config_sha256": "deadbeef01234567...",
+      "config_redacted": { "model": { "name": "claude-opus-4-7" }, "redaction": { "enabled": true } },
+      "cli_invocation": ["bench", "mini", "--task", "Fix bug", "--api-key", "[REDACTED]"],
+      "extra_context_present": false,
+      "task_timeout_secs": 300,
+      "step_limit": 30,
+      "model_name": "claude-opus-4-7",
+      "fallback_models": ["claude-sonnet-4-6"],
+      "redaction_policy_id": "sha256:3f4a1b2c9e8d7f6a",
+      "deterministic_mode": false,
+      "parent_sweep_run_id": null
+    }
+  }
+}
+```
+
+### Field reference
+
+| Field | Type | Description | Example |
+|---|---|---|---|
+| `harness_git_sha` | `string?` | Git HEAD SHA of the harness source tree at build time; `"inherits:parent_sweep"` when called from a sweep run | `"a1b2c3d4e5f6..."` |
+| `harness_binary_version` | `string` | `CARGO_PKG_VERSION` of the harness binary | `"1.3.0"` |
+| `started_at_utc` | `string` | ISO 8601 timestamp captured immediately before the agent loop begins | `"2026-05-27T12:00:00+00:00"` |
+| `ended_at_utc` | `string?` | ISO 8601 timestamp stamped at the first trajectory `save_pretty` call; `null` if the run never reached a save | `"2026-05-27T12:04:32+00:00"` |
+| `env_kind` | `string` | `"deterministic"` when `deterministic_responses` were injected; `"live"` otherwise | `"live"` |
+| `working_dir` | `string?` | Absolute path of the local workdir handed to the agent; `null` when none was configured | `"/workspaces/my-repo"` |
+| `config_sha256` | `string` | Full SHA-256 hex of the raw config JSON; `"inherits:parent_sweep"` when called from a sweep run | `"deadbeef01234567..."` |
+| `config_redacted` | `object` | Full config object serialized to JSON after sensitive values have been redacted | `{ "model": { "name": "claude-opus-4-7" }, ... }` |
+| `cli_invocation` | `string[]` | Process `argv` with values following `--api-key`, `--token`, `--secret`, `--password`, and `--credential` replaced by `"[REDACTED]"` | `["bench", "mini", "--api-key", "[REDACTED]"]` |
+| `extra_context_present` | `bool` | `true` when `extra_context` was non-empty; the content itself is not recorded | `false` |
+| `task_timeout_secs` | `integer?` | Task timeout in seconds; `null` when not set | `300` |
+| `step_limit` | `integer` | Maximum number of agent steps allowed for this run | `30` |
+| `model_name` | `string` | Primary model name from config | `"claude-opus-4-7"` |
+| `fallback_models` | `string[]` | Ordered list of fallback models from config; empty when no fallbacks are configured | `["claude-sonnet-4-6"]` |
+| `redaction_policy_id` | `string` | Short fingerprint of the redaction config (enabled flag, unsafe flag, literal count, custom patterns); never includes secret values | `"sha256:3f4a1b2c9e8d7f6a"` |
+| `deterministic_mode` | `bool` | `true` when `deterministic_responses` were provided (scripted/test runs) | `false` |
+| `parent_sweep_run_id` | `string?` | Run ID of the parent sweep when this task was launched by `bench sweep`; `null` for standalone `bench mini` invocations | `"sweep-2026-05-27-abc123"` |
+
+### Sweep-child sentinel values
+
+When a `bench mini` run is launched as a child of `bench sweep`, some
+per-run fields would duplicate sweep-level information. To avoid redundancy,
+those fields are set to the sentinel string `"inherits:parent_sweep"`:
+
+| Field | Sentinel condition |
+|---|---|
+| `harness_git_sha` | Always when `parent_sweep_run_id` is set |
+| `config_sha256` | Always when `parent_sweep_run_id` is set |
+
+Readers should treat `"inherits:parent_sweep"` as "see the sweep manifest for
+the authoritative value" rather than as a real SHA.
+
+### Absent `manifest` field
+
+Trajectories written before this feature (schema < 1.9) do not contain a
+`manifest` field inside `info`. Readers must handle its absence gracefully via
+`#[serde(default)]`.

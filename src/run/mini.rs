@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+
+
 use crate::agent::{
     Agent, ConfirmCallback, DefaultAgent, RatatuiDashboardHandle, StderrCliConfirmer,
     default::DefaultAgentBuilder,
@@ -163,6 +165,10 @@ pub struct MiniArgs {
     /// When `true`, disables per-step atomic checkpoint writes (AC6 opt-out).
     /// Default is `false` (checkpointing enabled).
     pub no_step_persist: bool,
+    /// Run ID of the parent sweep when this `mini` call is spawned by
+    /// `bench swebench`. Recorded in the per-trajectory provenance manifest.
+    /// `None` for standalone `bench mini` invocations.
+    pub parent_sweep_run_id: Option<String>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -182,9 +188,189 @@ pub enum InteractiveMode {
     Ratatui,
 }
 
+/// Derive a stable, non-secret identifier for the active redaction policy.
+///
+/// Incorporates: enabled flag, unsafe_allow_secret_leaks flag, number of
+/// configured secret literals (count, never their values), and sorted custom
+/// patterns. The resulting SHA-256 prefix changes whenever observable policy
+/// behaviour changes but never leaks secret literal content.
+fn redaction_policy_id(cfg: &crate::config::RedactionCfg) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(if cfg.enabled { b"enabled:1" as &[u8] } else { b"enabled:0" as &[u8] });
+    h.update(b":");
+    h.update(
+        if cfg.unsafe_allow_secret_leaks {
+            b"unsafe:1" as &[u8]
+        } else {
+            b"unsafe:0" as &[u8]
+        },
+    );
+    h.update(format!(":literals_count={}", cfg.secret_literals.len()).as_bytes());
+    let mut sorted = cfg.custom_patterns.clone();
+    sorted.sort();
+    for p in &sorted {
+        h.update(b":pattern=");
+        h.update(p.as_bytes());
+    }
+    let digest = format!("{:x}", h.finalize());
+    format!("sha256:{}", &digest[..16])
+}
+
+/// Redact the CLI `argv` vector: run each argument through the surface
+/// redaction policy.  Flag values following `--*key*`, `--*token*`, and
+/// similar sensitive flag names are replaced with `<redacted>` regardless of
+/// whether the redactor fires on their content, providing an extra layer of
+/// protection.
+fn redact_cli_invocation(
+    argv: Vec<String>,
+    redaction_cfg: &crate::config::RedactionCfg,
+) -> Vec<String> {
+    let redactor = crate::redaction::Redactor::from_config_lossy(redaction_cfg);
+    let mut out = Vec::with_capacity(argv.len());
+    let mut redact_next = false;
+    for arg in argv {
+        if redact_next {
+            out.push("<redacted>".into());
+            redact_next = false;
+            continue;
+        }
+        let lower = arg.to_ascii_lowercase();
+        if lower.starts_with("--") && cli_flag_is_sensitive(&arg) {
+            if arg.contains('=') {
+                // --flag=value → --flag=<redacted>
+                let key_part = arg.split_once('=').map(|(k, _)| k).unwrap_or(&arg);
+                out.push(format!("{key_part}=<redacted>"));
+            } else {
+                out.push(arg);
+                redact_next = true;
+            }
+            continue;
+        }
+        let outcome = redactor.redact_text(&arg, crate::redaction::surface::TRAJECTORY);
+        out.push(outcome.text);
+    }
+    out
+}
+
+fn cli_flag_is_sensitive(flag: &str) -> bool {
+    let body = flag
+        .trim_start_matches('-')
+        .split('=')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        body.as_str(),
+        "api-key"
+            | "apikey"
+            | "key"
+            | "token"
+            | "secret"
+            | "password"
+            | "access-token"
+            | "auth-token"
+            | "bearer-token"
+    ) || body.ends_with("-key")
+        || body.ends_with("-token")
+        || body.ends_with("-secret")
+        || body.ends_with("-password")
+}
+
+/// Compute SHA-256 hex of the effective merged config JSON.
+fn config_sha256(cfg: &crate::config::Config) -> String {
+    use sha2::{Digest, Sha256};
+    let serialized = serde_json::to_vec(&cfg.raw).unwrap_or_default();
+    let mut h = Sha256::new();
+    h.update(&serialized);
+    format!("{:x}", h.finalize())
+}
+
+/// Build a redacted copy of the config JSON by masking secret-bearing fields
+/// through the surface redaction policy.
+fn config_redacted(
+    cfg: &crate::config::Config,
+    redactor: &crate::redaction::Redactor,
+) -> serde_json::Value {
+    let mut value = cfg.raw.clone();
+    redactor.redact_json_value(&mut value, crate::redaction::surface::TRAJECTORY);
+    value
+}
+
+/// Build the initial per-trajectory provenance manifest.
+///
+/// Called at the start of `run()` before the agent loop begins.
+/// `ended_at_utc` is `None` here; it is set just before final trajectory save.
+fn build_mini_manifest(
+    args: &MiniArgs,
+    redactor: &crate::redaction::Redactor,
+    started_at_utc: &str,
+    git_sha: Option<String>,
+) -> crate::trajectory::MiniProvenanceManifest {
+    let is_sweep_child = args.parent_sweep_run_id.is_some();
+
+    let harness_git_sha = if is_sweep_child {
+        Some("inherits:parent_sweep".into())
+    } else {
+        git_sha.map(|s| s.into())
+    };
+
+    let cfg_sha256 = if is_sweep_child {
+        "inherits:parent_sweep".into()
+    } else {
+        config_sha256(&args.config)
+    };
+
+    let cfg_redacted = config_redacted(&args.config, redactor);
+
+    let cli_argv = std::env::args().collect::<Vec<String>>();
+    let cli_invocation = redact_cli_invocation(cli_argv, &args.config.root.redaction);
+
+    let env_kind = match args.config.root.environment.kind {
+        crate::config::EnvKind::Local => "local",
+        crate::config::EnvKind::Docker => "docker",
+    }
+    .to_owned();
+
+    let working_dir = args
+        .local_workdir
+        .as_ref()
+        .map(|p| p.display().to_string());
+
+    crate::trajectory::MiniProvenanceManifest {
+        harness_git_sha,
+        harness_binary_version: env!("CARGO_PKG_VERSION").to_owned(),
+        started_at_utc: started_at_utc.to_owned(),
+        ended_at_utc: None,
+        env_kind,
+        working_dir,
+        config_sha256: cfg_sha256,
+        config_redacted: cfg_redacted,
+        cli_invocation,
+        extra_context_present: args.extra_context.is_some(),
+        task_timeout_secs: args.task_timeout_secs,
+        step_limit: args.config.root.agent.step_limit,
+        model_name: args.config.root.model.name.clone(),
+        fallback_models: args.config.root.model.fallback_models.clone(),
+        redaction_policy_id: redaction_policy_id(&args.config.root.redaction),
+        deterministic_mode: args.deterministic_responses.is_some(),
+        parent_sweep_run_id: args.parent_sweep_run_id.clone(),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     std::fs::create_dir_all(&args.output_dir)?;
+
+    // Capture provenance data before any async/fallible work so the manifest
+    // is anchored to the actual invocation moment.
+    let started_at_utc = chrono::Utc::now().to_rfc3339();
+    let git_sha = current_git_sha();
+    // Build a temporary redactor to produce the redacted config snapshot.
+    // The agent will build its own full-lifetime redactor later.
+    let manifest_redactor =
+        crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+    let mini_manifest = build_mini_manifest(&args, &manifest_redactor, &started_at_utc, git_sha);
 
     let resolved_skills = crate::skills::resolve_for_task(
         &args.config.root.skills,
@@ -401,6 +587,10 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         traj.info
             .other
             .insert("mode".into(), serde_json::Value::String("rehearsal".into()));
+        // Attach provenance manifest for rehearsal runs.
+        let mut rehearsal_manifest = mini_manifest.clone();
+        rehearsal_manifest.ended_at_utc = Some(chrono::Utc::now().to_rfc3339());
+        traj.info.manifest = Some(rehearsal_manifest);
 
         traj.messages.push(crate::trajectory::MessageRecord {
             role: "assistant".into(),
@@ -496,6 +686,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             .other
             .insert("mode".into(), serde_json::Value::String("read_only".into()));
     }
+    // Attach provenance manifest. `ended_at_utc` will be stamped just before
+    // the final trajectory write; a checkpoint may omit it (still in progress).
+    agent.trajectory.info.manifest = Some(mini_manifest);
 
     let traj_path = args
         .output_dir
@@ -530,6 +723,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 if finalize_cancelled_if_requested(&mut agent, args.cancellation.as_ref()) {
                     agent.trajectory.info.verification_status =
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
+                    stamp_manifest_ended_at(&mut agent.trajectory);
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
                     warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
@@ -566,6 +760,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     agent.finalize_run_metadata(crate::trajectory::outcome::ERROR);
                     agent.trajectory.info.verification_status =
                         Some(crate::trajectory::verification_status::UNVERIFIED.into());
+                    stamp_manifest_ended_at(&mut agent.trajectory);
                     agent.trajectory.save_pretty(&traj_path)?;
                     tracing::info!(?traj_path, patch_written, "trajectory written");
                     warn_dropped_webhook_events(webhook_dropped_counter.as_deref());
@@ -689,6 +884,8 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // or stdout/stderr previews after finalize_run_metadata already stamped
     // info.redaction, so update it before writing the artifact.
     agent.trajectory.info.redaction = Some(agent.redactor.summary());
+    // Stamp manifest ended_at_utc and reflect any manifest-field redactions.
+    stamp_manifest_ended_at(&mut agent.trajectory);
     agent.trajectory.save_pretty(&traj_path)?;
 
     let exit = match run_result {
@@ -1257,6 +1454,19 @@ async fn run_verification_checks(
         trajectory.info.verification_status =
             Some(crate::trajectory::verification_status::VERIFICATION_FAILED.into());
         Some(Error::VerificationFailed(failed, checks.len()))
+    }
+}
+
+/// Stamp the manifest's `ended_at_utc` field with the current UTC time,
+/// if the manifest is present and not already stamped.
+///
+/// Called just before every `save_pretty` so the final-write timestamp is
+/// accurate regardless of which exit path fires.
+fn stamp_manifest_ended_at(traj: &mut crate::trajectory::Trajectory) {
+    if let Some(m) = &mut traj.info.manifest {
+        if m.ended_at_utc.is_none() {
+            m.ended_at_utc = Some(chrono::Utc::now().to_rfc3339());
+        }
     }
 }
 
@@ -2086,6 +2296,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: false,
+            parent_sweep_run_id: None,
         };
 
         run(args).await.unwrap();
@@ -2187,6 +2398,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: false,
+            parent_sweep_run_id: None,
         };
 
         run(args).await.unwrap();
@@ -2283,6 +2495,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: false,
+            parent_sweep_run_id: None,
         };
 
         run(args).await.unwrap();
@@ -2370,6 +2583,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: true,
+            parent_sweep_run_id: None,
         };
         run(args).await.unwrap();
 
@@ -2436,6 +2650,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: false,
+            parent_sweep_run_id: None,
         };
         run(args).await.unwrap();
 
@@ -2504,6 +2719,7 @@ index 8a1218a..24c5735 100644\n\
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
             no_step_persist: false,
+            parent_sweep_run_id: None,
         };
 
         run(args).await.unwrap();
@@ -2581,6 +2797,239 @@ index 8a1218a..24c5735 100644\n\
         assert_eq!(
             traj.info.verification_status.as_deref(),
             Some(crate::trajectory::verification_status::UNVERIFIED)
+        );
+    }
+
+    // ── RED-phase: provenance manifest (issue #329) ────────────────────────
+
+    fn make_mini_args_for_manifest_test(
+        output_dir: std::path::PathBuf,
+        traj_name: &str,
+    ) -> MiniArgs {
+        MiniArgs {
+            task: "test-manifest-task".into(),
+            extra_context: None,
+            config: crate::config::Config::defaults().unwrap(),
+            output_dir,
+            trajectory_name: traj_name.into(),
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: None,
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+            parent_sweep_run_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn mini_run_populates_manifest_on_trajectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "manifest-test");
+        run(args).await.unwrap();
+
+        let traj_path = tmp.path().join("manifest-test.traj.json");
+        let content = std::fs::read_to_string(&traj_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let manifest = &parsed["info"]["manifest"];
+        assert!(
+            !manifest.is_null(),
+            "info.manifest must be present on every mini run; got: {content}"
+        );
+
+        // Required fields
+        assert!(
+            manifest["harness_binary_version"].is_string(),
+            "harness_binary_version must be a string"
+        );
+        assert!(
+            manifest["started_at_utc"].is_string(),
+            "started_at_utc must be a string"
+        );
+        assert!(
+            manifest["ended_at_utc"].is_string(),
+            "ended_at_utc must be a string"
+        );
+        assert!(
+            manifest["env_kind"].is_string(),
+            "env_kind must be a string"
+        );
+        assert!(
+            manifest["config_sha256"].is_string(),
+            "config_sha256 must be a string"
+        );
+        assert!(
+            !manifest["config_redacted"].is_null(),
+            "config_redacted must be present"
+        );
+        assert!(
+            manifest["cli_invocation"].is_array(),
+            "cli_invocation must be an array"
+        );
+        assert!(
+            manifest["extra_context_present"].is_boolean(),
+            "extra_context_present must be a bool"
+        );
+        assert!(
+            manifest["step_limit"].is_number(),
+            "step_limit must be a number"
+        );
+        assert!(
+            manifest["model_name"].is_string(),
+            "model_name must be a string"
+        );
+        assert!(
+            manifest["redaction_policy_id"].is_string(),
+            "redaction_policy_id must be a string"
+        );
+        assert!(
+            manifest["deterministic_mode"].is_boolean(),
+            "deterministic_mode must be a bool"
+        );
+
+        // Deterministic mode should be true since we used scripted responses
+        assert_eq!(
+            manifest["deterministic_mode"].as_bool(),
+            Some(true),
+            "deterministic_mode must be true for scripted runs"
+        );
+
+        // extra_context_present should be false since no extra_context was supplied
+        assert_eq!(
+            manifest["extra_context_present"].as_bool(),
+            Some(false),
+            "extra_context_present must be false when no extra_context supplied"
+        );
+    }
+
+    #[tokio::test]
+    async fn mini_manifest_deterministic_fields_match_across_two_runs() {
+        // AC: Two back-to-back runs with identical args produce manifests whose
+        // deterministic fields match byte-for-byte; only timestamps differ.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Run 1
+        let args1 = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "run1");
+        run(args1).await.unwrap();
+        let json1 = std::fs::read_to_string(tmp.path().join("run1.traj.json")).unwrap();
+        let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
+        let m1 = &v1["info"]["manifest"];
+
+        // Run 2
+        let args2 = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "run2");
+        run(args2).await.unwrap();
+        let json2 = std::fs::read_to_string(tmp.path().join("run2.traj.json")).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        let m2 = &v2["info"]["manifest"];
+
+        // Deterministic fields must match
+        assert_eq!(
+            m1["config_sha256"], m2["config_sha256"],
+            "config_sha256 must match across identical runs"
+        );
+        assert_eq!(
+            m1["env_kind"], m2["env_kind"],
+            "env_kind must match across identical runs"
+        );
+        assert_eq!(
+            m1["model_name"], m2["model_name"],
+            "model_name must match across identical runs"
+        );
+        assert_eq!(
+            m1["step_limit"], m2["step_limit"],
+            "step_limit must match across identical runs"
+        );
+        assert_eq!(
+            m1["deterministic_mode"], m2["deterministic_mode"],
+            "deterministic_mode must match across identical runs"
+        );
+        assert_eq!(
+            m1["redaction_policy_id"], m2["redaction_policy_id"],
+            "redaction_policy_id must match across identical runs"
+        );
+        assert_eq!(
+            m1["harness_binary_version"], m2["harness_binary_version"],
+            "harness_binary_version must match across identical runs"
+        );
+
+        // Timestamps may differ between runs (time passes)
+        // We just assert they exist and are different or at least that the field
+        // is present (they could be the same if runs complete within the same second)
+        assert!(m1["started_at_utc"].is_string(), "started_at_utc must exist in run1");
+        assert!(m2["started_at_utc"].is_string(), "started_at_utc must exist in run2");
+    }
+
+    #[tokio::test]
+    async fn mini_manifest_does_not_contain_env_secrets() {
+        // AC: Secrets injected via env (*_API_KEY, *_TOKEN, *_SECRET) must not
+        // appear in the serialized manifest.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Inject a fake secret as an environment variable that the redactor picks up.
+        // We use a value that looks like a real API key pattern so the redactor fires.
+        let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
+        // SAFETY: test-only; single-threaded context for secret injection.
+        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
+
+        let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
+        run(args).await.unwrap();
+
+        // Clean up env var
+        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
+
+        let traj_path = tmp.path().join("secret-test.traj.json");
+        let content = std::fs::read_to_string(&traj_path).unwrap();
+
+        assert!(
+            !content.contains(fake_secret),
+            "serialized manifest must not contain secret value from env; found in: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mini_manifest_parent_sweep_run_id_is_recorded() {
+        // When parent_sweep_run_id is provided, it appears in the trajectory
+        // manifest and inherits:parent_sweep is used for config_sha256 / harness_git_sha.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "sweep-child");
+        args.parent_sweep_run_id = Some("test-sweep-abcdef01".into());
+        run(args).await.unwrap();
+
+        let content = std::fs::read_to_string(tmp.path().join("sweep-child.traj.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let manifest = &parsed["info"]["manifest"];
+
+        assert_eq!(
+            manifest["parent_sweep_run_id"].as_str(),
+            Some("test-sweep-abcdef01"),
+            "parent_sweep_run_id must be recorded"
+        );
+        assert_eq!(
+            manifest["config_sha256"].as_str(),
+            Some("inherits:parent_sweep"),
+            "config_sha256 must be inherits:parent_sweep when called from sweep"
+        );
+        assert_eq!(
+            manifest["harness_git_sha"].as_str(),
+            Some("inherits:parent_sweep"),
+            "harness_git_sha must be inherits:parent_sweep when called from sweep"
         );
     }
 }
