@@ -33,6 +33,19 @@ fn redacted_traj_for_stability_check(path: &std::path::Path) -> serde_json::Valu
     v
 }
 
+/// Parse a results.json file and strip the sweep-level provenance manifest so
+/// two rehearsal runs with identical inputs compare equal regardless of
+/// environment-specific values (git SHA, rust version, timestamps, CLI argv).
+/// The manifest records provenance metadata, not semantic sweep results.
+fn redacted_results_for_stability_check(path: &std::path::Path) -> serde_json::Value {
+    let raw = std::fs::read_to_string(path).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("manifest");
+    }
+    v
+}
+
 fn write_jsonl(path: &Path, ids: &[&str], patches: &[&str]) {
     let mut s = String::new();
     for (id, patch) in ids.iter().zip(patches.iter()) {
@@ -171,9 +184,13 @@ async fn test_rehearsal_byte_stable_reproducibility() {
         redacted_traj_for_stability_check(&output_b.join("inst-1").join("run-1.traj.json"));
     assert_eq!(traj_a, traj_b);
 
-    // Verify byte-stability of results
-    let res_a = std::fs::read(&output_a.join("results.json")).unwrap();
-    let res_b = std::fs::read(&output_b.join("results.json")).unwrap();
+    // Verify semantic stability of results.  Strip the sweep-level provenance
+    // manifest before comparing: it contains environment-specific values
+    // (harness git SHA, rust version, CLI argv, timestamps) that legitimately
+    // differ between CI machines or runs at different times.  Everything else
+    // — instance counts, outcomes, costs, token usage — must be identical.
+    let res_a = redacted_results_for_stability_check(&output_a.join("results.json"));
+    let res_b = redacted_results_for_stability_check(&output_b.join("results.json"));
     assert_eq!(res_a, res_b);
 }
 
