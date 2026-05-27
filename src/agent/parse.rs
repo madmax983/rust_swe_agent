@@ -57,20 +57,17 @@ fn extract_first_registered_tool_block(content: &str, tool_names: &[String]) -> 
         let line_end = after_fence.find('\n')?;
         let tag = after_fence[..line_end].trim();
         let body = &after_fence[line_end + 1..];
-        if let Some(end) = body.find("```") {
-            if tool_names.iter().any(|name| name == tag) {
-                let input = body[..end].trim_end_matches('\n').to_owned();
-                if !input.trim().is_empty() {
-                    return Some(ToolCall {
-                        name: tag.to_owned(),
-                        input,
-                    });
-                }
+        let end = body.find("```")?;
+        if tool_names.iter().any(|name| name == tag) {
+            let input = body[..end].trim_end_matches('\n').to_owned();
+            if !input.trim().is_empty() {
+                return Some(ToolCall {
+                    name: tag.to_owned(),
+                    input,
+                });
             }
-            remaining = &body[end + 3..];
-        } else {
-            return None;
         }
+        remaining = &body[end + 3..];
     }
     None
 }
