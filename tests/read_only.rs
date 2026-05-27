@@ -27,6 +27,8 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
             "user.email=t@e.com",
             "-c",
             "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             "init",
