@@ -423,12 +423,15 @@ fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
 }
 
 fn parse_step_limit_from_config(config_resolved: &str) -> Option<u32> {
-    // Anchored to start-of-line; allows TOML underscore separators (e.g. 1_000).
-    let re = regex::Regex::new(r"(?m)^\s*step_limit\s*=\s*([\d_]+)").ok()?;
-    // Take the last match in case of multiple TOML sections overriding the value.
-    re.captures_iter(config_resolved)
-        .last()
-        .and_then(|cap| cap[1].replace('_', "").parse::<u32>().ok())
+    // Use a proper TOML parse so we get correct integer semantics (underscore
+    // separators, hex literals, sign prefix, …) and look up the canonical path
+    // `agent.step_limit` rather than scanning raw text. This avoids matching
+    // keys in unrelated tables or inside multi-line string values.
+    let root: toml::Value = toml::from_str(config_resolved).ok()?;
+    root.get("agent")
+        .and_then(|a| a.get("step_limit"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
@@ -613,23 +616,35 @@ mod tests {
 
     #[test]
     fn parse_step_limit_from_toml_config() {
+        // Canonical path: [agent] table.
         assert_eq!(
             parse_step_limit_from_config("[agent]\nstep_limit = 30\n"),
             Some(30)
         );
-        assert_eq!(parse_step_limit_from_config("step_limit = 50"), Some(50));
+        // Top-level step_limit (no [agent] table) must NOT match — wrong path.
+        assert_eq!(parse_step_limit_from_config("step_limit = 50"), None);
         assert_eq!(parse_step_limit_from_config("no_limit_here"), None);
-        // Anchored regex must not match commented-out lines.
+        // Commented-out line must not produce a value.
         assert_eq!(
-            parse_step_limit_from_config("# step_limit = 99\nstep_limit = 20"),
+            parse_step_limit_from_config("# step_limit = 99\n[agent]\nstep_limit = 20"),
             Some(20)
         );
-        // Must not match keys that merely end with step_limit.
-        assert_eq!(parse_step_limit_from_config("max_step_limit = 100"), None);
+        // A different table (e.g. [sweep]) must not be picked up.
+        assert_eq!(
+            parse_step_limit_from_config("[sweep]\nstep_limit = 100"),
+            None
+        );
         // TOML underscore separators must be handled.
         assert_eq!(
-            parse_step_limit_from_config("step_limit = 1_000"),
+            parse_step_limit_from_config("[agent]\nstep_limit = 1_000"),
             Some(1000)
+        );
+        // Values inside a TOML string literal must not be matched.
+        assert_eq!(
+            parse_step_limit_from_config(
+                "[agent]\nstep_limit = 40\n[prompts]\nsystem = \"step_limit = 99\""
+            ),
+            Some(40)
         );
     }
 
@@ -1022,11 +1037,11 @@ mod tests {
     #[test]
     fn parse_step_limit_handles_underscore_integers() {
         assert_eq!(
-            parse_step_limit_from_config("step_limit = 1_000"),
+            parse_step_limit_from_config("[agent]\nstep_limit = 1_000"),
             Some(1000)
         );
         assert_eq!(
-            parse_step_limit_from_config("step_limit = 1_0_0"),
+            parse_step_limit_from_config("[agent]\nstep_limit = 1_0_0"),
             Some(100)
         );
     }
@@ -1060,7 +1075,8 @@ mod tests {
     }
 
     /// Builds a `results.json` string with a minimal embedded manifest whose
-    /// `config.resolved` contains `step_limit = <limit>`.
+    /// `config.resolved` contains `[agent]\nstep_limit = <limit>` (the
+    /// canonical TOML path used by the harness at runtime).
     fn results_json_with_step_limit(instances: &[serde_json::Value], step_limit: u32) -> String {
         serde_json::to_string_pretty(&serde_json::json!({
             "total": instances.len(),
@@ -1072,7 +1088,7 @@ mod tests {
                 "harness":  { "name": "test", "version": "0.0.0", "git_resolution": "none" },
                 "dataset":  { "path": "test.parquet", "sha256": "abc123", "instance_count": instances.len() },
                 "prompt_template": { "source": "inline", "sha256": "def456" },
-                "config":   { "resolved": format!("step_limit = {step_limit}\n") },
+                "config":   { "resolved": format!("[agent]\nstep_limit = {step_limit}\n") },
                 "model":    { "name": "test-model", "backend": "test" },
                 "runtime":  { "started_at_utc": "2024-01-01T00:00:00Z", "host_os": "linux" },
                 "cli":      { "argv": ["max", "bench"] },
