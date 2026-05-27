@@ -41,6 +41,7 @@ pub mod report;
 pub mod reproduce;
 pub mod retry;
 pub mod skills_preview;
+pub mod stagnation_report;
 pub mod swebench;
 pub mod tail;
 pub mod test_progress;

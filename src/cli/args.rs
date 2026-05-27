@@ -538,6 +538,8 @@ pub enum BenchCmd {
     EvalFlake(EvalFlakeCmd),
     /// Attach persistent operator triage tags and notes to SWE-bench instances.
     Annotate(AnnotateCmd),
+    /// Surface looped-action signatures across a sweep (zero-cost: reads only on-disk artifacts).
+    StagnationReport(StagnationReportCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -957,6 +959,25 @@ pub struct LadderCmd {
     pub baseline: Option<String>,
 
     /// Output format: `text` (default), `json`, or `markdown`.
+    #[arg(long, default_value = "text", value_name = "FMT")]
+    pub format: String,
+}
+
+/// `bench stagnation-report` — surface looped-action signatures across a sweep (zero-cost: reads only on-disk artifacts).
+///
+/// # USD-saved Estimate Formula
+///
+/// `usd_saved_estimate = (step_limit − halt_step) × mean_per_step_usd`
+/// where `mean_per_step_usd = budget_burned_usd / halt_step`.
+/// Conservative: assumes constant per-step cost equal to the observed mean.
+#[derive(Debug, Args)]
+pub struct StagnationReportCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long, value_name = "DIR")]
+    pub sweep: std::path::PathBuf,
+
+    /// Output format: `text` (default) or `json`.
+    /// JSON emits a stable, schema-versioned artifact suitable for CI snapshot diffing.
     #[arg(long, default_value = "text", value_name = "FMT")]
     pub format: String,
 }
