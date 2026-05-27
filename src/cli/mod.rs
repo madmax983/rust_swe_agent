@@ -3384,7 +3384,7 @@ async fn bench_cascade(c: args::CascadeCmd) -> Result<(), Error> {
         mock_eval_resolved_ids: None,
     };
 
-    let _summary = crate::run::cascade::run(cascade_args).await?;
+    let _summary = Box::pin(crate::run::cascade::run(cascade_args)).await?;
     Ok(())
 }
 
