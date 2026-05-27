@@ -75,6 +75,10 @@ pub struct StagnationInstanceRow {
     /// Estimated USD saved by the early halt. `null` when step_limit unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usd_saved_estimate: Option<f64>,
+    /// Full 32-char SHA-256 fingerprint used internally for collision-safe
+    /// clustering. Not exposed in JSON output.
+    #[serde(skip)]
+    pub(crate) full_hash: String,
 }
 
 /// Cluster of instances sharing a canonical fingerprint.
@@ -131,6 +135,11 @@ pub fn run(args: &StagnationReportArgs) -> Result<StagnationReport, Error> {
 
     let mut rows: Vec<StagnationInstanceRow> = Vec::new();
     for instance_id in &sorted_ids {
+        // Guard path traversal before any filesystem access.
+        if !instance_id_is_safe(instance_id) {
+            tracing::warn!("stagnation-report: skipping unsafe instance id {instance_id:?}");
+            continue;
+        }
         let ir = &sweep.instances[instance_id];
         if !matches!(ir.failure_category, Some(FailureCategory::AgentStagnation)) {
             continue;
@@ -257,7 +266,8 @@ fn try_build_instance_row(
     redactor: &Redactor,
 ) -> Option<StagnationInstanceRow> {
     let paths = resolve_trajectory_paths(sweep_dir, instance_id);
-    let path = paths.last()?;
+    // Use the first (run-1) slot: results.json metadata comes from pass@1.
+    let path = paths.first()?;
 
     let traj = load_trajectory(path)?;
 
@@ -272,22 +282,29 @@ fn try_build_instance_row(
     let stag_val = traj.info.other.get("stagnation")?;
     let stag: StagnationRecord = serde_json::from_value(stag_val.clone()).ok()?;
 
-    let full_hash = &stag.action_hash; // 32-char hex
+    let full_hash = stag.action_hash.clone(); // 32-char hex
     let fingerprint: String = full_hash.chars().take(8).collect();
 
-    let canonical_raw = find_canonical_action(&traj, full_hash)?;
+    // find_canonical_action may return None when the action was redacted before
+    // being written to the trajectory (action_hash is computed pre-redaction).
+    // Fall back to "[redacted]" so the instance is still counted and clustered.
+    let canonical_raw =
+        find_canonical_action(&traj, &full_hash).unwrap_or_else(|| "[redacted]".to_owned());
     let canonical_redacted = redactor.redact_text(&canonical_raw, surface::EXPORT).text;
     let canonical_action = truncate_action(&canonical_redacted);
 
+    // step_indices are 0-based (observe(self.steps - 1, ...)); step count = max + 1.
     let halt_step = traj
         .info
         .steps
-        .unwrap_or_else(|| stag.step_indices.iter().copied().max().unwrap_or(0));
+        .unwrap_or_else(|| stag.step_indices.iter().copied().max().map_or(0, |m| m + 1));
 
+    // Prefer actual (measured) cost; fall back to total which may include
+    // baseline components in some artifact versions.
     let budget_burned_usd = traj
         .info
-        .total_cost_usd
-        .or(traj.info.actual_cost_usd)
+        .actual_cost_usd
+        .or(traj.info.total_cost_usd)
         .unwrap_or(0.0);
 
     let usd_saved_estimate = compute_saved_estimate(budget_burned_usd, halt_step, step_limit);
@@ -300,6 +317,7 @@ fn try_build_instance_row(
         halt_step,
         budget_burned_usd,
         usd_saved_estimate,
+        full_hash,
     })
 }
 
@@ -342,31 +360,43 @@ fn truncate_action(s: &str) -> String {
 }
 
 fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
-    // Map fingerprint → (exemplar_action, total_usd, exemplar_ids up to 5, instance_count).
+    // Key on the full 32-char hash to avoid 8-char prefix collisions on large sweeps.
+    // Map full_hash → (display_fingerprint, exemplar_action, total_usd, exemplar_ids, count).
     // Rows are already ranked by budget_burned descending, so the first instance
     // encountered per fingerprint is the most expensive (good exemplar).
     // Count is accumulated in the same pass to avoid O(N×M) redundant iteration.
-    let mut by_fp: HashMap<&str, (String, f64, Vec<String>, usize)> = HashMap::new();
+    let mut by_hash: HashMap<&str, (String, String, f64, Vec<String>, usize)> = HashMap::new();
     for row in rows {
-        let entry = by_fp
-            .entry(row.fingerprint.as_str())
-            .or_insert_with(|| (row.canonical_action.clone(), 0.0, Vec::new(), 0));
-        entry.1 += row.budget_burned_usd;
-        if entry.2.len() < 5 {
-            entry.2.push(row.instance_id.clone());
+        let entry = by_hash.entry(row.full_hash.as_str()).or_insert_with(|| {
+            (
+                row.fingerprint.clone(),
+                row.canonical_action.clone(),
+                0.0,
+                Vec::new(),
+                0,
+            )
+        });
+        entry.2 += row.budget_burned_usd;
+        if entry.3.len() < 5 {
+            entry.3.push(row.instance_id.clone());
         }
-        entry.3 += 1;
+        entry.4 += 1;
     }
 
-    let mut clusters: Vec<StagnationCluster> = by_fp
+    let mut clusters: Vec<StagnationCluster> = by_hash
         .into_iter()
         .map(
-            |(fp, (exemplar_action, total_usd, exemplar_ids, instance_count))| StagnationCluster {
-                fingerprint: fp.to_owned(),
-                exemplar_action,
-                instance_count,
-                total_usd_burned: total_usd,
-                exemplar_instance_ids: exemplar_ids,
+            |(
+                _full_hash,
+                (fingerprint, exemplar_action, total_usd, exemplar_ids, instance_count),
+            )| {
+                StagnationCluster {
+                    fingerprint,
+                    exemplar_action,
+                    instance_count,
+                    total_usd_burned: total_usd,
+                    exemplar_instance_ids: exemplar_ids,
+                }
             },
         )
         .collect();
@@ -382,11 +412,12 @@ fn build_clusters(rows: &[StagnationInstanceRow]) -> Vec<StagnationCluster> {
 }
 
 fn parse_step_limit_from_config(config_resolved: &str) -> Option<u32> {
-    let re = regex::Regex::new(r"(?m)^\s*step_limit\s*=\s*(\d+)").ok()?;
+    // Anchored to start-of-line; allows TOML underscore separators (e.g. 1_000).
+    let re = regex::Regex::new(r"(?m)^\s*step_limit\s*=\s*([\d_]+)").ok()?;
     // Take the last match in case of multiple TOML sections overriding the value.
     re.captures_iter(config_resolved)
         .last()
-        .and_then(|cap| cap[1].parse::<u32>().ok())
+        .and_then(|cap| cap[1].replace('_', "").parse::<u32>().ok())
 }
 
 fn resolve_trajectory_paths(sweep: &Path, instance_id: &str) -> Vec<PathBuf> {
@@ -460,6 +491,14 @@ struct StagnationRecord {
     count: u32,
     #[serde(default)]
     step_indices: Vec<u32>,
+}
+
+/// Returns true when `id` is a single safe path component (no separators, no `..`).
+/// Mirrors the same guard used in `bench grep`.
+fn instance_id_is_safe(id: &str) -> bool {
+    use std::path::{Component, Path};
+    let mut components = Path::new(id).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -576,6 +615,11 @@ mod tests {
         );
         // Must not match keys that merely end with step_limit.
         assert_eq!(parse_step_limit_from_config("max_step_limit = 100"), None);
+        // TOML underscore separators must be handled.
+        assert_eq!(
+            parse_step_limit_from_config("step_limit = 1_000"),
+            Some(1000)
+        );
     }
 
     #[test]
@@ -872,5 +916,95 @@ mod tests {
         // 80 chars + "…" = 81 display chars
         assert_eq!(action.chars().count(), 81);
         assert!(action.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn stagnation_instance_preserved_when_action_not_in_messages() {
+        // Simulates a trajectory where the repeated action was redacted before
+        // being written to messages. The instance must still appear in the
+        // report with canonical_action = "[redacted]".
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        let full_hash = hash_of("secret-action");
+        // Write a trajectory with the correct hash but no matching action text.
+        let traj_json = serde_json::to_string_pretty(&serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.3",
+            "info": {
+                "failure_category": "agent_stagnation",
+                "steps": 4,
+                "total_cost_usd": 0.010,
+                "stagnation": {
+                    "action_hash": full_hash,
+                    "count": 4,
+                    "window": 8,
+                    "step_indices": [0, 1, 2, 3],
+                }
+            },
+            // Messages present but action text has been replaced/redacted.
+            "messages": [
+                {"role": "assistant", "content": "doing stuff",
+                 "extra": {"actions": ["[REDACTED]"]}}
+            ]
+        }))
+        .unwrap();
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json(&[serde_json::json!({
+                "instance_id": "r1",
+                "exit_reason": "error",
+                "failure_category": "agent_stagnation",
+            })]),
+        )
+        .unwrap();
+        std::fs::write(sweep.join("r1.traj.json"), traj_json).unwrap();
+
+        let report = run_report(sweep);
+        assert_eq!(report.totals.halted_count, 1);
+        assert_eq!(report.instances[0].canonical_action, "[redacted]");
+    }
+
+    #[test]
+    fn unsafe_instance_ids_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let sweep = dir.path();
+        // A crafted results.json with a path-traversal instance_id.
+        std::fs::write(
+            sweep.join("results.json"),
+            results_json(&[serde_json::json!({
+                "instance_id": "../evil",
+                "exit_reason": "error",
+                "failure_category": "agent_stagnation",
+            })]),
+        )
+        .unwrap();
+
+        let report = run_report(sweep);
+        // The unsafe instance must be skipped, not cause a panic or path escape.
+        assert_eq!(report.totals.halted_count, 0);
+    }
+
+    #[test]
+    fn parse_step_limit_handles_underscore_integers() {
+        assert_eq!(
+            parse_step_limit_from_config("step_limit = 1_000"),
+            Some(1000)
+        );
+        assert_eq!(
+            parse_step_limit_from_config("step_limit = 1_0_0"),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn instance_id_safe_accepts_normal_ids() {
+        assert!(instance_id_is_safe("django__django-1234"));
+        assert!(instance_id_is_safe("instance-a"));
+    }
+
+    #[test]
+    fn instance_id_safe_rejects_traversal() {
+        assert!(!instance_id_is_safe("../evil"));
+        assert!(!instance_id_is_safe("a/b"));
+        assert!(!instance_id_is_safe(""));
     }
 }
