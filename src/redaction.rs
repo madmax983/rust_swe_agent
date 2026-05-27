@@ -241,7 +241,16 @@ impl Redactor {
     }
 
     pub fn redact_json_value(&self, value: &mut serde_json::Value, surface: &str) -> bool {
-        if !self.inner.enabled {
+        self.redact_json_value_inner(value, surface, 0)
+    }
+
+    fn redact_json_value_inner(
+        &self,
+        value: &mut serde_json::Value,
+        surface: &str,
+        depth: usize,
+    ) -> bool {
+        if !self.inner.enabled || depth > 100 {
             return false;
         }
         match value {
@@ -251,7 +260,7 @@ impl Redactor {
                     if let Some(kind) = sensitive_key_kind(key) {
                         redacted |= self.redact_sensitive_value(child, surface, kind);
                     } else {
-                        redacted |= self.redact_json_value(child, surface);
+                        redacted |= self.redact_json_value_inner(child, surface, depth + 1);
                     }
                 }
                 redacted
@@ -259,7 +268,7 @@ impl Redactor {
             serde_json::Value::Array(values) => {
                 let mut redacted = false;
                 for child in values {
-                    redacted |= self.redact_json_value(child, surface);
+                    redacted |= self.redact_json_value_inner(child, surface, depth + 1);
                 }
                 redacted
             }

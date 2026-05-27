@@ -51,7 +51,7 @@ impl StreamSink for EventLogSink {
                 .open(&self.path)
                 .map(|f| Box::new(f) as Box<dyn Write + Send>)
             {
-                if let Ok(mut w) = self.writer.lock() {
+                if let Ok(mut w) = self.writer.lock().or_else(|e| Ok::<_, ()>(e.into_inner())) {
                     *w = new_writer;
                 }
             } else {
@@ -77,13 +77,13 @@ impl StreamSink for EventLogSink {
             }
         }
         let line = Value::Object(obj).to_string() + "\n";
-        match self.writer.lock() {
+        match self.writer.lock().or_else(|e| Ok::<_, ()>(e.into_inner())) {
             Ok(mut w) => {
                 if w.write_all(line.as_bytes()).is_err() || w.flush().is_err() {
                     self.warn_once("event-log write failed; continuing without event log");
                 }
             }
-            Err(_) => {
+            Err(()) => {
                 self.warn_once("event-log writer lock poisoned; continuing without event log");
             }
         }
@@ -111,5 +111,39 @@ mod tests {
         assert_eq!(v["event_type"], "run_started");
         assert_eq!(v["instance_id"], "mini");
         assert!(v["ts"].as_str().is_some());
+    }
+}
+
+#[cfg(test)]
+mod havoc_event_log_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_event_log_poison_causes_panic_or_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let sink = Arc::new(EventLogSink::new(&path, "mini".into()).unwrap());
+        let sink_clone = sink.clone();
+
+        let _ = thread::spawn(move || {
+            let _lock = sink_clone.writer.lock().unwrap();
+            panic!("Intentional poison");
+        })
+        .join();
+
+        sink.emit(StreamEvent::RunStarted {
+            task: "t".into(),
+            model: "m".into(),
+            started_at: "s".into(),
+        });
+
+        let line = std::fs::read_to_string(path).unwrap();
+        assert!(
+            !line.is_empty(),
+            "Event was silently dropped due to lock poisoning"
+        );
     }
 }
