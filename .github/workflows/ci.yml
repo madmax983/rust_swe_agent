@@ -35,6 +35,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v2"
       - run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   test:
