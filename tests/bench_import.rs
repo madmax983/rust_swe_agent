@@ -548,3 +548,117 @@ fn import_writes_patch_files() {
         "patch file should NOT be written for empty-patch instance"
     );
 }
+
+/// Duplicate instance_id records must be skipped with a reason (only the first kept).
+#[test]
+fn import_deduplicates_instance_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    // Build predictions with a duplicate entry for django__django-11001
+    let preds = tmp.path().join("preds.jsonl");
+    std::fs::write(
+        &preds,
+        r#"{"instance_id":"django__django-11001","model_patch":"diff a","model_name_or_path":"m"}
+{"instance_id":"django__django-11001","model_patch":"diff b","model_name_or_path":"m"}
+{"instance_id":"django__django-11003","model_patch":"diff c","model_name_or_path":"m"}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(support::binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            preds.to_str().unwrap(),
+            "--dataset-path",
+            "tests/data/dataset_sample.jsonl",
+            "--output",
+            out.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "import with duplicate should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+
+    assert_eq!(
+        summary["records_imported"].as_u64().unwrap(),
+        2,
+        "only 2 unique instances should be imported"
+    );
+    assert_eq!(
+        summary["records_skipped"].as_u64().unwrap(),
+        1,
+        "the duplicate should be counted as skipped"
+    );
+}
+
+/// `all_preds.jsonl` must be written with submitted (non-empty patch) records.
+#[test]
+fn import_writes_all_preds_jsonl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    let output = Command::new(support::binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            "tests/data/predictions_sample.jsonl",
+            "--dataset-path",
+            "tests/data/dataset_sample.jsonl",
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let all_preds = out.join("all_preds.jsonl");
+    assert!(all_preds.exists(), "all_preds.jsonl must be written");
+
+    let content = std::fs::read_to_string(&all_preds).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+
+    // Only non-empty-patch submitted records: 11001, 11003, 99999 (3 records)
+    assert_eq!(
+        lines.len(),
+        3,
+        "all_preds.jsonl should contain 3 submitted records (non-empty patches)"
+    );
+
+    // Each line must have instance_id, model_patch, and model_name_or_path
+    for line in &lines {
+        assert!(
+            line["instance_id"].is_string(),
+            "each all_preds.jsonl record needs instance_id"
+        );
+        assert!(
+            line["model_patch"].is_string(),
+            "each all_preds.jsonl record needs model_patch"
+        );
+        assert!(
+            line["model_name_or_path"].is_string(),
+            "each all_preds.jsonl record needs model_name_or_path"
+        );
+    }
+}

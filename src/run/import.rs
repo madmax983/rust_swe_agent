@@ -21,6 +21,8 @@
 //!   distinguish it from harness-native runs.
 //! * `<instance_id>/run-1.patch` — the model patch, written for every instance
 //!   whose `model_patch` field is non-empty.
+//! * `all_preds.jsonl` — evaluator-compatible predictions file (only submitted
+//!   records with non-empty patches), suitable for `bench evaluate --backend sb-cli`.
 //!
 //! Without `--evaluate`, `resolved` flags are absent (all `pass_at_1 = false`,
 //! `resolved_count = 0`). A separate `bench evaluate` pass fills them in.
@@ -76,7 +78,8 @@ pub struct ImportSummary {
     /// with errors such as an unrecognised `instance_id`).
     pub records_imported: usize,
     /// Number of records that could not be attributed to any instance (e.g.
-    /// missing `instance_id` field). These are excluded from `results.json`.
+    /// missing `instance_id` field or duplicate). These are excluded from
+    /// `results.json`.
     pub records_skipped: usize,
     /// Per-record reasons for the `records_skipped` entries.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -152,16 +155,9 @@ fn parse_predictions(bytes: &[u8]) -> Result<Vec<(usize, Option<PredictionRecord
     Ok(out)
 }
 
-fn load_dataset_instance_ids(
-    dataset_path: &Path,
-) -> Result<std::collections::HashSet<String>, Error> {
-    let bytes = std::fs::read(dataset_path).map_err(|e| {
-        Error::Trajectory(format!(
-            "cannot read dataset file {}: {e}",
-            dataset_path.display()
-        ))
-    })?;
-    let text = std::str::from_utf8(&bytes)
+/// Parse dataset JSONL bytes and return the set of known instance IDs.
+fn load_dataset_instance_ids(bytes: &[u8]) -> Result<std::collections::HashSet<String>, Error> {
+    let text = std::str::from_utf8(bytes)
         .map_err(|e| Error::Trajectory(format!("dataset utf-8 decode: {e}")))?;
     let mut ids = std::collections::HashSet::new();
     for (i, line) in text.lines().enumerate() {
@@ -199,11 +195,53 @@ fn write_patch_file(output_dir: &Path, instance_id: &str, patch: &str) -> Result
     Ok(())
 }
 
+/// Write `all_preds.jsonl` — the evaluator-compatible predictions file that
+/// `bench evaluate --backend sb-cli` expects in the sweep directory.
+///
+/// Only SUBMITTED records with a non-empty patch are included (same filter
+/// that `write_predictions_file` applies for native sweeps).
+fn write_all_preds_jsonl(
+    output_dir: &Path,
+    instances: &[InstanceResult],
+    model_name: &str,
+) -> Result<(), Error> {
+    let path = crate::run::swebench::predictions_path(output_dir);
+    let mut content = String::new();
+    for inst in instances {
+        if inst.outcome.as_deref() != Some(outcome::SUBMITTED) || !inst.non_empty_patch {
+            continue;
+        }
+        let patch_path = output_dir.join(&inst.instance_id).join("run-1.patch");
+        let model_patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+        let line = serde_json::json!({
+            "instance_id": inst.instance_id,
+            "model_patch": model_patch,
+            "model_name_or_path": model_name,
+        });
+        let _ = writeln!(
+            content,
+            "{}",
+            serde_json::to_string(&line).map_err(Error::Json)?
+        );
+    }
+    std::fs::write(&path, &content)?;
+    Ok(())
+}
+
 // ── core run function ─────────────────────────────────────────────────────────
 
 /// Run `bench import`.
 #[allow(clippy::too_many_lines)]
 pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
+    // 0. Fail fast on unsupported flags before touching the filesystem.
+    if args.evaluate {
+        return Err(Error::Config(crate::error::ConfigError::Usage(
+            "bench import --evaluate is not yet implemented; run `bench evaluate` \
+             separately after import to populate resolved flags"
+                .to_owned(),
+        )));
+    }
+
     // 1. Read and hash the predictions file.
     let predictions_bytes = std::fs::read(&args.predictions).map_err(|e| {
         Error::Trajectory(format!(
@@ -216,10 +254,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     // 2. Parse prediction records.
     let raw_records = parse_predictions(&predictions_bytes)?;
 
-    // 3. Load dataset for instance-id validation.
-    let dataset_ids = load_dataset_instance_ids(&args.dataset_path)?;
-
-    // 4. Read dataset bytes for the manifest.
+    // 3. Read dataset file once: used for both instance-ID validation and the manifest hash.
     let dataset_bytes = std::fs::read(&args.dataset_path).map_err(|e| {
         Error::Trajectory(format!(
             "cannot read dataset file {}: {e}",
@@ -227,13 +262,15 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         ))
     })?;
     let dataset_sha256 = sha256_hex(&dataset_bytes);
+    let dataset_ids = load_dataset_instance_ids(&dataset_bytes)?;
 
-    // 5. Create output directory.
+    // 4. Create output directory.
     std::fs::create_dir_all(&args.output)?;
 
-    // 6. Process records.
+    // 5. Process records, deduplicating on instance_id.
     let mut instances: Vec<InstanceResult> = Vec::with_capacity(raw_records.len());
     let mut skip_reasons: Vec<SkipReason> = Vec::new();
+    let mut seen_instance_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut model_name: Option<String> = None;
 
     for (idx, maybe_rec) in raw_records {
@@ -256,6 +293,15 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             }
         };
 
+        // Skip duplicates — downstream tools assume unique instance IDs.
+        if !seen_instance_ids.insert(instance_id.clone()) {
+            skip_reasons.push(SkipReason {
+                record_index: idx,
+                reason: format!("duplicate instance_id `{instance_id}`"),
+            });
+            continue;
+        }
+
         // Capture model name from first record that supplies it.
         if model_name.is_none() {
             if let Some(ref m) = rec.model_name_or_path {
@@ -277,8 +323,9 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             )
         });
 
-        // Write patch file for non-empty patches.
-        if non_empty_patch && error_msg.is_none() {
+        // Write patch file for all non-empty patches (even unknown IDs — the
+        // patch is valid data regardless of dataset membership).
+        if non_empty_patch {
             write_patch_file(&args.output, &instance_id, &patch)?;
         }
 
@@ -319,7 +366,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         });
     }
 
-    // 7. Build aggregate counts.
+    // 6. Build aggregate counts.
     let total = instances.len();
     let submitted_count = instances
         .iter()
@@ -331,7 +378,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         .count();
     let with_patch_count = instances.iter().filter(|r| r.non_empty_patch).count();
 
-    // 8. Build manifest.
+    // 7. Build manifest.
     let started_at_utc = chrono::Utc::now().to_rfc3339();
     let predictions_path_str = args
         .predictions
@@ -372,7 +419,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             overlay_paths: Vec::new(),
         },
         model: ModelManifest {
-            name: used_model_name,
+            name: used_model_name.clone(),
             backend: "external".to_owned(),
             backend_version: None,
             base_url: None,
@@ -394,7 +441,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         reproduced_from: None,
     };
 
-    // 9. Build SweepResults.
+    // 8. Build SweepResults.
     let sweep = SweepResults {
         total,
         sweep_status: SWEEP_STATUS_COMPLETED.to_owned(),
@@ -444,18 +491,13 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         span_export_dropped: 0,
     };
 
-    // 10. Write results.json atomically.
+    // 9. Write results.json atomically.
     let results_path = args.output.join("results.json");
     write_sweep_results_atomic(&results_path, &sweep)?;
 
-    // 11. Handle --evaluate (not yet implemented).
-    if args.evaluate {
-        return Err(Error::Config(crate::error::ConfigError::Usage(
-            "bench import --evaluate is not yet implemented; run `bench evaluate` \
-             separately after import to populate resolved flags"
-                .to_owned(),
-        )));
-    }
+    // 10. Write all_preds.jsonl so `bench evaluate --backend sb-cli` can submit without
+    //     needing to reconstruct the predictions from the per-instance patch files.
+    write_all_preds_jsonl(&args.output, &sweep.instances, &used_model_name)?;
 
     let canonical_output = args
         .output
