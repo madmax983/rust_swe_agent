@@ -381,4 +381,185 @@ mod tests {
         assert_eq!(ExitCode::AuditFailure.as_i32(), 20);
         assert_eq!(ExitCode::AuditFailure.outcome_class(), "audit_failure");
     }
+
+    #[test]
+    fn from_error_template_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Template(minijinja::Error::new(
+                minijinja::ErrorKind::SyntaxError,
+                "test",
+            ))),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_trajectory_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Trajectory("test".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_github_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Github("test".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn from_error_json_is_internal_error() {
+        let err = serde_json::from_str::<i32>("not_a_number").unwrap_err();
+        assert_eq!(
+            ExitCode::from_error(&Error::Json(err)),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_agent_stagnation_is_agent_stagnation() {
+        assert_eq!(
+            ExitCode::from_error(&Error::AgentStagnation {
+                count: 3,
+                window: 10
+            }),
+            ExitCode::AgentStagnation
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_budget_exhausted_is_bisect_budget_exhausted() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectBudgetExhausted),
+            ExitCode::BisectBudgetExhausted
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_schema_break_is_bisect_schema_break() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectSchemaBreak),
+            ExitCode::BisectSchemaBreak
+        );
+    }
+
+    #[test]
+    fn from_error_audit_is_audit_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Audit("test".into())),
+            ExitCode::AuditFailure
+        );
+    }
+
+    #[test]
+    fn from_error_model_replay_drift_is_replay_prompt_drift() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::ReplayDrift(5))),
+            ExitCode::ReplayPromptDrift
+        );
+    }
+
+    #[test]
+    fn as_i32_returns_correct_value() {
+        assert_eq!(ExitCode::Success.as_i32(), 0);
+        assert_eq!(ExitCode::InternalError.as_i32(), 1);
+        assert_eq!(ExitCode::UsageError.as_i32(), 2);
+    }
+
+    #[test]
+    fn outcome_class_returns_correct_string() {
+        assert_eq!(ExitCode::Success.outcome_class(), "success");
+        assert_eq!(ExitCode::InternalError.outcome_class(), "internal_error");
+        assert_eq!(ExitCode::UsageError.outcome_class(), "usage_error");
+    }
+
+    #[test]
+    fn outcome_class_all_variants() {
+        assert_eq!(ExitCode::Success.outcome_class(), "success");
+        assert_eq!(ExitCode::InternalError.outcome_class(), "internal_error");
+        assert_eq!(ExitCode::UsageError.outcome_class(), "usage_error");
+        assert_eq!(
+            ExitCode::PreflightFailure.outcome_class(),
+            "preflight_failure"
+        );
+        assert_eq!(
+            ExitCode::TaskUnsuccessful.outcome_class(),
+            "task_unsuccessful"
+        );
+        assert_eq!(ExitCode::BudgetHalt.outcome_class(), "budget_halt");
+        assert_eq!(
+            ExitCode::RegressionGateFailure.outcome_class(),
+            "regression_gate_failure"
+        );
+        assert_eq!(
+            ExitCode::VerificationFailure.outcome_class(),
+            "verification_failure"
+        );
+        assert_eq!(
+            ExitCode::CalibrationOptimistic.outcome_class(),
+            "calibration_optimistic"
+        );
+        assert_eq!(
+            ExitCode::ReplayPromptDrift.outcome_class(),
+            "replay_prompt_drift"
+        );
+        assert_eq!(
+            ExitCode::ReplayResponseExhausted.outcome_class(),
+            "replay_response_exhausted"
+        );
+        assert_eq!(ExitCode::SystemicHalt.outcome_class(), "systemic_halt");
+        assert_eq!(
+            ExitCode::AgentStagnation.outcome_class(),
+            "agent_stagnation"
+        );
+        assert_eq!(
+            ExitCode::EnvPreviewWarning.outcome_class(),
+            "env_preview_warning"
+        );
+        assert_eq!(
+            ExitCode::SkillsPreviewWarning.outcome_class(),
+            "skills_preview_warning"
+        );
+        assert_eq!(
+            ExitCode::ResumeAlreadyTerminal.outcome_class(),
+            "resume_already_terminal"
+        );
+        assert_eq!(
+            ExitCode::ResumeManifestMissing.outcome_class(),
+            "resume_manifest_missing"
+        );
+        assert_eq!(
+            ExitCode::ResumeInvalidPrefix.outcome_class(),
+            "resume_invalid_prefix"
+        );
+        assert_eq!(
+            ExitCode::BisectBudgetExhausted.outcome_class(),
+            "bisect_budget_exhausted"
+        );
+        assert_eq!(
+            ExitCode::BisectSchemaBreak.outcome_class(),
+            "bisect_schema_break"
+        );
+        assert_eq!(ExitCode::AuditFailure.outcome_class(), "audit_failure");
+        assert_eq!(
+            ExitCode::EvalGamingGateFailure.outcome_class(),
+            "eval_gaming_gate_failure"
+        );
+        assert_eq!(ExitCode::Interrupted.outcome_class(), "interrupted");
+        assert_eq!(ExitCode::Killed.outcome_class(), "killed");
+    }
+
+    #[test]
+    fn from_error_model_all_candidates_failed_is_task_unsuccessful() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Model(ModelError::AllCandidatesFailed(
+                "test".into(),
+                vec![]
+            ))),
+            ExitCode::TaskUnsuccessful
+        );
+    }
 }
