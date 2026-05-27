@@ -28,6 +28,11 @@ fn artifact_schema_current_minor_bumped_for_replay_fingerprinting() {
     // 1.8 added per-call sampling parameters (issue #177),
     // 1.9 added patch_error_log to InstanceEvaluation (issue #273).
     // 1.10 added local_workdir option to RenderOnlyReport (issue #341).
+    // NO-BUMP (issue #329): info.manifest was added as Option<MiniProvenanceManifest>
+    //   with skip_serializing_if="is_none".  It is absent from pre-#329 trajectories
+    //   (reads as None in new code, is silently ignored by all old readers) and no
+    //   existing bench inspect/tail/compare command displays or requires the field.
+    //   The change is fully reader-transparent under the major-1 additive policy.
     assert_eq!(
         ArtifactSchemaVersion::CURRENT,
         ArtifactSchemaVersion::new(1, 10)

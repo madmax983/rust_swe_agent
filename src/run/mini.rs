@@ -271,6 +271,9 @@ fn cli_flag_is_sensitive(flag: &str) -> bool {
             | "access-token"
             | "auth-token"
             | "bearer-token"
+            // Webhook flags can carry credentials in the URL or header value.
+            | "webhook-url"
+            | "webhook-header"
     ) || body.ends_with("-key")
         || body.ends_with("-token")
         || body.ends_with("-secret")
@@ -323,7 +326,9 @@ fn build_mini_manifest(
 
     let cfg_redacted = config_redacted(&args.config, redactor);
 
-    let cli_argv = std::env::args().collect::<Vec<String>>();
+    let cli_argv = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<String>>();
     let cli_invocation = redact_cli_invocation(cli_argv, &args.config.root.redaction);
 
     let env_kind = match args.config.root.environment.kind {
@@ -3034,5 +3039,43 @@ index 8a1218a..24c5735 100644\n\
             Some("inherits:parent_sweep"),
             "harness_git_sha must be inherits:parent_sweep when called from sweep"
         );
+    }
+
+    #[test]
+    fn cli_flag_is_sensitive_catches_webhook_flags() {
+        // Webhook URL can embed credentials in the URL; header values can be
+        // Authorization or X-Api-Key style secrets — both must be redacted.
+        assert!(
+            cli_flag_is_sensitive("--webhook-url"),
+            "--webhook-url must be treated as sensitive"
+        );
+        assert!(
+            cli_flag_is_sensitive("--webhook-header"),
+            "--webhook-header must be treated as sensitive"
+        );
+    }
+
+    #[test]
+    fn redact_cli_invocation_masks_webhook_url_and_header() {
+        let cfg = crate::config::Config::defaults().unwrap();
+        let argv = vec![
+            "bench".into(),
+            "mini".into(),
+            "--webhook-url".into(),
+            "https://hooks.example.com/token=supersecret".into(),
+            "--webhook-header".into(),
+            "Authorization: Bearer sk-abc123".into(),
+            "--task".into(),
+            "fix bug".into(),
+        ];
+        let redacted = redact_cli_invocation(argv, &cfg.root.redaction);
+        // The values following --webhook-url and --webhook-header must be redacted
+        assert_eq!(redacted[3], "<redacted>", "webhook URL must be redacted");
+        assert_eq!(
+            redacted[5], "<redacted>",
+            "webhook header value must be redacted"
+        );
+        // Non-sensitive values must pass through
+        assert_eq!(redacted[7], "fix bug");
     }
 }

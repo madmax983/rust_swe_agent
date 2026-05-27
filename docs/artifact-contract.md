@@ -46,6 +46,12 @@ Compatibility classes:
 
 Any future schema change needs either a documented no-bump rationale in the relevant change description or a schema-version bump plus fixture updates under `tests/fixtures/artifact_schema`.
 
+### No-bump change log
+
+| Issue | Change | Rationale |
+|-------|--------|-----------|
+| #329 | Added `info.manifest` (`Option<MiniProvenanceManifest>`) to trajectory | Field is optional (`skip_serializing_if = "is_none"`); absent from pre-#329 trajectories (reads as `None` in new code); silently ignored by all existing `bench inspect`/`tail`/`compare` readers; fully reader-transparent under the major-1 additive policy. |
+
 ## Trajectory `failure_category` values
 
 The `info.failure_category` field in a trajectory artifact uses a stable string
