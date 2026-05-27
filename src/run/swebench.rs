@@ -1561,7 +1561,7 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // The body is a single sequential pipeline (load → resume-skip → spawn →
 // join → aggregate → emit). Splitting it would obscure the linear flow
 // without yielding reusable pieces.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     if args.reruns == 0 {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2617,7 +2617,7 @@ async fn forward_os_cancellation_signals(tx: mpsc::UnboundedSender<SweepSignal>)
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let deadline = Instant::now() + Duration::from_secs(args.preflight_total_timeout_s);
     let mut checks = Vec::new();
@@ -4239,7 +4239,7 @@ struct RunOneParams {
     event_log: Option<PathBuf>,
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -> InstanceResult {
     let RunOneParams {
         output_dir,

@@ -211,7 +211,7 @@ pub fn validate_tiers(tiers: &[TierDef]) -> Result<(), Error> {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Run the full cascade experiment and return a summary.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub async fn run(args: CascadeArgs) -> Result<CascadeSummary, Error> {
     // Preflight: cascade requires an evaluation backend (or test mock).
     if args.eval_backend == EvaluateBackend::None && args.mock_eval_resolved_ids.is_none() {
@@ -735,6 +735,7 @@ struct TierStats {
     total_cost_usd: f64,
 }
 
+#[allow(clippy::large_futures)]
 async fn run_tier(
     tier: &TierDef,
     tier_sweep_dir: PathBuf,
