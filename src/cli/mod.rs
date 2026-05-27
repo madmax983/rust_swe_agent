@@ -1,4 +1,10 @@
 //! Command-line interface. `clap` derive; subcommand dispatch.
+// The dispatch functions in this module call large async subsystems.  The
+// Box::pin calls on the hot paths heap-allocate the inner futures, but the
+// outer dispatch state machines can still cross the 16 KiB threshold on some
+// compiler builds.  The lint is informational here; the allocation behaviour
+// is already correct.
+#![allow(clippy::large_futures)]
 
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::time::Duration;
