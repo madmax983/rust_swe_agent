@@ -1031,8 +1031,12 @@ pub async fn bench_swebench(s: args::SwebenchCmd) -> Result<(), Error> {
     } else {
         "sweep"
     };
-    let results =
-        Box::pin(crate::run::swebench::run(swebench_args_from_cmd(sweep_cmd, cfg, preflight_mode)?)).await?;
+    let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(
+        sweep_cmd,
+        cfg,
+        preflight_mode,
+    )?))
+    .await?;
 
     tracing::info!(
         total = results.total,
@@ -1193,7 +1197,10 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
             print_env_preview_text(&preview);
         }
     }
-    let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(s, cfg, "doctor")?)).await?;
+    let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(
+        s, cfg, "doctor",
+    )?))
+    .await?;
     if output_format != "json" {
         print!("{}", results.summary_table());
     }
