@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::Command;
 
 use maxwells_daemon::run::swebench::{
-    HarnessManifest, InstanceResult, ProvenanceManifest, SweepResults, SWEEP_STATUS_COMPLETED,
+    HarnessManifest, InstanceResult, ProvenanceManifest, SWEEP_STATUS_COMPLETED, SweepResults,
 };
 use maxwells_daemon::trajectory::outcome;
 
@@ -227,13 +227,16 @@ fn import_help_exposes_flags() {
         .args(["bench", "import", "--help"])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "bench import --help should exit 0"
-    );
+    assert!(output.status.success(), "bench import --help should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--predictions"), "should mention --predictions");
-    assert!(stdout.contains("--dataset-path"), "should mention --dataset-path");
+    assert!(
+        stdout.contains("--predictions"),
+        "should mention --predictions"
+    );
+    assert!(
+        stdout.contains("--dataset-path"),
+        "should mention --dataset-path"
+    );
     assert!(stdout.contains("--output"), "should mention --output");
     assert!(stdout.contains("--evaluate"), "should mention --evaluate");
     assert!(stdout.contains("--format"), "should mention --format");
@@ -271,7 +274,10 @@ fn import_produces_results_json() {
         results["artifact_kind"], "sweep_results",
         "artifact_kind must be sweep_results"
     );
-    assert!(results["schema_version"].is_object(), "schema_version must be present");
+    assert!(
+        results["schema_version"].is_object(),
+        "schema_version must be present"
+    );
 
     // Zero-cost guarantee
     let cost = results["total_cost_usd"]
@@ -392,7 +398,10 @@ fn import_format_json_summary() {
         ])
         .output()
         .unwrap();
-    assert!(output.status.success(), "bench import --format json should exit 0");
+    assert!(
+        output.status.success(),
+        "bench import --format json should exit 0"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let summary: serde_json::Value =

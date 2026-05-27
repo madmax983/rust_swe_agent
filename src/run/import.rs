@@ -36,8 +36,8 @@ use sha2::{Digest, Sha256};
 use crate::error::Error;
 use crate::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
-    ModelManifest, ProvenanceManifest, PromptTemplateManifest, RuntimeManifest, SWEEP_STATUS_COMPLETED,
-    SweepResults, write_sweep_results_atomic,
+    ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,
+    SWEEP_STATUS_COMPLETED, SweepResults, write_sweep_results_atomic,
 };
 use crate::trajectory::outcome;
 
@@ -152,7 +152,9 @@ fn parse_predictions(bytes: &[u8]) -> Result<Vec<(usize, Option<PredictionRecord
     Ok(out)
 }
 
-fn load_dataset_instance_ids(dataset_path: &Path) -> Result<std::collections::HashSet<String>, Error> {
+fn load_dataset_instance_ids(
+    dataset_path: &Path,
+) -> Result<std::collections::HashSet<String>, Error> {
     let bytes = std::fs::read(dataset_path).map_err(|e| {
         Error::Trajectory(format!(
             "cannot read dataset file {}: {e}",
@@ -167,9 +169,8 @@ fn load_dataset_instance_ids(dataset_path: &Path) -> Result<std::collections::Ha
         if line.is_empty() {
             continue;
         }
-        let val: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-            Error::Trajectory(format!("dataset line {}: {e}", i + 1))
-        })?;
+        let val: serde_json::Value = serde_json::from_str(line)
+            .map_err(|e| Error::Trajectory(format!("dataset line {}: {e}", i + 1)))?;
         if let Some(id) = val.get("instance_id").and_then(|v| v.as_str()) {
             ids.insert(id.to_owned());
         }
@@ -296,7 +297,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
             exit_reason: exit_reason.to_owned(),
             outcome: result_outcome,
             failure_category: None,
-            steps: None,    // zero-cost: steps not available
+            steps: None,         // zero-cost: steps not available
             cost_usd: Some(0.0), // zero-cost guarantee
             prompt_tokens: None,
             cache_read_tokens: None,
