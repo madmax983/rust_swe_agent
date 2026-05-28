@@ -72,6 +72,7 @@ pub async fn run() -> Result<(), Error> {
         Command::Replay(r) => replay_cmd(*r).await,
         Command::Bench { cmd } => match *cmd {
             args::BenchCmd::Swebench(s) => Box::pin(bench_swebench(*s)).await,
+            args::BenchCmd::Play(args) => play_cmd(args).await,
             args::BenchCmd::Rehearsal(mut s) => {
                 s.rehearse = true;
                 Box::pin(bench_swebench(*s)).await
@@ -908,6 +909,10 @@ fn bench_swebench_render_only(s: &args::SwebenchCmd) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+async fn play_cmd(r: args::PlayCmd) -> Result<(), Error> {
+    crate::run::play::run(r).await
 }
 
 async fn replay_cmd(r: args::ReplayCmd) -> Result<(), Error> {

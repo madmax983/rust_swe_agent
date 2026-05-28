@@ -32,6 +32,7 @@ pub mod ladder;
 pub mod matrix;
 pub mod mini;
 pub mod patch_stats;
+pub mod play;
 pub mod policy_impact;
 pub mod power;
 pub mod rate_limit;

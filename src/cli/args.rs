@@ -398,7 +398,19 @@ pub struct HelloWorldCmd {
     pub config: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
+/// `bench play` — watch a completed trajectory replay in the terminal.
+#[derive(Debug, Args, Clone)]
+pub struct PlayCmd {
+    /// Path to the trajectory JSON file to play.
+    #[arg(long)]
+    pub trajectory_path: std::path::PathBuf,
+
+    /// Milliseconds to delay between steps (default 500).
+    #[arg(long, default_value = "500")]
+    pub delay_ms: u64,
+}
+
+#[derive(Debug, Args, Clone)]
 pub struct ReplayCmd {
     /// Path to the original trajectory JSON file.
     #[arg(long)]
@@ -458,6 +470,8 @@ pub struct ReplayCmd {
 pub enum BenchCmd {
     /// Run a SWE-bench sweep over a local JSONL dataset.
     Swebench(Box<SwebenchCmd>),
+    /// Replay a completed trajectory and watch it live in the terminal.
+    Play(PlayCmd),
     /// Walk the full sweep pipeline end-to-end at zero cost using gold-patch shadow submissions.
     Rehearsal(Box<SwebenchCmd>),
     /// Forecast sweep cost from a reproducible calibration slice.
