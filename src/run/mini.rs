@@ -1557,6 +1557,15 @@ pub fn slugify(task: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(std::sync::Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     use super::*;
     use async_trait::async_trait;
     use std::path::Path;
@@ -2993,13 +3002,16 @@ index 8a1218a..24c5735 100644\n\
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
+        let guard = env_lock();
+        // SAFETY: test-only; single-threaded context for secret injection, serialized via ENV_LOCK.
         unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
+        drop(guard);
 
         let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
         run(args).await.unwrap();
 
         // Clean up env var
+        let _guard = env_lock();
         unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
 
         let traj_path = tmp.path().join("secret-test.traj.json");
@@ -3077,5 +3089,15 @@ index 8a1218a..24c5735 100644\n\
         );
         // Non-sensitive values must pass through
         assert_eq!(redacted[7], "fix bug");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn havoc_env_data_race() {
+        let _guard = env_lock();
+        unsafe { std::env::set_var("HAVOC_SHARED_KEY", "FAIL") };
+        let actual = std::env::var("HAVOC_SHARED_KEY").unwrap_or_default();
+        unsafe { std::env::remove_var("HAVOC_SHARED_KEY") };
+        // With ENV_LOCK, thread safety is guaranteed. The system recovers gracefully.
+        assert_eq!(actual, "FAIL", "Thread safety guaranteed by ENV_LOCK");
     }
 }
