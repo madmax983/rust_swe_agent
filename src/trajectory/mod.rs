@@ -676,11 +676,17 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Information about the trajectory's lineage if it was created as a fork.
 pub struct ForkLineage {
+    /// The original sweep path.
     pub parent_sweep_path: String,
+    /// The original instance ID.
     pub parent_instance_id: String,
+    /// The SHA256 of the parent trajectory.
     pub parent_trajectory_sha256: String,
+    /// The step at which this trajectory diverged.
     pub fork_step: u32,
+    /// Configuration overrides applied to the remaining steps.
     pub tail_overrides: std::collections::BTreeMap<String, serde_json::Value>,
 }
 

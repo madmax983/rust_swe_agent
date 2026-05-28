@@ -75,31 +75,53 @@ fn now_unix_nanos() -> u64 {
 
 /// Span data collected for the root sweep span.
 pub struct SweepSpanData {
+    /// The unique identifier for the sweep.
     pub sweep_id: String,
+    /// The name of the dataset being processed.
     pub dataset: String,
+    /// The primary model used in the sweep.
     pub model: String,
+    /// The total number of instances processed.
     pub instance_count: u64,
+    /// The total number of instances successfully resolved.
     pub resolved_count: u64,
+    /// The total cost incurred by the sweep, in USD.
     pub total_cost_usd: f64,
+    /// The version of the harness used to run the sweep.
     pub harness_version: String,
+    /// The Git commit SHA of the current code, if available.
     pub git_sha: Option<String>,
+    /// The sweep start time in nanoseconds since the UNIX epoch.
     pub start_nanos: u64,
+    /// The sweep end time in nanoseconds since the UNIX epoch.
     pub end_nanos: u64,
 }
 
 /// Span data for one instance run.
 pub struct InstanceSpanData {
+    /// The trace ID associated with this instance.
     pub trace_id: TraceId,
+    /// The span ID of the parent sweep, if part of a sweep.
     pub sweep_span_id: SpanId,
+    /// The unique identifier for the instance run.
     pub instance_id: String,
+    /// The repository name or URL being processed.
     pub repo: String,
+    /// The final outcome of the instance processing (e.g., 'resolved', 'failed').
     pub outcome: String,
+    /// The cost incurred by this instance, in USD.
     pub cost_usd: f64,
+    /// The number of steps taken during processing.
     pub step_count: u64,
+    /// The size of the generated patch in bytes.
     pub final_patch_bytes: u64,
+    /// The start time in nanoseconds since the UNIX epoch.
     pub start_nanos: u64,
+    /// The end time in nanoseconds since the UNIX epoch.
     pub end_nanos: u64,
+    /// Detailed span data for each model call made during this instance.
     pub model_calls: Vec<ModelCallSpanData>,
+    /// Detailed span data for each tool call made during this instance.
     pub tool_calls: Vec<ToolCallSpanData>,
 }
 
@@ -108,14 +130,23 @@ pub struct InstanceSpanData {
 /// Sensitive trajectory content (raw prompts, observations) is explicitly
 /// excluded; only numeric telemetry and non-sensitive metadata are recorded.
 pub struct ModelCallSpanData {
+    /// The specific model queried.
     pub model: String,
+    /// The number of tokens used in the prompt.
     pub prompt_tokens: u64,
+    /// The number of tokens generated in the completion.
     pub completion_tokens: u64,
+    /// The number of tokens read from cache.
     pub cache_read_tokens: u64,
+    /// The number of tokens created for cache.
     pub cache_creation_tokens: u64,
+    /// The latency of the model call in milliseconds.
     pub latency_ms: u64,
+    /// The reason the model call finished (e.g., 'stop', 'length').
     pub finish_reason: String,
+    /// The start time in nanoseconds since the UNIX epoch.
     pub start_nanos: u64,
+    /// The end time in nanoseconds since the UNIX epoch.
     pub end_nanos: u64,
 }
 
@@ -124,12 +155,19 @@ pub struct ModelCallSpanData {
 /// `observation_bytes` is the byte length; the actual content is not recorded
 /// in spans to keep sensitive output out of the observability pipeline.
 pub struct ToolCallSpanData {
+    /// The name of the tool executed.
     pub tool_name: String,
+    /// The exit code of the tool.
     pub exit_code: i32,
+    /// The number of bytes produced as output observation.
     pub observation_bytes: u64,
+    /// The duration of the tool execution in milliseconds.
     pub duration_ms: u64,
+    /// Whether the tool's output was truncated.
     pub truncated: bool,
+    /// The start time in nanoseconds since the UNIX epoch.
     pub start_nanos: u64,
+    /// The end time in nanoseconds since the UNIX epoch.
     pub end_nanos: u64,
 }
 

@@ -10,16 +10,25 @@ use serde_json::{Map, Value};
 use super::{StreamEvent, StreamSink};
 
 #[derive(Clone)]
+/// A stream sink that appends events as JSON-lines to a log file.
+/// Used primarily to capture `trajectory.jsonl` files.
 pub struct EventLogSink {
+    /// The output writer, wrapped in a thread-safe mutex.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// The original file path the sink writes to.
     path: PathBuf,
+    /// Whether a write warning has already been logged.
     warned: Arc<AtomicBool>,
+    /// A flag indicating whether the underlying file should be reopened.
     reopen_requested: Arc<AtomicBool>,
+    /// A counter for failures encountered during file reopening.
     dropped_reopen_failures: Arc<AtomicU64>,
+    /// The instance ID associated with these events.
     instance_id: String,
 }
 
 impl EventLogSink {
+    /// Creates a new `EventLogSink` that appends to the provided file path.
     pub fn new(path: &Path, instance_id: String) -> std::io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
@@ -31,6 +40,7 @@ impl EventLogSink {
             instance_id,
         })
     }
+    /// Requests that the underlying file writer be reopened. Used during log rotation or recovery.
     pub fn request_reopen(&self) {
         self.reopen_requested.store(true, Ordering::SeqCst);
     }

@@ -16,7 +16,9 @@ const WEBHOOK_HTTP_TIMEOUT_SECS: u64 = 5;
 /// Stable schema version sent in every webhook envelope.
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaVersion {
+    /// The major version number. Increments for breaking changes.
     pub major: u32,
+    /// The minor version number. Increments for backwards-compatible additions.
     pub minor: u32,
 }
 
@@ -34,11 +36,16 @@ impl Default for SchemaVersion {
 /// appended at the envelope level so operators can detect missed events.
 #[derive(Debug, Serialize)]
 pub struct WebhookEnvelope {
+    /// The schema version of the webhook payload.
     pub schema_version: SchemaVersion,
+    /// The unique identifier for the run that generated this event.
     pub run_id: String,
+    /// The actual event payload.
     pub event: StreamEvent,
+    /// The timestamp when the event was emitted, in ISO 8601 format.
     pub emitted_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// The number of webhook events dropped due to buffer overflow or transient errors, if any.
     pub webhook_events_dropped: Option<u64>,
 }
 
@@ -72,15 +79,25 @@ pub struct WebhookSink {
 #[derive(Debug, thiserror::Error)]
 pub enum WebhookSinkError {
     #[error("webhook sink requires an active Tokio runtime")]
+    /// A required Tokio runtime is not currently active.
     NoRuntime(#[source] TryCurrentError),
     #[error("webhook buffer capacity must be greater than zero")]
+    /// The provided buffer capacity is invalid (e.g., zero).
     InvalidBufferCapacity,
     #[error("invalid webhook URL: {0}")]
+    /// The provided webhook URL is not valid.
     InvalidUrl(String),
     #[error("failed to build webhook HTTP client")]
+    /// An error occurred while initializing the HTTP client.
     Client(#[source] reqwest::Error),
     #[error("invalid webhook header `{name}`: {reason}")]
-    InvalidHeader { name: String, reason: String },
+    /// The provided webhook header is invalid.
+    InvalidHeader {
+        /// The name of the invalid header.
+        name: String,
+        /// The reason the header is considered invalid.
+        reason: String,
+    },
 }
 
 impl WebhookSink {
@@ -219,6 +236,7 @@ pub struct WebhookSinkHandle {
 }
 
 impl WebhookSinkHandle {
+    /// Creates a new handle that delegates to the shared `WebhookSink`.
     pub fn new(inner: Arc<WebhookSink>, run_id: String) -> Self {
         Self { inner, run_id }
     }

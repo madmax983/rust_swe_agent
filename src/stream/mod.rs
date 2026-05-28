@@ -13,10 +13,14 @@
 
 use serde::Serialize;
 
+/// Broadcast channel for fanning out events to multiple asynchronous subscribers.
 pub mod broadcast;
+/// Event log sink for appending stream events to a JSON-lines file.
 pub mod event_log;
+/// Server-Sent Events (SSE) server for streaming events to HTTP clients.
 pub mod sse;
 #[cfg(feature = "webhook")]
+/// Webhook sink for POSTing events to an external HTTP endpoint.
 pub mod webhook;
 
 pub use broadcast::BroadcastSink;
@@ -37,53 +41,88 @@ pub use webhook::{
 pub enum StreamEvent {
     /// Emitted once at agent start, after the system + instance prompts
     /// are recorded.
+    /// Emitted once at agent start, after the system + instance prompts are recorded.
     RunStarted {
+        /// The task description.
         task: String,
+        /// The name of the model being used.
         model: String,
+        /// The start timestamp.
         started_at: String,
     },
     /// LLM produced a response (before action parsing).
+    /// LLM produced a response (before action parsing).
     AssistantMessage {
+        /// The current step number.
         step: u32,
+        /// The content of the assistant message.
         content: String,
+        /// The estimated cost of the model request in USD.
         cost_usd: Option<f64>,
+        /// The timestamp.
         timestamp: String,
     },
     /// About to execute a bash command.
+    /// About to execute a bash command.
     BashStart {
+        /// The step number.
         step: u32,
+        /// The bash command to execute.
         command: String,
+        /// The timestamp.
         timestamp: String,
     },
     /// Bash command finished.
+    /// Bash command finished.
     BashResult {
+        /// The step number.
         step: u32,
+        /// The exit code of the command.
         exit_code: i32,
+        /// The standard output of the command.
         stdout: String,
+        /// The standard error of the command.
         stderr: String,
+        /// Whether the command timed out.
         timed_out: bool,
+        /// The timestamp.
         timestamp: String,
     },
     /// Observation message recorded into the trajectory after a bash run.
+    /// Observation message recorded into the trajectory after a bash run.
     Observation {
+        /// The step number.
         step: u32,
+        /// The observation content.
         content: String,
+        /// The timestamp.
         timestamp: String,
     },
     /// Model output was malformed; format-error template was sent back.
+    /// Model output was malformed; format-error template was sent back.
     FormatError {
+        /// The step number.
         step: u32,
+        /// The content of the format error.
         content: String,
+        /// The timestamp.
         timestamp: String,
     },
     /// Agent loop ended.
+    /// Agent loop ended.
     RunEnded {
+        /// The reason the run ended.
         exit_reason: String,
+        /// The category of failure, if the run failed.
         #[serde(skip_serializing_if = "Option::is_none")]
         failure_category: Option<crate::trajectory::FailureCategory>,
+        /// The final output from the agent, if any.
         final_output: Option<String>,
+        /// Total steps taken.
         steps: u32,
+        /// Total cost in USD.
         total_cost_usd: f64,
+        /// The end timestamp.
         ended_at: String,
     },
 }
@@ -122,7 +161,11 @@ impl StreamSink for NullSink {
 /// Fan out one event to many sinks. Used so the agent can drive an SSE
 /// broadcast, the ratatui dashboard, and an stderr status line from the
 /// same emission path without each subsystem owning a side channel.
+/// Fan out one event to many sinks. Used so the agent can drive an SSE
+/// broadcast, the ratatui dashboard, and an stderr status line from the
+/// same emission path without each subsystem owning a side channel.
 pub struct MultiSink {
+    /// The underlying stream sinks to multiplex events to.
     sinks: Vec<std::sync::Arc<dyn StreamSink>>,
 }
 
@@ -145,7 +188,12 @@ impl StreamSink for MultiSink {
 /// Prints one terse `[status] step N/M cost $X.XXXX` line to stderr on
 /// each `AssistantMessage` (a clean per-step boundary that fires once
 /// after every model turn, before tool execution).
+/// Issue #312 `--yolo`-without-`--interactive` status-line printer.
+/// Prints one terse `[status] step N/M cost $X.XXXX` line to stderr on
+/// each `AssistantMessage` (a clean per-step boundary that fires once
+/// after every model turn, before tool execution).
 pub struct StatusLineStderrSink {
+    /// The maximum number of steps allowed for the run.
     step_limit: u32,
 }
 
