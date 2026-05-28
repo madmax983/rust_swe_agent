@@ -4,7 +4,7 @@ use proptest::prelude::*;
 proptest! {
     #[test]
     fn step_idx_next_never_panics(x in 0u32..=u32::MAX) {
-        let step = StepIdx(x);
+        let step = StepIdx::new(x);
         let _ = step.next();
     }
 }
