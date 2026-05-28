@@ -321,6 +321,138 @@ mod tests {
     }
 
     #[test]
+    fn success_exit_code_is_0() {
+        assert_eq!(ExitCode::Success.as_i32(), 0);
+        assert_eq!(ExitCode::Success.outcome_class(), "success");
+    }
+
+    #[test]
+    fn internal_error_exit_code_is_1() {
+        assert_eq!(ExitCode::InternalError.as_i32(), 1);
+        assert_eq!(ExitCode::InternalError.outcome_class(), "internal_error");
+    }
+
+    #[test]
+    fn usage_error_exit_code_is_2() {
+        assert_eq!(ExitCode::UsageError.as_i32(), 2);
+        assert_eq!(ExitCode::UsageError.outcome_class(), "usage_error");
+    }
+
+    #[test]
+    fn preflight_failure_exit_code_is_3() {
+        assert_eq!(ExitCode::PreflightFailure.as_i32(), 3);
+        assert_eq!(
+            ExitCode::PreflightFailure.outcome_class(),
+            "preflight_failure"
+        );
+    }
+
+    #[test]
+    fn task_unsuccessful_exit_code_is_4() {
+        assert_eq!(ExitCode::TaskUnsuccessful.as_i32(), 4);
+        assert_eq!(
+            ExitCode::TaskUnsuccessful.outcome_class(),
+            "task_unsuccessful"
+        );
+    }
+
+    #[test]
+    fn budget_halt_exit_code_is_5() {
+        assert_eq!(ExitCode::BudgetHalt.as_i32(), 5);
+        assert_eq!(ExitCode::BudgetHalt.outcome_class(), "budget_halt");
+    }
+
+    #[test]
+    fn regression_gate_failure_exit_code_is_6() {
+        assert_eq!(ExitCode::RegressionGateFailure.as_i32(), 6);
+        assert_eq!(
+            ExitCode::RegressionGateFailure.outcome_class(),
+            "regression_gate_failure"
+        );
+    }
+
+    #[test]
+    fn verification_failure_exit_code_is_7() {
+        assert_eq!(ExitCode::VerificationFailure.as_i32(), 7);
+        assert_eq!(
+            ExitCode::VerificationFailure.outcome_class(),
+            "verification_failure"
+        );
+    }
+
+    #[test]
+    fn calibration_optimistic_exit_code_is_8() {
+        assert_eq!(ExitCode::CalibrationOptimistic.as_i32(), 8);
+        assert_eq!(
+            ExitCode::CalibrationOptimistic.outcome_class(),
+            "calibration_optimistic"
+        );
+    }
+
+    #[test]
+    fn replay_prompt_drift_exit_code_is_9() {
+        assert_eq!(ExitCode::ReplayPromptDrift.as_i32(), 9);
+        assert_eq!(
+            ExitCode::ReplayPromptDrift.outcome_class(),
+            "replay_prompt_drift"
+        );
+    }
+
+    #[test]
+    fn replay_response_exhausted_exit_code_is_10() {
+        assert_eq!(ExitCode::ReplayResponseExhausted.as_i32(), 10);
+        assert_eq!(
+            ExitCode::ReplayResponseExhausted.outcome_class(),
+            "replay_response_exhausted"
+        );
+    }
+
+    #[test]
+    fn eval_gaming_gate_failure_exit_code_is_21() {
+        assert_eq!(ExitCode::EvalGamingGateFailure.as_i32(), 21);
+        assert_eq!(
+            ExitCode::EvalGamingGateFailure.outcome_class(),
+            "eval_gaming_gate_failure"
+        );
+    }
+
+    #[test]
+    fn interrupted_exit_code_is_130() {
+        assert_eq!(ExitCode::Interrupted.as_i32(), 130);
+        assert_eq!(ExitCode::Interrupted.outcome_class(), "interrupted");
+    }
+
+    #[test]
+    fn killed_exit_code_is_137() {
+        assert_eq!(ExitCode::Killed.as_i32(), 137);
+        assert_eq!(ExitCode::Killed.outcome_class(), "killed");
+    }
+
+    #[test]
+    fn systemic_halt_exit_code_is_11() {
+        assert_eq!(ExitCode::SystemicHalt.as_i32(), 11);
+        assert_eq!(ExitCode::SystemicHalt.outcome_class(), "systemic_halt");
+    }
+
+    #[test]
+    fn env_preview_warning_exit_code_is_13() {
+        assert_eq!(ExitCode::EnvPreviewWarning.as_i32(), 13);
+        assert_eq!(
+            ExitCode::EnvPreviewWarning.outcome_class(),
+            "env_preview_warning"
+        );
+    }
+
+    #[test]
+    fn skills_preview_warning_exit_code_is_14() {
+        assert_eq!(ExitCode::SkillsPreviewWarning.as_i32(), 14);
+        assert_eq!(
+            ExitCode::SkillsPreviewWarning.outcome_class(),
+            "skills_preview_warning"
+        );
+    }
+
+    #[test]
     fn agent_stagnation_exit_code_is_12() {
         assert_eq!(ExitCode::AgentStagnation.as_i32(), 12);
         assert_eq!(

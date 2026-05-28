@@ -1,28 +1,621 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
-     Running unittests src/lib.rs (target/debug/deps/rust_swe_agent-11e657ad366c9ce2)
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded anstyle v1.0.14
+  Downloaded cfg-if v1.0.4
+  Downloaded futures-core v0.3.32
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded rand_xorshift v0.4.0
+  Downloaded toml_datetime v0.6.11
+  Downloaded tinyvec_macros v0.1.1
+  Downloaded untrusted v0.9.0
+  Downloaded zeroize v1.8.2
+  Downloaded zmij v1.0.21
+  Downloaded tokio-util v0.7.18
+  Downloaded time v0.3.47
+  Downloaded serde_json v1.0.149
+  Downloaded reqwest v0.12.28
+  Downloaded tower v0.5.3
+  Downloaded typenum v1.20.0
+  Downloaded tower-http v0.6.8
+  Downloaded tracing-subscriber v0.3.23
+  Downloaded url v2.5.8
+  Downloaded winnow v0.7.15
+  Downloaded unicode-segmentation v1.13.2
+  Downloaded yansi v1.0.1
+  Downloaded zerovec v0.11.6
+  Downloaded zerotrie v0.2.4
+  Downloaded rustix v1.1.4
+  Downloaded rustls v0.23.39
+  Downloaded rustix v0.38.44
+  Downloaded regex-syntax v0.8.10
+  Downloaded webpki-roots v1.0.7
+  Downloaded tracing v0.1.44
+  Downloaded quinn-proto v0.11.14
+  Downloaded ratatui v0.29.0
+  Downloaded proptest v1.11.0
+  Downloaded zerocopy v0.8.48
+  Downloaded regex-automata v0.4.14
+  Downloaded tokio v1.52.1
+  Downloaded portable-atomic v1.13.1
+  Downloaded minijinja v2.19.0
+  Downloaded itertools v0.13.0
+  Downloaded iri-string v0.7.12
+  Downloaded regex v1.12.3
+  Downloaded libc v0.2.186
+  Downloaded serde_yml v0.0.12
+  Downloaded num-bigint v0.4.6
+  Downloaded insta v1.47.2
+  Downloaded idna v1.1.0
+  Downloaded rand v0.9.4
+  Downloaded quinn v0.11.9
+  Downloaded mio v1.2.0
+  Downloaded indexmap v2.14.0
+  Downloaded zerovec-derive v0.11.3
+  Downloaded zerofrom-derive v0.1.7
+  Downloaded yoke-derive v0.8.2
+  Downloaded xattr v1.6.1
+  Downloaded unit-prefix v0.5.2
+  Downloaded toml_edit v0.22.27
+  Downloaded serde v1.0.228
+  Downloaded ring v0.17.14
+  Downloaded rustls-webpki v0.103.13
+  Downloaded pretty_assertions v1.4.1
+  Downloaded miniz_oxide v0.8.9
+  Downloaded memchr v2.8.0
+  Downloaded libyml v0.0.5
+  Downloaded zerofrom v0.1.7
+  Downloaded yoke v0.8.2
+  Downloaded writeable v0.6.3
+  Downloaded want v0.3.1
+  Downloaded wait-timeout v0.2.1
+  Downloaded version_check v0.9.5
+  Downloaded uuid v1.23.1
+  Downloaded utf8parse v0.2.2
+  Downloaded utf8_iter v1.0.4
+  Downloaded unicode-truncate v1.1.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded unicase v2.9.0
+  Downloaded unarray v0.1.4
+  Downloaded tracing-log v0.2.0
+  Downloaded tracing-core v0.1.36
+  Downloaded tower-layer v0.3.3
+  Downloaded socket2 v0.6.3
+  Downloaded serde_core v1.0.228
+  Downloaded num-traits v0.2.19
+  Downloaded log v0.4.29
+  Downloaded jsonwebtoken v9.3.1
+  Downloaded indicatif v0.18.4
+  Downloaded try-lock v0.2.5
+  Downloaded tracing-attributes v0.1.31
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded litellm-rs v0.4.16
+  Downloaded tower-service v0.3.3
+  Downloaded toml_write v0.1.2
+  Downloaded toml v0.8.23
+  Downloaded tokio-stream v0.1.18
+  Downloaded tokio-rustls v0.26.4
+  Downloaded tokio-macros v2.7.0
+  Downloaded tinyvec v1.11.0
+  Downloaded linux-raw-sys v0.4.15
+  Downloaded time-macros v0.2.27
+  Downloaded thread_local v1.1.9
+  Downloaded thiserror-impl v2.0.18
+  Downloaded thiserror-impl v1.0.69
+  Downloaded unicode-width v0.2.0
+  Downloaded thiserror v2.0.18
+  Downloaded thiserror v1.0.69
+  Downloaded tempfile v3.27.0
+  Downloaded tar v0.4.45
+  Downloaded syn v2.0.117
+  Downloaded similar v2.7.0
+  Downloaded signal-hook v0.3.18
+  Downloaded sharded-slab v0.1.7
+  Downloaded serde_derive v1.0.228
+  Downloaded ryu v1.0.23
+  Downloaded rustls-pki-types v1.14.1
+  Downloaded unicode-width v0.1.14
+  Downloaded rmp-serde v1.3.1
+  Downloaded rmp v0.8.15
+  Downloaded quinn-udp v0.5.14
+  Downloaded proc-macro2 v1.0.106
+  Downloaded pin-project-lite v0.2.17
+  Downloaded paste v1.0.15
+  Downloaded parking_lot_core v0.9.12
+  Downloaded parking_lot v0.12.5
+  Downloaded once_cell v1.21.4
+  Downloaded lru v0.16.4
+  Downloaded litrs v1.0.0
+  Downloaded litemap v0.8.2
+  Downloaded icu_properties_data v2.1.2
+  Downloaded hashbrown v0.17.0
+  Downloaded hashbrown v0.16.1
+  Downloaded futures-util v0.3.32
+  Downloaded clap_builder v4.6.0
+  Downloaded chrono v0.4.44
+  Downloaded aho-corasick v1.1.4
+  Downloaded tinystr v0.8.3
+  Downloaded time-core v0.1.8
+  Downloaded synstructure v0.13.2
+  Downloaded sync_wrapper v1.0.2
+  Downloaded strum v0.26.3
+  Downloaded smallvec v1.15.1
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded shlex v1.3.0
+  Downloaded sha2 v0.10.9
+  Downloaded rusty-fork v0.3.1
+  Downloaded rustversion v1.0.22
+  Downloaded rand_core v0.9.5
+  Downloaded rand_chacha v0.9.0
+  Downloaded quote v1.0.45
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded pem v3.0.6
+  Downloaded num-integer v0.1.46
+  Downloaded nu-ansi-term v0.50.3
+  Downloaded mime_guess v2.0.5
+  Downloaded matchers v0.2.0
+  Downloaded lock_api v0.4.14
+  Downloaded ipnet v2.12.0
+  Downloaded indoc v2.0.7
+  Downloaded icu_normalizer_data v2.1.1
+  Downloaded icu_normalizer v2.1.1
+  Downloaded icu_locale_core v2.1.1
+  Downloaded icu_collections v2.1.1
+  Downloaded hyper-util v0.1.20
+  Downloaded hyper v1.9.0
+  Downloaded http v1.4.0
+  Downloaded hashbrown v0.15.5
+  Downloaded hashbrown v0.14.5
+  Downloaded getrandom v0.4.2
+  Downloaded flate2 v1.1.9
+  Downloaded darling_core v0.20.11
+  Downloaded crossterm v0.29.0
+  Downloaded crossterm v0.28.1
+  Downloaded compact_str v0.8.1
+  Downloaded comfy-table v7.2.2
+  Downloaded cc v1.2.61
+  Downloaded arc-swap v1.9.1
+  Downloaded subtle v2.6.1
+  Downloaded strum_macros v0.26.4
+  Downloaded strsim v0.11.1
+  Downloaded static_assertions v1.1.0
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded slab v0.4.12
+  Downloaded simple_asn1 v0.6.4
+  Downloaded simd-adler32 v0.3.9
+  Downloaded signal-hook-mio v0.2.5
+  Downloaded shell-words v1.1.1
+  Downloaded serde_urlencoded v0.7.1
+  Downloaded serde_spanned v0.6.9
+  Downloaded scopeguard v1.2.0
+  Downloaded rustc-hash v2.1.2
+  Downloaded quick-error v1.2.3
+  Downloaded powerfmt v0.2.0
+  Downloaded potential_utf v0.1.5
+  Downloaded percent-encoding v2.3.2
+  Downloaded option-ext v0.2.0
+  Downloaded num-conv v0.2.1
+  Downloaded memo-map v0.3.3
+  Downloaded lru-slab v0.1.2
+  Downloaded lru v0.12.5
+  Downloaded icu_provider v2.1.1
+  Downloaded icu_properties v2.1.2
+  Downloaded iana-time-zone v0.1.65
+  Downloaded httparse v1.10.1
+  Downloaded hmac v0.12.1
+  Downloaded getrandom v0.3.4
+  Downloaded getrandom v0.2.17
+  Downloaded futures-channel v0.3.32
+  Downloaded futures v0.3.32
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded either v1.15.0
+  Downloaded dotenvy v0.15.7
+  Downloaded displaydoc v0.2.5
+  Downloaded diff v0.1.13
+  Downloaded dialoguer v0.11.0
+  Downloaded dashmap v5.5.3
+  Downloaded darling v0.20.11
+  Downloaded crc32fast v1.5.0
+  Downloaded console v0.16.3
+  Downloaded console v0.15.11
+  Downloaded clap_derive v4.6.1
+  Downloaded clap v4.6.1
+  Downloaded bytes v1.11.1
+  Downloaded bitflags v2.11.1
+  Downloaded base64 v0.22.1
+  Downloaded async-trait v0.1.89
+  Downloaded anyhow v1.0.102
+  Downloaded anstyle-parse v1.0.0
+  Downloaded anstream v1.0.0
+  Downloaded allocator-api2 v0.2.21
+  Downloaded mime v0.3.17
+  Downloaded lazy_static v1.5.0
+  Downloaded itoa v1.0.18
+  Downloaded hyper-rustls v0.27.9
+  Downloaded http-body-util v0.1.3
+  Downloaded futures-io v0.3.32
+  Downloaded futures-executor v0.3.32
+  Downloaded form_urlencoded v1.2.2
+  Downloaded foldhash v0.2.0
+  Downloaded foldhash v0.1.5
+  Downloaded filetime v0.2.28
+  Downloaded fastrand v2.4.1
+  Downloaded errno v0.3.14
+  Downloaded dirs v6.0.0
+  Downloaded digest v0.10.7
+  Downloaded deranged v0.5.8
+  Downloaded crypto-common v0.1.7
+  Downloaded colorchoice v1.0.5
+  Downloaded clap_lex v1.1.0
+  Downloaded cassowary v0.3.0
+  Downloaded instability v0.3.10
+  Downloaded idna_adapter v1.2.1
+  Downloaded ident_case v1.0.1
+  Downloaded http-body v1.0.1
+  Downloaded hex v0.4.3
+  Downloaded heck v0.5.0
+  Downloaded generic-array v0.14.7
+  Downloaded futures-task v0.3.32
+  Downloaded futures-sink v0.3.32
+  Downloaded futures-macro v0.3.32
+  Downloaded equivalent v1.0.2
+  Downloaded dirs-sys v0.5.0
+  Downloaded darling_macro v0.20.11
+  Downloaded cpufeatures v0.2.17
+  Downloaded block-buffer v0.10.4
+  Downloaded bit-vec v0.8.0
+  Downloaded autocfg v1.5.0
+  Downloaded async-stream v0.3.6
+  Downloaded adler2 v2.0.1
+  Downloaded fnv v1.0.7
+  Downloaded document-features v0.2.12
+  Downloaded cfg_aliases v0.2.1
+  Downloaded castaway v0.2.4
+  Downloaded bit-set v0.8.0
+  Downloaded atomic-waker v1.1.2
+  Downloaded async-stream-impl v0.3.6
+  Downloaded anstyle-query v1.1.5
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling smallvec v1.15.1
+   Compiling parking_lot_core v0.9.12
+   Compiling futures-core v0.3.32
+   Compiling pin-project-lite v0.2.17
+   Compiling serde_core v1.0.228
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling memchr v2.8.0
+   Compiling log v0.4.29
+   Compiling syn v2.0.117
+   Compiling errno v0.3.14
+   Compiling bitflags v2.11.1
+   Compiling parking_lot v0.12.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling serde v1.0.228
+   Compiling stable_deref_trait v1.2.1
+   Compiling mio v1.2.0
+   Compiling bytes v1.11.1
+   Compiling futures-sink v0.3.32
+   Compiling shlex v1.3.0
+   Compiling version_check v0.9.5
+   Compiling autocfg v1.5.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.61
+   Compiling num-traits v0.2.19
+   Compiling socket2 v0.6.3
+   Compiling rustix v1.1.4
+   Compiling futures-channel v0.3.32
+   Compiling linux-raw-sys v0.12.1
+   Compiling equivalent v1.0.2
+   Compiling ring v0.17.14
+   Compiling synstructure v0.13.2
+   Compiling zeroize v1.8.2
+   Compiling futures-io v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling rustversion v1.0.22
+   Compiling getrandom v0.4.2
+   Compiling litemap v0.8.2
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling serde_derive v1.0.228
+   Compiling zerovec-derive v0.11.3
+   Compiling zerofrom v0.1.7
+   Compiling yoke v0.8.2
+   Compiling displaydoc v0.2.5
+   Compiling tokio-macros v2.7.0
+   Compiling zerovec v0.11.6
+   Compiling tokio v1.52.1
+   Compiling tinystr v0.8.3
+   Compiling futures-macro v0.3.32
+   Compiling slab v0.4.12
+   Compiling writeable v0.6.3
+   Compiling futures-util v0.3.32
+   Compiling icu_locale_core v2.1.1
+   Compiling potential_utf v0.1.5
+   Compiling zerotrie v0.2.4
+   Compiling generic-array v0.14.7
+   Compiling http v1.4.0
+   Compiling getrandom v0.2.17
+   Compiling getrandom v0.3.4
+   Compiling untrusted v0.9.0
+   Compiling icu_normalizer_data v2.1.1
+   Compiling subtle v2.6.1
+   Compiling icu_properties_data v2.1.2
+   Compiling http-body v1.0.1
+   Compiling icu_provider v2.1.1
+   Compiling icu_collections v2.1.1
+   Compiling rustls-pki-types v1.14.1
+   Compiling tracing-core v0.1.36
+   Compiling httparse v1.10.1
+   Compiling fnv v1.0.7
+   Compiling zerocopy v0.8.48
+   Compiling percent-encoding v2.3.2
+   Compiling strsim v0.11.1
+   Compiling typenum v1.20.0
+   Compiling unicode-width v0.2.0
+   Compiling tracing-attributes v0.1.31
+   Compiling zmij v1.0.21
+   Compiling allocator-api2 v0.2.21
+   Compiling base64 v0.22.1
+   Compiling regex-syntax v0.8.10
+   Compiling ryu v1.0.23
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling rustls v0.23.39
+   Compiling want v0.3.1
+   Compiling tracing v0.1.44
+   Compiling icu_properties v2.1.2
+   Compiling rand_core v0.9.5
+   Compiling icu_normalizer v2.1.1
+   Compiling rustls-webpki v0.103.13
+   Compiling aho-corasick v1.1.4
+   Compiling anyhow v1.0.102
+   Compiling unicase v2.9.0
+   Compiling ident_case v1.0.1
+   Compiling serde_json v1.0.149
+   Compiling signal-hook v0.3.18
+   Compiling time-core v0.1.8
+   Compiling thiserror v2.0.18
+   Compiling fastrand v2.4.1
+   Compiling powerfmt v0.2.0
+   Compiling hashbrown v0.17.0
+   Compiling atomic-waker v1.1.2
+   Compiling num-conv v0.2.1
+   Compiling heck v0.5.0
+   Compiling time-macros v0.2.27
+   Compiling indexmap v2.14.0
+   Compiling hyper v1.9.0
+   Compiling deranged v0.5.8
+   Compiling tempfile v3.27.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling mime_guess v2.0.5
+   Compiling darling_core v0.20.11
+   Compiling regex-automata v0.4.14
+   Compiling idna_adapter v1.2.1
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling form_urlencoded v1.2.2
+   Compiling thiserror-impl v2.0.18
+   Compiling num-integer v0.1.46
+   Compiling sync_wrapper v1.0.2
+   Compiling utf8_iter v1.0.4
+   Compiling ipnet v2.12.0
+   Compiling utf8parse v0.2.2
+   Compiling tower-layer v0.3.3
+   Compiling paste v1.0.15
+   Compiling rustix v0.38.44
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling anstyle-parse v1.0.0
+   Compiling idna v1.1.0
+   Compiling tokio-rustls v0.26.4
+   Compiling darling_macro v0.20.11
+   Compiling num-bigint v0.4.6
+   Compiling digest v0.10.7
+   Compiling time v0.3.47
+   Compiling rand_chacha v0.9.0
+   Compiling webpki-roots v1.0.7
+   Compiling serde_yml v0.0.12
+   Compiling instability v0.3.10
+   Compiling foldhash v0.1.5
+   Compiling portable-atomic v1.13.1
+   Compiling mime v0.3.17
+   Compiling crc32fast v1.5.0
+   Compiling unicode-segmentation v1.13.2
+   Compiling linux-raw-sys v0.4.15
+   Compiling colorchoice v1.0.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling litrs v1.0.0
+   Compiling iri-string v0.7.12
+   Compiling thiserror v1.0.69
+   Compiling option-ext v0.2.0
+   Compiling anstyle v1.0.14
+   Compiling foldhash v0.2.0
+   Compiling either v1.15.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v1.0.0
+   Compiling hashbrown v0.16.1
+   Compiling itertools v0.13.0
+   Compiling document-features v0.2.12
+   Compiling dirs-sys v0.5.0
+   Compiling simple_asn1 v0.6.4
+   Compiling tower-http v0.6.8
+   Compiling hashbrown v0.15.5
+   Compiling hyper-rustls v0.27.9
+   Compiling signal-hook-mio v0.2.5
+   Compiling rand v0.9.4
+   Compiling libyml v0.0.5
+   Compiling darling v0.20.11
+   Compiling url v2.5.8
+   Compiling serde_urlencoded v0.7.1
+   Compiling strum_macros v0.26.4
+   Compiling pem v3.0.6
+   Compiling console v0.16.3
+   Compiling tokio-util v0.7.18
+   Compiling castaway v0.2.4
+   Compiling futures-executor v0.3.32
+   Compiling http-body-util v0.1.3
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling async-stream-impl v0.3.6
+   Compiling thiserror-impl v1.0.69
+   Compiling rmp v0.8.15
+   Compiling winnow v0.7.15
+   Compiling lazy_static v1.5.0
+   Compiling static_assertions v1.1.0
+   Compiling cpufeatures v0.2.17
+   Compiling hashbrown v0.14.5
+   Compiling litellm-rs v0.4.16
+   Compiling indoc v2.0.7
+   Compiling toml_write v0.1.2
+   Compiling adler2 v2.0.1
+   Compiling unicode-width v0.1.14
+   Compiling iana-time-zone v0.1.65
+   Compiling clap_lex v1.1.0
+   Compiling simd-adler32 v0.3.9
+   Compiling unicode-truncate v1.1.0
+   Compiling clap_builder v4.6.0
+   Compiling miniz_oxide v0.8.9
+   Compiling chrono v0.4.44
+   Compiling toml_edit v0.22.27
+   Compiling dashmap v5.5.3
+   Compiling strum v0.26.3
+   Compiling sha2 v0.10.9
+   Compiling compact_str v0.8.1
+   Compiling sharded-slab v0.1.7
+   Compiling rmp-serde v1.3.1
+   Compiling async-stream v0.3.6
+   Compiling reqwest v0.12.28
+   Compiling futures v0.3.32
+   Compiling jsonwebtoken v9.3.1
+   Compiling lru v0.12.5
+   Compiling crossterm v0.28.1
+   Compiling crossterm v0.29.0
+   Compiling dirs v6.0.0
+   Compiling lru v0.16.4
+   Compiling hmac v0.12.1
+   Compiling regex v1.12.3
+   Compiling matchers v0.2.0
+   Compiling clap_derive v4.6.1
+   Compiling console v0.15.11
+   Compiling tokio-stream v0.1.18
+   Compiling tracing-log v0.2.0
+   Compiling arc-swap v1.9.1
+   Compiling uuid v1.23.1
+   Compiling async-trait v0.1.89
+   Compiling xattr v1.6.1
+   Compiling filetime v0.2.28
+   Compiling thread_local v1.1.9
+   Compiling shell-words v1.1.1
+   Compiling similar v2.7.0
+   Compiling dotenvy v0.15.7
+   Compiling nu-ansi-term v0.50.3
+   Compiling hex v0.4.3
+   Compiling memo-map v0.3.3
+   Compiling cassowary v0.3.0
+   Compiling unit-prefix v0.5.2
+   Compiling indicatif v0.18.4
+   Compiling ratatui v0.29.0
+   Compiling minijinja v2.19.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling clap v4.6.1
+   Compiling dialoguer v0.11.0
+   Compiling tar v0.4.45
+   Compiling comfy-table v7.2.2
+   Compiling flate2 v1.1.9
+   Compiling toml v0.8.23
+   Compiling wait-timeout v0.2.1
+   Compiling bit-vec v0.8.0
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling bit-set v0.8.0
+   Compiling rand_xorshift v0.4.0
+   Compiling yansi v1.0.1
+   Compiling unarray v0.1.4
+   Compiling diff v0.1.13
+   Compiling proptest v1.11.0
+   Compiling pretty_assertions v1.4.1
+   Compiling insta v1.47.2
+   Compiling maxwells-daemon v0.1.0 (/app)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 56s
+     Running unittests src/lib.rs (target/debug/deps/maxwells_daemon-1dd4ad9b9cac016f)
 
-running 417 tests
-test agent::default::tests::bash_then_submit_produces_observation ... ok
+running 682 tests
+test agent::confirm_cli::tests::forced_constructor_builds_in_non_tty ... ok
+test agent::confirm::tests::decision_labels_are_stable ... ok
+test agent::confirm_cli::tests::key_event_to_decision_ignores_release_events ... ok
+test agent::confirm_cli::tests::key_event_to_decision_press_keys_map_correctly ... ok
+test agent::confirm_cli::tests::new_if_tty_returns_none_under_cargo_test ... ok
+test agent::confirm_cli::tests::parse_line_decision_matches_documented_keys ... ok
+test agent::confirm_cli::tests::read_single_keystroke_returns_none_when_stdin_is_not_a_tty ... ok
+test agent::confirm_cli::tests::indent_command_indents_every_line ... ok
+test agent::confirm::tests::scripted_returns_decisions_in_order_then_default_approve ... ok
+test agent::confirm_cli::tests::render_banner_includes_step_cost_command_and_keys ... ok
+test agent::confirm_cli::tests::render_banner_indents_multiline_commands ... ok
+test agent::confirm_tui::tests::append_caps_log_at_max_lines ... ok
+
+[interactive] step 0/1  cost $0.0000  cache:auto-or-none
+[interactive] tool: bash
+[interactive] command:
+    echo x
+[interactive] (y)approve / (n)reject / (a)abort? test agent::confirm_cli::tests::confirm_under_non_tty_stdin_aborts_on_eof ... ok
+test agent::confirm_tui::tests::centered_rect_is_subset_of_area ... ok
+test agent::confirm_tui::tests::confirm_publishes_pending_and_completes_on_decision ... ok
+test agent::confirm_tui::tests::confirm_falls_back_to_abort_when_responder_dropped ... ok
+test agent::confirm_tui::tests::emit_assistant_message_updates_step_and_cost ... ok
+test agent::confirm_tui::tests::emit_assistant_message_without_cost_keeps_prior_cost ... ok
+test agent::confirm_tui::tests::draw_renders_header_log_and_footer_against_test_backend ... ok
+test agent::confirm_tui::tests::emit_bash_lifecycle_logs_run_and_result ... ok
+test agent::confirm_tui::tests::draw_modal_renders_when_pending_prompt_present ... ok
+test agent::confirm_tui::tests::emit_run_started_populates_header_state ... ok
+test agent::confirm_tui::tests::emit_run_ended_stamps_finished_and_totals ... ok
+test agent::confirm_tui::tests::draw_modal_marks_long_commands_with_ellipsis ... ok
+test agent::confirm_tui::tests::first_lines_no_ellipsis_when_under_cap ... ok
+test agent::confirm_tui::tests::first_lines_caps_count_and_length ... ok
+[?1049ltest agent::confirm_tui::tests::handle_dashboard_handle_constructors_clone_arcs ... ok
+test agent::confirm_tui::tests::handle_key_ignores_release_events ... ok
+test agent::confirm_tui::tests::handle_key_maps_keystrokes_to_decisions ... ok
+test agent::confirm_tui::tests::handle_key_unknown_keystroke_keeps_prompt_open ... ok
+test agent::confirm_tui::tests::handle_key_with_no_pending_is_noop ... ok
+test agent::confirm_tui::tests::summarize_stream_counts_both_streams ... ok
+test agent::confirm_tui::tests::summarize_stream_returns_byte_count ... ok
+test agent::confirm_tui::tests::footer_changes_when_run_finished ... ok
+test agent::confirm_tui::tests::emit_observation_and_format_error_log_with_preview ... ok
+test agent::confirm_tui::tests::first_lines_truncates_at_char_boundary_for_multibyte_input ... ok
 test agent::default::tests::budget_block_hidden_from_agent_when_flag_set ... ok
-test agent::default::tests::budget_block_appears_in_observation_when_enabled ... ok
 test agent::default::tests::budget_block_absent_when_no_per_task_budget ... ok
-test agent::default::tests::cancellation_after_model_response_wins_over_submit_action ... ok
+test agent::default::tests::budget_block_appears_in_observation_when_enabled ... ok
+test agent::default::tests::bash_then_submit_produces_observation ... ok
+test agent::default::tests::elide_both_flags_compose_more_aggressive_wins ... ok
+test agent::default::tests::elide_compaction_failed_when_irreducible ... ok
+test agent::default::tests::elide_count_inflation_handled_by_budget ... ok
+test agent::default::tests::elide_keep_last_1_elides_all_but_latest ... ok
+test agent::default::tests::elide_keep_last_preserves_system_and_instance ... ok
+test agent::default::tests::elide_marker_contains_step_number_and_bytes ... ok
+test agent::default::tests::elide_no_cap_returns_unchanged ... ok
+test agent::default::tests::elide_single_observation_compaction_failed_when_over_budget ... ok
+test agent::default::tests::elide_single_observation_never_elided ... ok
 test agent::default::tests::forced_cancellation_interrupts_in_flight_model_query ... ok
 test agent::default::tests::budget_exhausted_records_cost_and_failure_category ... ok
+test agent::default::tests::cancellation_after_model_response_wins_over_submit_action ... ok
 test agent::default::tests::combined_output_field_is_capped_when_stdout_and_stderr_are_large ... ok
 test agent::default::tests::malformed_response_triggers_format_error ... ok
 test agent::default::tests::retag_marks_system_breakpoint_and_rolling_auto ... ok
 test agent::default::tests::observation_truncated_true_when_only_combined_output_is_elided ... ok
-test agent::default::tests::oversized_stdout_is_truncated_for_model_but_preserved_on_disk ... ok
 test agent::default::tests::per_task_budget_terminates_with_budget_exhausted ... ok
+test agent::default::tests::oversized_stdout_is_truncated_for_model_but_preserved_on_disk ... ok
 test agent::default::tests::submit_on_first_turn_terminates ... ok
 test agent::default::tests::submit_records_outcome_and_token_usage ... ok
 test agent::default::tests::truncate_observation_text_elides_middle ... ok
-test agent::default::tests::truncate_observation_text_handles_utf8_boundaries ... ok
-test agent::default::tests::truncate_observation_text_respects_max_bytes_hard_cap ... ok
 test agent::default::tests::step_limit_records_outcome ... ok
+test agent::default::tests::truncate_observation_text_handles_utf8_boundaries ... ok
 test agent::default::tests::truncate_observation_text_zero_cap_empty_input_not_truncated ... ok
 test agent::default::tests::truncate_observation_text_zero_cap_returns_empty ... ok
+test agent::default::tests::truncate_observation_text_respects_max_bytes_hard_cap ... ok
 test agent::default::tests::step_limit_terminates ... ok
 test agent::parse::tests::empty_bash_block_is_none ... ok
 test agent::parse::tests::extracts_multiline_bash ... ok
@@ -40,6 +633,14 @@ test agent::parse::tests::submit_sentinel_matches_final_output ... ok
 test agent::parse::tests::submit_sentinel_without_block_submits_empty ... ok
 test agent::parse::tests::submit_text_wins_over_raw_tool_call ... ok
 test agent::parse::tests::submit_wins_over_bash ... ok
+test annotation::tests::add_and_list_round_trip ... ok
+test annotation::tests::invalid_tags_fail ... ok
+test annotation::tests::note_too_long_rejected ... ok
+test annotation::tests::valid_tags_pass ... ok
+test cli::args::tests::env_type_arg_as_str_docker ... ok
+test cli::args::tests::env_type_arg_as_str_local ... ok
+test cli::tests::bench_dataset_stats_rejects_invalid_format ... ok
+test cli::tests::build_patch_capture_spec_respects_workdir_override ... ok
 test cli::tests::cancellation_exit_code_only_applies_to_cancelled_sweeps ... ok
 test cli::tests::github_pr_arg_helpers_validate_required_inputs_and_modes ... ok
 test cli::tests::mini_cli_parses_invocation_time_mcp_server ... ok
@@ -51,8 +652,13 @@ test cli::tests::parse_verify_checks_parses_valid_specs ... ok
 test cli::tests::parse_verify_checks_rejects_empty_name_or_command ... ok
 test cli::tests::parse_verify_checks_rejects_missing_colon ... ok
 test cli::tests::parse_verify_checks_trims_whitespace ... ok
+test cli::tests::resolve_interactive_mode_interactive_picks_ui ... ok
+test cli::tests::resolve_interactive_mode_off_when_neither_flag_set ... ok
+test cli::tests::resolve_interactive_mode_yolo_alone_is_status_only ... ok
+test cli::tests::resolve_interactive_mode_yolo_overrides_interactive ... ok
 test cli::tests::swebench_cli_defers_os_signal_handler_installation_to_run_loop ... ok
 test cli::tests::swebench_github_pr_validation_rejects_empty_slug_branch_prefix ... ok
+test cli::tests::test_rehearsal_output_path_normalization ... ok
 test cli::tests::trajectory_submission_detection_reads_outcome ... ok
 test config::tests::defaults_parse ... ok
 test config::tests::invalid_agent_tool_names_return_config_error ... ok
@@ -65,6 +671,7 @@ test env::local::tests::echo_roundtrips ... ok
 test env::local::tests::env_var_passthrough ... ok
 test env::local::tests::exited_child_preserves_output_when_stdin_pipe_breaks ... ok
 test env::local::tests::nonzero_exit_surfaces ... ok
+test env::local::tests::relative_cwd_joined_with_workdir ... ok
 test env::local::tests::stderr_is_captured_separately ... ok
 test env::local::tests::stdin_is_passed_to_child ... ok
 test env::local::tests::timeout_flags_timed_out ... ok
@@ -76,38 +683,51 @@ test error::tests::retry_after_secs_parses_numeric_value_from_rate_limited ... o
 test error::tests::retry_after_secs_returns_none_for_non_rate_limited_variants ... ok
 test error::tests::retry_after_secs_returns_none_when_not_present ... ok
 test exit_code::tests::agent_stagnation_exit_code_is_12 ... ok
+test exit_code::tests::audit_failure_exit_code_is_20 ... ok
+test exit_code::tests::bisect_budget_exhausted_exit_code_is_18 ... ok
+test exit_code::tests::bisect_schema_break_exit_code_is_19 ... ok
 test exit_code::tests::from_error_command_failed_is_task_unsuccessful ... ok
 test exit_code::tests::from_error_config_is_usage_error ... ok
+test exit_code::tests::from_error_container_start_failed_is_preflight_failure ... ok
+test exit_code::tests::from_error_docker_daemon_unreachable_is_preflight_failure ... ok
 test exit_code::tests::from_error_docker_not_installed_is_preflight_failure ... ok
+test exit_code::tests::from_error_env_io_is_task_unsuccessful ... ok
 test exit_code::tests::from_error_io_is_internal_error ... ok
 test exit_code::tests::from_error_model_is_task_unsuccessful ... ok
+test exit_code::tests::from_error_preflight_is_preflight_failure ... ok
 test exit_code::tests::from_error_replay_response_exhausted ... ok
 test exit_code::tests::from_error_replay_unfingerprinted_legacy_is_usage_error ... ok
 test exit_code::tests::from_error_responses_exhausted_is_task_unsuccessful ... ok
+test exit_code::tests::from_error_timeout_is_task_unsuccessful ... ok
+test exit_code::tests::from_error_unexpected_exit_is_task_unsuccessful ... ok
 test exit_code::tests::from_error_verification_failed_is_verification_failure ... ok
+test exit_code::tests::resume_already_terminal_exit_code_is_15 ... ok
+test agent::interactive::tests::interactive_wraps_default_behavior ... ok
+test exit_code::tests::resume_invalid_prefix_exit_code_is_17 ... ok
+test agent::default::tests::wallclock_deadline_warning_is_visible_before_model_query ... ok
+test exit_code::tests::resume_manifest_missing_exit_code_is_16 ... ok
 test fingerprint::tests::all_roles_serialize ... ok
-test fingerprint::tests::canonical_json_excludes_extra_and_cache_hint ... ok
 test fingerprint::tests::canonical_json_sorted_keys ... ok
+test fingerprint::tests::canonical_json_excludes_extra_and_cache_hint ... ok
 test fingerprint::tests::canonical_size_matches_json_len ... ok
-test fingerprint::tests::different_content_different_fingerprint ... ok
 test fingerprint::tests::fingerprint_is_16_hex_chars ... ok
+test fingerprint::tests::different_content_different_fingerprint ... ok
 test fingerprint::tests::normalize_redaction_markers_different_salts_produce_same_result ... ok
 test fingerprint::tests::normalize_redaction_markers_leaves_non_redacted_text_unchanged ... ok
 test fingerprint::tests::normalize_redaction_markers_strips_hash_segment ... ok
-test fingerprint::tests::same_input_same_fingerprint ... ok
 test ids::tests::test_step_idx ... ok
+test fingerprint::tests::same_input_same_fingerprint ... ok
 test ids::tests::test_string_id_creation_and_conversion ... ok
 test model::deterministic::tests::errors_when_exhausted ... ok
 test model::deterministic::tests::scripted_responses_consumed_in_order ... ok
-test model::deterministic_chaos_test::tests::test_chaos_concurrency_deterministic_model ... ok
-test model::fallback::tests::all_failed_is_compound_error ... ok
 test model::fallback::tests::name_returns_primary ... ok
+test model::fallback::tests::all_failed_is_compound_error ... ok
 test model::fallback::tests::non_transient_no_fallback ... ok
 test model::fallback::tests::retry_after_secs_propagates_through_all_candidates_failed ... ok
-test model::fallback::tests::single_model_success_no_fallback ... ok
 test model::fallback::tests::supports_explicit_cache_delegates_to_primary ... ok
-test model::fallback::tests::transient_request_error_triggers_fallback ... ok
+test model::fallback::tests::single_model_success_no_fallback ... ok
 test model::fallback::tests::transient_then_non_transient_preserves_attempts ... ok
+test model::fallback::tests::transient_request_error_triggers_fallback ... ok
 test model::fallback::tests::transient_triggers_secondary ... ok
 test model::litellm::tests::auth_and_bad_request_are_not_transient ... ok
 test model::litellm::tests::auth_error_maps_to_missing_credentials ... ok
@@ -118,18 +738,20 @@ test model::litellm::tests::internal_gateway_error_is_transient ... ok
 test model::litellm::tests::network_and_unavailable_map_to_request ... ok
 test model::litellm::tests::parses_provider_prefix ... ok
 test model::litellm::tests::provider_rate_limit_maps_to_rate_limited_not_request ... ok
-test model::litellm::tests::rate_limit_and_network_are_transient ... ok
 test model::litellm::tests::rate_limit_error_maps_to_rate_limited ... ok
+test model::litellm::tests::rate_limit_and_network_are_transient ... ok
 test model::litellm::tests::rate_limit_with_structured_retry_after_embeds_value_in_message ... ok
 test model::litellm::tests::rate_limit_without_retry_after_preserves_original_message ... ok
 test model::litellm::tests::split_prompt_usage_preserves_prompt_tokens_when_cached_exceeds_prompt_total ... ok
 test model::litellm::tests::split_prompt_usage_subtracts_cached_subset_from_input_tokens ... ok
 test model::tests::cap_breakpoints_demotes_excess ... ok
 test model::tests::cap_breakpoints_passthrough_under_limit ... ok
-test agent::default::tests::wallclock_deadline_warning_is_visible_before_model_query ... ok
+test prompt_guard::tests::all_kinds_produce_distinct_tags ... ok
+test prompt_guard::tests::wrap_adds_opening_and_closing_tags ... ok
+test prompt_guard::tests::wrap_roundtrips_content ... ok
 test redaction::redaction_unsafe_tests::should_return_false_when_unsafe_allow_secret_leaks_is_false ... ok
-test agent::interactive::tests::interactive_wraps_default_behavior ... ok
 test redaction::redaction_unsafe_tests::should_return_true_when_unsafe_allow_secret_leaks_is_true ... ok
+test model::deterministic_chaos_test::tests::test_chaos_concurrency_deterministic_model ... ok
 test redaction::tests::configured_literals_are_deduplicated_before_rules ... ok
 test redaction::tests::env_assignment_redaction_detects_env_style_patch_lines ... ok
 test redaction::tests::configured_literal_detection_respects_unsafe_bypass ... ok
@@ -140,6 +762,9 @@ test redaction::tests::env_assignment_redaction_ignores_key_substrings ... ok
 test redaction::tests::env_assignment_redaction_ignores_lowercase_source_assignments ... ok
 test redaction::tests::sensitive_key_kind_handles_various_formats ... ok
 test run::bundle::tests::path_normalizer_prefers_longest_needle_first ... ok
+test run::command_stats::tests::extract_heads_pipeline_three_segments ... ok
+test run::command_stats::tests::extract_heads_strips_nested_prefixes ... ok
+test run::command_stats::tests::split_pipeline_handles_logical_or ... ok
 test run::compare::tests::aggregates_resolved_and_cost_deltas ... ok
 test run::compare::tests::build_model_mix_warnings_both_fallback_different_mix_and_rate_warns_twice ... ok
 test run::compare::tests::build_model_mix_warnings_both_fallback_different_rate_warns ... ok
@@ -152,26 +777,25 @@ test run::compare::tests::compare_provenance_sb_cli_both_none_sb_details_gives_m
 test run::compare::tests::compare_provenance_sb_cli_candidate_missing_sb_details_gives_mismatched ... ok
 test run::compare::tests::compare_reports_manifest_delta_when_prompt_hash_changes ... ok
 test run::compare::tests::cost_attribution_delta_computes_usd_and_share_point_changes ... ok
-test run::compare::tests::evaluation_json_rerun_counts_feed_compare_ci ... ok
+test redaction::tests::json_redaction_visits_every_sensitive_array_member ... ok
 test run::compare::tests::failure_category_breakdown_keeps_resolved_separate_from_none ... ok
+test run::compare::tests::evaluation_json_rerun_counts_feed_compare_ci ... ok
 test run::compare::tests::fallback_totals_from_slots_counts_each_rerun_slot_model_independently ... ok
 test run::compare::tests::fallback_totals_from_slots_empty_returns_zeros ... ok
 test run::compare::tests::fallback_totals_from_slots_slot_with_no_final_model_is_skipped_in_mix ... ok
-test redaction::tests::json_redaction_visits_every_sensitive_array_member ... ok
 test run::compare::tests::fallback_totals_from_slots_sums_fallback_counts_across_reruns ... ok
 test run::compare::tests::human_table_includes_cache_breakdown_and_hit_rate ... ok
-test run::compare::tests::falls_back_to_trajectory_files_when_no_results_json ... ok
 test run::compare::tests::human_table_includes_rate_limit_events_when_both_sides_present ... ok
+test run::compare::tests::falls_back_to_trajectory_files_when_no_results_json ... ok
 test run::compare::tests::human_table_rate_limit_section_absent_when_both_sides_none ... ok
 test run::compare::tests::human_table_lists_regressions_and_deltas ... ok
 test run::compare::tests::human_table_rate_limit_section_handles_one_sided_events ... ok
 test run::compare::tests::human_table_shows_subset_warnings_without_breakdown_rows ... ok
+test redaction::tests::same_value_gets_same_marker ... ok
 test run::compare::tests::incomplete_results_json_ignores_stale_trajectories_before_started_at ... ok
 test run::compare::tests::incomplete_results_json_falls_back_to_trajectory_scan ... ok
 test run::compare::tests::incomplete_resume_results_include_preexisting_trajectories ... ok
 test run::compare::tests::legacy_baseline_without_failure_category_does_not_panic ... ok
-test redaction::tests::same_value_gets_same_marker ... ok
-test run::compare::tests::json_round_trip_via_results_json ... ok
 test run::compare::tests::legacy_results_json_without_filter_spec_preserves_unavailable_metadata ... ok
 test run::compare::tests::load_sweep_propagates_rate_limit_events ... ok
 test run::compare::tests::missing_and_extra_ids_are_bucketed_not_dropped ... ok
@@ -180,6 +804,7 @@ test run::compare::tests::subset_warning_ignores_instance_id_order ... ok
 test run::compare::tests::subset_warning_when_filter_spec_missing ... ok
 test run::compare::tests::subset_warning_when_stratify_settings_differ ... ok
 test run::compare::tests::write_evaluator_provenance_section_matching_label ... ok
+test run::compare::tests::json_round_trip_via_results_json ... ok
 test run::compare::tests::write_evaluator_provenance_section_mismatched_with_warnings ... ok
 test run::dataset::tests::alias_display_matches_as_str ... ok
 test run::dataset::tests::alias_is_case_insensitive ... ok
@@ -187,10 +812,11 @@ test run::dataset::tests::alias_parses_canonical_forms ... ok
 test run::dataset::tests::alias_parses_known_alternate_forms ... ok
 test run::dataset::tests::alias_rejects_unknown_values ... ok
 test run::dataset::tests::cache_path_for_uses_alias_and_split ... ok
-test run::dataset::tests::check_cache_corrupt_when_invalid_jsonl_present ... ok
 test run::compare::tests::prefers_evaluation_json_resolved_over_submission_proxy ... ok
-test run::dataset::tests::check_cache_hit_when_valid_jsonl_present ... ok
+test run::dataset::tests::check_cache_corrupt_when_invalid_jsonl_present ... ok
 test run::dataset::tests::check_cache_miss_when_file_absent ... ok
+test run::dataset::tests::check_cache_hit_when_valid_jsonl_present ... ok
+test run::dataset::tests::legacy_default_cache_fallback_only_applies_to_new_default_cache ... ok
 test run::dataset::tests::resolve_dataset_local_path_reads_file ... ok
 test run::dataset::tests::resolve_dataset_named_cache_corrupt_returns_distinct_error ... ok
 test run::dataset::tests::resolve_dataset_named_cache_hit_returns_bytes ... ok
@@ -200,14 +826,25 @@ test run::dataset::tests::source_kind_from_named ... ok
 test run::dataset::tests::split_display_matches_as_str ... ok
 test run::dataset::tests::split_is_case_insensitive ... ok
 test run::dataset::tests::split_parses_canonical_forms ... ok
+test run::dataset::tests::resolve_dataset_named_default_cache_miss_reads_legacy_default_cache ... ok
 test run::dataset::tests::split_rejects_unknown_values ... ok
+test run::eval_flake::tests::build_summary_counts ... ok
+test run::eval_flake::tests::dominant_verdict_empty ... ok
+test run::dataset::tests::write_cache_creates_directories_and_file ... ok
+test run::eval_flake::tests::dominant_verdict_majority ... ok
+test run::eval_flake::tests::dominant_verdict_tie_prefers_resolved ... ok
+test run::eval_flake::tests::flake_rate_all_same ... ok
+test run::eval_flake::tests::flake_rate_alternating_three ... ok
+test run::eval_flake::tests::flake_rate_empty ... ok
+test run::eval_flake::tests::flake_rate_single ... ok
+test run::eval_flake::tests::is_flaky_true_when_rate_positive ... ok
 test run::evaluate::tests::behavioral_metrics_split_resolved_rate_by_test_behavior ... ok
 test run::evaluate::tests::aggregate_rerun_evaluations_preserves_pass_at_1_and_pass_at_k ... ok
-test run::dataset::tests::write_cache_creates_directories_and_file ... ok
 test run::evaluate::tests::breakdown_bucket_cost_per_resolved_usd_per_slice ... ok
 test run::evaluate::tests::budget_exhausted_instances_excluded_from_cost_per_resolved ... ok
 test run::evaluate::tests::build_provenance_effective_run_id_overrides_args_run_id ... ok
 test run::evaluate::tests::build_provenance_none_backend_has_no_prediction_path_or_sb_cli ... ok
+test run::evaluate::tests::build_elision_stats_counts_from_trajectory_files ... ok
 test run::evaluate::tests::build_source_reports_returns_empty_when_max_run_index_is_one ... ok
 test run::evaluate::tests::build_source_reports_returns_empty_when_resolved_by_run_is_empty ... ok
 test run::evaluate::tests::collect_report_paths_returns_empty_when_no_file ... ok
@@ -219,26 +856,48 @@ test run::evaluate::tests::cost_per_resolved_ci95_is_nan_when_nothing_resolved .
 test run::evaluate::tests::cost_per_resolved_usd_divides_total_cost_by_resolved_count ... ok
 test run::evaluate::tests::cost_per_resolved_usd_is_nan_when_resolved_count_is_zero ... ok
 test run::evaluate::tests::failure_category_breakdown_uses_none_for_missing_category ... ok
+test run::evaluate::tests::instance_evaluation_patch_error_log_is_skipped_when_none ... ok
+test run::evaluate::tests::instance_evaluation_patch_error_log_round_trips_through_json ... ok
 test run::evaluate::tests::model_mix_from_slots_counts_all_rerun_slots ... ok
 test run::evaluate::tests::model_mix_from_slots_empty_returns_empty ... ok
 test run::evaluate::tests::model_mix_from_slots_skips_slots_with_no_final_model ... ok
 test run::evaluate::tests::model_mix_from_slots_uses_per_slot_resolution ... ok
 test run::evaluate::tests::none_backend_marks_non_submitted_as_skipped_no_patch ... ok
+test run::evaluate::tests::parse_generic_eval_row_extracts_patch_error_log_for_patch_apply_failed ... ok
+test run::evaluate::tests::parse_generic_eval_row_omits_patch_error_log_for_other_reasons ... ok
+test run::evaluate::tests::parse_sb_cli_results_round_trips_patch_error_log_from_fixture ... ok
 test run::evaluate::tests::parses_repo_from_instance_id ... ok
 test run::evaluate::tests::parses_sb_cli_report_with_resolved_and_submitted_ids ... ok
+test run::evaluate::tests::render_elision_stats_empty_when_no_elision ... ok
+test run::evaluate::tests::render_elision_stats_shows_counts_when_nonzero ... ok
 test run::evaluate::tests::render_summary_table_includes_cost_per_resolved_usd ... ok
 test run::evaluate::tests::sha256_file_produces_valid_hex_digest ... ok
 test run::evaluate::tests::sha256_file_returns_error_for_missing_file ... ok
 test run::evaluate::tests::summary_reports_cache_breakdown_and_rendered_table ... ok
 test run::evaluate::tests::utc_now_iso8601_returns_valid_format ... ok
+test run::evaluator_selftest::tests::compute_totals_counts_correctly ... ok
+test run::evaluator_selftest::tests::exit_status_all_resolved ... ok
+test run::evaluator_selftest::tests::exit_status_errored_takes_precedence ... ok
+test run::evaluator_selftest::tests::exit_status_unresolved_no_errored ... ok
+test run::evaluator_selftest::tests::is_errored_reason_recognises_exact_and_prefixed_forms ... ok
+test run::evaluator_selftest::tests::map_eval_exit_reason_covers_all_variants ... ok
+test run::evaluator_selftest::tests::unix_to_ymd_hms_epoch ... ok
+test run::evaluator_selftest::tests::unix_to_ymd_hms_known_date ... ok
+test run::evaluator_selftest::tests::write_synthetic_predictions_produces_valid_jsonl ... ok
+test run::evaluator_selftest::tests::write_synthetic_results_json_is_parseable ... ok
 test run::forecast::tests::test_forecast_rng ... ok
 test run::forecast::tests::test_mean ... ok
 test run::forecast::tests::test_quantile_clamp_bounds ... ok
 test run::forecast::tests::test_quantile_empty_slice ... ok
 test run::forecast::tests::test_quantile_single_element ... ok
 test run::forecast::tests::test_threshold_check ... ok
-test run::evaluate::tests::build_redacted_submit_command_contains_expected_fields ... ok
+test run::fork::shell_quote_tests::arg_with_double_quote ... ok
+test run::fork::shell_quote_tests::arg_with_shell_metacharacters ... ok
+test run::fork::shell_quote_tests::arg_with_single_quote ... ok
+test run::fork::shell_quote_tests::arg_with_spaces ... ok
+test run::fork::shell_quote_tests::plain_arg ... ok
 test run::evaluate::tests::build_redacted_report_command_contains_expected_fields ... ok
+test run::evaluate::tests::build_redacted_submit_command_contains_expected_fields ... ok
 test run::github_pr::tests::github_api_client_creates_pull_request_when_none_exists ... ok
 test run::github_pr::tests::github_api_client_recovers_existing_pull_request_after_422 ... ok
 test run::github_pr::tests::github_api_client_reuses_existing_pull_request ... ok
@@ -254,9 +913,35 @@ test run::github_pr::tests::fetches_existing_head_branch_before_force_with_lease
 test run::github_pr::tests::repo_parser_requires_owner_and_name ... ok
 test run::github_pr::tests::sanitizer_removes_token_from_git_errors ... ok
 test run::github_pr::tests::temp_workdirs_are_unique_and_created_by_tempfile ... ok
+test run::grep::tests::char_boundary_ceil_aligns_correctly ... ok
+test run::grep::tests::char_boundary_floor_aligns_correctly ... ok
+test run::grep::tests::extract_snippet_at_end ... ok
+test run::grep::tests::extract_snippet_at_start ... ok
+test run::grep::tests::extract_snippet_full_context ... ok
+test run::grep::tests::extract_snippet_huge_context_does_not_overflow ... ok
+test run::grep::tests::extract_snippet_narrow_context ... ok
+test run::grep::tests::instance_id_is_safe_accepts_normal_ids ... ok
+test run::grep::tests::instance_id_is_safe_rejects_path_traversal ... ok
+test run::grep::tests::resolve_trajectory_paths_handles_noncontiguous_run_slots ... ok
+test run::grep::tests::resolve_trajectory_paths_sorts_runs_numerically ... ok
 test run::github_pr::tests::push_patch_branch_publishes_patch_to_local_remote ... ok
+test run::inspect::tests::build_failing_tests_falls_back_to_failure_category_when_eval_exit_reason_absent ... ok
+test run::inspect::tests::build_failing_tests_returns_none_for_resolved ... ok
+test run::inspect::tests::elided_step_renders_two_view ... ok
+test run::inspect::tests::elided_step_without_marker_shows_fallback ... ok
 test run::inspect::tests::timed_out_check_renders_timeout_note ... ok
 test run::inspect::tests::verification_command_and_output_redacted_at_view_time ... ok
+test run::instance_history::tests::classify_default_threshold ... ok
+test run::instance_history::tests::classify_relaxed_threshold ... ok
+test run::instance_history::tests::expand_sweep_arg_plain_path ... ok
+test run::instance_history::tests::flip_events_ordering ... ok
+test run::instance_history::tests::glob_to_regex_escapes_dots ... ok
+test run::ladder::tests::format_date_parses_rfc3339 ... ok
+test run::ladder::tests::format_date_passthrough_on_invalid ... ok
+test run::ladder::tests::sweep_data_resolved_pct_zero_n ... ok
+test run::ladder::tests::sweep_data_usd_per_resolved_none_when_zero_resolved ... ok
+test run::mini::tests::build_interactive_pieces_off_yields_no_callback ... ok
+test run::mini::tests::build_interactive_pieces_yolo_status_only_yields_no_callback ... ok
 test run::mini::tests::capture_patch_accepts_commit_message_search_revision_with_space ... ok
 test run::mini::tests::capture_patch_accepts_peeled_tag_revision_base ... ok
 test run::mini::tests::capture_patch_accepts_percent_ref_base ... ok
@@ -265,27 +950,116 @@ test run::mini::tests::capture_patch_accepts_reflog_revision_base ... ok
 test run::mini::tests::capture_patch_quotes_shell_metacharacters_in_revision_base ... ok
 test run::mini::tests::capture_patch_threads_cancellation_to_git_diff ... ok
 test run::mini::tests::check_patch_validity_does_not_cancel_cleanup_command ... ok
+test run::mini::tests::cli_flag_is_sensitive_catches_webhook_flags ... ok
+test run::mini::tests::compose_stream_sinks_multi_wraps_when_multiple ... ok
+test run::mini::tests::compose_stream_sinks_returns_none_when_all_absent ... ok
+test run::mini::tests::compose_stream_sinks_unwraps_single_sink_without_multi_wrap ... ok
 test run::mini::tests::env_error_during_verification_records_failed_check ... ok
 test run::mini::tests::env_error_with_cancellation_sets_unverified ... ok
+test run::mini::tests::interactive_mode_default_is_off ... ok
 test run::hello_world::tests::hello_world_smoke ... ok
+test env::local::tests::timeout_reclaims_stubborn_process_before_returning ... ok
 test run::github_pr::tests::process_capture_timeout_terminates_child ... ok
+test run::mini::tests::mini_manifest_does_not_contain_env_secrets ... ok
+test run::mini::tests::mini_manifest_parent_sweep_run_id_is_recorded ... ok
+test run::mini::tests::mini_resume_continues_from_partial_trajectory ... ok
+test run::mini::tests::mini_manifest_deterministic_fields_match_across_two_runs ... ok
+test run::mini::tests::mini_run_empty_diff_yields_patch_empty_outcome ... ok
 test run::mini::tests::patch_validation_empty_diff_yields_patch_empty_error ... ok
+test run::mini::tests::mini_run_populates_manifest_on_trajectory ... ok
 test run::mini::tests::patch_validation_skipped_when_flag_set ... ok
 test run::mini::tests::patch_validation_skipped_when_no_base_commit ... ok
-test env::local::tests::timeout_reclaims_stubborn_process_before_returning ... ok
-test run::mini::tests::patch_validation_valid_patch_passes ... ok
+test run::mini::tests::mini_run_honors_cancellation_after_submit_before_patch_capture ... ok
+test run::mini::tests::redact_cli_invocation_masks_webhook_url_and_header ... ok
 test run::mini::tests::slugify_basic ... ok
+test run::mini::tests::patch_validation_valid_patch_passes ... ok
+test run::mini::tests::patch_validation_wrong_base_yields_apply_invalid ... ok
 test run::mini::tests::validate_git_rev_accepts_revspec_chars_and_rejects_empty_or_control ... ok
+test run::mini::tests::validate_resume_accepts_valid_partial_trajectory ... ok
+test run::mini::tests::validate_resume_rejects_cancelled_exit_reason ... ok
+test run::mini::tests::validate_resume_rejects_empty_messages ... ok
+test run::mini::tests::validate_resume_rejects_error_terminal_trajectory ... ok
+test run::mini::tests::validate_resume_rejects_missing_model_name_field ... ok
+test run::mini::tests::validate_resume_rejects_missing_task_field ... ok
+test run::mini::tests::validate_resume_rejects_partial_false_without_outcome ... ok
+test run::mini::tests::validate_resume_rejects_single_message ... ok
+test run::mini::tests::validate_resume_rejects_submitted_terminal_trajectory ... ok
+test run::mini::tests::validate_resume_rejects_trailing_assistant_message ... ok
 test run::patch_stats::tests::classifier_toml_drives_generated_detection ... ok
+test run::patch_stats::tests::test_submission_class_scoring ... ok
 test run::rate_limit::tests::test_civil_to_unix_no_panic ... ok
 test run::rate_limit::tests::test_parse_retry_after_multibyte_lowercase ... ok
-test run::mini::tests::patch_validation_wrong_base_yields_apply_invalid ... ok
+test run::render_only::tests::broken_template_returns_err ... ok
+test run::render_only::tests::context_window_claude_is_200k ... ok
+test run::render_only::tests::context_window_gpt4_is_128k ... ok
+test run::render_only::tests::format_text_contains_key_sections ... ok
+test run::render_only::tests::reject_incompatible_flags_all_clear_ok ... ok
+test run::render_only::tests::reject_incompatible_flags_budget_err ... ok
+test run::render_only::tests::reject_incompatible_flags_open_pr_err ... ok
+test run::render_only::tests::reject_incompatible_flags_pr_dry_run_err ... ok
+test run::render_only::tests::reject_incompatible_flags_stream_err ... ok
+test run::render_only::tests::reject_incompatible_flags_timeout_err ... ok
+test run::render_only::tests::reject_incompatible_flags_verify_err ... ok
+test run::render_only::tests::reject_incompatible_flags_webhook_headers_err ... ok
+test run::render_only::tests::reject_incompatible_flags_webhook_url_err ... ok
+test run::render_only::tests::render_context_window_pct_in_valid_range ... ok
+test run::render_only::tests::render_initial_prompt_tokens_positive ... ok
+test run::render_only::tests::render_returns_ok_for_valid_config ... ok
+test run::render_only::tests::render_tools_includes_bash ... ok
+test run::render_only::tests::render_user_message_contains_extra_context ... ok
+test run::render_only::tests::render_user_message_contains_task ... ok
+test run::mini::tests::no_step_persist_true_completes_normally ... ok
 test run::replay::tests::make_unified_diff_identical_inputs_is_empty ... ok
 test run::replay::tests::make_unified_diff_recorded_truncated_flag_propagates ... ok
 test run::replay::tests::make_unified_diff_shows_changes ... ok
 test run::replay::tests::make_unified_diff_truncates_when_over_cap ... ok
-test run::mini::tests::mini_run_empty_diff_yields_patch_empty_outcome ... ok
+test run::mini::tests::step_persist_on_writes_recoverable_partial_on_cancellation ... ok
+test run::report::tests::cost_pct_zero_total_returns_zero ... ok
+test run::report::tests::pct_zero_total_returns_zero ... ok
+test run::report::tests::render_md_inline_does_not_italicize_underscores ... ok
+test run::report::tests::render_md_inline_escapes_html ... ok
+test run::report::tests::render_md_inline_renders_code_spans ... ok
+test run::report::tests::split_md_pipes_drops_leading_trailing_empties ... ok
+test run::report::tests::split_md_pipes_handles_escaped_pipe ... ok
+test run::report::tests::truncate_to_120_long_string_truncated ... ok
+test run::report::tests::truncate_to_120_pipes_escaped ... ok
+test run::report::tests::truncate_to_120_short_string_unchanged ... ok
 test run::reproduce::tests::compare_patches_returns_false_when_neither_patch_present ... ok
+test run::self_check::tests::parse_repo_rejects_bad_format ... ok
+test run::self_check::tests::parse_repo_round_trips ... ok
+test run::self_check::tests::round3_rounds_correctly ... ok
+test run::mini::tests::step_persist_default_on_final_trajectory_is_not_partial ... ok
+test run::skills_preview::tests::preview_disabled_returns_disabled ... ok
+test run::skills_preview::tests::preview_no_paths_returns_disabled ... ok
+test run::skills_preview::tests::preview_cap_hit_triggers_warning ... ok
+test run::skills_preview::tests::read_task_file_ignores_comment_lines ... ok
+test run::skills_preview::tests::sha256_prefix_12_is_12_chars ... ok
+test run::replay::tests::clean_replay_removes_stale_drift_report ... ok
+test run::skills_preview::tests::preview_report_has_task_entry ... ok
+test run::stagnation_report::tests::canonical_action_text_is_truncated_at_80_chars ... ok
+test run::stagnation_report::tests::compute_saved_estimate_correct_formula ... ok
+test run::stagnation_report::tests::compute_saved_estimate_none_when_no_step_limit ... ok
+test run::stagnation_report::tests::compute_saved_estimate_zero_when_halt_equals_limit ... ok
+test run::stagnation_report::tests::cluster_shows_up_to_5_exemplar_ids ... ok
+test run::stagnation_report::tests::clusters_group_by_same_fingerprint ... ok
+test run::stagnation_report::tests::empty_sweep_produces_well_formed_empty_report ... ok
+test run::stagnation_report::tests::empty_sweep_with_known_step_limit_has_zero_saved_estimate ... ok
+test run::stagnation_report::tests::format_parses_text_and_json ... ok
+test run::stagnation_report::tests::instance_id_safe_accepts_normal_ids ... ok
+test run::stagnation_report::tests::instance_id_safe_rejects_traversal ... ok
+test run::stagnation_report::tests::fingerprint_is_first_8_hex_chars_of_full_hash ... ok
+test run::stagnation_report::tests::json_output_has_correct_schema_shape ... ok
+test run::stagnation_report::tests::non_stagnation_instances_silently_skipped ... ok
+test run::stagnation_report::tests::parse_step_limit_handles_underscore_integers ... ok
+test run::stagnation_report::tests::parse_step_limit_from_toml_config ... ok
+test run::stagnation_report::tests::instances_ranked_by_budget_burned_descending ... ok
+test run::stagnation_report::tests::stagnation_instance_has_correct_fields ... ok
+test run::stagnation_report::tests::stagnation_instance_preserved_when_action_not_in_messages ... ok
+test run::stagnation_report::tests::total_saved_estimate_is_none_when_step_limit_unknown ... ok
+test run::stagnation_report::tests::truncate_81_chars_gets_ellipsis ... ok
+test run::stagnation_report::tests::truncate_exactly_80_chars_unchanged ... ok
+test run::stagnation_report::tests::truncate_short_action_unchanged ... ok
+test run::stagnation_report::tests::total_saved_estimate_is_some_when_step_limit_known ... ok
 test run::swebench::tests::actual_zero_cost_stays_separate_from_baseline_cost ... ok
 test run::swebench::tests::backoff_cap_can_shrink_below_base_or_disable_waits ... ok
 test run::swebench::tests::cancelled_wait_trajectory_clears_prior_failure_category ... ok
@@ -296,7 +1070,7 @@ test run::swebench::tests::classify_error_all_candidates_failed_transient_termin
 test run::swebench::tests::classify_error_plain_malformed_is_model_parse ... ok
 test run::swebench::tests::classify_error_rate_limited_is_model_api ... ok
 test run::swebench::tests::config_sweep_defaults_are_none ... ok
-test run::swebench::tests::config_sweep_keys_round_trip_toml ... ok
+test run::stagnation_report::tests::unsafe_instance_ids_are_skipped ... ok
 test run::swebench::tests::cost_estimate_applies_cache_multipliers_for_anthropic ... ok
 test run::swebench::tests::cost_estimate_applies_cache_multipliers_for_routed_anthropic_models ... ok
 test run::swebench::tests::cost_estimate_uses_sonnet_pricing ... ok
@@ -307,17 +1081,17 @@ test run::swebench::tests::deterministic_model_rate_limit_sentinel_returns_error
 test run::swebench::tests::doctor_and_dry_run_report_render_identical_for_same_checks ... ok
 test run::swebench::tests::ensure_total_deadline_errors_when_expired ... ok
 test run::swebench::tests::existing_trajectory_info_returns_none_for_missing_file ... ok
+test run::stagnation_report::tests::totals_sum_correctly ... ok
+test run::swebench::tests::config_sweep_keys_round_trip_toml ... ok
 test run::swebench::tests::existing_trajectory_info_returns_none_for_truncated_file ... ok
-test run::swebench::tests::existing_trajectory_info_returns_some_for_valid_file ... ok
 test run::swebench::tests::github_pr_failure_count_includes_later_rerun_slots ... ok
 test run::swebench::tests::github_pr_publication_failure_preserves_submission_outcome ... ok
-test run::swebench::tests::github_pr_publication_is_noop_when_disabled ... ok
-test run::mini::tests::mini_run_honors_cancellation_after_submit_before_patch_capture ... ok
+test run::swebench::tests::existing_trajectory_info_returns_some_for_valid_file ... ok
 test run::swebench::tests::governor_acquire_is_immediate_when_bucket_has_capacity ... ok
+test run::swebench::tests::github_pr_publication_is_noop_when_disabled ... ok
 test run::swebench::tests::governor_aimd_not_triggered_before_three_429s ... ok
-test run::swebench::tests::governor_aimd_triggers_after_three_consecutive_429s_without_retry_after ... ok
 test run::swebench::tests::governor_events_tracks_throttled_calls ... ok
-test run::replay::tests::clean_replay_removes_stale_drift_report ... ok
+test run::swebench::tests::governor_aimd_triggers_after_three_consecutive_429s_without_retry_after ... ok
 test run::swebench::tests::governor_is_none_when_no_rate_limit_flags ... ok
 test run::swebench::tests::governor_is_some_when_max_input_tpm_set ... ok
 test run::swebench::tests::governor_is_some_when_max_rpm_set ... ok
@@ -329,25 +1103,25 @@ test run::swebench::tests::governor_tick_aimd_no_op_when_no_suppression ... ok
 test run::swebench::tests::governor_tick_aimd_restores_suppressed_slot ... ok
 test run::swebench::tests::governor_acquire_blocks_when_rpm_bucket_empty ... ok
 test run::swebench::tests::governor_update_peak_concurrent_tracks_maximum ... ok
-test run::swebench::tests::harness_dirty_flag_detects_uncommitted_changes ... ok
-test run::swebench::tests::json_redaction_preserves_max_tokens_knob ... ok
+test run::swebench::tests::governor_global_retry_after_blocks_subsequent_acquire ... ok
+test run::swebench::tests::governor_retry_after_applies_globally_to_concurrent_workers ... ok
 test run::swebench::tests::legacy_effective_cost_still_reprices_zero_for_budget_compatibility ... ok
 test run::swebench::tests::legacy_prompt_token_alias_keeps_full_prompt_pricing ... ok
 test run::swebench::tests::loads_jsonl ... ok
-test run::swebench::tests::governor_global_retry_after_blocks_subsequent_acquire ... ok
-test run::swebench::tests::manifest_config_uses_effective_runtime_overrides ... ok
-test run::swebench::tests::manifest_records_resume_mode_from_args ... ok
+test run::swebench::tests::json_redaction_preserves_max_tokens_knob ... ok
+test run::swebench::tests::harness_dirty_flag_detects_uncommitted_changes ... ok
+test run::swebench::tests::governor_tpm_gates_when_estimate_exceeds_bucket ... ok
 test run::swebench::tests::parse_retry_after_from_error_extracts_seconds ... ok
 test run::swebench::tests::parse_retry_after_handles_http_date_in_future ... ok
 test run::swebench::tests::parse_retry_after_returns_none_for_malformed_http_date ... ok
 test run::swebench::tests::predictions_metadata_deserializes_from_versioned_artifact_json ... ok
 test run::swebench::tests::preflight_json_schema_has_stable_top_level_fields ... ok
-test run::swebench::tests::panic_after_initial_manifest_still_leaves_manifest_on_disk ... ok
-test run::swebench::tests::governor_retry_after_applies_globally_to_concurrent_workers ... ok
+test run::swebench::tests::manifest_config_uses_effective_runtime_overrides ... ok
+test run::swebench::tests::manifest_records_resume_mode_from_args ... ok
 test run::swebench::tests::rate_limit_events_serializes_to_json ... ok
 test run::swebench::tests::redact_argv_does_not_mask_max_tokens_flag ... ok
-test run::swebench::tests::governor_tpm_gates_when_estimate_exceeds_bucket ... ok
 test run::swebench::tests::redact_argv_masks_secret_flags ... ok
+test run::swebench::tests::panic_after_initial_manifest_still_leaves_manifest_on_disk ... ok
 test run::swebench::tests::rejects_path_traversal_instance_id ... ok
 test run::swebench::tests::render_preflight_text_mode_is_line_oriented ... ok
 test run::swebench::tests::retry_on_parser_accepts_known_labels ... ok
@@ -378,32 +1152,64 @@ test run::swebench::tests::redact_argv_uses_redactor_for_embedded_literals ... o
 test run::trajectory_diff::push_canonical_field_lines_tests::test_push_canonical_field_lines ... ok
 test run::swebench::tests::timed_sync_times_out ... ok
 test run::triage::tests::message_tail_limits_by_chars ... ok
+test run::watch::tests::not_terminal_when_no_outcome_and_no_exit_reason ... ok
+test run::watch::tests::resolve_watch_path_finds_flat_for_run1 ... ok
+test run::watch::tests::resolve_watch_path_finds_nested_run1 ... ok
+test run::watch::tests::resolve_watch_path_finds_run2 ... ok
+test run::watch::tests::resolve_watch_path_ignores_flat_for_run2 ... ok
+test run::watch::tests::terminal_when_any_exit_reason_set ... ok
+test run::watch::tests::terminal_when_outcome_and_exit_reason_both_set ... ok
+test run::watch::tests::terminal_when_outcome_error ... ok
+test run::watch::tests::terminal_when_outcome_submitted ... ok
 test stagnation::tests::canonicalize_collapses_internal_whitespace ... ok
-test run::trajectory_diff::tests::diffing_and_rendering_eighty_step_trajectories_stays_under_500ms ... ok
-test stagnation::tests::canonicalize_trims_whitespace ... ok
 test stagnation::tests::canonicalize_strips_trailing_semicolon ... ok
+test stagnation::tests::canonicalize_trims_whitespace ... ok
 test stagnation::tests::detector_does_not_trip_for_three_action_rotation ... ok
-test stagnation::tests::detector_window_slides_correctly ... ok
 test stagnation::tests::detector_trips_at_k_identical_observations ... ok
+test stagnation::tests::detector_window_slides_correctly ... ok
 test stagnation::tests::identical_variants_produce_same_canonical ... ok
 test stream::broadcast::tests::dropped_subscriber_does_not_break_emit ... ok
 test stream::broadcast::tests::emit_with_no_subscribers_does_not_error ... ok
 test stream::broadcast::tests::multiple_subscribers_each_get_each_event ... ok
 test stream::broadcast::tests::subscriber_receives_subsequent_events ... ok
+test stream::event_log::tests::includes_required_fields ... ok
+test run::trajectory_diff::tests::diffing_and_rendering_eighty_step_trajectories_stays_under_500ms ... ok
 test stream::sse::tests::frame_contains_event_and_data ... ok
 test stream::sse::tests::multiline_payload_is_split_across_data_lines ... ok
 test stream::sse::tests::shutdown_releases_listener ... ok
 test stream::tests::event_names_are_snake_case ... ok
+test stream::tests::multi_sink_empty_is_noop ... ok
+test stream::tests::multi_sink_fans_out_to_every_sink_in_order ... ok
 test stream::tests::null_sink_swallows_events ... ok
 test stream::tests::serializes_with_type_tag ... ok
+[status] step 3/7  cost $0.1234
+[status] step 4/7  cost $0.0000
+test stream::tests::status_line_sink_emits_on_assistant_message ... ok
+test stream::tests::status_line_sink_silent_on_non_assistant_events ... ok
+test stream::webhook::tests::custom_headers_appear_in_request ... ok
+test stream::sse::tests::end_to_end_subscribe_and_receive ... ok
+test stream::webhook::tests::invalid_header_name_is_rejected ... ok
+test stream::webhook::tests::new_reports_missing_tokio_runtime ... ok
+test stream::webhook::tests::run_ended_envelope_includes_drop_count ... ok
+test stream::webhook::tests::test_webhook_sink_emits_http_post_with_envelope ... ok
+test stream::webhook::tests::with_buffer_capacity_rejects_zero_capacity ... ok
+test telemetry::tests::build_otlp_json_is_valid_json ... ok
+test telemetry::tests::different_instances_get_different_trace_ids ... ok
+test telemetry::tests::noop_tracer_is_inactive ... ok
+test telemetry::tests::resolve_endpoint_falls_back_to_env_var ... ok
+test telemetry::tests::resolve_endpoint_prefers_cli_flag ... ok
+test telemetry::tests::resolve_endpoint_returns_none_when_unset ... ok
+test telemetry::tests::resolve_endpoint_traces_env_var_used_as_full_url ... ok
+test telemetry::tests::span_id_is_16_hex_chars ... ok
+test telemetry::tests::trace_id_is_32_hex_chars ... ok
 test template::tests::basic_substitution ... ok
+test run::swebench::tests::prompt_template_hash_changes_when_overlay_edits_prompt ... ok
 test template::tests::conditional_on_returncode ... ok
 test template::tests::env_global_is_available ... ok
-test run::swebench::tests::prompt_template_hash_changes_when_overlay_edits_prompt ... ok
-test template::tests::no_html_escaping_on_shell_content ... ok
 test tool::tests::mcp_response_result_skips_stdout_noise_before_json_rpc ... ok
-test tool::tests::mcp_stdio_server_discovers_and_calls_tools_via_json_rpc ... ok
+test template::tests::no_html_escaping_on_shell_content ... ok
 test tool::tests::mcp_stdio_server_discovers_paginated_tools_list ... ok
+test tool::tests::mcp_stdio_server_discovers_and_calls_tools_via_json_rpc ... ok
 test tool::tests::mcp_stdio_server_rejects_unsupported_negotiated_protocol ... ok
 test tool::tests::mcp_stdio_server_rejects_protocol_change_during_tool_call ... ok
 test tool::tests::mcp_stdio_server_uses_negotiated_protocol_for_tool_calls ... ok
@@ -411,24 +1217,33 @@ test trajectory::tests::budget_exhausted_failure_category_serializes_as_snake_ca
 test trajectory::tests::extra_is_empty_checks_all_fields ... ok
 test trajectory::tests::format_key_ordering ... ok
 test trajectory::tests::legacy_token_usage_without_cache_fields_defaults_to_zero ... ok
+test trajectory::tests::mini_provenance_manifest_parent_sweep_run_id_roundtrips ... ok
+test trajectory::tests::mini_provenance_manifest_roundtrips_through_json ... ok
 test trajectory::tests::new_fields_optional_omitted_when_none ... ok
 test trajectory::tests::outcome_token_usage_duration_round_trip ... ok
 test trajectory::tests::roundtrip_through_json ... ok
-test trajectory::tests::token_usage_total_prompt_tokens_calculates_correctly ... ok
-test trajectory::tests::unknown_keys_preserved ... ok
+test trajectory::tests::save_partial_atomic_creates_valid_parseable_json ... ok
 test trajectory::export::tests::test_markdown_export_format ... ok
-test stream::sse::tests::end_to_end_subscribe_and_receive ... ok
+test trajectory::tests::save_partial_atomic_does_not_leave_temp_file ... ok
+test trajectory::tests::save_partial_atomic_does_not_mutate_original ... ok
+test trajectory::tests::token_usage_total_prompt_tokens_calculates_correctly ... ok
+test trajectory::tests::trajectory_1_2_without_manifest_parses_to_none ... ok
+test trajectory::tests::trajectory_info_manifest_absent_when_not_set ... ok
+test trajectory::tests::trajectory_info_manifest_field_present_and_serialized ... ok
+test trajectory::tests::unknown_keys_preserved ... ok
+test trajectory::tests::save_partial_atomic_overwrites_previous_checkpoint ... ok
+test stream::webhook::tests::emit_drops_events_when_buffer_is_full ... ok
 test run::swebench::tests::queued_cancel_signal_stops_dispatch_after_joined_worker ... ok
 
-test result: ok. 417 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.61s
+test result: ok. 682 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.25s
 
-     Running unittests src/main.rs (target/debug/deps/rust_swe_agent-9be9f7d45d97ccfb)
+     Running unittests src/main.rs (target/debug/deps/max-cf19946969fe772b)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/agent_loop.rs (target/debug/deps/agent_loop-3446c22f8180ba7a)
+     Running tests/agent_loop.rs (target/debug/deps/agent_loop-ac64044df4dcb223)
 
 running 29 tests
 test cache_retag_is_minimal_and_idempotent ... ok
@@ -439,31 +1254,31 @@ test default_system_prompt_discourages_dependency_install_detours ... ok
 test command_tool_adapter_executes_from_matching_fenced_block ... ok
 test command_tool_adapter_rendered_command_is_policy_checked ... ok
 test cd_prefix_and_custom_pattern_match_test_commands ... ok
+test ignores_native_tool_calls_from_unselected_choices ... ok
+test invalid_custom_test_command_regex_rejects_agent_build ... ok
 test failing_post_tool_use_hook_is_reported_but_does_not_abort ... ok
 test fenced_action_wins_over_conflicting_native_tool_call ... ok
-test ignores_native_tool_calls_from_unselected_choices ... ok
 test echoing_pytest_does_not_register_as_test_invocation ... ok
-test invalid_custom_test_command_regex_rejects_agent_build ... ok
 test mcp_server_tool_executes_from_matching_fenced_block ... ok
-test pipeline_segment_after_single_pipe_counts_test_command ... ok
 test post_tool_use_environment_error_is_reported_not_propagated ... ok
+test pipeline_segment_after_single_pipe_counts_test_command ... ok
 test post_tool_use_env_payload_is_capped_for_large_outputs ... ok
 test post_tool_use_hook_output_is_added_to_next_observation ... ok
 test pre_tool_use_environment_error_is_propagated_not_reported_as_blocked_tool ... ok
 test post_tool_use_hook_output_is_truncated_before_observation_rendering ... ok
 test pre_tool_use_hook_can_block_the_bash_command ... ok
 test pre_tool_use_hook_env_preserves_full_command_for_policy_checks ... ok
-test provider_native_bash_tool_call_executes_without_format_error_turn ... ok
 test records_pytest_invocation_before_submit_from_action_text ... ok
+test provider_native_bash_tool_call_executes_without_format_error_turn ... ok
 test runtime_tool_provider_executes_without_command_tool_config ... ok
 test submit_without_test_commands_records_no_pre_submit_tests ... ok
-test tool_hook_task_context_keeps_raw_task_while_trajectory_is_redacted ... ok
 test tool_hooks_receive_cancellation_token ... ok
+test tool_hook_task_context_keeps_raw_task_while_trajectory_is_redacted ... ok
 test two_turn_echo_submit_produces_well_formed_trajectory ... ok
 
-test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.65s
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.89s
 
-     Running tests/agent_stagnation.rs (target/debug/deps/agent_stagnation-bf4eae9c33ab8b35)
+     Running tests/agent_stagnation.rs (target/debug/deps/agent_stagnation-85559c4b9fdf58db)
 
 running 9 tests
 test canonicalization_treats_variants_as_identical ... ok
@@ -476,13 +1291,13 @@ test stagnation_config_rejects_zero_window ... ok
 test stagnation_trajectory_is_coherent_after_earlier_work ... ok
 test stagnation_trips_at_step_4_for_repeated_ls ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
 
-     Running tests/artifact_schema.rs (target/debug/deps/artifact_schema-34e995dbd7c98750)
+     Running tests/artifact_schema.rs (target/debug/deps/artifact_schema-a058b69edb14d907)
 
 running 22 tests
-test artifact_classifier_rejects_kind_mismatch ... ok
 test artifact_classifier_warns_for_pre_versioning_legacy_artifacts ... ok
+test artifact_classifier_rejects_kind_mismatch ... ok
 test artifact_classifier_marks_exact_current_version_supported_current ... ok
 test artifact_classifier_rejects_unsupported_future_major_versions ... ok
 test artifact_schema_current_minor_bumped_for_replay_fingerprinting ... ok
@@ -496,52 +1311,253 @@ test forecast_json_includes_artifact_header ... ok
 test checked_in_fixture_sweeps_load_through_public_reader_commands ... ok
 test inspect_rejects_future_trajectory_schema_before_printing_metrics ... ok
 test inspect_warns_for_legacy_trajectory_schema ... ok
-test forecast_run_keeps_calibration_results_versioned_after_manifest_mark ... ok
+test current_contract_fixtures_match_emitted_artifact_top_level_fields ... ok
 test sweep_results_serialization_includes_dual_cost_metadata ... ok
 test tail_rejects_future_results_schema_before_printing_metrics ... ok
 test trajectory_serialization_includes_artifact_header ... ok
+test forecast_run_keeps_calibration_results_versioned_after_manifest_mark ... ok
 test evaluate_run_writes_versioned_evaluation_json ... ok
-test current_contract_fixtures_match_emitted_artifact_top_level_fields ... ok
 test swebench_run_writes_versioned_results_and_prediction_metadata ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
 
-     Running tests/bench_bundle.rs (target/debug/deps/bench_bundle-af77b3ae1f5fd92e)
+     Running tests/bench_annotate.rs (target/debug/deps/bench_annotate-a0ee3492f7f77ea8)
+
+running 38 tests
+test annotate_add_help_shows_flags ... ok
+test annotate_list_help_shows_flags ... ok
+test annotate_appears_in_bench_help ... ok
+test annotate_rm_help_shows_flags ... ok
+test annotate_add_is_zero_cost ... ok
+test cli_annotate_add_creates_store ... ok
+test cli_annotate_add_env_var_store ... ok
+test bundle_succeeds_without_annotations ... ok
+test cli_annotate_add_note_too_long_exits_nonzero ... ok
+test cli_annotate_add_invalid_tag_exits_nonzero ... ok
+test cli_annotate_add_multiple_tags ... ok
+test bundle_includes_annotations_when_present ... ok
+test cli_annotate_add_redacts_note_before_writing ... ok
+test cli_annotate_add_store_override ... ok
+test cli_annotate_add_with_note ... ok
+test cli_annotate_list_empty_store_exits_zero ... ok
+test cli_annotate_list_shows_added_annotations ... ok
+test cli_annotate_rm_all_tags ... ok
+test cli_annotate_list_filter_by_instance ... ok
+test cli_annotate_list_filter_by_tag ... ok
+test reproduce_annotation_diff_detects_only_in_original ... ok
+test reproduce_annotation_diff_detects_only_in_replay ... ok
+test reproduce_annotation_diff_empty_when_same ... ok
+test store_add_and_list_round_trip ... ok
+test store_invalid_tag_rejected ... ok
+test store_last_writer_wins_on_same_tag ... ok
+test store_list_filter_by_tag ... ok
+test store_note_cap_rejected ... ok
+test store_note_exactly_1024_accepted ... ok
+test store_rm_all_tags_for_instance ... ok
+test store_rm_specific_tag ... ok
+test store_schema_version_is_written ... ok
+test store_timestamps_are_rfc3339 ... ok
+test tag_regex_accepts_valid_tags ... ok
+test tag_regex_rejects_invalid_tags ... ok
+test inspect_no_operator_notes_when_no_annotations ... ok
+test cli_annotate_rm_specific_tag ... ok
+test inspect_shows_operator_notes_when_annotations_exist ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/bench_audit.rs (target/debug/deps/bench_audit-f733bfd212c5f581)
+
+running 10 tests
+test audit_clean_sweep_passes_successfully ... ok
+test audit_evaluator_contradiction_fails ... ok
+test audit_dataset_hash_mismatch_fails ... ok
+test audit_missing_trajectory_fails ... ok
+test audit_old_schema_trajectory_yields_partial_logs ... ok
+test audit_orphan_trajectory_fails ... ok
+test audit_tampered_cost_exceeds_tolerance_fails ... ok
+test audit_tampered_outcome_counts_fails ... ok
+test audit_tampered_tokens_fails ... ok
+test help_lists_audit_subcommand_and_flags ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/bench_behavior.rs (target/debug/deps/bench_behavior-aa021feec3c6fa3a)
+
+running 31 tests
+test classify_build_commands ... ok
+test classify_git_commands ... ok
+test classify_nav_commands ... ok
+test classify_read_commands ... ok
+test classify_search_commands ... ok
+test classify_test_commands ... ok
+test classify_turn_applies_priority_order_test_beats_write ... ok
+test classify_turn_applies_priority_search_beats_read ... ok
+test classify_turn_applies_priority_write_beats_read ... ok
+test classify_turn_empty_actions_is_noop ... ok
+test classify_turn_strips_env_prefix ... ok
+test classify_turn_strips_sudo_prefix ... ok
+test classify_turn_submit_only_is_noop ... ok
+test classify_unknown_heads_land_in_other ... ok
+test classify_write_commands ... ok
+test cli_json_format_emits_valid_json_to_stdout ... ok
+test by_outcome_schema_includes_all_required_buckets ... ok
+test class_metrics_include_required_fields ... ok
+test bucket_filter_all_includes_all_instances ... ok
+test cli_produces_text_output ... ok
+test cli_writes_behavior_json_artifact ... ok
+test edit_heavy_resolved_vs_read_heavy_unresolved_shape_diff ... ok
+test invalid_bucket_exits_with_error ... ok
+test missing_sweep_exits_with_error ... ok
+test determinism_same_output_on_two_runs ... ok
+test min_share_hides_low_share_classes ... ok
+test noop_only_sweep_reports_noop_share_one ... ok
+test rerun_sweep_classifies_turns_from_all_runs ... ok
+test per_instance_flag_emits_per_instance_data ... ok
+test totals_include_all_classes_with_share_fields ... ok
+test unknown_heads_appear_in_unclassified_heads ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/bench_bisect.rs (target/debug/deps/bench_bisect-7c90e47a2d3aac93)
+
+running 10 tests
+test bisect_fails_with_missing_args ... ok
+test bisect_fails_on_empty_range ... ok
+test bisect_budget_exhausted_exits_code_18 ... ok
+test bisect_all_schema_breaks_exits_code_19 ... ok
+test bisect_reproducible_mock_binary_search_finds_culprit ... ok
+test bisect_resume_fails_on_good_bad_sha_mismatch ... ok
+test bisect_subcommand_appears_in_bench_help ... ok
+test bisect_resume_loads_existing_results_and_bypasses_evaluation ... ok
+test bisect_systemic_halt_trips_circuit_breaker ... ok
+test bisect_resume_fails_on_parameter_mismatch ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/bench_budget_fit.rs (target/debug/deps/bench_budget_fit-711b6d12b3100e0d)
+
+running 48 tests
+test behavior_after_retry_without_cap_change_is_accepted ... ok
+test bench_budget_fit_axis_flag_restricts_output ... ok
+test bench_budget_fit_format_json_prints_valid_json ... ok
+test bench_budget_fit_cli_writes_artifact_and_exits_0 ... ok
+test budget_halted_sweep_is_rejected ... ok
+test cli_per_task_budget_with_config_cost_limit_is_rejected ... ok
+test distribution_p95_matches_expected ... ok
+test distribution_stats_empty_returns_zero_count ... ok
+test config_sourced_per_task_budget_silent_reset_is_rejected ... ok
+test distribution_stats_single_value ... ok
+test bench_budget_fit_in_help ... ok
+test empty_evaluation_json_is_rejected ... ok
+test fresh_behavior_after_retry_is_accepted ... ok
+test harness_mismatch_retry_is_rejected ... ok
+test fresh_evaluation_after_retry_is_accepted ... ok
+test mixed_cost_caps_in_resolved_config_are_rejected ... ok
+test mixed_cost_caps_accepted_with_non_cost_axis ... ok
+test model_changing_retry_is_rejected ... ok
+test none_backend_evaluation_is_rejected ... ok
+test original_config_overlay_with_retry_is_rejected ... ok
+test multi_attempt_sweep_is_rejected ... ok
+test original_docker_environment_with_retry_is_rejected ... ok
+test per_task_budget_usd_read_from_resolved_config_toml ... ok
+test progress_class_cap_hits_excluded_from_waste ... ok
+test resumed_sweep_is_rejected ... ok
+test bench_budget_fit_no_cap_failures_exits_0 ... ok
+test rerun_sweep_is_rejected ... ok
+test retry_omitting_default_step_limit_is_accepted ... ok
+test retry_preserving_same_step_limit_is_accepted ... ok
+test retry_with_only_sweep_budget_change_is_accepted ... ok
+test retry_restating_same_model_is_accepted ... ok
+test silent_cap_reset_retry_is_rejected ... ok
+test stale_behavior_after_retry_is_rejected ... ok
+test step_limit_read_from_resolved_config_toml ... ok
+test stale_evaluation_after_retry_is_rejected ... ok
+test stuck_class_ptarget_at_or_above_cap_emits_no_recommendation ... ok
+test test_a_resolved_under_cap_recommends_tighten ... ok
+test test_b_write_class_cap_bound_recommends_raise ... ok
+test test_c_stuck_class_cap_bound_does_not_recommend_raise ... ok
+test test_d_no_wall_clock_cap_emits_null_recommendation ... ok
+test tightening_savings_use_actual_value_not_cap_reduction ... ok
+test test_e_determinism_byte_identical_modulo_generated_at ... ok
+test tied_behavior_class_is_not_classified ... ok
+test test_f_target_percentile_changes_recommendation ... ok
+test unknown_filter_key_is_rejected ... ok
+test waste_estimate_usd_includes_step_limit_costs ... ok
+test unparseable_retry_timestamp_treats_eval_as_stale ... ok
+test well_sized_cap_rationale_appears_in_headline ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/bench_bundle.rs (target/debug/deps/bench_bundle-8bf8497a4d8eda40)
 
 running 23 tests
-test bundle_full_sweep_allows_budget_halted_row_without_trajectory ... ok
 test bundle_create_is_byte_identical_with_fixed_timestamp ... ok
+test bundle_full_sweep_allows_budget_halted_row_without_trajectory ... ok
 test bundle_create_verify_full_sweep_round_trips_with_fixed_layout ... ok
 test bundle_instance_scope_allows_budget_halted_row_without_trajectory ... ok
 test bundle_instance_scope_drops_filtered_evaluation_summaries ... ok
+test bundle_instance_scope_includes_only_requested_instance_artifacts ... ok
 test bundle_instance_scope_ignores_stale_nested_run_artifacts_for_single_run_row ... ok
 test bundle_instance_scope_rejects_missing_rerun_trajectory ... ok
-test bundle_instance_scope_includes_only_requested_instance_artifacts ... ok
 test bundle_instance_scope_uses_rerun_slots_for_scoped_aggregates ... ok
 test bundle_instance_scope_zeroes_existing_cost_totals_without_selected_cost_telemetry ... ok
 test bundle_normalizes_unrelated_absolute_paths_inside_artifacts ... ok
 test bundle_redaction_retrigger_fails_closed_and_writes_nothing ... ok
-test bundle_redaction_uses_standalone_manifest_custom_patterns ... ok
 test bundle_redaction_uses_source_manifest_custom_patterns ... ok
+test bundle_redaction_uses_standalone_manifest_custom_patterns ... ok
 test bundle_size_stays_within_ratio_of_explicit_file_tar ... ok
 test bundle_verify_reports_duplicate_manifest_paths ... ok
 test extracted_bundle_contains_no_known_secret_shapes ... ok
 test bundle_verify_reports_extra_missing_and_hash_mismatch ... ok
-test extracted_bundle_runs_bench_triage_without_layout_rewrite ... ok
 test extracted_bundle_reproduce_with_positive_limit_requires_real_local_dataset ... ok
 test help_lists_bundle_subcommand_and_flags ... ok
+test extracted_bundle_runs_bench_triage_without_layout_rewrite ... ok
 test extracted_bundle_runs_bench_reproduce_manifest_smoke_without_layout_rewrite ... ok
 test bundle_create_is_identical_modulo_timestamp_without_fixed_epoch ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 
-     Running tests/bench_calibrate.rs (target/debug/deps/bench_calibrate-21c1ce3a6df21f53)
+     Running tests/bench_cache_stats.rs (target/debug/deps/bench_cache_stats-1e7b3485ac2b88db)
+
+running 28 tests
+test cache_hit_rate_zero_tokens_returns_zero ... ok
+test cache_hit_rate_mixed ... ok
+test cache_hit_rate_all_reads ... ok
+test cache_hit_rate_no_reads ... ok
+test cli_cache_disabled_exits_zero_and_prints_message ... ok
+test cli_cache_disabled_still_shows_baseline_delta ... ok
+test cli_baseline_text_shows_delta_column ... ok
+test cli_baseline_json_includes_delta_fields ... ok
+test cli_exits_zero_with_cache_data ... ok
+test cli_json_emits_versioned_artifact_kind ... ok
+test cli_json_cache_disabled_sets_flag ... ok
+test cli_json_format_includes_all_instances_regardless_of_top ... ok
+test cli_json_has_required_sweep_total_fields ... ok
+test cli_json_instance_row_has_required_fields ... ok
+test cli_json_sweep_totals_correct_values ... ok
+test cli_json_instances_sorted_worst_first ... ok
+test cli_text_output_shows_bench_header ... ok
+test estimated_savings_creation_only_is_negative ... ok
+test estimated_savings_mixed_reads_and_creation ... ok
+test estimated_savings_reads_only ... ok
+test estimated_savings_zero_tokens_is_zero ... ok
+test realized_spend_creation_only ... ok
+test realized_spend_mixed ... ok
+test realized_spend_reads_only ... ok
+test realized_spend_zero_tokens_is_zero ... ok
+test cli_text_output_shows_cache_hit_rate ... ok
+test cli_writes_cache_stats_json_to_disk ... ok
+test cli_top_flag_limits_text_display ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/bench_calibrate.rs (target/debug/deps/bench_calibrate-27e702dec055f30e)
 
 running 14 tests
+test actual_above_upper_interval_is_optimistic_with_signed_relative_error ... ok
+test absent_parallel_arg_defaults_to_cli_parallel_for_comparison ... ok
 test actual_resolution_rate_uses_pass_at_1_semantics_for_rerun_rows ... ok
 test actual_below_lower_interval_is_pessimistic ... ok
-test absent_parallel_arg_defaults_to_cli_parallel_for_comparison ... ok
-test actual_above_upper_interval_is_optimistic_with_signed_relative_error ... ok
 test actuals_inside_intervals_are_well_calibrated ... ok
 test calibration_json_shape_is_stable ... ok
 test dataset_model_parallel_and_instance_mismatches_are_flagged ... ok
@@ -549,56 +1565,236 @@ test exact_target_instance_set_mismatch_is_flagged_even_when_counts_match ... ok
 test parallel_mismatch_is_detected_from_equals_and_short_manifest_forms ... ok
 test cli_missing_input_path_is_usage_error ... ok
 test relative_calibration_output_dir_is_resolved_from_current_cwd_first ... ok
-test cli_can_gate_on_optimistic_verdict_with_stable_outcome_class ... ok
 test small_n_zero_resolution_signal_uses_nonzero_interval ... ok
+test cli_can_gate_on_optimistic_verdict_with_stable_outcome_class ... ok
 test cli_exposes_calibrate_and_writes_json_artifact ... ok
 
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
-     Running tests/bench_compare.rs (target/debug/deps/bench_compare-0b981a9783d99d3b)
+     Running tests/bench_cascade.rs (target/debug/deps/bench_cascade-f015f7ca4c5177fb)
 
-running 37 tests
-test cli_json_output_is_machine_readable ... ok
+running 20 tests
+test cascade_budget_limit_marks_skipped_budget ... ok
+test cascade_artifacts_have_correct_kind_field ... ok
+test cascade_fails_preflight_without_eval_backend_and_no_mock ... ok
+test cascade_records_null_resolving_tier_for_unresolved_instances ... ok
+test cascade_creates_cascade_summary_json ... ok
+test cli_cascade_help_shows_required_flags ... ok
+test cli_cascade_requires_config_flag ... ok
+test cli_cascade_requires_dataset_flag ... ok
+test cli_help_includes_cascade_subcommand ... ok
+test manifest_parses_minimal_tier_definition ... ok
+test manifest_parses_multiple_tiers_in_order ... ok
+test manifest_parses_tier_with_all_optional_fields ... ok
+test validate_tiers_accepts_unique_names ... ok
+test validate_tiers_rejects_duplicate_names ... ok
+test validate_tiers_rejects_empty_list ... ok
+test validate_tiers_rejects_empty_name ... ok
+test validate_tiers_rejects_name_with_path_separator ... ok
+test cascade_creates_tier_dirs_and_cascade_json ... ok
+test cascade_resume_skips_completed_instances ... ok
+test cascade_short_circuits_resolved_instances ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.28s
+
+     Running tests/bench_command_stats.rs (target/debug/deps/bench_command_stats-f758edce1f416426)
+
+running 32 tests
+test cli_exits_nonzero_when_sweep_dir_missing ... ok
+test cli_bucket_filter_restricts_to_one_outcome ... ok
+test cli_compare_resolved_vs_unresolved_emits_delta_table ... ok
+test cli_compare_text_output_includes_comparison_section ... ok
+test cli_filter_resolved_bad_value_exits_nonzero ... ok
+test cli_filter_invalid_key_exits_nonzero ... ok
+test cli_exits_zero_on_success_regardless_of_failures ... ok
+test cli_filter_resolved_false_excludes_resolved_instances ... ok
+test cli_filter_resolved_true_restricts_to_resolved_instances ... ok
+test cli_json_format_emits_valid_json_to_stdout ... ok
+test cli_json_output_matches_golden_snapshot_byte_for_byte ... ok
+test cli_min_invocations_hides_low_frequency_commands ... ok
+test cli_nonzero_exit_rate_reflects_failed_commands ... ok
+test cli_produces_text_output_with_outcome_tables ... ok
+test cli_row_fields_have_correct_types ... ok
+test cli_rows_ordered_by_invocation_count_descending ... ok
+test cli_top_limits_printed_rows ... ok
+test head_extraction_decomposes_pipeline ... ok
+test head_extraction_empty_command_returns_empty ... ok
+test head_extraction_pipeline_not_logical_or ... ok
+test cli_works_without_evaluation_json ... ok
+test head_extraction_quoted_args_dont_affect_head ... ok
+test head_extraction_simple_command ... ok
+test head_extraction_strips_env_prefix ... ok
+test head_extraction_strips_inline_var_assignment ... ok
+test head_extraction_strips_multiple_env_vars ... ok
+test head_extraction_strips_sudo ... ok
+test head_extraction_strips_time ... ok
+test head_extraction_sudo_time_combined ... ok
+test head_extraction_whitespace_only_returns_empty ... ok
+test cli_writes_command_stats_json_artifact ... ok
+test cli_output_is_deterministic_except_generated_at ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+
+     Running tests/bench_compare.rs (target/debug/deps/bench_compare-74d9956088c08254)
+
+running 55 tests
 test cli_legacy_baseline_without_failure_category_does_not_panic ... ok
 test cli_disjoint_id_sets_bucketed_not_dropped ... ok
+test cli_json_output_is_machine_readable ... ok
 test cli_text_output_lists_regressions ... ok
 test compare_breakdown_json_includes_all_buckets_and_threshold_flag ... ok
-test compare_cost_attribution_falls_back_to_run_slots_when_evaluation_json_is_missing ... ok
+test compare_allow_underpowered_overrides_underpowered_block_for_significant_delta ... ok
 test compare_cost_attribution_prefers_evaluation_json_table_over_aggregate_rows ... ok
-test compare_cost_attribution_warns_when_dataset_subsets_differ ... ok
 test cli_max_regressions_flips_exit_code ... ok
+test compare_cost_attribution_falls_back_to_run_slots_when_evaluation_json_is_missing ... ok
+test compare_cost_attribution_warns_when_dataset_subsets_differ ... ok
 test compare_gate_fails_only_when_rerun_ci_is_below_zero ... ok
+test compare_json_has_resolved_rate_significance_block ... ok
 test compare_inspect_diff_sugar_renders_one_instance_diff ... ok
-test compare_json_includes_cost_per_resolved_and_pareto_verdict ... ok
 test compare_gate_uses_evaluation_resolved_when_present ... ok
-test compare_reports_tests_before_submit_rate_drop_with_flat_resolved_rate ... ok
 test compare_json_marks_small_rerun_delta_as_within_noise ... ok
+test compare_json_includes_cost_per_resolved_and_pareto_verdict ... ok
 test compare_emit_diff_script_executes_generated_script_for_all_regressions ... ok
+test compare_min_significance_gate_blocked_when_underpowered ... ok
+test compare_min_significance_gate_blocked_for_rerun_sweep ... ok
+test compare_min_significance_exits_nonzero_on_noisy_win ... ok
+test compare_min_significance_passes_when_delta_is_significant ... ok
+test compare_reports_tests_before_submit_rate_drop_with_flat_resolved_rate ... ok
+test compare_regression_significance_exits_nonzero_on_significant_regression ... ok
+test compare_regression_significance_passes_on_insignificant_regression ... ok
+test compare_significance_clearly_noisy_delta ... ok
+test compare_significance_clearly_significant_delta ... ok
+test compare_significance_few_discordant_pairs_is_underpowered ... ok
+test compare_significance_identical_sweeps_is_underpowered ... ok
+test compare_significance_rerun_sweep_is_underpowered ... ok
+test compare_significance_zero_overlap_is_underpowered ... ok
+test compare_text_output_has_significance_line ... ok
+test compare_text_output_includes_pareto_verdict ... ok
+test compare_text_output_prints_underpowered_tag ... ok
 test compare_treats_wallclock_timeout_as_ordinary_failure_transition ... ok
 test compare_uses_manifest_model_for_fallback_cost_repricing ... ok
-test compare_text_output_includes_pareto_verdict ... ok
 test evaluate_breakdown_csv_includes_cost_per_resolved_usd_column ... ok
+test compare_patch_size_regression_gate_fails_when_resolved_rate_ties ... ok
 test evaluate_breakdown_none_is_headline_only ... ok
 test evaluate_cost_attribution_dedupes_legacy_root_and_nested_run_slots ... ok
-test evaluate_cost_attribution_off_matches_legacy_stdout ... ok
 test evaluate_cost_attribution_ignores_stale_trajectories_outside_current_sweep ... ok
+test evaluate_cost_attribution_off_matches_legacy_stdout ... ok
 test evaluate_cost_attribution_uses_per_run_trajectories_for_reruns ... ok
-test compare_patch_size_regression_gate_fails_when_resolved_rate_ties ... ok
 test evaluate_cost_per_resolved_usd_correct_when_resolved_present ... ok
+test compare_test_only_resolved_rate_ci_gating_and_reporting ... ok
 test evaluate_none_backend_writes_evaluation_json ... ok
 test evaluate_notes_budget_exhausted_exclusion_in_output ... ok
 test evaluate_outputs_cost_per_resolved_usd_in_text ... ok
 test frontier_emits_ascii_chart_in_text_mode ... ok
-test frontier_emits_pareto_json_with_efficient_frontier ... ok
 test frontier_resolved_count_capped_to_sweep_instance_ids ... ok
+test frontier_emits_pareto_json_with_efficient_frontier ... ok
+test evaluate_uses_manifest_model_for_fallback_cost_repricing ... ok
 test frontier_subcommand_exists_in_help ... ok
 test help_lists_compare_subcommand ... ok
-test evaluate_uses_manifest_model_for_fallback_cost_repricing ... ok
+test test_compare_appends_diff_config_hint ... ok
 test evaluate_writes_patch_stats_with_gold_distance_and_data_driven_classifiers ... ok
 
-test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
 
-     Running tests/bench_forecast.rs (target/debug/deps/bench_forecast-1115eab100b416e5)
+     Running tests/bench_dataset_stats.rs (target/debug/deps/bench_dataset_stats-c1de0fb386218d4f)
+
+running 5 tests
+test test_skew_detection_repo_coverage ... ok
+test test_language_detection_case_insensitivity ... ok
+test test_mock_dataset_stats_computation ... ok
+test test_skew_detection_token_length ... ok
+test test_historical_resolved_rates_legacy_and_hash_handling ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/bench_diff_config.rs (target/debug/deps/bench_diff_config-5a4cc75d18d9c1f4)
+
+running 15 tests
+test bench_help_documents_diff_config_subcommand_and_options ... ok
+test test_corrupted_json_results_rejected ... ok
+test test_empty_container_drift_detected ... ok
+test test_escaped_object_keys_in_flattened_diff_paths ... ok
+test test_fail_on_change_returns_exit_3 ... ok
+test test_identical_manifests_json_mode ... ok
+test test_identical_manifests_text_mode ... ok
+test test_invalid_format_value_rejected ... ok
+test test_malformed_manifest_type_rejected ... ok
+test test_malformed_toml_resolved_rejected ... ok
+test test_missing_manifest_block_exits_2 ... ok
+test test_missing_results_json_exits_2 ... ok
+test test_ignore_and_fail_on_change ... ok
+test test_manifest_differences_and_priority_headlines ... ok
+test test_redaction_argv_safety ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/bench_eval_flake.rs (target/debug/deps/bench_eval_flake-2c544e6f02af5b71)
+
+running 10 tests
+test artifact_written_to_sweep_dir ... ok
+test dominant_disagrees_with_sweep_count_correct ... ok
+test compare_all_flaky_exits_usage_error ... ok
+test errored_instances_without_patch_skipped ... ok
+test compare_excludes_flaky_instances_from_mcnemar ... ok
+test flaky_instance_detected_with_correct_rate ... ok
+test total_cost_usd_is_zero ... ok
+test compare_help_shows_flake_report_flag ... ok
+test inspect_help_shows_flake_report_flag ... ok
+test eval_flake_subcommand_in_help ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/bench_evaluator_selftest.rs (target/debug/deps/bench_evaluator_selftest-7589e0f16f012478)
+
+running 21 tests
+test evaluator_duration_ms_is_recorded ... ok
+test exit_status_nonzero_for_errored_only ... ok
+test empty_patch_string_treated_as_missing ... ok
+test evaluator_backend_field_reflects_none_backend ... ok
+test exit_status_ok_when_all_resolved ... ok
+test exit_status_nonzero_when_any_unresolved ... ok
+test fail_instance_exit_reason_in_json ... ok
+test fail_instance_exit_reason_surfaced_in_stdout ... ok
+test instance_ids_at_file_filter_works ... ok
+test instance_ids_filter_works ... ok
+test json_artifact_dataset_path_matches_input ... ok
+test json_artifact_has_required_schema_fields ... ok
+test json_artifact_written_to_output_dir ... ok
+test missing_patch_field_recorded_as_gold_patch_missing ... ok
+test nonempty_patch_marks_resolved ... ok
+test limit_restricts_instance_count ... ok
+test stdout_text_contains_headline ... ok
+test stdout_json_format_emits_json_only ... ok
+test stdout_text_lists_non_resolved_instances ... ok
+test totals_match_per_instance_results ... ok
+test two_runs_produce_identical_json_modulo_timestamp_and_duration ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/bench_failure_digest.rs (target/debug/deps/bench_failure_digest-201c62df80f5822b)
+
+running 17 tests
+test digest_errored_instance_contains_cost_and_steps ... ok
+test digest_errored_instance_contains_last_tool_stderr ... ok
+test digest_errored_instance_contains_last_assistant_message ... ok
+test digest_completes_within_200ms ... ok
+test digest_errored_instance_shows_no_triage_when_absent ... ok
+test digest_errored_instance_shows_patch_status_not_attempted ... ok
+test digest_json_format_is_schema_versioned_and_stable ... ok
+test digest_max_chars_truncation_preserves_headline_and_triage_footer ... ok
+test digest_missing_results_json_exits_nonzero_with_clear_error ... ok
+test digest_multi_instance_without_flag_exits_nonzero_naming_candidates ... ok
+test digest_patch_apply_invalid_surfaces_apply_stderr ... ok
+test digest_multi_instance_with_flag_selects_specific_instance ... ok
+test digest_resolved_instance_exits_zero_and_says_no_failure ... ok
+test digest_redacts_sensitive_env_var_from_tool_stderr ... ok
+test digest_single_errored_instance_exits_zero_and_contains_headline ... ok
+test digest_step_limit_includes_triage_cluster_label ... ok
+test digest_step_limit_surfaces_final_loop_state ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/bench_forecast.rs (target/debug/deps/bench_forecast-85336e49882827f6)
 
 running 18 tests
 test cli_exposes_forecast_command_and_forecast_first_flag ... ok
@@ -620,11 +1816,63 @@ test default_target_n_honors_planned_sample_and_seed ... ok
 test forecast_with_stratified_planning_runs_calibration_subset ... ok
 test cli_forecast_first_blocks_or_launches_real_sweep ... ok
 
-test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.53s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.73s
 
-     Running tests/bench_inspect.rs (target/debug/deps/bench_inspect-326c4d503aba454c)
+     Running tests/bench_fork.rs (target/debug/deps/bench_fork-6f17f61ab4937a70)
 
-running 23 tests
+running 11 tests
+test bench_fork_help_works ... ok
+test bench_fork_legacy_without_flag_fails ... ok
+test bench_fork_legacy_with_flag_succeeds ... ok
+test bench_fork_invalid_args_in_mcp_config_fails ... ok
+test bench_fork_corrupt_manifest_fails ... ok
+test bench_fork_out_of_bounds_step_fails ... ok
+test bench_fork_lineage_redaction ... ok
+test bench_fork_lineage_records_only_effective_mcp_override ... ok
+test bench_fork_preserves_parent_step_limit_without_override ... ok
+test bench_fork_prompt_drift_fails ... ok
+test bench_fork_successful_run_and_inspect ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.34s
+
+     Running tests/bench_grep.rs (target/debug/deps/bench_grep-49609db6edfd52e7)
+
+running 29 tests
+test cli_exit_code_nonzero_with_no_matches ... ok
+test cli_exclude_instance_ids_removes_specified ... ok
+test cli_exit_code_0_with_matches ... ok
+test cli_help_mentions_zero_cost_guarantee ... ok
+test cli_invalid_regex_exits_nonzero_with_usage_error ... ok
+test cli_instance_ids_filter_restricts_to_specified ... ok
+test cli_json_format_emits_one_json_object_per_line ... ok
+test cli_max_matches_per_instance_caps_output ... ok
+test cli_missing_sweep_exits_nonzero ... ok
+test cli_no_match_exit_code_is_1 ... ok
+test cli_outcome_filter_restricts_to_error_instances ... ok
+test cli_pattern_field_and_instances_scanned_in_json ... ok
+test cli_redaction_prevents_secret_in_stdout ... ok
+test cli_role_filter_restricts_output ... ok
+test cli_300_trajectory_sweep_completes_in_under_5_seconds ... ok
+test cli_text_output_includes_instance_id_and_role ... ok
+test cli_text_output_shows_tab_separated_columns ... ok
+test unit_basic_match_returns_hits ... ok
+test unit_exclude_instance_ids_removes_specified ... ok
+test unit_field_actions_searches_bash_commands ... ok
+test unit_context_chars_controls_snippet_size ... ok
+test unit_invalid_regex_returns_error ... ok
+test unit_instance_ids_filter_includes_only_specified ... ok
+test unit_max_matches_per_instance_caps_hits ... ok
+test unit_outcome_filter_restricts_to_error_instances ... ok
+test unit_no_match_returns_empty_vec ... ok
+test unit_instances_scanned_counts_filtered_instances ... ok
+test unit_role_filter_restricts_to_user_only ... ok
+test unit_redaction_masks_secret_shaped_content ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/bench_inspect.rs (target/debug/deps/bench_inspect-6704ee48898c3f8e)
+
+running 47 tests
 test diff_instance_id_mismatch_fails_fast ... ok
 test diff_groups_initial_prompt_assistant_and_tool_result_as_one_role_keyed_step ... ok
 test diff_identical_trajectories_collapse_to_all_match_output ... ok
@@ -638,35 +1886,221 @@ test diff_suppresses_timestamp_noise_by_default ... ok
 test diff_text_highlights_changed_fields_when_color_is_forced ... ok
 test diff_trailing_prompt_tail_uses_next_logical_step_index ... ok
 test diff_unified_format_renders_canonical_unified_diff ... ok
-test diff_suppresses_whitespace_noise_unless_requested ... ok
+test failing_tests_json_shape_round_trips ... ok
 test diff_unified_format_suppresses_noise_by_default ... ok
+test diff_suppresses_whitespace_noise_unless_requested ... ok
+test format_csv_without_feature_gives_format_unavailable_error ... ok
+test format_html_without_feature_gives_format_unavailable_error ... ok
 test filter_mode_lists_matching_instances ... ok
+test failing_test_names_are_redacted_at_view_time ... ok
+test format_markdown_renders_trajectory_as_markdown ... ok
+test format_markdown_with_output_flag_writes_file_and_empty_stdout ... ok
+test format_markdown_redacts_secrets_in_export ... ok
+test format_mermaid_without_feature_gives_format_unavailable_error ... ok
 test help_lists_inspect_subcommand_and_flags ... ok
 test instance_mode_renders_header_and_steps ... ok
 test instance_mode_renders_patch_stats_from_evaluation_json ... ok
 test instance_mode_renders_test_telemetry_header_line ... ok
+test json_format_includes_failing_tests_field ... ok
 test instance_mode_reports_total_prompt_tokens_with_cache_breakdown ... ok
+test json_format_includes_patch_error_log_for_patch_apply_failed ... ok
+test json_format_resolved_instance_has_no_failing_tests_field ... ok
+test patch_apply_failed_with_error_log_renders_log_after_failure_reason ... ok
+test patch_error_log_is_null_for_non_patch_apply_failed_in_schema ... ok
+test inspect_displays_submission_class_and_warning_for_test_only_patches ... ok
+test patch_error_log_round_trips_through_evaluation_json ... ok
+test patch_apply_failed_without_error_log_shows_not_captured ... ok
+test patch_error_log_is_absent_for_non_patch_apply_failed_reasons ... ok
+test patch_error_log_is_redacted_at_view_time ... ok
+test resolved_instance_has_no_failing_tests_section ... ok
+test show_expected_parses_json_encoded_string_form ... ok
+test show_expected_renders_pass_to_pass_and_fail_to_pass ... ok
 test truncation_is_utf8_safe_for_multibyte_logs ... ok
+test unresolved_with_evaluator_failures_shows_failing_tests ... ok
+test unresolved_with_patch_apply_failed_shows_reason ... ok
 test truncates_long_output_unless_full ... ok
+test unresolved_without_test_names_shows_reason_from_eval_exit_reason ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
 
-     Running tests/bench_matrix.rs (target/debug/deps/bench_matrix-a7919b4a50e68508)
+     Running tests/bench_instance_history.rs (target/debug/deps/bench_instance_history-5939150c5c6f8989)
+
+running 14 tests
+test test_fewer_than_two_sweeps_exits_nonzero ... ok
+instance-history: 2 sweeps, 0 instances in intersection
+  stable_win=0  stable_loss=0  flipper=0  minority_win=0  minority_loss=0
+  flipper_share=0.0%
+
+(no instances match the current filter)
+instance-history: 2 sweeps, 3 instances in intersection
+  stable_win=1  stable_loss=1  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=33.3%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+gamma                                               flipper     1/2    50.0%  win→loss
+beta                                                stable_loss     0/2     0.0%  -
+alpha                                               stable_win     2/2   100.0%  -
+instance-history: 2 sweeps, 1 instances in intersection
+  stable_win=0  stable_loss=0  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=100.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+gamma                                               flipper     1/2    50.0%  win→loss
+test test_disjoint_instances_empty_intersection ... ok
+test test_flip_event_finished_at_delta ... ok
+instance-history: 3 sweeps, 1 instances in intersection
+  stable_win=0  stable_loss=0  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=100.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+gamma                                               flipper     2/3    66.7%  loss→win
+test test_flip_events_ordered_by_finished_at ... ok
+instance-history: 2 sweeps, 3 instances in intersection
+  stable_win=1  stable_loss=1  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=33.3%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+gamma                                               flipper     1/2    50.0%  win→loss
+beta                                                stable_loss     0/2     0.0%  -
+alpha                                               stable_win     2/2   100.0%  -
+instance-history: 3 sweeps, 5 instances in intersection
+  stable_win=2  stable_loss=2  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=20.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+gamma                                               flipper     2/3    66.7%  loss→win
+beta                                                stable_loss     0/3     0.0%  -
+epsilon                                             stable_loss     0/3     0.0%  -
+alpha                                               stable_win     3/3   100.0%  -
+delta                                               stable_win     3/3   100.0%  -
+test test_help_accessible ... ok
+test test_determinism ... ok
+test test_focus_flag_shows_flippers ... ok
+test test_flipper_classification_three_sweeps ... ok
+outcome_class: usage_error
+error: invalid config: instance-history: --require-full-coverage failed: 33.3% partial (limit 0.0%) (see docs/config-reference.md for valid values and examples)
+test test_require_full_coverage_exits_nonzero ... ok
+instance-history: 2 sweeps, 2 instances in intersection
+  stable_win=1  stable_loss=1  flipper=0  minority_win=0  minority_loss=0
+  flipper_share=0.0%
+  skipped: /tmp/.tmp7ITaQo/sweep_bad
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+beta                                                stable_loss     0/2     0.0%  -
+alpha                                               stable_win     2/2   100.0%  -
+test test_missing_results_json_skipped ... ok
+instance-history: 2 sweeps, 2 instances in intersection
+  stable_win=1  stable_loss=0  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=50.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+beta                                                flipper     1/2    50.0%  loss→win
+alpha                                               stable_win     2/2   100.0%  -
+test test_sweep_discovery_glob ... ok
+instance-history: 10 sweeps, 3 instances in intersection
+  stable_win=1  stable_loss=1  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=33.3%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+swing                                               flipper     7/10   70.0%  win→loss
+loss                                                stable_loss     0/10    0.0%  -
+stable                                              stable_win    10/10  100.0%  -
+instance-history: 2 sweeps, 2 instances in intersection
+  stable_win=1  stable_loss=0  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=50.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+beta                                                flipper     1/2    50.0%  loss→win
+alpha                                               stable_win     2/2   100.0%  -
+test test_sweep_discovery_parent_directory ... ok
+instance-history: 2 sweeps, 1 instances in intersection
+  stable_win=0  stable_loss=0  flipper=1  minority_win=0  minority_loss=0
+  flipper_share=100.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+alpha                                               flipper     1/2    50.0%  win→loss
+test test_sweep_outcomes_sampling_summary ... ok
+instance-history: 10 sweeps, 3 instances in intersection
+  stable_win=1  stable_loss=1  flipper=0  minority_win=1  minority_loss=0
+  flipper_share=0.0%
+
+instance_id                                         stability_class         resolved    rate  last_flip
+--------------------------------------------------------------------------------------------------------------
+swing                                               unstable_minority_win     7/10   70.0%  win→loss
+loss                                                stable_loss     0/10    0.0%  -
+stable                                              stable_win    10/10  100.0%  -
+test test_stable_threshold_relaxation ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/bench_ladder.rs (target/debug/deps/bench_ladder-af5ae96d1b0ee0e1)
+
+running 36 tests
+test ladder_baseline_delta_computed_correctly ... ok
+test ladder_baseline_row_has_delta_zero ... ok
+test ladder_baseline_adds_delta_vs_baseline_column ... ok
+test ladder_dataset_filter_by_alias_keeps_matching_sweeps ... ok
+test ladder_exits_zero_with_zero_matching_sweeps ... ok
+test ladder_json_delta_resolved_pct_first_row_is_null ... ok
+test ladder_exits_zero_with_valid_root ... ok
+test ladder_json_delta_resolved_pct_second_row_is_positive ... ok
+test ladder_dataset_filter_by_nonexistent_returns_zero_rows ... ok
+test ladder_json_has_artifact_kind ... ok
+test ladder_json_has_schema_version ... ok
+test ladder_json_has_skipped_section ... ok
+test ladder_json_has_three_rows ... ok
+test ladder_json_mean_steps_correct ... ok
+test ladder_json_model_and_prompt_sha_present ... ok
+test ladder_json_row_has_required_fields ... ok
+test ladder_json_rows_sorted_chronologically ... ok
+test ladder_json_resolved_pct_values_correct ... ok
+test ladder_json_skipped_reason_mentions_mismatch ... ok
+test ladder_json_usd_per_resolved_correct ... ok
+test ladder_last_flag_truncates_to_n_most_recent ... ok
+test ladder_last_zero_returns_empty_rows ... ok
+test ladder_markdown_has_header ... ok
+test ladder_markdown_has_skipped_section ... ok
+test ladder_markdown_has_table_rows ... ok
+test ladder_output_is_deterministic ... ok
+test ladder_subcommand_appears_in_bench_help ... ok
+test ladder_text_rows_sorted_by_start_timestamp ... ok
+test ladder_text_shows_bench_header ... ok
+test ladder_text_shows_delta_column ... ok
+test ladder_text_shows_resolved_percentages ... ok
+test ladder_snapshot_json_format ... ok
+test ladder_snapshot_text_format ... ok
+test ladder_snapshot_markdown_format ... ok
+test ladder_text_shows_skipped_section ... ok
+test ladder_text_shows_three_sweep_rows ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running tests/bench_matrix.rs (target/debug/deps/bench_matrix-6069f46f1a378303)
 
 running 22 tests
 test cli_matrix_requires_config_flag ... ok
 test cli_matrix_requires_dataset_flag ... ok
-test manifest_parses_minimal_arm_definition ... ok
+test cli_matrix_help_shows_required_flags ... ok
 test manifest_parses_arm_with_all_optional_fields ... ok
 test cli_help_includes_matrix_subcommand ... ok
-test cli_matrix_help_shows_required_flags ... ok
+test manifest_parses_minimal_arm_definition ... ok
 test manifest_parses_multiple_arms ... ok
 test matrix_budget_limit_skips_arms_that_exceed_it ... ok
 test matrix_json_has_correct_artifact_kind ... ok
 test matrix_parallelism_zero_returns_error ... ok
 test matrix_arm_dirs_are_nested_inside_output ... ok
-test matrix_all_arms_see_the_same_instances ... ok
 test matrix_instance_list_is_deterministic_for_same_seed ... ok
+test matrix_all_arms_see_the_same_instances ... ok
 test matrix_resume_skips_complete_arms ... ok
 test validate_arms_accepts_unique_names ... ok
 test validate_arms_rejects_duplicate_names ... ok
@@ -677,14 +2111,82 @@ test matrix_summary_json_is_well_formed ... ok
 test matrix_summary_rows_are_ranked_contiguously_from_one ... ok
 test matrix_run_creates_per_arm_dirs_and_results ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.38s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.85s
 
-     Running tests/bench_reproduce.rs (target/debug/deps/bench_reproduce-407b27512acc0739)
+     Running tests/bench_power.rs (target/debug/deps/bench_power-04a4988962fed01f)
+
+running 24 tests
+test cli_fails_when_power_below_alpha ... ok
+test cli_fails_when_both_n_and_delta_omitted ... ok
+test cli_cost_per_instance_calculates_total_cost ... ok
+test cli_bonferroni_note_shows_for_multiple_arms ... ok
+test cli_fails_with_impossible_delta ... ok
+test cli_fails_with_extreme_precision_alpha ... ok
+test cli_fails_with_infinite_cost_per_instance ... ok
+test cli_fails_with_invalid_alpha ... ok
+test cli_fails_with_invalid_baseline_rate ... ok
+test cli_fails_with_invalid_power ... ok
+test cli_fails_with_malformed_forecast_point_cost ... ok
+test cli_fails_with_mode_b_infeasibility ... ok
+test cli_fails_with_overflowing_delta_sample_size ... ok
+test cli_fails_with_overflowing_total_cost ... ok
+test cli_fails_with_malformed_forecast_target_n ... ok
+test cli_fails_with_under_resolved_delta ... ok
+test cli_fails_with_nan_inputs ... ok
+test cli_mode_a_conservative_delta_mapping ... ok
+test cli_help_shows_power_subcommand ... ok
+test cli_mode_a_sample_size_native_no_override ... ok
+test cli_mode_a_sample_size_reference_1 ... ok
+test cli_mode_b_conservative_mde_reporting ... ok
+test cli_mode_b_mde_reference ... ok
+test cli_one_sided_mode_native_no_override ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/bench_report.rs (target/debug/deps/bench_report-be7c3c094c6906d7)
 
 running 32 tests
-test build_report_counts_flipped_to_resolved ... ok
+test bench_report_basic_markdown_exits_zero ... ok
+test bench_report_cache_effectiveness_renders_no_cache_data_gracefully ... ok
+test bench_report_cache_effectiveness_hit_rate_value_is_correct ... ok
+test bench_report_baseline_flag_emits_delta_section ... ok
+test bench_report_corrupt_evaluation_json_fails ... ok
+test bench_report_cache_effectiveness_section_present_with_cache_data ... ok
+test bench_report_falls_back_to_token_based_cost_when_cost_usd_missing ... ok
+test bench_report_escapes_pipes_in_cell_values ... ok
+test bench_report_in_help ... ok
+test bench_report_finds_nested_canonical_trajectory_layout ... ok
+test bench_report_format_markdown_is_default ... ok
+test bench_report_format_html_exits_zero_and_writes_html ... ok
+test bench_report_legacy_single_run_eval_row_counts_as_pass_at_1 ... ok
+test bench_report_markdown_contains_failure_mix_table ... ok
+test bench_report_markdown_contains_top_failed_instances ... ok
+test bench_report_markdown_contains_provenance_block ... ok
+test bench_report_markdown_contains_topline_metrics ... ok
+test bench_report_missing_evaluation_json_renders_graceful_message ... ok
+test bench_report_missing_evaluation_json_exits_zero ... ok
+test bench_report_missing_sweep_exits_nonzero ... ok
+test bench_report_markdown_matches_snapshot ... ok
+test bench_report_preserves_zero_cost_for_free_tier_model ... ok
+test bench_report_redacts_secrets_in_instance_ids ... ok
+test bench_report_rejects_wrong_kind_evaluation_artifact ... ok
+test bench_report_redacts_secrets_in_manifest_fields ... ok
+test bench_report_output_is_deterministic ... ok
+test bench_report_rejects_path_traversal_instance_id ... ok
+test bench_report_resolved_instance_not_in_failed_table ... ok
+test bench_report_schema_version_in_header ... ok
+test bench_report_treats_legacy_submitted_row_as_resolved ... ok
+test bench_report_top_failures_flag_limits_table ... ok
+test bench_report_uses_evaluation_resolved_over_sweep_submission ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/bench_reproduce.rs (target/debug/deps/bench_reproduce-5918888804094961)
+
+running 32 tests
 test build_report_counts_flipped_to_unresolved ... ok
 test build_report_marks_errored_for_missing_replay_instance ... ok
+test build_report_counts_flipped_to_resolved ... ok
 test build_report_counts_matched_resolved_instances ... ok
 test build_report_records_reproduced_from_block ... ok
 test compare_manifests_finds_no_drift_when_identical ... ok
@@ -702,112 +2204,343 @@ test load_manifest_rejects_results_without_manifest_block ... ok
 test load_manifest_returns_manifest_from_valid_sweep ... ok
 test manifest_reproduced_from_field_serializes_and_deserializes ... ok
 test manifest_reproduced_from_is_absent_for_normal_sweeps ... ok
-test cli_parses_bench_reproduce_required_args ... ok
 test render_summary_includes_patch_identical_percentage ... ok
 test render_summary_includes_percent_matched ... ok
-test cli_parses_bench_reproduce_optional_overrides ... ok
-test render_summary_lists_top_diverging_failure_categories ... ok
 test render_summary_includes_top_categories_section_when_divergences_exist ... ok
-test soft_drifts_are_excluded_from_filter_hard_drifts ... ok
-test render_summary_omits_top_categories_when_no_divergences ... ok
+test render_summary_lists_top_diverging_failure_categories ... ok
 test render_summary_includes_total_instance_count ... ok
-test unwhitelisted_hard_drifts_are_reported ... ok
+test render_summary_omits_top_categories_when_no_divergences ... ok
+test soft_drifts_are_excluded_from_filter_hard_drifts ... ok
 test sweep_results_with_reproduced_from_roundtrips_through_json ... ok
+test unwhitelisted_hard_drifts_are_reported ... ok
 test whitelisted_hard_drifts_are_excluded ... ok
+test cli_parses_bench_reproduce_optional_overrides ... ok
+test cli_parses_bench_reproduce_required_args ... ok
 
 test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/bench_reproduce_fixtures.rs (target/debug/deps/bench_reproduce_fixtures-3ff7b17943ecb271)
+     Running tests/bench_reproduce_fixtures.rs (target/debug/deps/bench_reproduce_fixtures-7f5b36482cfc447d)
 
 running 4 tests
-test current_fixture_manifest_parses_successfully ... ok
 test same_fixture_produces_no_drift ... ok
+test current_fixture_manifest_parses_successfully ... ok
 test legacy_fixture_manifest_parses_successfully ... ok
 test drift_detection_identifies_sha_difference_between_fixtures ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/bench_tail.rs (target/debug/deps/bench_tail-b47190160b7ba5d8)
+     Running tests/bench_retry.rs (target/debug/deps/bench_retry-24a13cfe0aac8717)
+
+running 36 tests
+test archive_uses_flat_path ... ok
+test cli_refuse_without_selector ... ok
+test cli_harness_mismatch_bypassed_with_flag ... ok
+test cli_dry_run_no_yes_exits_nonzero ... ok
+test cli_dry_run_non_interactive_hint ... ok
+test cli_round_trip_tail_reads_retry_history ... ok
+test detect_harness_mismatch_false_when_no_current_sha ... ok
+test detect_harness_mismatch_false_when_no_manifest ... ok
+test detect_harness_mismatch_false_when_shas_match ... ok
+test detect_harness_mismatch_when_shas_differ ... ok
+test cli_round_trip_compare_reads_retry_history ... ok
+test instance_result_omits_retry_fields_when_none ... ok
+test instance_result_serializes_retry_fields_when_set ... ok
+test merge_appends_retry_history_entry ... ok
+test merge_preserves_prior_retry_history_entries ... ok
+test merge_preserves_unselected_rows ... ok
+test merge_replaces_selected_row ... ok
+test merge_sets_previous_failure_category ... ok
+test merge_sets_retry_id_on_retried_instance ... ok
+test resolve_selection_by_failure_category ... ok
+test resolve_selection_by_instance_ids ... ok
+test resolve_selection_by_outcome ... ok
+test resolve_selection_composition_order ... ok
+test resolve_selection_limit_caps_after_filters ... ok
+test resolve_selection_refuse_no_selector ... ok
+test resolve_selection_refuse_submitted_without_allow_flag ... ok
+test resolve_selection_submitted_allowed_with_flag ... ok
+test restore_missing_trajectories_keeps_valid_trajectory ... ok
+test restore_missing_trajectories_restores_cancelled ... ok
+test restore_missing_trajectories_restores_when_absent ... ok
+test save_pre_retry_backup_writes_json ... ok
+test schema_version_is_1_10 ... ok
+test sweep_results_omits_retry_history_when_empty ... ok
+test sweep_results_serializes_retry_history_when_present ... ok
+test cli_round_trip_inspect_retried_instance ... ok
+test cli_round_trip_evaluate_reads_retry_history ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/bench_self_check.rs (target/debug/deps/bench_self_check-76ffd6e4e6d9a090)
+
+running 12 tests
+test by_repo_flag_produces_per_repo_breakdown ... ok
+test all_resolved_all_none_brier_and_excluded_count ... ok
+test all_resolved_all_tests_passed_precision_recall_brier ... ok
+test legacy_trajectory_missing_test_field_returns_preflight_error ... ok
+test confusion_matrix_totals_are_consistent ... ok
+test json_output_round_trips_cleanly ... ok
+test calibration_delta_is_positive_when_precision_exceeds_base_rate ... ok
+test missing_evaluation_json_returns_config_error ... ok
+test list_zero_suppresses_false_positives_negatives ... ok
+test text_format_contains_required_sections ... ok
+test mixed_sweep_exact_metrics ... ok
+test perf_300_instances_under_2_seconds ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/bench_tail.rs (target/debug/deps/bench_tail-be9af009f17ee4bb)
 
 running 13 tests
 test all_failed_trajectory_excluded_from_model_mix ... ok
 test fallback_count_is_summed_across_rerun_slots ... ok
-test model_mix_counts_all_rerun_slots_not_just_first ... ok
 test snapshot_counts_running_sweep_and_ignores_half_written_trajectory ... ok
-test snapshot_marks_budget_halt_as_abort ... ok
+test model_mix_counts_all_rerun_slots_not_just_first ... ok
 test snapshot_keeps_zero_actual_cost_separate_from_baseline_cost ... ok
+test snapshot_marks_budget_halt_as_abort ... ok
 test snapshot_marks_complete_when_all_instances_are_accounted_for ... ok
-test snapshot_renders_cancelling_deadline_state ... ok
 test snapshot_prefers_legacy_trajectory_actual_over_results_estimate ... ok
+test snapshot_renders_cancelling_deadline_state ... ok
 test snapshot_reports_zero_actual_and_baseline_cache_repricing ... ok
 test snapshot_uses_total_cost_usd_metadata_when_no_records_exist ... ok
 test cli_once_budget_abort_exits_nonzero_with_reason ... ok
 test cli_once_json_outputs_single_snapshot ... ok
 
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/bench_triage.rs (target/debug/deps/bench_triage-6f637d3a08fce7a3)
+     Running tests/bench_test_progress.rs (target/debug/deps/bench_test_progress-13ecd6bc0a04534f)
+
+running 38 tests
+test ac_a_all_resolved_mean_score_is_one ... ok
+test ac_b_partial_progress_instance ... ok
+test ac_c_regressed_instance ... ok
+test ac_d_evaluator_unavailable_excluded_from_means ... ok
+test ac_e_hot_failing_tests_ranking ... ok
+test ac_h_min_tests_drops_from_means_keeps_in_per_instance ... ok
+test cli_bench_compare_omits_section_when_test_progress_absent ... ok
+test cli_exits_nonzero_when_sweep_dir_missing ... ok
+test cli_bucket_filter_restricts_text_output ... ok
+test ac_f_bench_compare_test_progress_delta ... ok
+test cli_exits_zero_regardless_of_bucket_mix ... ok
+test cli_exits_zero_when_all_evaluator_unavailable ... ok
+test cli_filter_does_not_write_test_progress_json ... ok
+test cli_hot_tests_n_limits_list_size ... ok
+test cli_means_exclude_evaluator_unavailable ... ok
+test cli_min_tests_does_not_write_test_progress_json ... ok
+test cli_per_instance_sorted_by_partial_credit_score_asc_then_instance_id ... ok
+test cli_schema_version_is_integer ... ok
+test compute_instance_metrics_partial_example_b ... ok
+test compute_instance_metrics_regressed_example_c ... ok
+test cli_totals_bucket_counts_match_per_instance ... ok
+test help_includes_test_progress_subcommand ... ok
+test cli_writes_test_progress_json ... ok
+test partial_credit_score_clamped_to_neg_one_floor ... ok
+test partial_credit_score_fully_regressed_is_neg_one ... ok
+test partial_credit_score_no_progress_is_zero ... ok
+test partial_credit_score_partial_example_b ... ok
+test partial_credit_score_regressed_example_c ... ok
+test partial_credit_score_resolved_is_one ... ok
+test hot_failing_tests_counts_implied_failures ... ok
+test hot_failing_tests_excludes_resolved_instances ... ok
+test verdict_bucket_no_progress ... ok
+test verdict_bucket_partial_progress ... ok
+test verdict_bucket_regressed ... ok
+test verdict_bucket_resolved ... ok
+test unresolved_with_empty_eval_tests_is_evaluator_unavailable ... ok
+test unresolved_with_no_dataset_entry_is_evaluator_unavailable ... ok
+test ac_g_determinism ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s
+
+     Running tests/bench_tool_ablation.rs (target/debug/deps/bench_tool_ablation-774cecfecd4e0661)
+
+running 23 tests
+test cli_help_includes_tool_ablation_subcommand ... ok
+test cli_render_only_exits_zero_without_running_sweeps ... ok
+test budget_exhaustion_is_not_failure_exit ... ok
+test cli_render_only_json_outputs_schema_versioned_object ... ok
+test cli_tool_ablation_help_shows_required_flags ... ok
+test cli_tool_ablation_requires_config_flag ... ok
+test enumerate_tools_empty_for_default_config ... ok
+test enumerate_tools_returns_user_defined_tool_names ... ok
+test cli_tool_ablation_requires_dataset_flag ... ok
+test full_ablation_baseline_has_null_ablated_tool ... ok
+test full_ablation_json_per_arm_has_required_fields ... ok
+test ablate_flag_restricts_tool_set ... ok
+test arms_run_against_same_instance_set_as_baseline ... ok
+test generate_arm_plan_creates_baseline_plus_one_per_tool ... ok
+test generate_arm_plan_empty_tools_gives_only_baseline ... ok
+test generate_arm_plan_with_ablate_filter_restricts_set ... ok
+test generate_arm_plan_with_pair_ablation_adds_pair_arms ... ok
+test planned_arm_baseline_has_no_ablated_tool ... ok
+test full_ablation_run_creates_per_arm_dirs_and_results ... ok
+test full_ablation_writes_summary_txt ... ok
+test full_ablation_run_writes_tool_ablation_json ... ok
+test trajectory_artifacts_live_under_arm_name_dirs ... ok
+test tool_ablation_json_instance_ids_match_arm_results ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.32s
+
+     Running tests/bench_tool_coverage.rs (target/debug/deps/bench_tool_coverage-0bedf772e1e1f122)
+
+running 21 tests
+test bash_tool_has_builtin_source ... ok
+test by_outcome_contains_required_fields ... ok
+test bucket_filter_does_not_affect_json_artifact ... ok
+test bucket_filter_shows_in_text_output ... ok
+test cli_produces_text_output_with_tool_table ... ok
+test by_tool_contains_required_fields_for_each_tool ... ok
+test cli_writes_tool_coverage_json_artifact ... ok
+test dead_tool_appears_in_unused_tools_text ... ok
+test invalid_bucket_exits_nonzero ... ok
+test invalid_format_exits_nonzero ... ok
+test dead_tool_explicitly_visible_in_text_output ... ok
+test exit_code_zero_when_only_bash_used ... ok
+test json_format_produces_valid_json_on_stdout ... ok
+test mcp_tool_has_source_and_mcp_server_fields ... ok
+test min_invocations_hides_low_use_tools_in_text_but_not_json ... ok
+test mcp_tool_used_in_resolved_instances_shows_higher_usage_rate ... ok
+test per_instance_flag_emits_instance_rows ... ok
+test toolset_drift_text_output_mentions_drift ... ok
+test per_instance_mcp_calls_match_trajectory ... ok
+test toolset_drift_detected_when_instances_have_different_toolsets ... ok
+test two_runs_produce_identical_artifact_modulo_generated_at ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/bench_triage.rs (target/debug/deps/bench_triage-d09bd2f0d4d8653b)
 
 running 7 tests
 test cli_errors_when_evaluation_json_is_missing ... ok
-test cli_clusters_unresolved_failures_and_writes_ranked_triage_json ... ok
 test cli_excludes_resolved_rerun_aggregates_from_results_fallback_candidates ... ok
 test signature_normalization_replaces_numbers_paths_and_whitespace ... ok
 test cli_includes_errored_results_rows_missing_from_evaluation_json ... ok
+test cli_clusters_unresolved_failures_and_writes_ranked_triage_json ... ok
 test cli_json_format_honors_bucket_and_min_cluster_size_filters ... ok
 test triage_json_is_deterministic_except_generated_at ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
 
-     Running tests/cli_task_timeout_help.rs (target/debug/deps/cli_task_timeout_help-f61649efb00ac6e2)
+     Running tests/bench_triage_diff.rs (target/debug/deps/bench_triage_diff-38e1014ecab3ae62)
 
-running 3 tests
+running 5 tests
+test triage_diff_missing_triage_json_errors_if_no_auto_triage ... ok
+test triage_diff_identical_sweeps ... ok
+test triage_diff_fail_on_regression_flag ... ok
+test triage_diff_filtered_triage_json_errors_unless_auto_triage ... ok
+test triage_diff_wins_and_regressions ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/bench_watch.rs (target/debug/deps/bench_watch-2dbbe426a7f8e441)
+
+running 10 tests
+test invalid_sweep_dir_exits_2 ... ok
+test complete_trajectory_exits_0_with_turns ... ok
+test redaction_strips_secret_from_stdout ... ok
+test ndjson_mode_produces_valid_ndjson ... ok
+test run_index_2_reads_correct_slot ... ok
+test sweep_is_file_not_dir_exits_2 ... ok
+test run_index_missing_slot_exits_1 ... ok
+test wait_secs_zero_missing_file_exits_1 ... ok
+test streams_turns_from_in_flight_trajectory ... ok
+test stall_warning_fires_and_watch_keeps_following ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+
+     Running tests/checkpointing.rs (target/debug/deps/checkpointing-6e6958caf7d8b7f2)
+
+running 15 tests
+test final_trajectory_after_resume_has_partial_false ... ok
+test legacy_trajectory_without_partial_field_parses_as_false ... ok
+test bench_inspect_partial_trajectory_shows_banner ... ok
+test partial_false_omitted_from_json_for_backward_compat ... ok
+test partial_true_serializes_and_roundtrips ... ok
+test bench_bundle_excludes_partial_trajectories_with_warning ... ok
+test checkpoint_write_latency_p95_under_50ms ... ok
+test save_partial_atomic_leaves_prior_file_intact_on_tmp_truncation ... ok
+test save_partial_atomic_writes_file_with_partial_true ... ok
+test save_pretty_writes_partial_false_on_final ... ok
+test mini_run_writes_partial_checkpoint_after_each_step ... ok
+test trajectory_info_has_partial_field_defaults_false ... ok
+test resume_corrupted_trajectory_reruns_from_step_zero ... ok
+test resume_classifies_partial_trajectory_and_reruns_not_skips ... ok
+test sweep_summary_table_shows_partial_count ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+     Running tests/cli_interactive_e2e.rs (target/debug/deps/cli_interactive_e2e-35b85a375eed5e58)
+
+running 2 tests
+test non_tty_without_yolo_rejects_with_usage_error ... ok
+test yolo_alone_does_not_require_tty ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+     Running tests/cli_interactive_flags.rs (target/debug/deps/cli_interactive_flags-9f1a31d19506b805)
+
+running 8 tests
+test interactive_and_render_only_are_mutually_exclusive ... ok
+test interactive_and_yolo_can_both_be_set ... ok
+test interactive_flag_defaults_false ... ok
+test interactive_flag_parses ... ok
+test unknown_ui_value_is_rejected ... ok
+test ui_ratatui_parses ... ok
+test ui_stderr_parses ... ok
+test yolo_flag_parses ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/cli_task_timeout_help.rs (target/debug/deps/cli_task_timeout_help-6a1b3f5106fb82ed)
+
+running 4 tests
+test cli_uses_maxwell_branding ... ok
 test mini_help_documents_task_timeout_seconds_and_step_limit_interaction ... ok
 test swebench_help_documents_task_timeout_seconds_and_step_limit_interaction ... ok
 test github_pr_flags_are_visible_for_mini_and_swebench ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests/concurrent_model.rs (target/debug/deps/concurrent_model-bb52fb1012feb41d)
+     Running tests/concurrent_model.rs (target/debug/deps/concurrent_model-8acb0321b3f7ad28)
 
 running 1 test
 test test_deterministic_model_concurrent_query ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/config_reference.rs (target/debug/deps/config_reference-b65e7803f225af00)
+     Running tests/config_reference.rs (target/debug/deps/config_reference-56f8970671b48c1c)
 
 running 14 tests
-test config_reference_documents_all_top_level_sections ... ok
 test config_reference_covers_secret_handling ... ok
+test config_reference_documents_all_top_level_sections ... ok
 test config_reference_exists ... ok
-test config_reference_explains_precedence ... ok
 test config_reference_states_toml_format_and_migration_note ... ok
+test config_reference_explains_precedence ... ok
+test docker_sweep_example_parses ... ok
 test config_reference_documents_actual_default_values ... ok
 test config_reference_documents_all_default_toml_fields ... ok
 test interactive_local_example_parses ... ok
-test config_validation_error_points_to_reference ... ok
-test docker_sweep_example_parses ... ok
+test no_key_smoke_example_parses ... ok
 test readme_links_to_config_reference ... ok
 test live_model_example_parses ... ok
-test no_key_smoke_example_parses ... ok
+test config_validation_error_points_to_reference ... ok
 test no_key_smoke_example_produces_valid_trajectory ... ok
 
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
 
-     Running tests/dataset_alias.rs (target/debug/deps/dataset_alias-3928437bec0f80ec)
+     Running tests/dataset_alias.rs (target/debug/deps/dataset_alias-55548e85ef03f717)
 
 running 16 tests
-test dataset_manifest_source_kind_local_for_local_path ... ok
-test dataset_manifest_source_kind_named_for_alias ... ok
 test dataset_source_local_path_kind_is_local ... ok
+test dataset_manifest_source_kind_named_for_alias ... ok
+test dataset_manifest_source_kind_local_for_local_path ... ok
 test dataset_source_from_alias_and_split_strings ... ok
 test invalid_split_string_rejected_with_list_of_valid_splits ... ok
 test invalid_alias_string_rejected_with_list_of_valid_aliases ... ok
 test local_path_source_runs_sweep_dry_run ... ok
 test doctor_reports_cache_miss_without_launching_tasks ... ok
-test local_path_non_jsonl_format_produces_distinct_parse_error ... ok
 test named_alias_cache_hit_resolves_without_error ... ok
+test local_path_non_jsonl_format_produces_distinct_parse_error ... ok
 test named_alias_cache_miss_errors_before_any_task_launches ... ok
 test named_alias_corrupt_cache_produces_distinct_error ... ok
 test doctor_reports_cache_hit_without_launching_tasks ... ok
@@ -815,9 +2548,82 @@ test sweep_artifact_records_provenance_for_local_dataset ... ok
 test sweep_artifact_records_provenance_for_named_dataset ... ok
 test named_and_local_datasets_produce_identical_sampling_for_same_seed ... ok
 
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.84s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.85s
 
-     Running tests/evaluator_provenance.rs (target/debug/deps/evaluator_provenance-264365e93f878f8a)
+     Running tests/env_preview.rs (target/debug/deps/env_preview-6ecf77ad98afefb9)
+
+running 67 tests
+test background_operator_mcp_command_flagged_as_outside_workdir ... ok
+test brace_expanded_exe_flagged ... ok
+test backtick_substitution_mcp_flagged_as_outside_workdir ... ok
+test command_builtin_mcp_inside_workdir_not_flagged ... ok
+test command_tool_outside_workdir_triggers_finding ... ok
+test command_substitution_mcp_flagged_as_outside_workdir ... ok
+test command_tool_inside_workdir_not_flagged ... ok
+test compound_mcp_command_flagged_as_outside_workdir ... ok
+test digit_prefix_env_assignment_not_treated_as_valid ... ok
+test docker_env_type_produces_no_env_var_findings ... ok
+test docker_env_host_paths_is_empty ... ok
+test docker_env_without_docker_image_triggers_warning ... ok
+test docker_without_docker_feature_triggers_warning ... ok
+test dot_source_builtin_flagged ... ok
+test dot_slash_mcp_inside_workdir_not_flagged ... ok
+test dotdot_in_mcp_path_flagged_as_outside_workdir ... ok
+test env_preview_json_has_env_preview_wrapper_key ... ok
+test env_preview_serializes_to_json_with_schema_version ... ok
+test env_preview_struct_has_expected_fields ... ok
+test env_preview_warning_exit_code_is_13 ... ok
+test env_preview_warning_outcome_class_string ... ok
+test env_var_preview_has_sensitive_flag ... ok
+test empty_workdir_flags_any_exe ... ok
+test format_preview_text_clean_findings_label ... ok
+test format_preview_text_contains_all_sections ... ok
+test double_quoted_backtick_in_mcp_flagged ... ok
+test double_quoted_dollar_paren_in_mcp_flagged ... ok
+test exec_builtin_mcp_inside_workdir_not_flagged ... ok
+test hook_entry_has_name_and_command ... ok
+test hook_command_outside_workdir_triggers_finding ... ok
+test is_risky_returns_false_for_clean_preview ... ok
+test is_risky_returns_true_when_findings_present ... ok
+test group_command_mcp_flagged ... ok
+test hook_command_inside_workdir_not_flagged ... ok
+test hooks_preview_reflects_config_hooks ... ok
+test local_env_has_full_host_access_warning ... ok
+test local_env_with_root_workdir_triggers_warning ... ok
+test mcp_server_preview_has_outside_workdir_flag ... ok
+test mcp_server_inside_workdir_not_flagged ... ok
+test mcp_server_outside_workdir_triggers_warning ... ok
+test newline_separator_mcp_flagged ... ok
+test policy_preview_reflects_config_profile ... ok
+test mcp_server_path_boundary_not_confused_by_prefix_match ... ok
+test normalized_workdir_with_dotdot_checks_correctly ... ok
+test policy_profile_is_redacted_when_it_contains_a_secret_literal ... ok
+test preview_finding_has_severity_and_message ... ok
+test policy_validation_error_does_not_leak_secret_literal ... ok
+test policy_extra_deny_is_redacted ... ok
+test preview_env_flag_overrides_config_kind_no_mismatch_warning ... ok
+test preview_network_egress_is_unrestricted ... ok
+test process_substitution_input_mcp_flagged ... ok
+test quoted_shell_assignment_in_mcp_command_not_flagged_as_outside ... ok
+test redaction_disabled_config_still_masks_env_vars_without_show_values ... ok
+test quoted_shell_operator_in_assignment_value_not_flagged ... ok
+test redaction_sk_deadbeef_does_not_appear_in_text_output ... ok
+test relative_mcp_command_flagged_as_outside_workdir ... ok
+test sensitive_var_detection_covers_password_and_credential ... ok
+test run_env_preview_schema_version_is_one ... ok
+test sensitive_env_var_name_is_flagged ... ok
+test run_env_preview_returns_preview_with_correct_env_type ... ok
+test shell_param_expansion_in_hook_exe_flagged ... ok
+test shell_prefixed_mcp_command_detected_correctly ... ok
+test shell_param_expansion_in_mcp_exe_flagged ... ok
+test slash_relative_bin_mcp_inside_workdir_not_flagged ... ok
+test template_placeholder_in_mcp_command_flagged ... ok
+test template_placeholder_in_tool_command_flagged ... ok
+test tilde_exe_path_flagged ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.71s
+
+     Running tests/evaluator_provenance.rs (target/debug/deps/evaluator_provenance-501f91b360b56b52)
 
 running 26 tests
 test compare_both_missing_evaluation_gives_unavailable ... ok
@@ -825,65 +2631,67 @@ test compare_dataset_split_mismatch_gives_mismatched_status ... ok
 test compare_backend_mismatch_gives_mismatched_status ... ok
 test compare_backend_version_mismatch_gives_mismatched_status ... ok
 test compare_dataset_subset_mismatch_gives_mismatched_status ... ok
+test compare_matching_provenance_gives_matching_status ... ok
 test compare_human_table_shows_provenance_status ... ok
 test compare_human_table_shows_provenance_warnings ... ok
-test compare_matching_provenance_gives_matching_status ... ok
 test compare_one_side_missing_provenance_gives_unavailable ... ok
 test compare_report_has_provenance_status_field ... ok
-test compare_report_json_includes_provenance_status ... ok
 test compare_parallel_mismatch_gives_mismatched_status ... ok
-test evaluator_provenance_backend_version_optional ... ok
+test compare_report_json_includes_provenance_status ... ok
 test evaluation_results_roundtrip_with_provenance ... ok
+test evaluator_provenance_backend_version_optional ... ok
 test evaluator_provenance_status_enum ... ok
 test evaluator_provenance_struct_exists_and_serializes ... ok
-test compare_run_id_diff_does_not_warn ... ok
-test legacy_evaluation_results_deserializes_without_provenance ... ok
 test inspect_text_renders_provenance_summary ... ok
-test inspect_summary_loads_provenance_from_evaluation_json ... ok
-test compare_timeout_mismatch_gives_mismatched_status ... ok
-test summary_report_has_evaluator_provenance_field ... ok
+test legacy_evaluation_results_deserializes_without_provenance ... ok
+test compare_run_id_diff_does_not_warn ... ok
 test sb_cli_provenance_struct_fields ... ok
+test inspect_summary_loads_provenance_from_evaluation_json ... ok
 test source_report_entry_struct_fields ... ok
+test summary_report_has_evaluator_provenance_field ... ok
 test summary_report_without_provenance_omits_field ... ok
+test compare_timeout_mismatch_gives_mismatched_status ... ok
 test sb_cli_provenance_secrets_are_redacted ... ok
 
-test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running tests/exit_code_contract.rs (target/debug/deps/exit_code_contract-363df3f9116755f1)
+     Running tests/exit_code_contract.rs (target/debug/deps/exit_code_contract-79fd65fb9f273bce)
 
-running 46 tests
-test budget_halt_is_distinct_from_usage_error ... ok
+running 48 tests
 test all_variants_have_unique_outcome_classes ... ok
-test budget_halt_code_is_five ... ok
-test config_error_maps_to_usage_error ... ok
 test all_variants_have_unique_codes ... ok
+test budget_halt_code_is_five ... ok
+test budget_halt_is_distinct_from_usage_error ... ok
+test config_error_maps_to_usage_error ... ok
+test container_start_failed_maps_to_preflight_failure ... ok
 test config_not_found_maps_to_usage_error ... ok
 test docker_daemon_unreachable_maps_to_preflight_failure ... ok
-test container_start_failed_maps_to_preflight_failure ... ok
 test docker_not_installed_maps_to_preflight_failure ... ok
 test env_command_failed_maps_to_task_unsuccessful ... ok
 test env_timeout_maps_to_task_unsuccessful ... ok
+test eval_gaming_gate_failure_code_is_21 ... ok
 test github_error_maps_to_internal_error ... ok
 test internal_error_code_is_one ... ok
-test io_error_maps_to_internal_error ... ok
 test interrupted_and_killed_follow_posix_signal_convention ... ok
 test interrupted_code_is_130 ... ok
+test io_error_maps_to_internal_error ... ok
 test killed_code_is_137 ... ok
-test json_error_maps_to_internal_error ... ok
-test model_probe_failure_maps_to_preflight_failure ... ok
+test model_api_error_maps_to_task_unsuccessful ... ok
 test model_malformed_maps_to_task_unsuccessful ... ok
 test only_success_is_zero ... ok
 test outcome_class_budget_halt ... ok
+test model_probe_failure_maps_to_preflight_failure ... ok
+test outcome_class_eval_gaming_gate_failure ... ok
 test outcome_class_internal_error ... ok
+test json_error_maps_to_internal_error ... ok
 test outcome_class_interrupted ... ok
 test outcome_class_killed ... ok
 test outcome_class_preflight_failure ... ok
 test outcome_class_regression_gate_failure ... ok
 test outcome_class_strings_are_valid_snake_case_identifiers ... ok
-test model_api_error_maps_to_task_unsuccessful ... ok
+test outcome_class_success ... ok
 test outcome_class_task_unsuccessful ... ok
 test outcome_class_usage_error ... ok
-test outcome_class_success ... ok
 test outcome_class_verification_failure ... ok
 test preflight_failure_code_is_three ... ok
 test preflight_probe_errors_map_to_preflight_failure ... ok
@@ -899,506 +2707,51 @@ test usage_error_code_is_two ... ok
 test verification_failed_maps_to_verification_failure ... ok
 test verification_failure_code_is_seven ... ok
 
-test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/fallback_agent.rs (target/debug/deps/fallback_agent-9b82065f60719d30)
+     Running tests/fallback_agent.rs (target/debug/deps/fallback_agent-f08a9ff7b9c75156)
 
 running 4 tests
-test no_fallback_run_leaves_no_fallback_summary ... ok
-test all_candidates_fail_sets_all_failed_flag_in_trajectory ... ok
 test fallback_summary_is_populated_on_fallback ... ok
 test multi_step_fallback_preserves_all_step_responders ... ok
+test all_candidates_fail_sets_all_failed_flag_in_trajectory ... ok
+test no_fallback_run_leaves_no_fallback_summary ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
 
-     Running tests/fallback_model.rs (target/debug/deps/fallback_model-cc38960cc867a578)
+     Running tests/fallback_model.rs (target/debug/deps/fallback_model-a4d8f07a8070c323)
 
 running 27 tests
 test all_candidates_failed_is_not_transient ... ok
 test compare_no_warning_when_same_model_no_fallbacks ... ok
-test compare_warns_when_candidate_has_fallbacks_and_baseline_does_not ... ok
 test compare_warns_when_model_mixes_differ ... ok
+test compare_warns_when_candidate_has_fallbacks_and_baseline_does_not ... ok
 test fallback_attempt_record_carrying_cost_attributes_to_final_model ... ok
 test all_candidates_failed_returns_compound_error ... ok
 test fallback_summary_omitted_when_none ... ok
 test fallback_summary_all_failed_excludes_from_model_mix ... ok
-test fallback_config_empty_by_default ... ok
-test fallback_summary_round_trips_through_trajectory_info ... ok
-test fallback_config_opt_in_parses ... ok
 test instance_result_fallback_fields_default_none ... ok
-test malformed_is_not_transient ... ok
+test fallback_summary_round_trips_through_trajectory_info ... ok
 test instance_result_legacy_without_fallback_fields_deserializes ... ok
-test missing_credentials_is_not_transient ... ok
+test malformed_is_not_transient ... ok
 test instance_result_fallback_fields_serialize_and_deserialize ... ok
-test refused_is_not_transient ... ok
-test rate_limited_is_transient ... ok
+test missing_credentials_is_not_transient ... ok
 test non_transient_primary_failure_no_fallback ... ok
-test request_error_is_transient ... ok
+test rate_limited_is_transient ... ok
+test refused_is_not_transient ... ok
 test primary_success_zero_fallback_recorded ... ok
+test request_error_is_transient ... ok
+test fallback_config_empty_by_default ... ok
+test fallback_config_opt_in_parses ... ok
 test sweep_results_model_mix_defaults_empty ... ok
 test sweep_results_model_mix_omitted_when_empty ... ok
+test sweep_results_model_mix_serializes_and_deserializes ... ok
 test sweep_results_model_mix_visible_to_evaluate ... ok
 test trajectory_fallback_summary_survives_full_roundtrip ... ok
-test sweep_results_model_mix_serializes_and_deserializes ... ok
 test transient_primary_failure_triggers_secondary ... ok
 
-test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
-     Running tests/fuzz_agent_parse.rs (target/debug/deps/fuzz_agent_parse-ec5765242289c162)
-
-running 1 test
-test extract_action_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.69s
-
-     Running tests/fuzz_agent_parse2.rs (target/debug/deps/fuzz_agent_parse2-a6d9d3291a63939b)
+     Running tests/fuzz_agent_parse.rs (target/debug/deps/fuzz_agent_parse-e0ebefbf28247c60)
 
 running 1 test
-test extract_action_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
-
-     Running tests/fuzz_agent_parse3.rs (target/debug/deps/fuzz_agent_parse3-0a8296351308f2be)
-
-running 1 test
-test extract_action_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
-
-     Running tests/fuzz_config.rs (target/debug/deps/fuzz_config-cd8a615f1daf284a)
-
-running 1 test
-test config_from_toml_str_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
-
-     Running tests/fuzz_evaluate.rs (target/debug/deps/fuzz_evaluate-8034eb19a681f2a6)
-
-running 1 test
-test parse_repo_from_instance_id_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
-
-     Running tests/fuzz_litellm.rs (target/debug/deps/fuzz_litellm-b3706eecb300b826)
-
-running 1 test
-test is_anthropic_model_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
-
-     Running tests/fuzz_slugify.rs (target/debug/deps/fuzz_slugify-f26f20ec65011a15)
-
-running 1 test
-test slugify_never_crashes ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
-
-     Running tests/fuzz_step_idx.rs (target/debug/deps/fuzz_step_idx-483c4c6c26bed109)
-
-running 1 test
-test step_idx_next_never_panics ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-
-     Running tests/fuzz_step_idx_overflow.rs (target/debug/deps/fuzz_step_idx_overflow-205d389702cc4eda)
-
-running 1 test
-test step_idx_next_saturates_on_max ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running tests/github_pr.rs (target/debug/deps/github_pr-b5c731753be94185)
-
-running 6 tests
-test dry_run_renders_pr_fields_without_token_material ... ok
-test pr_dry_run_redacts_secret_bearing_summary_filenames ... ok
-test pr_plan_rejects_branch_prefix_that_slugs_to_empty ... ok
-test pr_plan_is_deterministic_and_mentions_trajectory ... ok
-test pr_text_redaction_uses_configured_run_literals ... ok
-test pr_head_branch_preserves_task_id_uniqueness_when_slugs_collide ... ok
-
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
-
-     Running tests/golden_trajectory.rs (target/debug/deps/golden_trajectory-f37434e912a87f37)
-
-running 2 tests
-test emits_content_even_when_extra_empty ... ok
-test golden_round_trip_preserves_format ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running tests/nightly_workflow.rs (target/debug/deps/nightly_workflow-61e83b410fe88ec6)
-
-running 1 test
-test nightly_smoke_swebench_multiline_command_keeps_all_flags_in_one_shell_command ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
-     Running tests/per_turn_latency.rs (target/debug/deps/per_turn_latency-ecbe24d0126c52bf)
-
-running 13 tests
-test artifact_schema_minor_bumped_for_latency_attribution ... ok
-test evaluation_results_carry_latency_summary_field ... ok
-test inspect_report_aggregates_stage_totals ... ok
-test legacy_trajectory_without_latency_fields_parses_cleanly ... ok
-test message_extra_omits_latency_fields_when_none ... ok
-test message_extra_supports_latency_fields_roundtrip ... ok
-test legacy_trajectory_inspect_renders_latency_unknown ... ok
-test deterministic_model_assistant_turn_omits_model_latency ... ok
-test per_turn_stage_times_reconcile_to_duration_within_5_percent ... ok
-test observation_turn_records_tool_latency_when_bash_runs ... ok
-test assistant_turn_records_model_latency_when_model_is_real ... ok
-test slow_post_tool_hook_time_is_attributed_to_current_obs_turn ... ok
-test slow_pre_tool_hook_makes_harness_overhead_dominate_observation_turn ... ok
-
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.33s
-
-     Running tests/policy_engine.rs (target/debug/deps/policy_engine-f8c31fcae48a3a4c)
-
-running 111 tests
-test blocks_catastrophic_deletes ... ok
-test blocks_credential_reads ... ok
-test blocks_privilege_escalation ... ok
-test blocks_exfiltration ... ok
-test blocks_script_from_network ... ok
-test blocks_raw_disk_writes ... ok
-test ask_profile_still_denies_dangerous_commands ... ok
-test dangerous_corpus_has_at_least_100_entries ... ok
-test custom_allow_rule_overrides_default_deny ... ok
-test custom_deny_rule_blocks_otherwise_benign_command ... ok
-test ask_profile_returns_ask_for_unlisted_commands ... ok
-test engine_builds_from_cfg ... ok
-test invalid_extra_deny_regex_returns_error ... ok
-test deny_decision_has_non_empty_label ... ok
-test policy_cfg_defaults_to_safe ... ok
-test policy_cfg_deserializes_from_toml ... ok
-test policy_counts_accumulate_correctly ... ok
-test effective_policy_human_is_non_empty_string ... ok
-test effective_policy_machine_is_valid_json_with_required_keys ... ok
-test non_interactive_ask_resolves_to_deny ... ok
-test safe_blocks_brace_expansion_of_protected_dirs ... ok
-test safe_blocks_cd_to_protected_dir_then_rm ... ok
-test safe_blocks_all_rm_recursive_force_variants ... ok
-test safe_blocks_chmod_chown_long_recursive_options ... ok
-test safe_blocks_credential_input_redirect_without_space ... ok
-test safe_blocks_curl_pipe_through_passthrough_to_shell ... ok
-test safe_blocks_curl_pipe_to_absolute_shell_path ... ok
-test safe_blocks_curl_pipe_to_alternate_shells ... ok
-test safe_blocks_all_dangerous_commands ... ok
-test safe_blocks_curl_pipe_to_wrapped_shell_sink ... ok
-test safe_blocks_dangerous_command_after_background_separator ... ok
-test safe_blocks_dangerous_command_in_command_substitution ... ok
-test safe_blocks_dangerous_command_in_compound_list ... ok
-test safe_blocks_dangerous_command_in_nested_shell ... ok
-test safe_blocks_dangerous_command_on_second_line_of_bash_fence ... ok
-test safe_blocks_dangerous_command_with_assignment_prefix ... ok
-test safe_blocks_dangerous_commands_with_absolute_paths ... ok
-test safe_blocks_dangerous_command_with_shell_wrapper ... ok
-test safe_blocks_dangerous_commands_with_line_continuations ... ok
-test safe_blocks_dd_write_to_sensitive_files ... ok
-test safe_blocks_dd_writes_to_device_aliases ... ok
-test safe_blocks_deletes_of_sensitive_system_files ... ok
-test safe_blocks_dollar_home_with_trailing_slash_variants ... ok
-test safe_blocks_env_s_with_options_inside_payload ... ok
-test safe_blocks_env_split_string_payload ... ok
-test safe_blocks_env_split_string_with_dd_or_other_sensitive_writes ... ok
-test safe_blocks_env_with_arg_options_before_dangerous_cmd ... ok
-test safe_blocks_eval_with_quoted_dangerous_payload ... ok
-test safe_blocks_find_exec_rm_with_protected_target ... ok
-test safe_blocks_find_delete_under_protected_dirs ... ok
-test safe_blocks_glob_deletes_in_system_dirs ... ok
-test safe_blocks_heredoc_chmod_then_direct_execution ... ok
-test safe_blocks_heredoc_body_when_target_is_later_invoked ... ok
-test safe_blocks_heredoc_piped_to_interpreter ... ok
-test safe_blocks_heredoc_then_dot_slash_execution ... ok
-test safe_blocks_heredoc_then_exec_with_mixed_redirects ... ok
-test safe_blocks_heredoc_with_redirect_after_operator ... ok
-test safe_blocks_heredoc_with_unclosed_delimiter ... ok
-test safe_blocks_home_glob_and_dollar_home_variants ... ok
-test safe_blocks_process_substitution_with_absolute_shell_path ... ok
-test safe_blocks_inplace_edit_of_sensitive_files ... ok
-test safe_blocks_normalized_root_and_system_dir_paths ... ok
-test safe_blocks_protected_deletes_via_double_dot_components ... ok
-test safe_blocks_protected_dirs_with_repeated_trailing_slashes ... ok
-test safe_blocks_quoted_dd_device_operands ... ok
-test safe_blocks_quoted_catastrophic_targets ... ok
-test safe_blocks_redirection_to_block_device ... ok
-test safe_blocks_rm_home_variants ... ok
-test safe_blocks_rm_rf_root_with_trailing_separator ... ok
-test safe_blocks_root_level_globs_expanding_to_protected_dirs ... ok
-test safe_blocks_shell_c_with_network_substitution ... ok
-test safe_blocks_shell_heredoc_body_executable_script ... ok
-test safe_blocks_su_with_trailing_separator ... ok
-test safe_blocks_shell_negated_dangerous_commands ... ok
-test safe_blocks_sudo_long_option_shell_spawn ... ok
-test safe_blocks_sudo_prefixed_device_writes ... ok
-test safe_blocks_sudo_with_absolute_shell_path ... ok
-test safe_blocks_sudo_with_arg_taking_option_before_dangerous_cmd ... ok
-test safe_blocks_sudo_with_flags_before_rm ... ok
-test safe_blocks_tee_heredoc_when_target_is_later_invoked ... ok
-test safe_blocks_tee_heredoc_with_stdout_redirect_to_other_file ... ok
-test safe_blocks_tilde_user_home_deletes ... ok
-test safe_blocks_truncate_on_sensitive_files ... ok
-test safe_blocks_unquoted_heredoc_body_dangerous_substitution ... ok
-test safe_blocks_writes_to_sensitive_system_files ... ok
-test safe_blocks_xargs_rm_recursive_force ... ok
-test safe_does_not_block_cd_to_safe_dir_then_rm ... ok
-test safe_does_not_block_dd_to_safe_pseudo_devices ... ok
-test safe_does_not_block_find_exec_rm_on_benign_targets ... ok
-test safe_does_not_block_find_in_benign_paths ... ok
-test safe_does_not_block_heredoc_fixture_with_chmod_only_no_execution ... ok
-test safe_does_not_block_heredoc_when_target_is_not_later_invoked ... ok
-test safe_does_not_block_quoted_credential_examples ... ok
-test safe_does_not_block_quoted_curl_pipe_bash_examples ... ok
-test safe_does_not_block_quoted_dollar_home_literal ... ok
-test safe_does_not_block_quoted_heredoc_body_to_data_tool ... ok
-test safe_does_not_block_quoted_sensitive_file_redirect_examples ... ok
-test safe_does_not_block_redirection_to_safe_pseudo_devices ... ok
-test safe_does_not_block_rm_of_specific_files ... ok
-test safe_does_not_block_specific_files_under_system_dirs ... ok
-test safe_does_not_block_tee_heredoc_pure_data_write ... ok
-test safe_does_not_block_unquoted_heredoc_pure_data_body ... ok
-test safe_does_not_block_xargs_rm_specific_safe_uses ... ok
-test safe_still_blocks_dangerous_command_alongside_heredoc ... ok
-test safe_still_blocks_real_credential_reads_after_anchor_change ... ok
-test unknown_profile_error_message_lists_valid_options ... ok
-test unknown_profile_returns_error_instead_of_silently_defaulting ... ok
-test yolo_allows_everything ... ok
-test safe_still_blocks_real_curl_pipe_bash_after_anchor ... ok
-test safe_still_blocks_real_redirect_to_sensitive_file_with_quoted_args ... ok
-test safe_permits_at_least_95_percent_of_benign_commands ... ok
-
-test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.61s
-
-     Running tests/quickstart_docs.rs (target/debug/deps/quickstart_docs-41022df0925a2cfc)
-
-running 2 tests
-test readme_positions_project_as_measure_first_harness ... ok
-test readme_no_key_smoke_command_writes_documented_artifacts ... ok
-
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
-
-     Running tests/replay_fingerprint.rs (target/debug/deps/replay_fingerprint-2d7dda86486ad96b)
-
-running 14 tests
-test canonical_json_keys_are_sorted ... ok
-test different_messages_produce_different_fingerprints ... ok
-test canonical_json_excludes_extra_metadata ... ok
-test compute_fingerprint_is_stable ... ok
-test fingerprint_hex_is_16_chars ... ok
-test input_fingerprint_fields_are_accessible ... ok
-test legacy_trajectory_refused_without_flag ... ok
-test legacy_trajectory_accepted_with_flag ... ok
-test replay_prompt_drift_exit_code_is_9 ... ok
-test replay_response_exhausted_exit_code_is_10 ... ok
-test prompt_drift_exits_drift_code_at_step_zero ... ok
-test replay_omits_model_latency_ms_on_assistant_turns ... ok
-test identical_replay_exits_zero_no_drift_file ... ok
-test report_only_with_two_divergences_exits_zero ... ok
-
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.76s
-
-     Running tests/secret_redaction.rs (target/debug/deps/secret_redaction-7ded3cae9e3c9a53)
-
-running 6 tests
-test bench_inspect_redacts_legacy_raw_trajectory_and_warns ... ok
-test rendered_observation_template_static_literals_are_redacted_before_history ... ok
-test redacts_hundred_secret_fixture_from_trajectory_and_streams ... ok
-test lowercase_key_token_assignments_in_patch_do_not_block_predictions ... ok
-test configured_literal_in_patch_blocks_submission_and_predictions ... ok
-test trajectory_task_metadata_redacts_configured_literals_on_build ... ok
-
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
-
-     Running tests/skills.rs (target/debug/deps/skills-651f7985d0bb6857)
-
-running 12 tests
-test active_skill_context_appends_after_operator_extra_context ... ok
-test active_skill_context_omits_source_path_and_hash ... ok
-test auto_resolver_loads_skills_from_task_keywords ... ok
-test auto_resolver_matches_short_programming_language_tokens ... ok
-test explicit_mentions_require_boundary_after_skill_name ... ok
-test frontmatter_parser_ignores_trailing_comments_outside_quotes ... ok
-test registry_scans_skill_manifests_without_loading_bodies ... ok
-test config_parses_skills_section ... ok
-test resolver_loads_explicit_skill_without_leaking_inactive_metadata ... ok
-test mini_run_redacts_active_skill_provenance ... ok
-test selected_skill_context_reaches_agent_prompt_without_inactive_manifest_leak ... ok
-test mini_run_records_active_skill_provenance ... ok
-
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
-
-     Running tests/streaming.rs (target/debug/deps/streaming-09282038b0bd1e10)
-
-running 3 tests
-test broadcast_sink_receives_step_outcomes ... ok
-test sse_client_receives_events_over_tcp ... ok
-test agent_survives_client_disconnect_mid_run ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
-
-     Running tests/swebench_budget.rs (target/debug/deps/swebench_budget-3c7b19bca09035a1)
-
-running 12 tests
-test per_task_budget_absent_means_no_enforcement ... ok
-test cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle ... ok
-test free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens ... ok
-test per_task_budget_terminates_task_with_budget_exhausted_category ... ok
-test resume_skipped_costs_count_against_budget ... ok
-test resume_uses_prior_results_token_totals_for_budget_accounting ... ok
-test retry_on_resume_instances_are_precharged_before_rerun ... ok
-test stale_results_json_is_not_trusted_over_newer_trajectory ... ok
-test unknown_actual_zero_cost_still_trips_budget_from_tokens ... ok
-test zero_stored_cost_still_trips_budget_from_tokens ... ok
-test sweep_without_limit_runs_all_tasks ... ok
-test sweep_halts_when_cumulative_cost_reaches_limit ... ok
-
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.67s
-
-     Running tests/swebench_cancel.rs (target/debug/deps/swebench_cancel-7b79e3e046eebba4)
-
-running 6 tests
-test forced_cancel_interrupts_retry_backoff_wait ... ok
-test forced_cancel_interrupts_pre_run_rate_limit_wait ... ok
-test forced_cancel_preserves_partial_command_output_in_trajectory ... ok
-test second_sigint_escalates_to_cancelled_exit_137 ... ok
-test sigterm_uses_graceful_cancel_exit_130 ... ok
-test graceful_sigint_persists_cancelled_inflight_and_resume_retries_it ... ok
-
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.16s
-
-     Running tests/swebench_failure_categories.rs (target/debug/deps/swebench_failure_categories-78359ef3e8e8e278)
-
-running 1 test
-test sweep_counts_failure_categories_and_preserves_legacy_unclassified ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
-
-     Running tests/swebench_patch.rs (target/debug/deps/swebench_patch-ec0e2463deca51a0)
-
-running 4 tests
-test missing_workdir_marks_outcome_as_error ... ok
-test sweep_emits_empty_patch_when_agent_changes_nothing ... ok
-test sweep_emits_patch_artifact_for_modifying_agent ... ok
-test benign_key_substring_assignments_do_not_trigger_secret_leak ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
-
-     Running tests/swebench_rerun.rs (target/debug/deps/swebench_rerun-c33ff7436a8e40d7)
-
-running 3 tests
-test resumed_tested_run_does_not_inflate_fresh_submitted_with_tests_count ... ok
-test resume_skips_only_completed_run_slots ... ok
-test rerun_writes_nested_run_files_and_pass_at_k_summary ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.98s
-
-     Running tests/swebench_resume.rs (target/debug/deps/swebench_resume-6471490fd00c728b)
-
-running 8 tests
-test resume_raw_secret_patch_blocks_github_pr_publication_before_publish ... ok
-test resume_raw_secret_patch_downgrades_instance_and_writes_results ... ok
-test resume_skipped_submitted_runs_still_attempt_github_pr_publication ... ok
-test resume_reruns_submitted_trajectory_with_missing_patch ... ok
-test malformed_results_json_does_not_block_new_non_resume_sweep ... ok
-test resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false ... ok
-test resume_skips_valid_trajectory_and_reruns_invalid ... ok
-test without_resume_existing_trajectories_are_overwritten ... ok
-
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.71s
-
-     Running tests/swebench_retry.rs (target/debug/deps/swebench_retry-630d23eee596d27d)
-
-running 5 tests
-test max_retries_zero_disables_retry ... ok
-test instance_cost_prefers_recorded_trajectory_cost ... ok
-test retries_on_injected_transient_category_then_recovers ... ok
-test cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip ... ok
-test max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_retried ... ok
-
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.28s
-
-     Running tests/swebench_systemic_halt.rs (target/debug/deps/swebench_systemic_halt-2e61f9e75b2fb329)
-
-running 24 tests
-test circuit_breaker_does_not_trip_below_min_samples ... ok
-test circuit_breaker_does_not_trip_when_disabled ... ok
-test circuit_breaker_does_not_trip_on_non_actionable_dominant_category ... ok
-test circuit_breaker_does_not_trip_when_prior_successes_dilute_share_on_resume ... ok
-test circuit_breaker_does_not_trip_when_successes_dilute_share_below_threshold ... ok
-test circuit_breaker_does_not_trip_without_dominant_actionable_category ... ok
-test circuit_breaker_trips_on_env_setup_dominant ... ok
-test circuit_breaker_trips_on_actionable_dominant_category_at_exact_threshold ... ok
-test circuit_breaker_trips_when_failures_dominate_mixed_completions ... ok
-test failure_category_is_actionable_env_setup ... ok
-test failure_category_is_actionable_model_api ... ok
-test failure_category_not_actionable_budget_exhausted ... ok
-test failure_category_not_actionable_cost_limit ... ok
-test failure_category_not_actionable_patch_empty ... ok
-test circuit_breaker_is_deterministic ... ok
-test failure_category_not_actionable_patch_invalid ... ok
-test failure_category_not_actionable_step_limit ... ok
-test failure_category_not_actionable_wallclock_timeout ... ok
-test sweep_results_summary_table_shows_circuit_breaker_status ... ok
-test systemic_halt_does_not_trip_when_total_below_min_samples ... ok
-test systemic_halt_trips_at_min_samples_with_dominant_actionable_category ... ok
-test systemic_halt_disabled_flag_lets_all_instances_run ... ok
-test systemic_halt_writes_valid_results_json_on_trip ... ok
-test systemic_halt_is_deterministic_across_runs ... ok
-
-test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.49s
-
-     Running tests/swebench_wallclock_timeout.rs (target/debug/deps/swebench_wallclock_timeout-d167a6e62bd88329)
-
-running 1 test
-test sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.45s
-
-     Running tests/verification.rs (target/debug/deps/verification-98bda05e9cd6574e)
-
-running 13 tests
-test inspect_shows_unverified_status_in_header ... ok
-test inspect_json_includes_verification_evidence ... ok
-test inspect_shows_timed_out_note_in_verification_detail ... ok
-test inspect_shows_verification_summary_in_header ... ok
-test cancellation_during_verification_sets_unverified ... ok
-test multiple_checks_all_pass_sets_verified ... ok
-test large_verification_output_is_truncated ... ok
-test multiple_checks_mixed_results_sets_verification_failed ... ok
-test no_verification_check_sets_unverified_status ... ok
-test single_failing_check_sets_verification_failed_and_returns_error ... ok
-test single_passing_check_sets_verified_status ... ok
-test verification_result_captures_required_fields ... ok
-test timed_out_check_treated_as_failure ... ok
-
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.44s
-
-   Doc-tests rust_swe_agent
-
-running 21 tests
-test src/agent/mod.rs - agent::Agent (line 117) - compile ... ok
-test src/agent/mod.rs - agent::Agent::run (line 158) - compile ... ok
-test src/agent/mod.rs - agent::ExitReason (line 34) ... ok
-test src/agent/mod.rs - agent::ExitReason::label (line 70) ... ok
-test src/agent/parse.rs - agent::parse::extract_action (line 102) ... ok
-test src/agent/mod.rs - agent::StepOutcome (line 96) ... ok
-test src/tool.rs - tool::CommandTool (line 217) ... ok
-test src/tool.rs - tool::ToolManifestEntry (line 145) ... ok
-test src/agent/parse.rs - agent::parse::extract_action (line 91) ... ok
-test src/tool.rs - tool::ToolRegistry::from_config (line 275) ... ok
-test src/tool.rs - tool::validate_tool_name (line 864) ... ok
-test src/tool.rs - tool::validate_tool_name (line 876) ... ok
-test src/trajectory/mod.rs - trajectory::TokenUsage::has_cached_prompt_tokens (line 432) ... ok
-test src/trajectory/mod.rs - trajectory::TokenUsage::total_prompt_tokens (line 416) ... ok
-test src/trajectory/mod.rs - trajectory::Trajectory::new (line 600) ... ok
-test src/trajectory/mod.rs - trajectory::Trajectory::record_message (line 613) ... ok
-test src/trajectory/mod.rs - trajectory::Trajectory::save_pretty (line 651) - compile ... ok
-test src/trajectory/mod.rs - trajectory::Trajectory::record_with_extra (line 632) ... ok
-test src/trajectory/mod.rs - trajectory::Trajectory::to_json_pretty (line 667) ... ok
-test src/trajectory/mod.rs - trajectory::detect_test_command (line 279) ... ok
-test src/trajectory/export.rs - trajectory::export::MarkdownExporter (line 27) ... ok
-
-test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
-
-all doctests ran in 1.56s; merged doctests compilation took 1.48s
