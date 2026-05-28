@@ -1557,6 +1557,7 @@ pub fn slugify(task: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+
     use super::*;
     use async_trait::async_trait;
     use std::path::Path;
