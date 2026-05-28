@@ -74,7 +74,7 @@ pub async fn run(args: PlayCmd) -> Result<(), Error> {
             "tool" | "observation" => {
                 // Determine if it was bash ok or err or just observation
                 if let Some(response) = &msg.extra.response {
-                    let is_error = response.get("error").is_some();
+                    let is_error = response.get("error").is_some_and(|e| !e.is_null());
                     let exit_code = i32::from(is_error);
                     let stdout = response
                         .get("output")
@@ -236,7 +236,7 @@ mod tests {
                 }
                 "tool" | "observation" => {
                     if let Some(response) = &msg.extra.response {
-                        let is_error = response.get("error").filter(|e| !e.is_null()).is_some();
+                        let is_error = response.get("error").is_some_and(|e| !e.is_null());
                         let exit_code = i32::from(is_error);
                         let stdout = response
                             .get("output")
