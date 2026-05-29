@@ -245,8 +245,56 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "finetune-export")]
+pub struct OpenAiFinetuneExporter;
+
+#[cfg(feature = "finetune-export")]
+impl TrajectoryExporter for OpenAiFinetuneExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        use serde_json::json;
+        let redactor = Redactor::default_enabled();
+        let mut messages = Vec::new();
+        for msg in &trajectory.messages {
+            let content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+            messages.push(json!({
+                "role": msg.role,
+                "content": content
+            }));
+        }
+        format!("{}\n", json!({"messages": messages}))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+    #[cfg(feature = "finetune-export")]
+    #[test]
+    fn test_finetune_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent\nMulti-line"));
+        t.record_message(&Message::assistant("Hello \"user\""));
+
+        let finetune = OpenAiFinetuneExporter::export(&t);
+
+        let expected = "{\"messages\":[{\"content\":\"System prompt\",\"role\":\"system\"},{\"content\":\"Hello agent\\nMulti-line\",\"role\":\"user\"},{\"content\":\"Hello \\\"user\\\"\",\"role\":\"assistant\"}]}\n";
+
+        // Because JSON key order can change (e.g. role vs content), let's just parse both objects and compare.
+        // We know they both end in '\n'. We strip it before parse.
+        assert!(finetune.ends_with('\n'), "Expected trailing newline");
+        let finetune_trimmed = finetune.trim_end();
+        let expected_trimmed = expected.trim_end();
+
+        let actual_json: serde_json::Value = serde_json::from_str(finetune_trimmed).unwrap();
+        let expected_json: serde_json::Value = serde_json::from_str(expected_trimmed).unwrap();
+
+        assert_eq!(actual_json, expected_json);
+    }
+
     use super::*;
     use crate::model::Message;
     use crate::trajectory::outcome;

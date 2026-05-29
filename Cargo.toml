@@ -87,6 +87,7 @@ html-export = []
 webhook = []
 csv-export = []
 mermaid-export = []
+finetune-export = []
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
