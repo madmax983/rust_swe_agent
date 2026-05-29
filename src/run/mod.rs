@@ -3,6 +3,7 @@
 
 pub mod annotate;
 pub mod audit;
+pub mod contamination_check;
 pub mod behavior;
 pub mod bisect;
 pub mod budget_fit;

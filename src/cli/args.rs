@@ -546,6 +546,8 @@ pub enum BenchCmd {
     Import(ImportCmd),
     /// Export a completed sweep as JUnit XML and/or GitHub Actions annotations (zero-cost: reads only on-disk artifacts).
     ExportCi(ExportCiCmd),
+    /// Score each resolved instance for training-leakage risk using deterministic trajectory signals (zero-cost: reads only on-disk artifacts).
+    ContaminationCheck(ContaminationCheckCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -1072,6 +1074,33 @@ pub struct ExportCiCmd {
     pub output: Option<PathBuf>,
 }
 
+/// `bench contamination-check` — score resolved instances for training-leakage signals.
+///
+/// Reads only on-disk trajectory artifacts. Zero model calls, zero network.
+/// Writes `contamination.json` to the sweep directory.
+#[derive(Debug, Args)]
+pub struct ContaminationCheckCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Override the output file path. Defaults to `<sweep>/contamination.json`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Path to a TOML file overriding signal weights and risk thresholds.
+    /// See `docs/spec-contamination-check.md` for configurable keys.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Exit non-zero (exit code 3) when the high-risk share of resolved instances
+    /// exceeds this fraction. Range [0.0, 1.0]. Unset (default) always exits 0.
+    /// Example: `--fail-on-high 0.10` fails CI when > 10% of resolved instances
+    /// are classified as high-risk.
+    #[arg(long, value_name = "THRESHOLD")]
+    pub fail_on_high: Option<f64>,
+}
+
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.
 #[derive(Debug, Args)]
 pub struct InstanceHistoryCmd {
@@ -1499,6 +1528,12 @@ pub struct CompareCmd {
     /// delta and the McNemar paired significance test.
     #[arg(long, value_name = "PATH")]
     pub flake_report: Option<PathBuf>,
+
+    /// Path to a `contamination.json` produced by `bench contamination-check`.
+    /// When set, emits a contamination-adjusted resolved-rate alongside the raw rate:
+    /// `(raw_resolved - high_risk_resolved) / total`.
+    #[arg(long, value_name = "PATH")]
+    pub contamination: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Args)]
