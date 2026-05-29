@@ -124,6 +124,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::SelfCheck(s) => bench_self_check(s),
             args::BenchCmd::Import(i) => bench_import(i),
             args::BenchCmd::ExportCi(c) => bench_export_ci(c),
+            args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -1881,12 +1882,96 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             }
         }
     }
+    // Contamination-adjusted resolved rate (text format only — JSON stdout must stay clean)
+    if let Some(ref contamination_path) = c.contamination {
+        if format == crate::run::compare::CompareFormat::Text {
+            print_contamination_adjusted_rate(contamination_path, &report, &c.candidate)?;
+        } else {
+            eprintln!(
+                "compare: note: --contamination is ignored with --format json; \
+                 omit --format json to see the contamination-adjusted rate"
+            );
+        }
+    }
+
     apply_significance_gates(
         &report,
         c.min_significance,
         c.regression_significance,
         c.allow_underpowered,
     );
+    Ok(())
+}
+
+/// Load a `contamination.json` and emit a contamination-adjusted resolved-rate section.
+fn print_contamination_adjusted_rate(
+    path: &std::path::Path,
+    compare_report: &crate::run::compare::CompareReport,
+    candidate_dir: &std::path::Path,
+) -> Result<(), Error> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        Error::Io(std::io::Error::other(format!(
+            "compare: cannot read contamination report `{}`: {e}",
+            path.display()
+        )))
+    })?;
+    let contamination: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        Error::Io(std::io::Error::other(format!(
+            "compare: malformed contamination.json `{}`: {e}",
+            path.display()
+        )))
+    })?;
+
+    // Validate that the contamination report was produced for this candidate sweep.
+    if let Some(report_sweep) = contamination["sweep_path"].as_str() {
+        let candidate_canonical = candidate_dir
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !candidate_canonical.is_empty() && report_sweep != candidate_canonical {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "compare: contamination report was produced for '{}' but candidate sweep is '{}'; \
+                 re-run `bench contamination-check --sweep {}` to refresh the report",
+                report_sweep,
+                candidate_canonical,
+                candidate_dir.display()
+            ))));
+        }
+    }
+
+    let total_resolved = usize::try_from(
+        contamination["summary"]["total_resolved"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+    .unwrap_or(usize::MAX);
+    let high_count = usize::try_from(contamination["summary"]["high_count"].as_u64().unwrap_or(0))
+        .unwrap_or(usize::MAX);
+    let high_share = contamination["summary"]["high_risk_share"]
+        .as_f64()
+        .ok_or_else(|| {
+            Error::Io(std::io::Error::other(format!(
+                "compare: contamination report `{}` is missing or has non-numeric \
+                 `summary.high_risk_share` field",
+                path.display()
+            )))
+        })?;
+
+    let raw_rate = compare_report.candidate_resolved_rate;
+    let adjusted_absolute = raw_rate * (1.0 - high_share);
+
+    println!(
+        "\ncontamination-adjusted resolved-rate (candidate):\n  \
+         raw resolved-rate       : {raw:.1}%\n  \
+         high-risk instances     : {high} of {total} resolved ({pct:.1}%)\n  \
+         contamination-adjusted  : {adj:.1}%\n",
+        raw = raw_rate * 100.0,
+        high = high_count,
+        total = total_resolved,
+        pct = high_share * 100.0,
+        adj = adjusted_absolute * 100.0,
+    );
+
     Ok(())
 }
 
@@ -2604,7 +2689,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
         if i.output.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/finetune)".into(),
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
             )));
         }
         let format = parse_trajectory_diff_format(&i.format)?;
@@ -2619,16 +2704,13 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(
-        i.format.as_str(),
-        "markdown" | "html" | "csv" | "mermaid" | "finetune"
-    ) {
+    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/finetune), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
             i.format
         ))));
     }
@@ -2638,7 +2720,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         "json" => crate::run::inspect::InspectFormat::Json,
         other => {
             return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, `mermaid`, or `finetune`)"
+                "unknown --format `{other}` (expected `text`, `json`, `markdown`, `html`, `csv`, or `mermaid`)"
             ))));
         }
     };
@@ -2680,7 +2762,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/finetune)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
         ))
     })?;
     let traj_path =
@@ -2702,7 +2784,6 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
-        "finetune" => inspect_export_finetune(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3297,22 +3378,6 @@ fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(feature = "finetune-export")]
-#[allow(clippy::unnecessary_wraps)]
-fn inspect_export_finetune(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    use crate::trajectory::export::{OpenAiFinetuneExporter, TrajectoryExporter};
-    Ok(OpenAiFinetuneExporter::export(traj))
-}
-
-#[cfg(not(feature = "finetune-export"))]
-fn inspect_export_finetune(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
-    Err(Error::Cli(
-        "format_unavailable: --format finetune requires the `finetune-export` Cargo feature; \
-         rebuild with `--features finetune-export`"
-            .into(),
-    ))
-}
-
 fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
     use crate::run::export_ci::{ExportCiArgs, ExportCiFormat};
 
@@ -3342,6 +3407,60 @@ fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
                 result.json_errors,
             ),
         );
+    }
+
+    Ok(())
+}
+
+fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error> {
+    use crate::run::contamination_check::{ContaminationCheckArgs, ContaminationReport};
+
+    if let Some(threshold) = c.fail_on_high {
+        if !(0.0..=1.0).contains(&threshold) {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                "contamination-check: --fail-on-high must be between 0.0 and 1.0",
+            );
+        }
+    }
+
+    let args = ContaminationCheckArgs {
+        sweep_dir: c.sweep,
+        output: c.output,
+        config: c.config,
+        fail_on_high: c.fail_on_high,
+    };
+
+    let report: ContaminationReport = crate::run::contamination_check::run(&args)?;
+
+    let total = report.summary.total_resolved;
+    let high = report.summary.high_count;
+    let high_share = report.summary.high_risk_share;
+
+    if total == 0 {
+        eprintln!("contamination-check: no resolved instances found; contamination.json written");
+    } else {
+        eprintln!(
+            "contamination-check: {total} resolved instance(s) scored \
+             — low: {low}, medium: {med}, high: {high} ({pct:.1}%)",
+            low = report.summary.low_count,
+            med = report.summary.medium_count,
+            pct = high_share * 100.0,
+        );
+    }
+
+    if let Some(threshold) = c.fail_on_high {
+        if high_share > threshold {
+            exit_with_outcome(
+                ExitCode::PreflightFailure,
+                &format!(
+                    "contamination-check: high-risk share {pct:.1}% exceeds \
+                     --fail-on-high threshold {thr:.1}% ({high} of {total} resolved)",
+                    pct = high_share * 100.0,
+                    thr = threshold * 100.0,
+                ),
+            );
+        }
     }
 
     Ok(())
