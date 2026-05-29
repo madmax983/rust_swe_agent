@@ -923,160 +923,42 @@ impl SweepResults {
     /// Render the post-sweep summary table. A flat plain-text block so it
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn summary_table(&self) -> String {
-        let submit_rate_pct = self.submit_rate_pct();
-        let tokens = self.token_breakdown();
-        let total_tokens = tokens.total_tokens();
-        let effective_tasks = self.effective_task_count();
-        let uniform_runs = self.uniform_runs_per_instance();
-        let pass_at_k_label = uniform_runs.map_or_else(|| "k".to_owned(), |k| k.to_string());
         let mut s = String::new();
         s.push_str("\n=== SWE-bench sweep summary ===\n");
-        let _ = writeln!(s, "Total tasks:        {}", self.total);
-        if self.sweep_status != SWEEP_STATUS_COMPLETED {
-            let _ = writeln!(s, "Sweep status:       {}", self.sweep_status);
-            if self.sweep_status == SWEEP_STATUS_CANCELLED {
-                let _ = writeln!(
-                    s,
-                    "Cancelled:          completed {}, in-flight {}, not-started {}",
-                    self.completed, self.in_flight_at_cancel, self.not_started
-                );
-            }
-            if self.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
-                let _ = writeln!(
-                    s,
-                    "Circuit breaker:    tripped — {} not started; dominant category: {}",
-                    self.not_started,
-                    self.systemic_halt_category
-                        .map_or_else(|| "unknown".to_owned(), |c| format!("{c:?}"))
-                );
-            }
-        }
+
+        write_sweep_status(&mut s, self);
+
+        let effective_tasks = self.effective_task_count();
+        let uniform_runs = self.uniform_runs_per_instance();
         write_effective_task_line(&mut s, self.total, effective_tasks, uniform_runs);
+
         write_submission_lines(
             &mut s,
             self.submitted,
             self.submitted_with_tests,
             &self.instances,
         );
-        let _ = writeln!(
-            s,
-            "With patch:         {} — non-empty diff against base_commit",
-            self.with_patch
-        );
-        if self.patch_empty > 0 || self.patch_apply_invalid > 0 {
-            let _ = writeln!(
-                s,
-                "Patch-empty:        {} — empty diff downgraded from submitted",
-                self.patch_empty
-            );
-            let _ = writeln!(
-                s,
-                "Patch-invalid:      {} — git apply --check failed at capture",
-                self.patch_apply_invalid
-            );
-        }
-        let _ = writeln!(
-            s,
-            "Skipped:            {} — trajectory already on disk",
-            self.skipped
-        );
-        if self.partial > 0 {
-            let _ = writeln!(
-                s,
-                "Partial (resumed):  {} — mid-run checkpoints re-run via --resume",
-                self.partial
-            );
-        }
-        let _ = writeln!(
-            s,
-            "Budget-halted:      {} — never started; sweep-level USD limit reached",
-            self.budget_halted
-        );
-        let _ = writeln!(
-            s,
-            "Retries:            {} over {} instances",
-            self.retries, self.retried_instances
-        );
+
+        write_task_counts(&mut s, self);
+
+        let submit_rate_pct = self.submit_rate_pct();
+        let pass_at_k_label = uniform_runs.map_or_else(|| "k".to_owned(), |k| k.to_string());
         let _ = writeln!(s, "Submit rate:        {submit_rate_pct:.2}%");
         let _ = writeln!(
             s,
             "Pass@{pass_at_k_label}:            {:.2}%",
             self.pass_at_k * 100.0
         );
-        let _ = writeln!(s, "Input tokens:       {}", self.total_prompt_tokens);
-        let _ = writeln!(s, "Cache read tokens:  {}", self.total_cache_read_tokens);
-        let _ = writeln!(
-            s,
-            "Cache create toks:  {}",
-            self.total_cache_creation_tokens
-        );
-        let _ = writeln!(s, "Completion tokens:  {}", self.total_completion_tokens);
-        let _ = writeln!(
-            s,
-            "Cache hit rate:     {:.2}%",
-            tokens.cache_hit_rate() * 100.0
-        );
-        let _ = writeln!(s, "Total tokens:       {total_tokens}");
-        let actual_cost = self
-            .actual_cost_total_usd()
-            .unwrap_or(self.estimated_cost_usd);
-        let actual_source = self
-            .actual_cost_source
-            .map_or(CostSource::Unknown, std::convert::identity);
-        let baseline_cost = self.baseline_cost_total_usd();
-        let baseline_model = self
-            .baseline_cost_model
-            .as_deref()
-            .unwrap_or(BASELINE_COST_MODEL);
-        let _ = writeln!(s, "Actual cost:        ${actual_cost:.4} ({actual_source})");
-        let _ = writeln!(
-            s,
-            "Baseline cost:      ${baseline_cost:.4} ({baseline_model})"
-        );
-        if let Some(limit) = self.cost_limit_usd {
-            let _ = writeln!(s, "Sweep cost limit:   ${limit:.4}");
-            if self.budget_halted > 0 {
-                let _ = writeln!(
-                    s,
-                    "BUDGET HALT at ${:.4} of ${:.4} — {} task(s) never started",
-                    actual_cost, limit, self.budget_halted
-                );
-            }
-        }
-        let mut nonzero: Vec<(FailureCategory, usize)> = self
-            .failures_by_category
-            .iter()
-            .filter_map(|(k, v)| (*v > 0).then_some((*k, *v)))
-            .collect();
-        nonzero.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        if !nonzero.is_empty() {
-            s.push_str("Failures by category:\n");
-            for (k, v) in nonzero {
-                let _ = writeln!(s, "  - {}: {}", failure_category_label(k), v);
-            }
-        }
-        let unclassified_legacy = self
-            .instances
-            .iter()
-            .filter(|r| is_failed_instance(r) && r.failure_category.is_none())
-            .count();
-        if unclassified_legacy > 0 {
-            let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
-        }
+
+        write_token_and_cost_summary(&mut s, self);
+        write_failures_by_category(&mut s, self);
+
         let model_name = self.manifest.as_ref().map(|m| m.model.name.as_str());
         write_spend_stats_by_resolution(&mut s, &self.instances, model_name);
         write_rate_limit_summary(&mut s, self.rate_limit_events.as_ref());
-        if self.total_fallbacks > 0 || !self.model_mix.is_empty() {
-            s.push_str("Model mix (by final model):\n");
-            for (model, count) in &self.model_mix {
-                let _ = writeln!(s, "  - {model}: {count}");
-            }
-            if self.total_fallbacks > 0 {
-                let _ = writeln!(s, "Total fallbacks:    {}", self.total_fallbacks);
-            }
-        }
+        write_model_mix(&mut s, self);
+
         s
     }
 
@@ -5031,6 +4913,154 @@ impl XorShift64 {
         {
             let bytes = self.next_u64().to_le_bytes();
             usize::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        }
+    }
+}
+
+fn write_sweep_status(s: &mut String, results: &SweepResults) {
+    let _ = writeln!(s, "Total tasks:        {}", results.total);
+    if results.sweep_status != SWEEP_STATUS_COMPLETED {
+        let _ = writeln!(s, "Sweep status:       {}", results.sweep_status);
+        if results.sweep_status == SWEEP_STATUS_CANCELLED {
+            let _ = writeln!(
+                s,
+                "Cancelled:          completed {}, in-flight {}, not-started {}",
+                results.completed, results.in_flight_at_cancel, results.not_started
+            );
+        }
+        if results.sweep_status == SWEEP_STATUS_SYSTEMIC_HALT {
+            let _ = writeln!(
+                s,
+                "Circuit breaker:    tripped — {} not started; dominant category: {}",
+                results.not_started,
+                results
+                    .systemic_halt_category
+                    .map_or_else(|| "unknown".to_owned(), |c| format!("{c:?}"))
+            );
+        }
+    }
+}
+
+fn write_task_counts(s: &mut String, results: &SweepResults) {
+    let _ = writeln!(
+        s,
+        "With patch:         {} — non-empty diff against base_commit",
+        results.with_patch
+    );
+    if results.patch_empty > 0 || results.patch_apply_invalid > 0 {
+        let _ = writeln!(
+            s,
+            "Patch-empty:        {} — empty diff downgraded from submitted",
+            results.patch_empty
+        );
+        let _ = writeln!(
+            s,
+            "Patch-invalid:      {} — git apply --check failed at capture",
+            results.patch_apply_invalid
+        );
+    }
+    let _ = writeln!(
+        s,
+        "Skipped:            {} — trajectory already on disk",
+        results.skipped
+    );
+    if results.partial > 0 {
+        let _ = writeln!(
+            s,
+            "Partial (resumed):  {} — mid-run checkpoints re-run via --resume",
+            results.partial
+        );
+    }
+    let _ = writeln!(
+        s,
+        "Budget-halted:      {} — never started; sweep-level USD limit reached",
+        results.budget_halted
+    );
+    let _ = writeln!(
+        s,
+        "Retries:            {} over {} instances",
+        results.retries, results.retried_instances
+    );
+}
+
+fn write_token_and_cost_summary(s: &mut String, results: &SweepResults) {
+    let tokens = results.token_breakdown();
+    let total_tokens = tokens.total_tokens();
+    let _ = writeln!(s, "Input tokens:       {}", results.total_prompt_tokens);
+    let _ = writeln!(s, "Cache read tokens:  {}", results.total_cache_read_tokens);
+    let _ = writeln!(
+        s,
+        "Cache create toks:  {}",
+        results.total_cache_creation_tokens
+    );
+    let _ = writeln!(s, "Completion tokens:  {}", results.total_completion_tokens);
+    let _ = writeln!(
+        s,
+        "Cache hit rate:     {:.2}%",
+        tokens.cache_hit_rate() * 100.0
+    );
+    let _ = writeln!(s, "Total tokens:       {total_tokens}");
+
+    let actual_cost = results
+        .actual_cost_total_usd()
+        .unwrap_or(results.estimated_cost_usd);
+    let actual_source = results
+        .actual_cost_source
+        .map_or(CostSource::Unknown, std::convert::identity);
+    let baseline_cost = results.baseline_cost_total_usd();
+    let baseline_model = results
+        .baseline_cost_model
+        .as_deref()
+        .unwrap_or(BASELINE_COST_MODEL);
+
+    let _ = writeln!(s, "Actual cost:        ${actual_cost:.4} ({actual_source})");
+    let _ = writeln!(
+        s,
+        "Baseline cost:      ${baseline_cost:.4} ({baseline_model})"
+    );
+    if let Some(limit) = results.cost_limit_usd {
+        let _ = writeln!(s, "Sweep cost limit:   ${limit:.4}");
+        if results.budget_halted > 0 {
+            let _ = writeln!(
+                s,
+                "BUDGET HALT at ${:.4} of ${:.4} — {} task(s) never started",
+                actual_cost, limit, results.budget_halted
+            );
+        }
+    }
+}
+
+fn write_failures_by_category(s: &mut String, results: &SweepResults) {
+    let mut nonzero: Vec<(FailureCategory, usize)> = results
+        .failures_by_category
+        .iter()
+        .filter_map(|(k, v)| (*v > 0).then_some((*k, *v)))
+        .collect();
+    nonzero.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if !nonzero.is_empty() {
+        s.push_str("Failures by category:\n");
+        for (k, v) in nonzero {
+            let _ = writeln!(s, "  - {}: {}", failure_category_label(k), v);
+        }
+    }
+    let unclassified_legacy = results
+        .instances
+        .iter()
+        .filter(|r| is_failed_instance(r) && r.failure_category.is_none())
+        .count();
+    if unclassified_legacy > 0 {
+        let _ = writeln!(s, "  - unclassified (legacy): {unclassified_legacy}");
+    }
+}
+
+fn write_model_mix(s: &mut String, results: &SweepResults) {
+    if results.total_fallbacks > 0 || !results.model_mix.is_empty() {
+        s.push_str("Model mix (by final model):\n");
+        for (model, count) in &results.model_mix {
+            let _ = writeln!(s, "  - {model}: {count}");
+        }
+        if results.total_fallbacks > 0 {
+            let _ = writeln!(s, "Total fallbacks:    {}", results.total_fallbacks);
         }
     }
 }
