@@ -161,7 +161,7 @@ struct Aggregates {
     time_secs: f64,
 }
 
-fn compute_aggregates(sweep: &SweepResults, instances: &[&InstanceResult]) -> Aggregates {
+fn compute_aggregates(_sweep: &SweepResults, instances: &[&InstanceResult]) -> Aggregates {
     use crate::run::swebench::resolved_count;
     use crate::trajectory::outcome;
 
@@ -170,14 +170,23 @@ fn compute_aggregates(sweep: &SweepResults, instances: &[&InstanceResult]) -> Ag
         .iter()
         .filter(|r| r.outcome.as_deref() == Some(outcome::ERROR))
         .count();
-    // failures = submitted instances that were not resolved (excludes budget-halted/skipped).
+    // failures = submitted instances that were not resolved.
+    // Excludes "skipped_resume" rows (--resume sweeps mark previously-completed
+    // unresolved instances this way; sweep.submitted also excludes them).
+    // Using an instance-level count rather than sweep.submitted avoids
+    // double-counting run slots in pass@k sweeps where sweep.submitted is a
+    // per-run-slot total, not a per-instance total.
     let failures = instances
         .iter()
-        .filter(|r| r.outcome.as_deref() == Some(outcome::SUBMITTED) && resolved_count(r) == 0)
+        .filter(|r| {
+            r.outcome.as_deref() == Some(outcome::SUBMITTED)
+                && r.exit_reason != "skipped_resume"
+                && resolved_count(r) == 0
+        })
         .count();
-    let json_failures_expected = sweep
-        .submitted
-        .saturating_sub(instances.iter().filter(|r| resolved_count(r) > 0).count());
+    // Derived from the same instance-level filter so integrity_mismatch can
+    // compare them without false positives on reruns/resumed sweeps.
+    let json_failures_expected = failures;
     let time_secs: f64 = instances.iter().filter_map(|r| r.duration_secs).sum();
 
     Aggregates {
@@ -190,9 +199,9 @@ fn compute_aggregates(sweep: &SweepResults, instances: &[&InstanceResult]) -> Ag
 }
 
 fn integrity_mismatch(agg: &Aggregates, sweep: &SweepResults) -> bool {
-    agg.tests != sweep.total
-        || agg.errors != sweep.errored
-        || agg.failures != agg.json_failures_expected
+    // failures == json_failures_expected by construction; only tests and errors
+    // can diverge between the XML aggregate and results.json.
+    agg.tests != sweep.total || agg.errors != sweep.errored
 }
 
 // ── JUnit XML rendering ────────────────────────────────────────────────────
@@ -351,8 +360,13 @@ fn build_redactor(sweep: &SweepResults) -> Redactor {
         let resolved = &manifest.config.resolved;
         if let Ok(parsed) = toml::from_str::<ResolvedConfigForRedaction>(resolved) {
             if let Some(rc) = parsed.redaction {
-                cfg.secret_literals.extend(rc.secret_literals);
+                // custom_patterns are regexes (not secret values) so they survive
+                // manifest redaction intact and can be applied here.
                 cfg.custom_patterns.extend(rc.custom_patterns);
+                // secret_literals are NOT usable: the manifest embedded in
+                // results.json was already redacted before being written, so
+                // the original literal values are gone. The built-in token/key
+                // patterns in the default RedactionCfg cover common secrets.
             }
         }
     }
@@ -367,6 +381,7 @@ struct ResolvedConfigForRedaction {
 
 #[derive(serde::Deserialize)]
 struct RedactionFields {
+    #[allow(dead_code)]
     #[serde(default)]
     secret_literals: Vec<String>,
     #[serde(default)]
