@@ -544,6 +544,8 @@ pub enum BenchCmd {
     SelfCheck(SelfCheckCmd),
     /// Ingest an external SWE-bench predictions file and materialise it as a normalised sweep directory.
     Import(ImportCmd),
+    /// Export a completed sweep as JUnit XML and/or GitHub Actions annotations (zero-cost: reads only on-disk artifacts).
+    ExportCi(ExportCiCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -1040,6 +1042,34 @@ pub struct ImportCmd {
     /// Output format for the summary printed to stdout: `text` (default) or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
+}
+
+/// Output format selector for `bench export-ci`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExportCiFormatArg {
+    /// Write a JUnit XML file (default output path: `<sweep>/junit.xml`).
+    Junit,
+    /// Write GitHub Actions workflow command annotations to stdout.
+    GithubAnnotations,
+    /// Write JUnit XML to file AND annotations to stdout.
+    Both,
+}
+
+/// `bench export-ci` — convert a completed sweep to JUnit XML and/or GitHub Actions annotations.
+#[derive(Debug, Args)]
+pub struct ExportCiCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Output format: `junit` (default), `github-annotations`, or `both`.
+    #[arg(long, default_value = "junit")]
+    pub format: ExportCiFormatArg,
+
+    /// Output file path for JUnit XML. Defaults to `<sweep>/junit.xml`.
+    /// For `--format github-annotations` this flag is ignored.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.
