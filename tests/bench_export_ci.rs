@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use maxwells_daemon::run::swebench::{SWEEP_STATUS_COMPLETED, InstanceResult, SweepResults};
+use maxwells_daemon::run::swebench::{InstanceResult, SWEEP_STATUS_COMPLETED, SweepResults};
 use maxwells_daemon::trajectory::{FailureCategory, outcome};
 
 mod support;
@@ -130,10 +130,7 @@ fn errored(id: &str, cat: FailureCategory) -> InstanceResult {
 
 fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
     let total_cost: f64 = instances.iter().filter_map(|i| i.cost_usd).sum();
-    let resolved_count = instances
-        .iter()
-        .filter(|r| r.resolved_count > 0)
-        .count();
+    let resolved_count = instances.iter().filter(|r| r.resolved_count > 0).count();
     let pass_at_k = if instances.is_empty() {
         0.0
     } else {
@@ -179,10 +176,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>) {
         total_prompt_tokens: instances.iter().filter_map(|i| i.prompt_tokens).sum(),
         total_cache_read_tokens: 0,
         total_cache_creation_tokens: 0,
-        total_completion_tokens: instances
-            .iter()
-            .filter_map(|i| i.completion_tokens)
-            .sum(),
+        total_completion_tokens: instances.iter().filter_map(|i| i.completion_tokens).sum(),
         estimated_cost_usd: total_cost,
         actual_cost_usd: Some(total_cost),
         actual_cost_source: None,
@@ -272,10 +266,7 @@ fn bench_export_ci_junit_exits_zero() {
 #[test]
 fn bench_export_ci_junit_default_output_path() {
     let work = tempfile::tempdir().unwrap();
-    write_sweep(
-        work.path(),
-        vec![resolved("django__django-001")],
-    );
+    write_sweep(work.path(), vec![resolved("django__django-001")]);
 
     let output = run_export_ci(&[
         "--sweep",
@@ -360,10 +351,7 @@ fn bench_export_ci_junit_testcase_structure() {
 #[test]
 fn bench_export_ci_junit_classname_parsing() {
     let work = tempfile::tempdir().unwrap();
-    write_sweep(
-        work.path(),
-        vec![resolved("django__django-12345")],
-    );
+    write_sweep(work.path(), vec![resolved("django__django-12345")]);
 
     let out_path = work.path().join("junit.xml");
     let output = run_export_ci(&[
@@ -528,10 +516,7 @@ fn bench_export_ci_github_annotations_format() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(
         work.path(),
-        vec![unresolved(
-            "django__django-002",
-            FailureCategory::StepLimit,
-        )],
+        vec![unresolved("django__django-002", FailureCategory::StepLimit)],
     );
 
     let output = run_export_ci(&[
@@ -587,10 +572,7 @@ fn bench_export_ci_both_format() {
     // JUnit XML file should exist
     assert!(junit_path.exists(), "JUnit XML file should be written");
     let xml = std::fs::read_to_string(&junit_path).unwrap();
-    assert!(
-        xml.starts_with("<?xml"),
-        "should be valid XML\n{xml}"
-    );
+    assert!(xml.starts_with("<?xml"), "should be valid XML\n{xml}");
 
     // Annotations should be on stdout
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -637,10 +619,7 @@ fn bench_export_ci_junit_failure_message_contains_category() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(
         work.path(),
-        vec![unresolved(
-            "django__django-001",
-            FailureCategory::StepLimit,
-        )],
+        vec![unresolved("django__django-001", FailureCategory::StepLimit)],
     );
 
     let out_path = work.path().join("junit.xml");
@@ -747,7 +726,10 @@ fn bench_export_ci_annotations_golden_output() {
 
     // Each annotation line has the expected format
     for line in &annotation_lines {
-        assert!(line.starts_with("::error "), "should start with ::error \n{line}");
+        assert!(
+            line.starts_with("::error "),
+            "should start with ::error \n{line}"
+        );
         assert!(line.contains("title="), "should contain title=\n{line}");
         assert!(line.contains("file="), "should contain file=\n{line}");
         // format: ::error title=X,file=Y::message
@@ -792,10 +774,7 @@ fn bench_export_ci_uses_triage_json_when_available() {
     let work = tempfile::tempdir().unwrap();
     write_sweep(
         work.path(),
-        vec![unresolved(
-            "django__django-001",
-            FailureCategory::StepLimit,
-        )],
+        vec![unresolved("django__django-001", FailureCategory::StepLimit)],
     );
 
     // Write a minimal triage.json

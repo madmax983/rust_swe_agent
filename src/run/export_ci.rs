@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::error::Error;
 use crate::config::RedactionCfg;
+use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::swebench::{InstanceResult, SweepResults, trajectory_path_for};
 use crate::trajectory::FailureCategory;
@@ -71,7 +71,8 @@ fn load_triage(sweep_dir: &Path) -> Option<HashMap<String, String>> {
     let mut map = HashMap::new();
     for cluster in report.clusters {
         for id in cluster.instance_ids {
-            map.entry(id).or_insert_with(|| cluster.failure_category.clone());
+            map.entry(id)
+                .or_insert_with(|| cluster.failure_category.clone());
         }
     }
     Some(map)
@@ -106,20 +107,40 @@ pub fn run(args: &ExportCiArgs) -> Result<ExportCiResult, Error> {
     match args.format {
         ExportCiFormat::Junit => {
             let junit_path = junit_output_path(args);
-            let xml = render_junit(&instances, &agg, triage_categories.as_ref(), &redactor, &args.sweep_dir);
+            let xml = render_junit(
+                &instances,
+                &agg,
+                triage_categories.as_ref(),
+                &redactor,
+                &args.sweep_dir,
+            );
             write_output(&junit_path, &xml)?;
         }
         ExportCiFormat::GithubAnnotations => {
-            let annotations =
-                render_annotations(&instances, triage_categories.as_ref(), &redactor, &args.sweep_dir);
+            let annotations = render_annotations(
+                &instances,
+                triage_categories.as_ref(),
+                &redactor,
+                &args.sweep_dir,
+            );
             print!("{annotations}");
         }
         ExportCiFormat::Both => {
             let junit_path = junit_output_path(args);
-            let xml = render_junit(&instances, &agg, triage_categories.as_ref(), &redactor, &args.sweep_dir);
+            let xml = render_junit(
+                &instances,
+                &agg,
+                triage_categories.as_ref(),
+                &redactor,
+                &args.sweep_dir,
+            );
             write_output(&junit_path, &xml)?;
-            let annotations =
-                render_annotations(&instances, triage_categories.as_ref(), &redactor, &args.sweep_dir);
+            let annotations = render_annotations(
+                &instances,
+                triage_categories.as_ref(),
+                &redactor,
+                &args.sweep_dir,
+            );
             print!("{annotations}");
         }
     }
@@ -283,8 +304,9 @@ fn load_results(sweep_dir: &Path) -> Result<SweepResults, Error> {
         results_path.display().to_string(),
     )
     .map_err(|e| Error::Trajectory(e.to_string()))?;
-    let results: SweepResults = serde_json::from_value(value)
-        .map_err(|e| Error::Trajectory(format!("bench export-ci: cannot deserialize results: {e}")))?;
+    let results: SweepResults = serde_json::from_value(value).map_err(|e| {
+        Error::Trajectory(format!("bench export-ci: cannot deserialize results: {e}"))
+    })?;
     Ok(results)
 }
 
@@ -483,7 +505,10 @@ mod tests {
 
     #[test]
     fn artifact_integrity_violation_exit_code_is_22() {
-        assert_eq!(crate::exit_code::ExitCode::ArtifactIntegrityViolation.as_i32(), 22);
+        assert_eq!(
+            crate::exit_code::ExitCode::ArtifactIntegrityViolation.as_i32(),
+            22
+        );
         assert_eq!(
             crate::exit_code::ExitCode::ArtifactIntegrityViolation.outcome_class(),
             "artifact_integrity_violation"
