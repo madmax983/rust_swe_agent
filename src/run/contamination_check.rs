@@ -358,7 +358,12 @@ fn load_sweep_results(sweep_dir: &Path) -> Result<HashMap<String, bool>, Error> 
             None => continue,
         };
         let resolved = inst["resolved_count"].as_u64().unwrap_or(0) > 0
-            || inst["pass_at_1"].as_bool().unwrap_or(false);
+            || inst["pass_at_1"].as_bool().unwrap_or(false)
+            // Legacy format (pre-runs field): when `resolved_count` is absent, fall back to
+            // outcome=="submitted" with no failure_category as the resolved signal.
+            || (inst["resolved_count"].is_null()
+                && inst["outcome"].as_str() == Some("submitted")
+                && inst["failure_category"].is_null());
         map.insert(id, resolved);
     }
     Ok(map)
@@ -535,6 +540,10 @@ fn find_first_edit_step(messages: &[TrajMessage]) -> (Option<usize>, usize) {
 /// Compound shell commands (`cmd1 && cmd2`, `cmd1 | cmd2`) are split and each
 /// part is classified independently so that a combined read+write command (e.g.
 /// `cat a.py && sed -i 's/x/y/' a.py`) records both the read and the write.
+///
+/// For redirect-based writes (`echo foo > file`), only the redirect target is
+/// counted as an edited file — the other arguments of the command are not
+/// falsely added to the read or edited sets.
 fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
     let mut reads_before: HashSet<String> = HashSet::new();
     let mut edited_unread: HashSet<String> = HashSet::new();
@@ -546,18 +555,29 @@ fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
         }
         for action in &msg.actions {
             for part in split_compound_action(action.as_str()) {
+                // Read branch: collect read inputs, but skip redirect-output targets so
+                // that `cat <<'EOF' > dst.py` does not falsely mark dst.py as pre-read.
                 if is_read_action(part) {
+                    let redirect_targets: HashSet<String> =
+                        extract_redirect_targets(part).into_iter().collect();
                     for p in extract_file_args(part) {
-                        reads_before.insert(p);
+                        if !redirect_targets.contains(&p) {
+                            reads_before.insert(p);
+                        }
                     }
                 }
+
+                // Write branch: for redirect-based writes use only the redirect target;
+                // for tool writes (sed -i, tee, edit, …) use all file args.
                 if is_write_action(part) {
-                    for p in extract_file_args(part) {
-                        if edited_all.insert(p.clone()) {
-                            // First time this file is edited — was it read before?
-                            if !reads_before.contains(&p) {
-                                edited_unread.insert(p);
-                            }
+                    let written: Vec<String> = if is_write_tool(part) {
+                        extract_file_args(part)
+                    } else {
+                        extract_redirect_targets(part)
+                    };
+                    for p in written {
+                        if edited_all.insert(p.clone()) && !reads_before.contains(&p) {
+                            edited_unread.insert(p);
                         }
                     }
                 }
@@ -648,49 +668,89 @@ fn is_read_action(action: &str) -> bool {
     )
 }
 
-/// True when a bash action string is primarily a file-write/edit operation.
-fn is_write_action(action: &str) -> bool {
+/// True when a bash action uses a known write-mutating tool (not counting redirections).
+///
+/// Used to decide which path-extraction strategy to apply: tool writes use
+/// `extract_file_args`, while redirect-only writes use `extract_redirect_targets`.
+fn is_write_tool(action: &str) -> bool {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     let head = tokens.first().copied().unwrap_or("");
 
     // `sed` is a write only when invoked with `-i` / `--in-place`.
-    // Without `-i`, `sed` reads stdin/files and prints to stdout — not a write.
     if head == "sed" {
         return tokens
             .iter()
             .any(|t| *t == "-i" || t.starts_with("-i") || *t == "--in-place");
     }
-
     if matches!(head, "awk" | "patch" | "tee" | "dd") {
         return true;
     }
-
-    // `git apply` applies a patch to the working tree — file write.
     if head == "git" && tokens.get(1).copied() == Some("apply") {
         return true;
     }
-
-    // Detect output redirection with or without surrounding spaces.
-    // A `>` or `>>` token (alone or as prefix of the filename) means a file write.
-    // We exclude `>&` and `>/dev/null`-style redirects to non-file fds.
-    for token in &tokens {
-        if (*token == ">" || *token == ">>") || (token.starts_with('>') && !token.starts_with(">&"))
-        {
-            return true;
-        }
-    }
-
-    // Tool-call write verbs: `edit`, `write`, `create_file`, `apply_patch`.
     if matches!(head, "edit" | "write" | "create_file" | "apply_patch") {
         return true;
     }
-
-    // Colon-form tool calls: `write:{...}`, `edit:{...}`.
     if head.starts_with("write:") || head.starts_with("edit:") {
         return true;
     }
-
     false
+}
+
+/// True when a bash action string writes to at least one file.
+///
+/// Returns `true` for known write tools **and** for redirect-based writes (`>`, `>>`).
+/// Redirects to `/dev/` special files (e.g. `>/dev/null`) are excluded — those
+/// discard output rather than creating real source files.
+fn is_write_action(action: &str) -> bool {
+    if is_write_tool(action) {
+        return true;
+    }
+    let tokens: Vec<&str> = action.split_whitespace().collect();
+    for (i, token) in tokens.iter().enumerate() {
+        if *token == ">" || *token == ">>" {
+            // Standalone redirect token: check whether target is a /dev/ device.
+            let target = tokens.get(i + 1).copied().unwrap_or("");
+            if !target.starts_with("/dev/") {
+                return true;
+            }
+        } else if token.starts_with('>') && !token.starts_with(">&") && !token.starts_with(">/dev/")
+        {
+            // Compact redirect token: `>file`, `>>file` (but not `>/dev/null` etc.)
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract only the files that are output-redirect targets (`>` / `>>`) of an action.
+///
+/// Excludes `/dev/` device files (e.g. `/dev/null`).  Used together with
+/// `is_write_tool` to avoid counting non-redirect command arguments (e.g. the
+/// input files of `grep ... > /dev/null`) as edited files.
+fn extract_redirect_targets(action: &str) -> Vec<String> {
+    let tokens: Vec<&str> = action.split_whitespace().collect();
+    let mut targets = Vec::new();
+    let mut take_next = false;
+    for token in &tokens {
+        if take_next {
+            take_next = false;
+            let unquoted = token.trim_matches(|c: char| c == '\'' || c == '"');
+            if !unquoted.starts_with("/dev/") && looks_like_path(unquoted) {
+                targets.push(normalize_path(unquoted));
+            }
+        } else if *token == ">" || *token == ">>" {
+            take_next = true;
+        } else if token.starts_with('>') && !token.starts_with(">&") && !token.starts_with(">/dev/")
+        {
+            let path = token.trim_start_matches('>');
+            let unquoted = path.trim_matches(|c: char| c == '\'' || c == '"');
+            if !unquoted.is_empty() && looks_like_path(unquoted) {
+                targets.push(normalize_path(unquoted));
+            }
+        }
+    }
+    targets
 }
 
 /// Heuristically extract file-path arguments from a bash command.
@@ -740,6 +800,13 @@ fn extract_file_args(action: &str) -> Vec<String> {
             || unquoted.contains('$')
             || unquoted.contains('(')
             || unquoted.contains(')')
+        {
+            continue;
+        }
+        // Exclude special device/pseudo-filesystem paths (/dev/null, /proc/self/…, etc.)
+        if unquoted.starts_with("/dev/")
+            || unquoted.starts_with("/proc/")
+            || unquoted.starts_with("/sys/")
         {
             continue;
         }

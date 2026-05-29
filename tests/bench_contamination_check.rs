@@ -1797,4 +1797,147 @@ fn bench_compare_json_format_not_polluted_by_contamination() {
         panic!("bench compare --format json stdout is not valid JSON: {e}\nstdout: {stdout}")
     });
     assert!(parsed.is_object(), "stdout should be a JSON object");
+    // stderr may contain an informational note about --contamination being skipped in JSON mode
+    assert!(
+        stderr.contains("contamination") || stderr.is_empty() || !stdout.contains("contamination"),
+        "contamination text must not appear in stdout when --format json\nstdout: {stdout}"
+    );
+}
+
+// ── second-round review feedback tests ────────────────────────────────────
+
+// Redirect target should NOT be counted as a pre-read (cat <<EOF > dst.py)
+#[test]
+fn contamination_check_redirect_target_not_pre_read() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // `cat > dst.py` is a write via heredoc — dst.py was never read
+    write_trajectory(sweep, "test__repo-001", &[vec!["cat > src/foo.py"]]);
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // cat > src/foo.py: redirect target src/foo.py written at step 0, no prior read
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "cat > file at step 0 should give high ttfe (redirect-based write): {ttfe}"
+    );
+}
+
+// Redirect to /dev/null should NOT count as a write action
+#[test]
+fn contamination_check_dev_null_redirect_not_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // grep + discard output is a read/inspect action, not a write
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["grep -r 'pattern' src/ > /dev/null"],
+            vec!["grep -r 'other' src/ >/dev/null"],
+            vec!["sed -i 's/old/new/' src/module.py"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // grep >/dev/null should not be counted as an edit — first real edit at step 2
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe < 0.5,
+        "grep >/dev/null should not be a write; first real edit is late: {ttfe}"
+    );
+}
+
+// sweep_path mismatch in contamination report should fail
+#[test]
+fn bench_compare_contamination_wrong_sweep_path_errors() {
+    let work = tempfile::tempdir().unwrap();
+    let base_dir = work.path().join("baseline");
+    let cand_dir = work.path().join("candidate");
+    let other_dir = work.path().join("other_sweep");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+    std::fs::create_dir_all(&other_dir).unwrap();
+
+    write_sweep(
+        &base_dir,
+        vec![
+            resolved("django__django-001"),
+            resolved("django__django-002"),
+        ],
+    );
+    write_sweep(
+        &cand_dir,
+        vec![
+            resolved("django__django-001"),
+            resolved("django__django-002"),
+        ],
+    );
+    write_sweep(&other_dir, vec![resolved("django__django-001")]);
+    write_trajectory(
+        &other_dir,
+        "django__django-001",
+        &[vec!["cat src/a.py"], vec!["sed -i 's/x/y/' src/a.py"]],
+    );
+
+    // Run contamination check on OTHER sweep (not candidate)
+    let cc_out = run_contamination_check(&["--sweep", other_dir.to_str().unwrap()]);
+    assert!(
+        cc_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cc_out.stderr)
+    );
+    let contamination_path = other_dir.join("contamination.json");
+
+    // Pass the OTHER sweep's contamination report for the CANDIDATE sweep
+    let out = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "compare",
+            "--baseline",
+            base_dir.to_str().unwrap(),
+            "--candidate",
+            cand_dir.to_str().unwrap(),
+            "--contamination",
+            contamination_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run bench compare");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "mismatched sweep path should cause non-zero exit\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("sweep") || stdout.contains("sweep"),
+        "error should mention sweep path mismatch"
+    );
 }

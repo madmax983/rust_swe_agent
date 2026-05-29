@@ -1884,7 +1884,12 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
     // Contamination-adjusted resolved rate (text format only — JSON stdout must stay clean)
     if let Some(ref contamination_path) = c.contamination {
         if format == crate::run::compare::CompareFormat::Text {
-            print_contamination_adjusted_rate(contamination_path, &report)?;
+            print_contamination_adjusted_rate(contamination_path, &report, &c.candidate)?;
+        } else {
+            eprintln!(
+                "compare: note: --contamination is ignored with --format json; \
+                 omit --format json to see the contamination-adjusted rate"
+            );
         }
     }
 
@@ -1901,6 +1906,7 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
 fn print_contamination_adjusted_rate(
     path: &std::path::Path,
     compare_report: &crate::run::compare::CompareReport,
+    candidate_dir: &std::path::Path,
 ) -> Result<(), Error> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         Error::Io(std::io::Error::other(format!(
@@ -1914,6 +1920,23 @@ fn print_contamination_adjusted_rate(
             path.display()
         )))
     })?;
+
+    // Validate that the contamination report was produced for this candidate sweep.
+    if let Some(report_sweep) = contamination["sweep_path"].as_str() {
+        let candidate_canonical = candidate_dir
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !candidate_canonical.is_empty() && report_sweep != candidate_canonical {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                "compare: contamination report was produced for '{}' but candidate sweep is '{}'; \
+                 re-run `bench contamination-check --sweep {}` to refresh the report",
+                report_sweep,
+                candidate_canonical,
+                candidate_dir.display()
+            ))));
+        }
+    }
 
     let total_resolved = usize::try_from(
         contamination["summary"]["total_resolved"]
