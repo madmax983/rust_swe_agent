@@ -90,6 +90,11 @@ pub enum ExitCode {
     AuditFailure = 20,
     /// 21 — `bench compare --max-test-only-resolved-rate` threshold was exceeded.
     EvalGamingGateFailure = 21,
+    /// 22 — `bench export-ci` detected that the JUnit XML aggregate attributes
+    /// (`tests`, `failures`, `errors`) do not match the corresponding counts in
+    /// `results.json`. The export still wrote whatever it had, but the mismatch
+    /// signals a corrupt or incomplete sweep artifact.
+    ArtifactIntegrityViolation = 22,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -132,6 +137,7 @@ impl ExitCode {
             Self::BisectSchemaBreak => "bisect_schema_break",
             Self::AuditFailure => "audit_failure",
             Self::EvalGamingGateFailure => "eval_gaming_gate_failure",
+            Self::ArtifactIntegrityViolation => "artifact_integrity_violation",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

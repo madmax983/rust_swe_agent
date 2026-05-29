@@ -97,6 +97,8 @@ verdict, top regressions, and top improvements.
 - **Deterministic**: identical byte output for the same input sweep.
 - **Exit code**: always 0 on success; non-zero only on I/O or schema-version errors.
   The command never gates CI — use `bench compare --max-regressions` for gating.
+  For surfacing failures inline on a PR check, use `bench export-ci` to produce
+  JUnit XML and GitHub Actions annotations (see [`spec-export-ci.md`](spec-export-ci.md)).
 - **Redaction**: all text fields pass through the existing redaction pipeline
   before being written; the report never contains secrets that the underlying
   trajectories would have redacted.

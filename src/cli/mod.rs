@@ -123,6 +123,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::StagnationReport(s) => bench_stagnation_report(s),
             args::BenchCmd::SelfCheck(s) => bench_self_check(s),
             args::BenchCmd::Import(i) => bench_import(i),
+            args::BenchCmd::ExportCi(c) => bench_export_ci(c),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3288,6 +3289,40 @@ fn bench_self_check(s: args::SelfCheckCmd) -> Result<(), Error> {
             ))));
         }
     }
+    Ok(())
+}
+
+fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
+    use crate::run::export_ci::{ExportCiArgs, ExportCiFormat};
+
+    let format = match c.format {
+        args::ExportCiFormatArg::Junit => ExportCiFormat::Junit,
+        args::ExportCiFormatArg::GithubAnnotations => ExportCiFormat::GithubAnnotations,
+        args::ExportCiFormatArg::Both => ExportCiFormat::Both,
+    };
+
+    let result = crate::run::export_ci::run(&ExportCiArgs {
+        sweep_dir: c.sweep,
+        format,
+        output: c.output,
+    })?;
+
+    if result.integrity_violation {
+        exit_with_outcome(
+            ExitCode::ArtifactIntegrityViolation,
+            &format!(
+                "bench export-ci: JUnit aggregate attributes do not match results.json counts \
+                 (tests: xml={} json={}; failures: xml={} json={}; errors: xml={} json={})",
+                result.xml_tests,
+                result.json_total,
+                result.xml_failures,
+                result.json_failures,
+                result.xml_errors,
+                result.json_errors,
+            ),
+        );
+    }
+
     Ok(())
 }
 

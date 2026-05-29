@@ -387,6 +387,11 @@ a valid trajectory in hand:
   loop fingerprint, ranked by cost burned, with a conservative USD-saved estimate.
   Zero-cost (reads only on-disk artifacts); JSON output suitable for CI snapshot
   diffing to prove prompt changes reduce recurring loops.
+- [`bench export-ci`](docs/spec-export-ci.md): convert a completed sweep to JUnit
+  XML and GitHub Actions annotations — surface every unresolved instance inline on
+  the PR check with zero custom JSON-parsing glue. Pairs with `bench triage` for
+  structured failure messages; composes with `bench compare` for regression gating.
+  Zero-cost (reads only on-disk artifacts).
 
 ## Nightly E2E smoke
 
