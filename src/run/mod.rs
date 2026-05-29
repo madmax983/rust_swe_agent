@@ -12,6 +12,7 @@ pub mod calibrate;
 pub mod cascade;
 pub mod command_stats;
 pub mod compare;
+pub mod contamination_check;
 pub mod dataset;
 pub mod dataset_stats;
 pub mod diff_config;
