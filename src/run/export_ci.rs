@@ -170,8 +170,11 @@ fn compute_aggregates(sweep: &SweepResults, instances: &[&InstanceResult]) -> Ag
         .iter()
         .filter(|r| r.outcome.as_deref() == Some(outcome::ERROR))
         .count();
-    let resolved = instances.iter().filter(|r| resolved_count(r) > 0).count();
-    let failures = tests.saturating_sub(resolved).saturating_sub(errors);
+    // failures = submitted instances that were not resolved (excludes budget-halted/skipped).
+    let failures = instances
+        .iter()
+        .filter(|r| r.outcome.as_deref() == Some(outcome::SUBMITTED) && resolved_count(r) == 0)
+        .count();
     let json_failures_expected = sweep
         .submitted
         .saturating_sub(instances.iter().filter(|r| resolved_count(r) > 0).count());
@@ -187,7 +190,9 @@ fn compute_aggregates(sweep: &SweepResults, instances: &[&InstanceResult]) -> Ag
 }
 
 fn integrity_mismatch(agg: &Aggregates, sweep: &SweepResults) -> bool {
-    agg.tests != sweep.total || agg.errors != sweep.errored
+    agg.tests != sweep.total
+        || agg.errors != sweep.errored
+        || agg.failures != agg.json_failures_expected
 }
 
 // ── JUnit XML rendering ────────────────────────────────────────────────────
@@ -213,6 +218,8 @@ fn render_junit(
     );
 
     for inst in instances {
+        use crate::trajectory::outcome;
+
         let classname = parse_classname(&inst.instance_id);
         let time = inst.duration_secs.unwrap_or(0.0);
         let traj_rel = trajectory_relative_path(sweep_dir, &inst.instance_id);
@@ -228,6 +235,7 @@ fn render_junit(
         } else {
             let failure_msg = failure_message(inst, triage);
             let excerpt = build_excerpt(inst, redactor);
+            let is_error = inst.outcome.as_deref() == Some(outcome::ERROR);
             let _ = writeln!(
                 out,
                 "    <testcase name=\"{}\" classname=\"{}\" time=\"{:.3}\" file=\"{}\">",
@@ -236,12 +244,21 @@ fn render_junit(
                 time,
                 xml_attr(&traj_rel),
             );
-            let _ = writeln!(
-                out,
-                "      <failure message=\"{}\">{}</failure>",
-                xml_attr(&failure_msg),
-                xml_text(&excerpt),
-            );
+            if is_error {
+                let _ = writeln!(
+                    out,
+                    "      <error message=\"{}\">{}</error>",
+                    xml_attr(&failure_msg),
+                    xml_text(&excerpt),
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "      <failure message=\"{}\">{}</failure>",
+                    xml_attr(&failure_msg),
+                    xml_text(&excerpt),
+                );
+            }
             out.push_str("    </testcase>\n");
         }
     }
@@ -274,14 +291,32 @@ fn render_annotations(
         } else {
             format!("{failure_msg}: {excerpt}")
         };
-        let message = message.replace('\n', " ").replace('\r', "");
         let _ = writeln!(
             out,
             "::error title={},file={}::{}",
-            inst.instance_id, traj_rel, message,
+            gha_escape_property(&inst.instance_id),
+            gha_escape_property(&traj_rel),
+            gha_escape_message(&message),
         );
     }
     out
+}
+
+/// Escape a value for use in a GitHub Actions workflow command property
+/// (the `key=value` pairs before the `::` message separator).
+fn gha_escape_property(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+        .replace(':', "%3A")
+        .replace(',', "%2C")
+}
+
+/// Escape a value for use as the message body of a GitHub Actions workflow command.
+fn gha_escape_message(s: &str) -> String {
+    s.replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -339,7 +374,7 @@ struct RedactionFields {
 }
 
 fn is_resolved(inst: &InstanceResult) -> bool {
-    crate::run::swebench::is_resolved_instance_result(inst)
+    crate::run::swebench::resolved_count(inst) > 0
 }
 
 fn failure_message(inst: &InstanceResult, triage: Option<&HashMap<String, String>>) -> String {
@@ -357,17 +392,13 @@ fn failure_message(inst: &InstanceResult, triage: Option<&HashMap<String, String
 }
 
 fn build_excerpt(inst: &InstanceResult, redactor: &Redactor) -> String {
-    let raw = inst
-        .error
-        .as_deref()
-        .unwrap_or("")
-        .chars()
-        .take(EXCERPT_MAX_CHARS)
-        .collect::<String>();
+    let raw = inst.error.as_deref().unwrap_or("");
     if raw.is_empty() {
         return String::new();
     }
-    redactor.redact_text(&raw, surface::EXPORT).text
+    // Redact first so that secrets are not split by the char-count truncation.
+    let redacted = redactor.redact_text(raw, surface::EXPORT).text;
+    redacted.chars().take(EXCERPT_MAX_CHARS).collect()
 }
 
 fn failure_category_label(cat: FailureCategory) -> &'static str {
@@ -418,14 +449,23 @@ fn strip_issue_number(s: &str) -> &str {
 }
 
 /// Return the trajectory path relative to the sweep directory.
+///
+/// Prefers the nested layout returned by `trajectory_path_for` when the file
+/// exists on disk; falls back to the legacy flat `<instance_id>.traj.json`
+/// otherwise. Path separators are normalised to `/` for cross-platform URLs.
 fn trajectory_relative_path(sweep_dir: &Path, instance_id: &str) -> String {
-    let abs = trajectory_path_for(sweep_dir, instance_id);
-    if let Ok(rel) = abs.strip_prefix(sweep_dir) {
-        rel.to_string_lossy().into_owned()
+    let nested = trajectory_path_for(sweep_dir, instance_id);
+    let abs = if nested.exists() {
+        nested
     } else {
-        // Legacy flat path fallback.
+        sweep_dir.join(format!("{instance_id}.traj.json"))
+    };
+    let rel = if let Ok(r) = abs.strip_prefix(sweep_dir) {
+        r.to_string_lossy().into_owned()
+    } else {
         format!("{instance_id}.traj.json")
-    }
+    };
+    rel.replace('\\', "/")
 }
 
 fn junit_output_path(args: &ExportCiArgs) -> PathBuf {
@@ -446,8 +486,27 @@ fn write_output(path: &Path, content: &str) -> Result<(), Error> {
 
 // ── XML helpers ────────────────────────────────────────────────────────────
 
+/// Remove code points that XML 1.0 forbids regardless of encoding.
+///
+/// Allowed ranges: `#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]`.
+/// This strips C0 controls (except `\t`, `\n`, `\r`) and the two Unicode
+/// non-characters `U+FFFE` / `U+FFFF`.
+fn strip_xml10_forbidden(s: &str) -> String {
+    s.chars()
+        .filter(|&c| {
+            matches!(c as u32,
+                0x09 | 0x0A | 0x0D          // \t, \n, \r
+                | 0x20..=0xD7FF             // Basic Multilingual Plane minus surrogates
+                | 0xE000..=0xFFFD           // Private Use Area up to but not including non-chars
+                | 0x10000..=0x10FFFF        // Supplementary planes
+            )
+        })
+        .collect()
+}
+
 /// Escape a string for use in an XML attribute value (double-quoted).
 fn xml_attr(s: &str) -> String {
+    let s = strip_xml10_forbidden(s);
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -457,6 +516,7 @@ fn xml_attr(s: &str) -> String {
 
 /// Escape a string for use as XML text content.
 fn xml_text(s: &str) -> String {
+    let s = strip_xml10_forbidden(s);
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
