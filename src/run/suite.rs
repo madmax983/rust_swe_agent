@@ -222,8 +222,7 @@ fn exit_code_severity(code: ExitCode) -> u8 {
     match code {
         ExitCode::VerificationFailure => 4,
         ExitCode::BudgetHalt => 3,
-        ExitCode::TaskUnsuccessful => 2,
-        ExitCode::PreflightFailure => 2,
+        ExitCode::TaskUnsuccessful | ExitCode::PreflightFailure => 2,
         ExitCode::Success => 0,
         _ => 1,
     }
