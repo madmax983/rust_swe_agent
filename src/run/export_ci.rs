@@ -101,7 +101,7 @@ pub fn run(args: &ExportCiArgs) -> Result<ExportCiResult, Error> {
         xml_errors: agg.errors,
         json_total: sweep.total,
         json_failures: agg.json_failures_expected,
-        json_errors: sweep.errored,
+        json_errors: agg.errors,
     };
 
     match args.format {
@@ -162,28 +162,9 @@ struct Aggregates {
 }
 
 fn compute_aggregates(_sweep: &SweepResults, instances: &[&InstanceResult]) -> Aggregates {
-    use crate::run::swebench::resolved_count;
-    use crate::trajectory::outcome;
-
     let tests = instances.len();
-    let errors = instances
-        .iter()
-        .filter(|r| r.outcome.as_deref() == Some(outcome::ERROR))
-        .count();
-    // failures = submitted instances that were not resolved.
-    // Excludes "skipped_resume" rows (--resume sweeps mark previously-completed
-    // unresolved instances this way; sweep.submitted also excludes them).
-    // Using an instance-level count rather than sweep.submitted avoids
-    // double-counting run slots in pass@k sweeps where sweep.submitted is a
-    // per-run-slot total, not a per-instance total.
-    let failures = instances
-        .iter()
-        .filter(|r| {
-            r.outcome.as_deref() == Some(outcome::SUBMITTED)
-                && r.exit_reason != "skipped_resume"
-                && resolved_count(r) == 0
-        })
-        .count();
+    let errors = instances.iter().filter(|r| is_junit_error(r)).count();
+    let failures = instances.iter().filter(|r| is_junit_failure(r)).count();
     // Derived from the same instance-level filter so integrity_mismatch can
     // compare them without false positives on reruns/resumed sweeps.
     let json_failures_expected = failures;
@@ -199,9 +180,10 @@ fn compute_aggregates(_sweep: &SweepResults, instances: &[&InstanceResult]) -> A
 }
 
 fn integrity_mismatch(agg: &Aggregates, sweep: &SweepResults) -> bool {
-    // failures == json_failures_expected by construction; only tests and errors
-    // can diverge between the XML aggregate and results.json.
-    agg.tests != sweep.total || agg.errors != sweep.errored
+    // Only tests is reliable to cross-check: sweep.errored and sweep.submitted
+    // are run-slot counts for pass@k sweeps, not per-instance counts.
+    // failures == json_failures_expected by construction (same filter).
+    agg.tests != sweep.total
 }
 
 // ── JUnit XML rendering ────────────────────────────────────────────────────
@@ -227,8 +209,6 @@ fn render_junit(
     );
 
     for inst in instances {
-        use crate::trajectory::outcome;
-
         let classname = parse_classname(&inst.instance_id);
         let time = inst.duration_secs.unwrap_or(0.0);
         let traj_rel = trajectory_relative_path(sweep_dir, &inst.instance_id);
@@ -241,10 +221,9 @@ fn render_junit(
                 xml_attr(&classname),
                 time,
             );
-        } else {
+        } else if is_junit_error(inst) || is_junit_failure(inst) {
             let failure_msg = failure_message(inst, triage);
             let excerpt = build_excerpt(inst, redactor);
-            let is_error = inst.outcome.as_deref() == Some(outcome::ERROR);
             let _ = writeln!(
                 out,
                 "    <testcase name=\"{}\" classname=\"{}\" time=\"{:.3}\" file=\"{}\">",
@@ -253,7 +232,7 @@ fn render_junit(
                 time,
                 xml_attr(&traj_rel),
             );
-            if is_error {
+            if is_junit_error(inst) {
                 let _ = writeln!(
                     out,
                     "      <error message=\"{}\">{}</error>",
@@ -268,6 +247,19 @@ fn render_junit(
                     xml_text(&excerpt),
                 );
             }
+            out.push_str("    </testcase>\n");
+        } else {
+            // budget-halted (outcome: None) and skipped_resume instances are
+            // counted in `tests` but not in `failures` or `errors`; emit a
+            // <skipped/> child so CI parsers do not count them as passes.
+            let _ = writeln!(
+                out,
+                "    <testcase name=\"{}\" classname=\"{}\" time=\"{:.3}\">",
+                xml_attr(&inst.instance_id),
+                xml_attr(&classname),
+                time,
+            );
+            out.push_str("      <skipped/>\n");
             out.push_str("    </testcase>\n");
         }
     }
@@ -287,7 +279,9 @@ fn render_annotations(
 ) -> String {
     let mut out = String::new();
     for inst in instances {
-        if is_resolved(inst) {
+        // Only emit annotations for instances counted in failures or errors;
+        // resolved, budget-halted, and skipped_resume rows produce no annotation.
+        if !is_junit_error(inst) && !is_junit_failure(inst) {
             continue;
         }
         let traj_rel = trajectory_relative_path(sweep_dir, &inst.instance_id);
@@ -390,6 +384,25 @@ struct RedactionFields {
 
 fn is_resolved(inst: &InstanceResult) -> bool {
     crate::run::swebench::resolved_count(inst) > 0
+}
+
+/// True when this instance should map to a JUnit `<error>` element.
+fn is_junit_error(inst: &InstanceResult) -> bool {
+    use crate::trajectory::outcome;
+    inst.outcome.as_deref() == Some(outcome::ERROR)
+}
+
+/// True when this instance should map to a JUnit `<failure>` element.
+///
+/// Excludes `skipped_resume` rows (--resume sweeps) and budget-halted rows
+/// (outcome is None) so the element count matches the `failures` aggregate
+/// attribute.
+fn is_junit_failure(inst: &InstanceResult) -> bool {
+    use crate::run::swebench::resolved_count;
+    use crate::trajectory::outcome;
+    inst.outcome.as_deref() == Some(outcome::SUBMITTED)
+        && inst.exit_reason != "skipped_resume"
+        && resolved_count(inst) == 0
 }
 
 fn failure_message(inst: &InstanceResult, triage: Option<&HashMap<String, String>>) -> String {
