@@ -661,3 +661,133 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn dummy_state(arms: Vec<ArmStatus>, n: usize) -> MatrixState {
+        MatrixState {
+            artifact_kind: "test".to_string(),
+            config_path: "test".to_string(),
+            instance_ids: vec!["i1".to_string(); n],
+            filter_spec: FilterSpec {
+                original_count: n,
+                selected_count: n,
+                instance_ids: None,
+                limit: None,
+                sample: None,
+                seed: None,
+                stratify_by: None,
+                stratify_mode: None,
+            },
+            cost_limit_usd: None,
+            arms,
+        }
+    }
+
+    fn dummy_arm(name: &str, state: ArmState, resolved: usize, total_cost_usd: f64) -> ArmStatus {
+        ArmStatus {
+            name: name.to_string(),
+            model: "test-model".to_string(),
+            state,
+            sweep_dir: "test".to_string(),
+            total_cost_usd,
+            resolved,
+            submitted: 0,
+        }
+    }
+
+    #[test]
+    fn build_summary_ranks_complete_arms_by_resolved_rate_then_cost() {
+        let arms = vec![
+            dummy_arm("A", ArmState::Complete, 5, 10.0), // 50%
+            dummy_arm("B", ArmState::Complete, 8, 20.0), // 80%
+            dummy_arm("C", ArmState::Complete, 5, 5.0),  // 50%, lower cost
+        ];
+        let state = dummy_state(arms, 10);
+        let summary = build_summary(&state);
+
+        assert_eq!(summary.arms.len(), 3);
+        assert_eq!(summary.arms[0].name, "B");
+        assert_eq!(summary.arms[0].rank, 1);
+        assert_eq!(summary.arms[1].name, "C");
+        assert_eq!(summary.arms[1].rank, 2);
+        assert_eq!(summary.arms[2].name, "A");
+        assert_eq!(summary.arms[2].rank, 3);
+    }
+
+    #[test]
+    fn build_summary_puts_incomplete_arms_last() {
+        let arms = vec![
+            dummy_arm("A", ArmState::Pending, 10, 10.0), // High resolved but incomplete
+            dummy_arm("B", ArmState::Complete, 5, 20.0),
+            dummy_arm("C", ArmState::Cancelled, 8, 5.0),
+        ];
+        let state = dummy_state(arms, 10);
+        let summary = build_summary(&state);
+
+        assert_eq!(summary.arms.len(), 3);
+        assert_eq!(summary.arms[0].name, "B");
+        assert_eq!(summary.arms[0].rank, 1);
+        assert_eq!(summary.arms[1].name, "A"); // Pending is incomplete
+        assert_eq!(summary.arms[2].name, "C"); // Cancelled is incomplete
+    }
+
+    #[test]
+    fn build_summary_calculates_deltas_relative_to_rank_1() {
+        let arms = vec![
+            dummy_arm("A", ArmState::Complete, 5, 10.0), // 50%, 2.0 per resolved
+            dummy_arm("B", ArmState::Complete, 8, 8.0),  // 80%, 1.0 per resolved (Rank 1)
+        ];
+        let state = dummy_state(arms, 10);
+        let summary = build_summary(&state);
+
+        assert_eq!(summary.arms[0].name, "B");
+        assert!((summary.arms[0].delta_resolved_rate_pp - 0.0).abs() < f64::EPSILON);
+        assert!((summary.arms[0].delta_cost_per_resolved_usd - 0.0).abs() < f64::EPSILON);
+
+        assert_eq!(summary.arms[1].name, "A");
+        assert!((summary.arms[1].delta_resolved_rate_pp - (-30.0)).abs() < 1e-6);
+        assert!((summary.arms[1].delta_cost_per_resolved_usd - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_summary_handles_zero_instances() {
+        let arms = vec![dummy_arm("A", ArmState::Complete, 0, 10.0)];
+        let state = dummy_state(arms, 0); // 0 instances
+        let summary = build_summary(&state);
+
+        assert!((summary.arms[0].resolved_rate - 0.0).abs() < f64::EPSILON);
+        assert!((summary.arms[0].cost_per_resolved_usd - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn render_summary_text_includes_all_arms() {
+        let arms = vec![
+            dummy_arm("A", ArmState::Complete, 5, 10.0),
+            dummy_arm("B", ArmState::Pending, 0, 0.0),
+        ];
+        let state = dummy_state(arms, 10);
+        let summary = build_summary(&state);
+        let text = render_summary_text(&summary, &state);
+
+        assert!(text.contains('A'));
+        assert!(text.contains('B'));
+        assert!(text.contains("50.0")); // 5/10
+        assert!(text.contains("0.0")); // 0/10
+        assert!(text.contains("10.0000")); // Cost A
+        assert!(text.contains("0.0000")); // Cost B
+    }
+
+    #[test]
+    fn render_summary_text_handles_zero_instances() {
+        let arms = vec![dummy_arm("A", ArmState::Complete, 0, 10.0)];
+        let state = dummy_state(arms, 0);
+        let summary = build_summary(&state);
+        let text = render_summary_text(&summary, &state);
+
+        assert!(text.contains("N/A")); // N/A for rate when instances = 0
+    }
+}
