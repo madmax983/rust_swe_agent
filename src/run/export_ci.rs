@@ -498,7 +498,7 @@ fn strip_xml10_forbidden(s: &str) -> String {
                 0x09 | 0x0A | 0x0D          // \t, \n, \r
                 | 0x20..=0xD7FF             // Basic Multilingual Plane minus surrogates
                 | 0xE000..=0xFFFD           // Private Use Area up to but not including non-chars
-                | 0x10000..=0x10FFFF        // Supplementary planes
+                | 0x0001_0000..=0x0010_FFFF // Supplementary planes
             )
         })
         .collect()
