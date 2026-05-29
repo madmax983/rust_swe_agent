@@ -90,7 +90,7 @@ pub fn parse_task_file(content: &str, format: TaskFileFormat) -> Result<Vec<Suit
             Ok(tasks)
         }
         TaskFileFormat::Yaml => {
-            let specs: Vec<SuiteTaskSpec> = serde_yaml::from_str(content).map_err(|e| {
+            let specs: Vec<SuiteTaskSpec> = serde_yml::from_str(content).map_err(|e| {
                 Error::Config(crate::error::ConfigError::Invalid(format!(
                     "task file YAML parse error: {e}"
                 )))
@@ -206,10 +206,11 @@ impl SuiteResults {
 }
 
 fn truncate_id(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_owned()
     } else {
-        format!("{}…", &s[..max.saturating_sub(1)])
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -222,6 +223,7 @@ fn exit_code_severity(code: ExitCode) -> u8 {
         ExitCode::VerificationFailure => 4,
         ExitCode::BudgetHalt => 3,
         ExitCode::TaskUnsuccessful => 2,
+        ExitCode::PreflightFailure => 2,
         ExitCode::Success => 0,
         _ => 1,
     }
@@ -258,7 +260,12 @@ fn count_unchanged_failures(invocations: &[TestInvocation]) -> u32 {
         .rev()
         .take_while(|t| t.exit_code == last_exit)
         .count();
-    u32::try_from(n).unwrap_or(u32::MAX)
+    // Only signal "stuck" when the same failure repeats 2+ times consecutively.
+    if n >= 2 {
+        u32::try_from(n).unwrap_or(u32::MAX)
+    } else {
+        0
+    }
 }
 
 /// Net verifier score: passed minus failed. `None` when no checks ran.
@@ -362,12 +369,55 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         )));
     }
 
+    // ── Validate task IDs ─────────────────────────────────────────────────
+    {
+        let mut seen = std::collections::HashSet::new();
+        for task in &tasks {
+            if task.id.is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "task id must not be empty".into(),
+                )));
+            }
+            if task.id.contains('/') || task.id.contains('\\') || task.id.contains("..") {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "task id '{}' must not contain path separators or '..'",
+                    task.id
+                ))));
+            }
+            if !seen.insert(task.id.as_str()) {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "duplicate task id '{}'",
+                    task.id
+                ))));
+            }
+        }
+    }
+
     // ── Prepare output directory ──────────────────────────────────────────
     let suite_dir = args.output_dir.join(&args.suite_name);
+    if args.suite_name.contains('/')
+        || args.suite_name.contains('\\')
+        || args.suite_name.contains("..")
+    {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "suite name '{}' must not contain path separators or '..'",
+            args.suite_name
+        ))));
+    }
     std::fs::create_dir_all(&suite_dir).map_err(Error::Io)?;
 
     // ── Parse suite-level verify checks ──────────────────────────────────
     let suite_verify = parse_verify_checks(&args.verify)?;
+
+    // ── Pre-validate all per-task verify entries ──────────────────────────
+    for task in &tasks {
+        parse_verify_checks(&task.verify).map_err(|e| match e {
+            Error::Config(crate::error::ConfigError::Invalid(msg)) => Error::Config(
+                crate::error::ConfigError::Invalid(format!("task '{}': {msg}", task.id)),
+            ),
+            other => other,
+        })?;
+    }
 
     let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
 
@@ -381,6 +431,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     let mut verified_count = 0_usize;
     let mut suite_exit = ExitCode::Success;
     let mut cumulative_cost = 0.0_f64;
+    let mut early_halt_reason: Option<&'static str> = None;
 
     for task in &tasks {
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
@@ -400,6 +451,9 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                 if is_verified {
                     verified_count += 1;
                 }
+                // Resumed tasks must still contribute to suite exit code.
+                let task_exit = classify_task_exit(&result, &Ok(()), false);
+                suite_exit = merge_exit_code(suite_exit, task_exit);
                 task_results.push(result);
                 continue;
             }
@@ -480,12 +534,24 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
 
         // ── Load trajectory from disk ─────────────────────────────────────
         let result = if let Some(traj) = try_load_terminal_trajectory(&traj_path) {
-            let r = task_result_from_trajectory(&task.id, &traj, &traj_path);
-            // Apply redaction to trajectory_path string
-            let _ = redactor.redact_text(&r.trajectory_path, crate::redaction::surface::EXPORT);
+            let mut r = task_result_from_trajectory(&task.id, &traj, &traj_path);
+            r.trajectory_path = redactor
+                .redact_text(&r.trajectory_path, crate::redaction::surface::EXPORT)
+                .text;
             r
         } else {
             // Mini errored before writing a trajectory (env/preflight failure).
+            let (failure_category, stop_reason) = match &run_outcome {
+                Err(e) => {
+                    let code = ExitCode::from_error(e);
+                    let cat = match code {
+                        ExitCode::PreflightFailure => FailureCategory::EnvSetup,
+                        _ => FailureCategory::AgentInternal,
+                    };
+                    (Some(cat), Some(code.outcome_class().to_owned()))
+                }
+                Ok(()) => (None, Some("error".to_owned())),
+            };
             SuiteTaskResult {
                 id: task.id.clone(),
                 outcome: "error".to_owned(),
@@ -493,12 +559,12 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                 steps: None,
                 cost_usd: None,
                 duration_secs: None,
-                failure_category: Some(FailureCategory::AgentInternal),
+                failure_category,
                 trajectory_path: traj_path.display().to_string(),
                 attempt_count: 0,
                 unchanged_failure_count: 0,
                 verifier_delta: None,
-                stop_reason: Some("error".to_owned()),
+                stop_reason,
             }
         };
 
@@ -514,6 +580,13 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             verified_count += 1;
         }
 
+        // ── Post-task budget check ────────────────────────────────────────
+        if let Some(limit) = args.suite_cost_limit_usd {
+            if cumulative_cost >= limit {
+                suite_exit = merge_exit_code(suite_exit, ExitCode::BudgetHalt);
+            }
+        }
+
         // ── Determine per-task exit code contribution ─────────────────────
         let task_exit = classify_task_exit(&result, &run_outcome, is_verification_error);
         suite_exit = merge_exit_code(suite_exit, task_exit);
@@ -525,7 +598,10 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             Err(e) if !is_verification_error => {
                 let code = ExitCode::from_error(e);
                 if matches!(code, ExitCode::PreflightFailure) {
-                    // Stop early on preflight failures — they affect all tasks.
+                    early_halt_reason = Some("suite_preflight_halt");
+                    break;
+                } else if matches!(code, ExitCode::Interrupted | ExitCode::Killed) {
+                    early_halt_reason = Some("suite_interrupted");
                     break;
                 }
             }
@@ -534,12 +610,18 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     }
 
     // ── Pad skipped tasks not yet reached due to early halt ───────────────
+    let halt_reason = early_halt_reason.unwrap_or("suite_halted");
+    let halt_outcome = if halt_reason == "suite_preflight_halt" {
+        "skipped_preflight_halt"
+    } else {
+        "skipped_interrupted"
+    };
     let reached = task_results.len();
     for task in tasks.iter().skip(reached) {
         let traj_path = suite_dir.join(format!("{}.traj.json", task.id));
         task_results.push(SuiteTaskResult {
             id: task.id.clone(),
-            outcome: "skipped_budget_exhausted".to_owned(),
+            outcome: halt_outcome.to_owned(),
             verification_status: crate::trajectory::verification_status::UNVERIFIED.to_owned(),
             steps: None,
             cost_usd: None,
@@ -549,7 +631,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             attempt_count: 0,
             unchanged_failure_count: 0,
             verifier_delta: None,
-            stop_reason: Some("suite_preflight_halt".to_owned()),
+            stop_reason: Some(halt_reason.to_owned()),
         });
     }
 
@@ -596,7 +678,7 @@ fn classify_task_exit(
         return ExitCode::Success;
     }
     match run_outcome {
-        Ok(()) => ExitCode::Success,
+        Ok(()) => ExitCode::TaskUnsuccessful,
         Err(e) => ExitCode::from_error(e),
     }
 }
@@ -800,7 +882,16 @@ mod tests {
             make_invocation(2, 1),
         ];
         // Last is 1, but the one before is 2 — chain breaks.
-        assert_eq!(count_unchanged_failures(&invocations), 1);
+        assert_eq!(count_unchanged_failures(&invocations), 0);
+    }
+
+    #[test]
+    fn unchanged_failure_count_single_tail_failure_is_zero() {
+        let invocations = vec![
+            make_invocation(0, 0), // pass
+            make_invocation(1, 1), // single fail — not a "stuck" streak
+        ];
+        assert_eq!(count_unchanged_failures(&invocations), 0);
     }
 
     #[test]
