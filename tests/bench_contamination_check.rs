@@ -1516,3 +1516,285 @@ fn contamination_check_fail_on_high_threshold_one_always_passes() {
         "--fail-on-high 1.0 should always pass\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+// ── review-feedback tests ──────────────────────────────────────────────────
+
+// `sed -n` (read-only sed, no -i) must NOT be classified as a write.
+#[test]
+fn contamination_check_sed_without_i_is_not_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // sed -n just prints to stdout — not a file write.
+    // So this should look like "two reads, then an edit at step 2".
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["cat src/a.py"],
+            vec!["sed -n '1,10p' src/a.py"], // read-only sed — not a write
+            vec!["sed -i 's/old/new/' src/a.py"], // actual in-place write
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // src/a.py was read before the write → EBR should be 0 (not 1)
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "sed -n should not count as a write; read before edit → ebr ~0: {ebr}"
+    );
+}
+
+// Compound action `cat a.py && sed -i ... a.py` should record both read and write.
+#[test]
+fn contamination_check_compound_action_read_and_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // The compound action reads then writes the same file in one step.
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py && sed -i 's/old/new/' src/a.py"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // The read in the same compound command counts as a prior read → EBR = 0
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "compound read+write should record the read; ebr should be ~0: {ebr}"
+    );
+}
+
+// `git apply` should be classified as a write.
+#[test]
+fn contamination_check_git_apply_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(sweep, "test__repo-001", &[vec!["git apply fix.patch"]]);
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // git apply at step 0 with no prior reads → high TTFE signal
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "git apply at step 0 should give high ttfe signal: {ttfe}"
+    );
+}
+
+// Partial TOML config (missing some fields) should fall back to defaults.
+#[test]
+fn contamination_check_partial_toml_config_uses_defaults() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py"], vec!["sed -i 's/x/y/' src/a.py"]],
+    );
+
+    // Write a TOML that only overrides one field; rest should use defaults.
+    let cfg_path = work.path().join("partial.toml");
+    std::fs::write(&cfg_path, "medium_threshold = 0.15\n").unwrap();
+
+    let out = run_contamination_check(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--config",
+        cfg_path.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "partial TOML config should succeed (missing fields use defaults)\nstderr: {stderr}"
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(report["instances"].as_array().unwrap().len(), 1);
+}
+
+// `--fail-on-high` out of range should exit non-zero.
+#[test]
+fn contamination_check_fail_on_high_out_of_range_errors() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py"], vec!["sed -i 's/x/y/' src/a.py"]],
+    );
+
+    let out = run_contamination_check(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--fail-on-high",
+        "1.5", // out of range
+    ]);
+    assert!(
+        !out.status.success(),
+        "--fail-on-high 1.5 (out of range) should exit non-zero"
+    );
+}
+
+// Colon-form tool action `write:{...}` should be detected as a write.
+#[test]
+fn contamination_check_colon_form_write_action() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec![r#"write:{"path":"src/a.py","content":"new"}"#]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // write: at step 0 → high TTFE signal
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "colon-form write: at step 0 should give high ttfe signal: {ttfe}"
+    );
+}
+
+// results.json missing `instances` array should exit non-zero.
+#[test]
+fn contamination_check_missing_instances_array_errors() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    // Write a results.json without an `instances` field.
+    std::fs::write(
+        sweep.join("results.json"),
+        r#"{"total": 0, "sweep_status": "completed"}"#,
+    )
+    .unwrap();
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        !out.status.success(),
+        "results.json missing `instances` field should exit non-zero"
+    );
+}
+
+// bench compare --contamination JSON output should not be polluted by text.
+#[test]
+fn bench_compare_json_format_not_polluted_by_contamination() {
+    let work = tempfile::tempdir().unwrap();
+    let base_dir = work.path().join("baseline");
+    let cand_dir = work.path().join("candidate");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+
+    write_sweep(
+        &base_dir,
+        vec![
+            resolved("django__django-001"),
+            resolved("django__django-002"),
+        ],
+    );
+    write_sweep(
+        &cand_dir,
+        vec![
+            resolved("django__django-001"),
+            resolved("django__django-002"),
+        ],
+    );
+    write_trajectory(
+        &cand_dir,
+        "django__django-001",
+        &[vec!["cat src/a.py"], vec!["sed -i 's/x/y/' src/a.py"]],
+    );
+    write_trajectory(
+        &cand_dir,
+        "django__django-002",
+        &[vec!["cat src/b.py"], vec!["sed -i 's/a/b/' src/b.py"]],
+    );
+
+    let cc_out = run_contamination_check(&["--sweep", cand_dir.to_str().unwrap()]);
+    assert!(cc_out.status.success());
+    let contamination_path = cand_dir.join("contamination.json");
+
+    let out = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "compare",
+            "--baseline",
+            base_dir.to_str().unwrap(),
+            "--candidate",
+            cand_dir.to_str().unwrap(),
+            "--format",
+            "json",
+            "--contamination",
+            contamination_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run bench compare --format json");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "bench compare --format json --contamination should exit 0\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // stdout must be valid JSON (not polluted by contamination text)
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("bench compare --format json stdout is not valid JSON: {e}\nstdout: {stdout}")
+    });
+    assert!(parsed.is_object(), "stdout should be a JSON object");
+}

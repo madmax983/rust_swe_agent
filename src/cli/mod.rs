@@ -1881,9 +1881,11 @@ fn bench_compare(c: args::CompareCmd) -> Result<(), Error> {
             }
         }
     }
-    // Contamination-adjusted resolved rate
+    // Contamination-adjusted resolved rate (text format only — JSON stdout must stay clean)
     if let Some(ref contamination_path) = c.contamination {
-        print_contamination_adjusted_rate(contamination_path, &report)?;
+        if format == crate::run::compare::CompareFormat::Text {
+            print_contamination_adjusted_rate(contamination_path, &report)?;
+        }
     }
 
     apply_significance_gates(
@@ -1923,7 +1925,13 @@ fn print_contamination_adjusted_rate(
         .unwrap_or(usize::MAX);
     let high_share = contamination["summary"]["high_risk_share"]
         .as_f64()
-        .unwrap_or(0.0);
+        .ok_or_else(|| {
+            Error::Io(std::io::Error::other(format!(
+                "compare: contamination report `{}` is missing or has non-numeric \
+                 `summary.high_risk_share` field",
+                path.display()
+            )))
+        })?;
 
     let raw_rate = compare_report.candidate_resolved_rate;
     let adjusted_absolute = raw_rate * (1.0 - high_share);
@@ -3382,6 +3390,15 @@ fn bench_export_ci(c: args::ExportCiCmd) -> Result<(), Error> {
 
 fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error> {
     use crate::run::contamination_check::{ContaminationCheckArgs, ContaminationReport};
+
+    if let Some(threshold) = c.fail_on_high {
+        if !(0.0..=1.0).contains(&threshold) {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                "contamination-check: --fail-on-high must be between 0.0 and 1.0",
+            );
+        }
+    }
 
     let args = ContaminationCheckArgs {
         sweep_dir: c.sweep,

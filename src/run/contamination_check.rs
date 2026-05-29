@@ -33,7 +33,11 @@ use crate::error::Error;
 ///
 /// All weights should sum to approximately 1.0 for meaningful scores, but this
 /// is not enforced; raw weighted sums are clamped to `[0.0, 1.0]`.
+///
+/// `#[serde(default)]` lets a partial TOML file override only the keys it
+/// specifies while leaving the rest at their `Default` values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ContaminationCheckConfig {
     /// Weight for the edit-before-read ratio signal (default 0.40).
     /// Rationale: file edits without prior reads strongly resemble memorised patches.
@@ -340,17 +344,22 @@ fn load_sweep_results(sweep_dir: &Path) -> Result<HashMap<String, bool>, Error> 
         )))
     })?;
 
+    let instances = value["instances"].as_array().ok_or_else(|| {
+        Error::Io(std::io::Error::other(format!(
+            "contamination-check: `{}` is missing or has a non-array `instances` field",
+            results_path.display()
+        )))
+    })?;
+
     let mut map = HashMap::new();
-    if let Some(instances) = value["instances"].as_array() {
-        for inst in instances {
-            let id = match inst["instance_id"].as_str() {
-                Some(s) => s.to_owned(),
-                None => continue,
-            };
-            let resolved = inst["resolved_count"].as_u64().unwrap_or(0) > 0
-                || inst["pass_at_1"].as_bool().unwrap_or(false);
-            map.insert(id, resolved);
-        }
+    for inst in instances {
+        let id = match inst["instance_id"].as_str() {
+            Some(s) => s.to_owned(),
+            None => continue,
+        };
+        let resolved = inst["resolved_count"].as_u64().unwrap_or(0) > 0
+            || inst["pass_at_1"].as_bool().unwrap_or(false);
+        map.insert(id, resolved);
     }
     Ok(map)
 }
@@ -402,6 +411,12 @@ fn load_trajectory(sweep_dir: &Path, instance_id: &str) -> Result<TrajData, Erro
     } else if legacy.exists() {
         legacy
     } else {
+        tracing::warn!(
+            instance_id = %instance_id,
+            "contamination-check: trajectory not found; scoring as zero (checked {:?} and {:?})",
+            sweep_dir.join(instance_id).join("run-1.traj.json"),
+            sweep_dir.join(format!("{instance_id}.traj.json")),
+        );
         return Ok(TrajData {
             messages: Vec::new(),
             total_steps: 0,
@@ -503,8 +518,10 @@ fn find_first_edit_step(messages: &[TrajMessage]) -> (Option<usize>, usize) {
             continue;
         }
         for action in &msg.actions {
-            if is_write_action(action.as_str()) && first_edit_step.is_none() {
-                first_edit_step = Some(step_index);
+            for part in split_compound_action(action.as_str()) {
+                if is_write_action(part) && first_edit_step.is_none() {
+                    first_edit_step = Some(step_index);
+                }
             }
         }
         step_index += 1;
@@ -514,6 +531,10 @@ fn find_first_edit_step(messages: &[TrajMessage]) -> (Option<usize>, usize) {
 
 /// Walk messages in order, tracking which files were read before the first edit.
 /// Returns the edit-before-read ratio.
+///
+/// Compound shell commands (`cmd1 && cmd2`, `cmd1 | cmd2`) are split and each
+/// part is classified independently so that a combined read+write command (e.g.
+/// `cat a.py && sed -i 's/x/y/' a.py`) records both the read and the write.
 fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
     let mut reads_before: HashSet<String> = HashSet::new();
     let mut edited_unread: HashSet<String> = HashSet::new();
@@ -524,17 +545,19 @@ fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
             continue;
         }
         for action in &msg.actions {
-            let action = action.as_str();
-            if is_read_action(action) {
-                for p in extract_file_args(action) {
-                    reads_before.insert(p);
+            for part in split_compound_action(action.as_str()) {
+                if is_read_action(part) {
+                    for p in extract_file_args(part) {
+                        reads_before.insert(p);
+                    }
                 }
-            } else if is_write_action(action) {
-                for p in extract_file_args(action) {
-                    if edited_all.insert(p.clone()) {
-                        // First time this file is edited — was it read before?
-                        if !reads_before.contains(&p) {
-                            edited_unread.insert(p);
+                if is_write_action(part) {
+                    for p in extract_file_args(part) {
+                        if edited_all.insert(p.clone()) {
+                            // First time this file is edited — was it read before?
+                            if !reads_before.contains(&p) {
+                                edited_unread.insert(p);
+                            }
                         }
                     }
                 }
@@ -544,7 +567,6 @@ fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
 
     compute_edit_before_read_ratio(
         &{
-            // The files read before any edit of them
             let reads_before_edit: HashSet<String> = edited_all
                 .iter()
                 .filter(|p| !edited_unread.contains(*p))
@@ -566,6 +588,55 @@ fn compute_weighted_score(signals: &SignalBreakdown, cfg: &ContaminationCheckCon
     (ebr + ps + ttfe + vr).clamp(0.0, 1.0)
 }
 
+// ── compound action splitting ─────────────────────────────────────────────
+
+/// Split a shell action string into individual commands at `&&`, `||`, `|`, `;`
+/// without breaking inside single-quoted strings.
+///
+/// For example:
+/// - `"cat a.py && sed -i 's/x/y/' a.py"` → `["cat a.py", "sed -i 's/x/y/' a.py"]`
+/// - `"cat a.py | tee b.py"` → `["cat a.py", "tee b.py"]`
+fn split_compound_action(action: &str) -> Vec<&str> {
+    let bytes = action.as_bytes();
+    let n = bytes.len();
+    let mut parts: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    let mut in_single_quote = false;
+    let mut i = 0usize;
+
+    while i < n {
+        if bytes[i] == b'\'' {
+            in_single_quote = !in_single_quote;
+            i += 1;
+        } else if in_single_quote {
+            i += 1;
+        } else if i + 1 < n
+            && ((bytes[i] == b'&' && bytes[i + 1] == b'&')
+                || (bytes[i] == b'|' && bytes[i + 1] == b'|'))
+        {
+            // `&&` or `||` — split and advance two chars
+            parts.push(action[start..i].trim());
+            start = i + 2;
+            i += 2;
+        } else if bytes[i] == b'|' || bytes[i] == b';' {
+            parts.push(action[start..i].trim());
+            start = i + 1;
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    let tail = action[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    if parts.is_empty() {
+        parts.push(action.trim());
+    }
+    parts
+}
+
 // ── bash action classification ────────────────────────────────────────────
 
 /// True when a bash action string is primarily a file-read operation.
@@ -579,18 +650,46 @@ fn is_read_action(action: &str) -> bool {
 
 /// True when a bash action string is primarily a file-write/edit operation.
 fn is_write_action(action: &str) -> bool {
-    let head = action.split_whitespace().next().unwrap_or("");
-    if matches!(head, "sed" | "awk" | "patch" | "tee" | "dd") {
+    let tokens: Vec<&str> = action.split_whitespace().collect();
+    let head = tokens.first().copied().unwrap_or("");
+
+    // `sed` is a write only when invoked with `-i` / `--in-place`.
+    // Without `-i`, `sed` reads stdin/files and prints to stdout — not a write.
+    if head == "sed" {
+        return tokens
+            .iter()
+            .any(|t| *t == "-i" || t.starts_with("-i") || *t == "--in-place");
+    }
+
+    if matches!(head, "awk" | "patch" | "tee" | "dd") {
         return true;
     }
-    // Detect output redirection: `echo … > file`, `printf … > file`, etc.
-    if action.contains(" > ") || action.contains(" >> ") {
+
+    // `git apply` applies a patch to the working tree — file write.
+    if head == "git" && tokens.get(1).copied() == Some("apply") {
         return true;
     }
-    // Tool-call write actions: `edit`, `write`, `create_file`, etc.
+
+    // Detect output redirection with or without surrounding spaces.
+    // A `>` or `>>` token (alone or as prefix of the filename) means a file write.
+    // We exclude `>&` and `>/dev/null`-style redirects to non-file fds.
+    for token in &tokens {
+        if (*token == ">" || *token == ">>") || (token.starts_with('>') && !token.starts_with(">&"))
+        {
+            return true;
+        }
+    }
+
+    // Tool-call write verbs: `edit`, `write`, `create_file`, `apply_patch`.
     if matches!(head, "edit" | "write" | "create_file" | "apply_patch") {
         return true;
     }
+
+    // Colon-form tool calls: `write:{...}`, `edit:{...}`.
+    if head.starts_with("write:") || head.starts_with("edit:") {
+        return true;
+    }
+
     false
 }
 
@@ -598,9 +697,10 @@ fn is_write_action(action: &str) -> bool {
 ///
 /// Conservative: only accepts tokens that plausibly are filesystem paths:
 /// - Not a shell flag (starts with `-`)
-/// - Not a quoted shell argument (starts with `'` or `"`)
-/// - Not a shell pattern/substitution (contains `=`, `*`, `[`, `{`, `$`)
-/// - Looks like a path: contains `/` (without `//`) OR ends with a common extension
+/// - Quoted tokens have their outer quotes stripped; only accepted if result
+///   has a common file extension (avoids confusing `'s/old/new/'` with a path)
+/// - Not a shell pattern/substitution (contains `=`, `*`, `[`, `{`, `$`, `(`, `)`)
+/// - Looks like a path: contains `/` OR ends with a common extension
 fn extract_file_args(action: &str) -> Vec<String> {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     if tokens.is_empty() {
@@ -609,22 +709,42 @@ fn extract_file_args(action: &str) -> Vec<String> {
 
     let mut paths = Vec::new();
     for token in tokens.iter().skip(1) {
-        if token.starts_with('-') || token.starts_with('\'') || token.starts_with('"') {
+        if token.starts_with('-') {
             continue;
         }
-        // Reject tokens with shell pattern/substitution characters
-        if token.contains('=')
-            || token.contains('*')
-            || token.contains('[')
-            || token.contains('{')
-            || token.contains('$')
-            || token.contains('(')
-            || token.contains(')')
+
+        // Strip balanced outer quotes and validate the unquoted form.
+        let unquoted: &str =
+            if (token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2)
+                || (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
+            {
+                let inner = &token[1..token.len() - 1];
+                // Only promote to a path if it has a known extension — this avoids
+                // treating sed patterns like `'s/old/new/'` as paths.
+                if !has_common_extension(inner) {
+                    continue;
+                }
+                inner
+            } else if token.starts_with('\'') || token.starts_with('"') {
+                // Unbalanced quote — skip entirely.
+                continue;
+            } else {
+                token
+            };
+
+        // Reject tokens with shell pattern/substitution characters.
+        if unquoted.contains('=')
+            || unquoted.contains('*')
+            || unquoted.contains('[')
+            || unquoted.contains('{')
+            || unquoted.contains('$')
+            || unquoted.contains('(')
+            || unquoted.contains(')')
         {
             continue;
         }
-        if looks_like_path(token) {
-            paths.push(normalize_path(token));
+        if looks_like_path(unquoted) {
+            paths.push(normalize_path(unquoted));
         }
     }
     paths
