@@ -17,11 +17,17 @@ pub mod broadcast;
 pub mod event_log;
 pub mod sse;
 #[cfg(feature = "webhook")]
+pub mod sweep_webhook;
+#[cfg(feature = "webhook")]
 pub mod webhook;
 
 pub use broadcast::BroadcastSink;
 pub use event_log::EventLogSink;
 pub use sse::SseServer;
+#[cfg(feature = "webhook")]
+pub use sweep_webhook::{
+    SweepNotificationEvent, SweepWebhookEnvelope, SweepWebhookSink, SweepWebhookSinkError,
+};
 #[cfg(feature = "webhook")]
 pub use webhook::{
     SchemaVersion, WebhookEnvelope, WebhookSink, WebhookSinkError, WebhookSinkHandle,

@@ -1207,6 +1207,17 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
             print_env_preview_text(&preview);
         }
     }
+
+    // Non-fatal webhook reachability check (issue #315).  Gated on the flag
+    // being present; the only paid network call doctor makes.
+    #[cfg(feature = "webhook")]
+    if let Some(ref url) = s.notify_webhook {
+        if output_format != "json" {
+            let status = doctor_probe_webhook(url).await;
+            println!("[bench doctor] Webhook reachability: {url} — {status}");
+        }
+    }
+
     let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(
         s, cfg, "doctor",
     )?))
@@ -1697,6 +1708,8 @@ fn swebench_args_from_cmd(
         sb_subset: s.sb_subset,
         sb_split: s.sb_split,
         eval_timeout_secs: s.eval_timeout_secs,
+        notify_webhook_url: s.notify_webhook,
+        notify_webhook_headers: s.notify_webhook_headers,
     })
 }
 
@@ -2516,6 +2529,8 @@ fn reproduce_swebench_args(
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
 }
 
@@ -4126,6 +4141,8 @@ fn retry_swebench_args(
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
 }
 
@@ -4236,6 +4253,32 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
 }
 
 /// Print a non-fatal skills-preview informational section for `bench doctor`.
+/// POST a `doctor_probe` event to the webhook URL and return a short status
+/// string for the non-fatal doctor output line.  Best-effort; never aborts.
+#[cfg(feature = "webhook")]
+async fn doctor_probe_webhook(url: &str) -> String {
+    use serde_json::json;
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("client build failed: {e}"),
+    };
+    let payload = json!({
+        "schema_version": { "major": 1, "minor": 0 },
+        "sweep_id": "doctor_probe",
+        "event": { "type": "doctor_probe", "sweep_id": "doctor_probe" },
+        "emitted_at": chrono::Utc::now().to_rfc3339(),
+    });
+    match client.post(url).json(&payload).send().await {
+        Ok(resp) => format!("HTTP {}", resp.status().as_u16()),
+        Err(e) if e.is_timeout() => "timeout".to_owned(),
+        Err(e) if e.is_connect() => "connection refused".to_owned(),
+        Err(_) => "network error".to_owned(),
+    }
+}
+
 fn print_doctor_skills_preview(cfg: &crate::config::Config) {
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     println!("\n--- skills-preview (informational) ---");
