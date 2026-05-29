@@ -1015,4 +1015,504 @@ mod unit {
             "no edit should give 0.0 signal: {signal}"
         );
     }
+
+    #[test]
+    fn time_to_first_edit_single_step_trajectory_edits() {
+        // Edge case: total_steps == 0 and step == 0 → maximally suspicious
+        let signal = compute_time_to_first_edit_signal(Some(0), 0);
+        assert!(
+            (signal - 1.0).abs() < 1e-9,
+            "single-step edit at 0 with 0 total should give 1.0: {signal}"
+        );
+    }
+
+    #[test]
+    fn time_to_first_edit_single_step_trajectory_nonzero_step() {
+        // Edge case: total_steps == 0 but step > 0 → not suspicious
+        let signal = compute_time_to_first_edit_signal(Some(1), 0);
+        assert!(
+            (signal - 0.0).abs() < 1e-9,
+            "single-step edit at >0 with 0 total should give 0.0: {signal}"
+        );
+    }
+
+    #[test]
+    fn risk_tier_display() {
+        assert_eq!(RiskTier::Low.to_string(), "low");
+        assert_eq!(RiskTier::Medium.to_string(), "medium");
+        assert_eq!(RiskTier::High.to_string(), "high");
+    }
+
+    #[test]
+    fn config_default_weights_sum_to_one() {
+        let cfg = ContaminationCheckConfig::default();
+        let sum = cfg.weight_edit_before_read
+            + cfg.weight_patch_similarity
+            + cfg.weight_time_to_first_edit
+            + cfg.weight_verbatim_recall;
+        assert!(
+            (sum - 1.0).abs() < 1e-9,
+            "default weights should sum to 1.0, got {sum}"
+        );
+    }
+
+    #[test]
+    fn config_from_toml_file_overrides_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("custom.toml");
+        std::fs::write(
+            &cfg_path,
+            r#"
+weight_edit_before_read = 0.50
+weight_patch_similarity = 0.20
+weight_time_to_first_edit = 0.20
+weight_verbatim_recall = 0.10
+medium_threshold = 0.25
+high_threshold = 0.55
+verbatim_recall_min_tokens = 30
+"#,
+        )
+        .unwrap();
+
+        let cfg = ContaminationCheckConfig::from_toml_file(&cfg_path).unwrap();
+        assert!((cfg.weight_edit_before_read - 0.50).abs() < 1e-9);
+        assert!((cfg.medium_threshold - 0.25).abs() < 1e-9);
+        assert!((cfg.high_threshold - 0.55).abs() < 1e-9);
+        assert_eq!(cfg.verbatim_recall_min_tokens, 30);
+    }
+
+    #[test]
+    fn config_from_toml_file_missing_returns_error() {
+        let result = ContaminationCheckConfig::from_toml_file(std::path::Path::new(
+            "/nonexistent/config.toml",
+        ));
+        assert!(result.is_err(), "missing file should return Err");
+    }
+
+    #[test]
+    fn config_from_toml_file_invalid_toml_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("bad.toml");
+        std::fs::write(&cfg_path, "this is not valid toml = = =").unwrap();
+        let result = ContaminationCheckConfig::from_toml_file(&cfg_path);
+        assert!(result.is_err(), "invalid TOML should return Err");
+    }
+}
+
+// ── additional integration tests for coverage ──────────────────────────────
+
+// Test --config flag (from_toml_file code path)
+#[test]
+fn contamination_check_custom_toml_config() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("django__django-001")]);
+    write_trajectory(
+        sweep,
+        "django__django-001",
+        &[vec!["cat src/a.py"], vec!["sed -i 's/x/y/' src/a.py"]],
+    );
+
+    // Write a custom TOML config that changes thresholds
+    let cfg_path = work.path().join("custom.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+weight_edit_before_read = 0.50
+weight_patch_similarity = 0.20
+weight_time_to_first_edit = 0.20
+weight_verbatim_recall = 0.10
+medium_threshold = 0.10
+high_threshold = 0.40
+verbatim_recall_min_tokens = 15
+"#,
+    )
+    .unwrap();
+
+    let out = run_contamination_check(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--config",
+        cfg_path.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "should succeed with custom TOML config\nstderr: {stderr}"
+    );
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(report["instances"].as_array().unwrap().len(), 1);
+}
+
+// Test invalid --config path exits non-zero
+#[test]
+fn contamination_check_invalid_config_path_fails() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+    write_sweep(sweep, vec![resolved("django__django-001")]);
+
+    let out = run_contamination_check(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--config",
+        "/nonexistent/config.toml",
+    ]);
+    assert!(
+        !out.status.success(),
+        "missing --config path should exit non-zero"
+    );
+}
+
+// Test write detection via echo redirect and tool-call verbs
+#[test]
+fn contamination_check_echo_and_tool_write_actions() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    // Instance uses echo redirect and 'edit' tool call — both should be detected as writes
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["echo 'new content' > src/module.py"],
+            vec!["edit src/other.py"],
+            vec!["pytest tests/"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // No reads before writes → edit_before_read_ratio should be > 0
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.0,
+        "echo redirect and tool writes without reads should produce ebr > 0: {ebr}"
+    );
+    // First write at step 0 → high time_to_first_edit signal
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(ttfe > 0.5, "echo at step 0 should give high ttfe: {ttfe}");
+}
+
+// Test append redirect (>>) also counts as a write
+#[test]
+fn contamination_check_append_redirect_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["printf 'patch' >> src/fix.py"], vec!["pytest tests/"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+    // Append at step 0 with no prior reads → suspicious
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(ttfe > 0.5, "append at step 0 should give high ttfe: {ttfe}");
+}
+
+// Test create_file and apply_patch tool verbs
+#[test]
+fn contamination_check_tool_verb_create_and_apply_patch() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["create_file src/new_module.py"],
+            vec!["apply_patch src/existing.py"],
+            vec!["pytest tests/"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+    // create_file at step 0, no reads → high time-to-first-edit
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "create_file at step 0 should give high ttfe signal: {ttfe}"
+    );
+}
+
+// Test with ./ prefix in paths (normalize_path)
+#[test]
+fn contamination_check_dotslash_path_prefix_normalized() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Read ./src/a.py then edit src/a.py — should match after normalize_path strips "./"
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["cat ./src/a.py"],
+            vec!["sed -i 's/x/y/' src/a.py"],
+            vec!["pytest tests/"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+    // After normalizing "./" prefix, src/a.py read before edit → low EBR
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.5,
+        "read ./src/a.py should count as reading src/a.py (normalize_path): {ebr}"
+    );
+}
+
+// Test resolved instance with no trajectory file (graceful degradation)
+#[test]
+fn contamination_check_missing_trajectory_scores_zero() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    // Write results.json with a resolved instance but no trajectory file
+    write_sweep(sweep, vec![resolved("no-traj__repo-001")]);
+    // Intentionally skip write_trajectory — no traj file exists
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let instances = report["instances"].as_array().unwrap();
+    assert_eq!(instances.len(), 1);
+    // Without a trajectory, all signals default to 0 → leakage_score = 0
+    let score = instances[0]["leakage_score"].as_f64().unwrap();
+    assert!(
+        (score - 0.0).abs() < 1e-9,
+        "missing trajectory should produce score 0.0: {score}"
+    );
+    assert_eq!(instances[0]["risk_tier"], "low");
+}
+
+// Test legacy flat trajectory path (<sweep>/<id>.traj.json)
+#[test]
+fn contamination_check_legacy_flat_trajectory_path() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("django__django-001")]);
+
+    // Write in legacy flat format: <sweep>/<id>.traj.json (not nested)
+    let traj = serde_json::json!({
+        "trajectory_format": "mini-swe-agent-1.1",
+        "artifact_kind": "trajectory",
+        "schema_version": {"major": 1, "minor": 3},
+        "info": {
+            "task": "django__django-001",
+            "model_name": "fixture",
+            "outcome": "submitted",
+            "exit_reason": "submitted",
+            "total_cost_usd": 0.05,
+            "steps": 2,
+            "test_invocations": [],
+            "tests_run_before_submit": true
+        },
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "read first",
+                "extra": {"actions": ["cat src/fix.py"], "cost": 0.01}
+            },
+            {"role": "user", "content": "content", "extra": {}},
+            {
+                "role": "assistant",
+                "content": "edit",
+                "extra": {"actions": ["sed -i 's/a/b/' src/fix.py"], "cost": 0.01}
+            },
+            {"role": "user", "content": "", "extra": {}}
+        ]
+    });
+    std::fs::write(
+        sweep.join("django__django-001.traj.json"),
+        serde_json::to_string_pretty(&traj).unwrap(),
+    )
+    .unwrap();
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let instances = report["instances"].as_array().unwrap();
+    assert_eq!(instances.len(), 1, "legacy flat trajectory should be found");
+}
+
+// Test that bench compare --contamination errors when file is missing
+#[test]
+fn bench_compare_contamination_missing_file_errors() {
+    let work = tempfile::tempdir().unwrap();
+    let base_dir = work.path().join("baseline");
+    let cand_dir = work.path().join("candidate");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    std::fs::create_dir_all(&cand_dir).unwrap();
+
+    write_sweep(&base_dir, vec![resolved("django__django-001")]);
+    write_sweep(&cand_dir, vec![resolved("django__django-001")]);
+
+    let out = Command::new(binary_path())
+        .args([
+            "--log",
+            "error",
+            "bench",
+            "compare",
+            "--baseline",
+            base_dir.to_str().unwrap(),
+            "--candidate",
+            cand_dir.to_str().unwrap(),
+            "--contamination",
+            "/nonexistent/contamination.json",
+        ])
+        .output()
+        .expect("failed to run bench compare");
+
+    assert!(
+        !out.status.success(),
+        "missing --contamination file should cause non-zero exit"
+    );
+}
+
+// Test that file-extension-only paths (no /) are also tracked
+#[test]
+fn contamination_check_extension_only_paths_tracked() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Uses bare filenames with extensions (no path separator)
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["cat module.py"],
+            vec!["sed -i 's/x/y/' module.py"],
+            vec!["pytest tests/"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+    // cat module.py → read; sed module.py → edit. EBR should be 0 (read before edit).
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "bare-extension paths should be tracked; read before edit → ebr ~0: {ebr}"
+    );
+}
+
+// Test write tool verb 'write' and 'tee'
+#[test]
+fn contamination_check_tee_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py | tee src/b.py"], vec!["pytest tests/"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Command contains tee — should be classified as a write at step 0
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(report["instances"].as_array().unwrap().len(), 1);
+}
+
+// Test --fail-on-high with threshold of 1.0 always passes (even with high-risk)
+#[test]
+fn contamination_check_fail_on_high_threshold_one_always_passes() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    // Even the most suspicious trajectory
+    write_sweep(sweep, vec![resolved("suspicious__repo-001")]);
+    write_trajectory(
+        sweep,
+        "suspicious__repo-001",
+        &[
+            vec!["sed -i 's/x/y/' src/a.py"],
+            vec!["sed -i 's/x/y/' src/b.py"],
+        ],
+    );
+
+    let out = run_contamination_check(&[
+        "--sweep",
+        sweep.to_str().unwrap(),
+        "--fail-on-high",
+        "1.0", // 100% threshold — can never be exceeded
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "--fail-on-high 1.0 should always pass\nstdout: {stdout}\nstderr: {stderr}"
+    );
 }
