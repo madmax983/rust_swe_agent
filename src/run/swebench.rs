@@ -608,6 +608,18 @@ pub struct ProvenanceManifest {
     /// Systemic-failure circuit-breaker configuration used for this sweep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreakerManifest>,
+    /// Provenance source: `None` / absent for native harness runs,
+    /// `"external_import"` for sweeps produced by `bench import`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// For `source = "external_import"`: canonical path of the ingested
+    /// predictions file on the local filesystem at import time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_predictions_path: Option<String>,
+    /// For `source = "external_import"`: `sha256:<lowercase-hex>` content
+    /// digest of the predictions file bytes, for reproducibility auditing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_predictions_sha256: Option<String>,
     /// Present only when this sweep was produced by `bench reproduce`.
     /// Points back at the source sweep's manifest for full provenance chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1549,7 +1561,7 @@ fn parse_dataset_lines(text: &str) -> Result<Vec<SweBenchInstance>, Error> {
 // The body is a single sequential pipeline (load → resume-skip → spawn →
 // join → aggregate → emit). Splitting it would obscure the linear flow
 // without yielding reusable pieces.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     if args.reruns == 0 {
         return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -2606,7 +2618,7 @@ async fn forward_os_cancellation_signals(tx: mpsc::UnboundedSender<SweepSignal>)
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 async fn run_preflight(args: &SwebenchArgs) -> Result<Vec<CheckResult>, Error> {
     let deadline = Instant::now() + Duration::from_secs(args.preflight_total_timeout_s);
     let mut checks = Vec::new();
@@ -3056,6 +3068,9 @@ fn build_manifest(
             min_samples: args.systemic_failure_min_samples,
             share_pct: args.systemic_failure_share_pct,
         }),
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: args
             .reproduced_from
             .as_ref()
@@ -4229,7 +4244,7 @@ struct RunOneParams {
     parent_sweep_run_id: String,
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -> InstanceResult {
     let RunOneParams {
         output_dir,

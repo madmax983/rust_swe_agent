@@ -71,6 +71,9 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     }
 }

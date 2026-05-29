@@ -2,7 +2,7 @@
 //!
 //! Covers the acceptance criteria from issue #264.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -167,6 +167,9 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
             },
             cli: CliManifest { argv: Vec::new() },
             circuit_breaker: None,
+            source: None,
+            import_predictions_path: None,
+            import_predictions_sha256: None,
             reproduced_from: None,
         }),
         cost_limit_usd: None,

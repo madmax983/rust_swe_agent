@@ -742,6 +742,9 @@ fn make_manifest_with_sha(sha: &str) -> ProvenanceManifest {
         },
         cli: CliManifest { argv: vec![] },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     }
 }

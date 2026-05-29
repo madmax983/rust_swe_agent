@@ -4,7 +4,7 @@
 //! Unit-level parsing/validation live in `src/run/matrix.rs`;
 //! these tests exercise the CLI binary and the public Rust API.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::large_futures)]
 
 use std::fmt::Write as _;
 use std::path::Path;

@@ -1,6 +1,9 @@
 //! Measure-first SWE agent harness with runtime MCP toolsets.
 //!
 //! Re-exports the public surface. See module docs for the architecture.
+// Many async runner functions hold large state machines by design.
+// The allocation behaviour is correct; the lint is informational only.
+#![allow(clippy::large_futures)]
 
 pub mod agent;
 pub mod annotation;

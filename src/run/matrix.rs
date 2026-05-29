@@ -219,7 +219,7 @@ pub fn validate_arms(arms: &[ArmDef]) -> Result<(), Error> {
 }
 
 /// Run the full matrix experiment and return a ranked summary.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
     // Load and validate manifest.
     let manifest_text = std::fs::read_to_string(&args.config_path)?;
@@ -474,6 +474,7 @@ pub async fn run(args: MatrixArgs) -> Result<MatrixSummary, Error> {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
+#[allow(clippy::large_futures)]
 async fn run_arm(
     arm: ArmDef,
     arm_sweep_dir: PathBuf,

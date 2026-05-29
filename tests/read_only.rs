@@ -22,6 +22,16 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         .unwrap();
     std::process::Command::new("git")
         .current_dir(&repo)
+        .args(["config", "commit.gpgSign", "false"])
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["config", "tag.gpgSign", "false"])
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .current_dir(&repo)
         .args([
             "-c",
             "user.email=t@e.com",

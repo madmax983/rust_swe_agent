@@ -188,6 +188,9 @@ fn make_manifest(step_limit: Option<u32>, task_timeout_secs: Option<u64>) -> Pro
         },
         cli: CliManifest { argv },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     }
 }
@@ -905,6 +908,9 @@ fn mixed_cost_caps_in_resolved_config_are_rejected() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -990,6 +996,9 @@ fn per_task_budget_usd_read_from_resolved_config_toml() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -1169,6 +1178,9 @@ fn step_limit_read_from_resolved_config_toml() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -1743,6 +1755,9 @@ fn cli_per_task_budget_with_config_cost_limit_is_rejected() {
             ],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -2094,6 +2109,9 @@ fn config_sourced_per_task_budget_silent_reset_is_rejected() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -2285,6 +2303,9 @@ fn original_config_overlay_with_retry_is_rejected() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -2384,6 +2405,9 @@ fn original_docker_environment_with_retry_is_rejected() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);
@@ -2686,6 +2710,9 @@ fn mixed_cost_caps_accepted_with_non_cost_axis() {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
         circuit_breaker: None,
+        source: None,
+        import_predictions_path: None,
+        import_predictions_sha256: None,
         reproduced_from: None,
     };
     write_results(dir.path(), instances, manifest);

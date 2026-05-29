@@ -542,6 +542,8 @@ pub enum BenchCmd {
     StagnationReport(StagnationReportCmd),
     /// Score agent self-verdict (last_tests_passed) against the evaluator (zero-cost: reads only on-disk artifacts).
     SelfCheck(SelfCheckCmd),
+    /// Ingest an external SWE-bench predictions file and materialise it as a normalised sweep directory.
+    Import(ImportCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -1007,6 +1009,37 @@ pub struct SelfCheckCmd {
     /// Show per-repository breakdown in addition to the overall report.
     #[arg(long, default_value_t = false)]
     pub by_repo: bool,
+}
+
+/// `bench import` — ingest an external SWE-bench predictions file and materialise
+/// it as a normalised sweep directory compatible with `bench compare`, `bench triage`,
+/// and `bench report` at zero model cost.
+#[derive(Debug, Args)]
+pub struct ImportCmd {
+    /// Path to a SWE-bench predictions file (JSONL or JSON array).
+    /// Each record must carry at minimum `instance_id` and `model_patch`.
+    #[arg(long)]
+    pub predictions: PathBuf,
+
+    /// Path to the matching SWE-bench dataset JSONL file.
+    /// Used to validate instance IDs and populate dataset metadata.
+    #[arg(long)]
+    pub dataset_path: PathBuf,
+
+    /// Output directory for the normalised sweep.
+    /// The directory is created if it does not exist.
+    #[arg(long)]
+    pub output: PathBuf,
+
+    /// Run the evaluator pipeline after import to populate `pass_at_1` / `resolved_count`.
+    /// When omitted, all instances default to `pass_at_1 = false`; run `bench evaluate`
+    /// separately to fill in the resolution results.
+    #[arg(long, default_value_t = false)]
+    pub evaluate: bool,
+
+    /// Output format for the summary printed to stdout: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
 }
 
 /// `bench instance-history` — longitudinal view of instance resolution across sweeps.

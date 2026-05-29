@@ -293,7 +293,7 @@ pub fn render_text_summary(report: &ToolAblationReport) -> String {
 }
 
 /// Run the full tool-ablation experiment and return a ranked report.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_futures)]
 pub async fn run(args: ToolAblationArgs) -> Result<ToolAblationReport, Error> {
     let base_cfg = Config::load(&args.config_path).map_err(Error::Config)?;
     let all_tools = enumerate_tools(&base_cfg);
@@ -791,6 +791,7 @@ struct AblationRunCtx {
 }
 
 /// Run one arm sweep and return raw `SweepResults`.
+#[allow(clippy::large_futures)]
 async fn run_arm_ablation(
     arm_cfg: Config,
     arm_dir: PathBuf,
