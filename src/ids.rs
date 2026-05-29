@@ -8,7 +8,7 @@ macro_rules! string_id {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
-        pub struct $name(pub String);
+        pub struct $name(String);
 
         impl $name {
             pub fn new(s: impl Into<String>) -> Self {
@@ -44,9 +44,12 @@ string_id!(TaskId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct StepIdx(pub u32);
+pub struct StepIdx(u32);
 
 impl StepIdx {
+    pub const fn new(val: u32) -> Self {
+        Self(val)
+    }
     pub const fn zero() -> Self {
         Self(0)
     }
