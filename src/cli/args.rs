@@ -61,6 +61,93 @@ pub enum AgentEnvCmd {
     Preview(EnvPreviewCmd),
 }
 
+/// `agent suite` — run an operator-defined personal eval task pack (issue #322).
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SuiteCmd {
+    /// Path to the task-pack file. Format auto-detected by extension:
+    /// `.yaml`/`.yml` → YAML, `.jsonl`/`.ndjson` → JSONL, `.toml` → TOML.
+    /// Each task must have `id` and `task`; `extra_context` and `verify` are optional.
+    #[arg(long = "tasks-file", value_name = "PATH")]
+    pub tasks_file: PathBuf,
+
+    /// Override format detection: `yaml`, `jsonl`, or `toml`.
+    #[arg(long = "format", value_name = "FORMAT")]
+    pub format: Option<String>,
+
+    /// Name for the suite run. Used as the output subdirectory name and in
+    /// `suite-results.json`. Defaults to the tasks-file stem.
+    #[arg(long = "suite-name", value_name = "NAME")]
+    pub suite_name: Option<String>,
+
+    /// Model name (e.g. `claude-haiku-4-5-20251001`).
+    #[arg(long, default_value = "claude-opus-4-7")]
+    pub model: String,
+
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Environment: `local` or `docker`.
+    #[arg(long)]
+    pub env: Option<String>,
+
+    /// Docker image, if `--env docker`.
+    #[arg(long)]
+    pub docker_image: Option<String>,
+
+    /// Root output directory. Suite artifacts land in `<output>/<suite-name>/`.
+    #[arg(long, default_value = "./runs")]
+    pub output: PathBuf,
+
+    /// Max agent steps per task.
+    #[arg(long)]
+    pub step_limit: Option<u32>,
+
+    /// Per-task wallclock timeout in seconds.
+    #[arg(long)]
+    pub task_timeout_secs: Option<u64>,
+
+    /// Per-task USD ceiling enforced inside the agent loop.
+    #[arg(long)]
+    pub per_task_budget_usd: Option<f64>,
+
+    /// Suite-level USD ceiling. When exceeded, remaining tasks are recorded
+    /// with `outcome: "skipped_budget_exhausted"` and the exit code is 5.
+    #[arg(long = "suite-cost-limit-usd")]
+    pub suite_cost_limit_usd: Option<f64>,
+
+    /// Suite-level verify check applied to every task. Format: `NAME:COMMAND`.
+    /// Repeatable. Merged with per-task `verify` entries from the task file.
+    #[arg(long = "verify", value_name = "NAME:COMMAND")]
+    pub verify: Vec<String>,
+
+    /// Per-check timeout in seconds for `--verify` checks. Default: 60.
+    #[arg(long = "verify-timeout-secs", default_value_t = 60)]
+    pub verify_timeout_secs: u64,
+
+    /// Register an invocation-time MCP stdio server command.
+    #[arg(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_servers: Vec<String>,
+
+    /// Enable or disable in-loop stagnation detection.
+    #[arg(long = "detect-stagnation", num_args = 0..=1, default_missing_value = "true")]
+    pub detect_stagnation: Option<bool>,
+
+    /// Token budget for the model-visible prompt (elides old observations first).
+    #[arg(long)]
+    pub history_max_input_tokens: Option<u64>,
+
+    /// Keep only the last N tool observations in the model-visible prompt.
+    #[arg(long)]
+    pub history_keep_last_observations: Option<usize>,
+
+    /// Resume: skip tasks whose `.traj.json` already has a terminal outcome;
+    /// re-run only missing or non-terminal tasks.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -71,6 +158,8 @@ pub enum AgentCmd {
     },
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
+    /// Run an operator-defined personal eval task pack and produce suite-results.json.
+    Suite(Box<SuiteCmd>),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

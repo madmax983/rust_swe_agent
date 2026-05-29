@@ -130,6 +130,7 @@ pub async fn run() -> Result<(), Error> {
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
+            args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
         },
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
@@ -4731,6 +4732,69 @@ pub fn compare_rehearsals(
     }
 
     println!("\n✅ No regressions detected between baseline and candidate.");
+    Ok(())
+}
+
+// ── agent suite ───────────────────────────────────────────────────────────────
+
+async fn agent_suite_cmd(s: args::SuiteCmd) -> Result<(), Error> {
+    let mut cfg = match &s.config {
+        Some(p) => Config::load(p)?,
+        None => Config::defaults()?,
+    };
+
+    cfg.root.model.name.clone_from(&s.model);
+
+    if let Some(v) = s.step_limit {
+        cfg.root.agent.step_limit = v;
+    }
+    if let Some(v) = s.per_task_budget_usd {
+        cfg.root.agent.per_task_budget_usd = Some(v);
+    }
+    if let Some(kind) = &s.env {
+        cfg.root.environment.kind = parse_env_kind(kind.as_str())?;
+    }
+    if let Some(img) = s.docker_image.clone() {
+        cfg.root.environment.docker_image = Some(img);
+    }
+    if let Some(v) = s.detect_stagnation {
+        cfg.root.agent.detect_stagnation = v;
+    }
+    if let Some(v) = s.history_max_input_tokens {
+        cfg.root.agent.history_max_input_tokens = Some(v);
+    }
+    if let Some(v) = s.history_keep_last_observations {
+        cfg.root.agent.history_keep_last_observations = Some(v);
+    }
+    apply_mcp_server_overrides(&mut cfg, &s.mcp_servers)?;
+
+    let suite_name = s.suite_name.clone().unwrap_or_else(|| {
+        s.tasks_file
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("suite")
+            .to_owned()
+    });
+
+    let suite_args = crate::run::suite::SuiteArgs {
+        tasks_file: s.tasks_file,
+        format_override: s.format,
+        suite_name,
+        config: cfg,
+        output_dir: s.output,
+        suite_cost_limit_usd: s.suite_cost_limit_usd,
+        verify: s.verify,
+        verify_timeout_secs: s.verify_timeout_secs,
+        resume: s.resume,
+        task_timeout_secs: s.task_timeout_secs,
+        step_limit: s.step_limit,
+        per_task_budget_usd: s.per_task_budget_usd,
+    };
+
+    let exit_code = crate::run::suite::run(suite_args).await?;
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, "suite completed with failures");
+    }
     Ok(())
 }
 

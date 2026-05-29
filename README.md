@@ -158,7 +158,44 @@ Export the same trajectory as shareable Markdown in one command:
 cargo run --quiet -- --log error bench inspect --sweep runs/quickstart --instance hello-world --format markdown --output traj.md
 ```
 
-### 6. Optional Preflight Before SWE-bench
+### 6. Personal Regression Pack
+
+Before committing budget to a full SWE-bench sweep, validate that your prompt,
+config, or model change still solves your own common workflows.
+
+Create a YAML task pack:
+
+```yaml
+# my-tasks.yaml
+- id: fix-null-deref
+  task: Fix the null dereference in src/handler.rs line 42
+  verify:
+    - tests:cargo test handler
+
+- id: improve-errors
+  task: Improve error messages in src/error.rs to include file paths
+```
+
+Run the pack against a cheap model with a cost cap:
+
+```bash
+cargo run --quiet -- --log error agent suite \
+    --tasks-file my-tasks.yaml \
+    --model claude-haiku-4-5-20251001 \
+    --suite-cost-limit-usd 1.00 \
+    --output ./regression-runs
+```
+
+Results are written to `regression-runs/my-tasks/suite-results.json` with a
+summary table showing per-task outcome, verification status, cost, and steps.
+Each task also records loop-behaviour fields (`attempt_count`,
+`unchanged_failure_count`, `verifier_delta`, `stop_reason`) so you can detect
+the "same miss, more spend" regression pattern before it reaches the full sweep.
+
+See `docs/spec-agent-suite.md` for the full flag reference, file schema, and
+exit-code matrix.
+
+### 8. Optional Preflight Before SWE-bench
 
 Use `bench dataset-stats` to preview the composition, token distributions (computed completely offline using `litellm-rs`'s `TokenCounter`), expected tests count, languages present, representative slice skewness (warns if unique repos < 50% or median token length difference > 25% compared to the full dataset), and historical resolved rates matching current dataset hash before running a sweep:
 
@@ -189,7 +226,7 @@ budget, run `forecast` before a full sweep:
 cargo run --quiet -- --log info bench forecast --dataset-path ./data/swebench.jsonl --output runs/forecast --limit 5 --calibration-n 2 --sweep-cost-limit-usd 1.00 --format json > runs/forecast.json
 ```
 
-### 7. Close The Calibration Loop
+### 9. Close The Calibration Loop
 
 For paid sweeps, treat the operator loop as `doctor` -> `forecast` ->
 `swebench` -> `calibrate`. The forecast keeps the first spend bounded; the
