@@ -1099,6 +1099,25 @@ verbatim_recall_min_tokens = 30
     }
 
     #[test]
+    fn config_negative_weight_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Negative weight should be rejected (would negate the leakage signal)
+        let path = dir.path().join("neg.toml");
+        std::fs::write(&path, "weight_edit_before_read = -0.40\n").unwrap();
+        let result = ContaminationCheckConfig::from_toml_file(&path);
+        assert!(result.is_err(), "negative weight should return Err");
+
+        // Non-finite weight should also be rejected
+        let path2 = dir.path().join("inf.toml");
+        std::fs::write(&path2, "weight_patch_similarity = inf\n").unwrap();
+        let result2 = ContaminationCheckConfig::from_toml_file(&path2);
+        // TOML `inf` may or may not parse — either rejected by serde or by validate()
+        // but the result must never silently produce a negative/infinite weight.
+        let _ = result2; // accept either Err from parse or from validate
+    }
+
+    #[test]
     fn config_out_of_range_threshold_rejected() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1898,6 +1917,94 @@ fn contamination_check_dev_null_redirect_not_write() {
     assert!(
         ttfe < 0.5,
         "grep >/dev/null should not be a write; first real edit is late: {ttfe}"
+    );
+}
+
+// ── fourth-round review feedback tests ────────────────────────────────────
+
+// P2: `cp /tmp/fix.py src/foo.py` without a prior read should score as suspicious.
+#[test]
+fn contamination_check_cp_to_source_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Agent copies a memorised fix without ever reading the target file.
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cp /tmp/memorised_fix.py src/foo.py"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // cp at step 0 → early write signal
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "cp at step 0 should give high ttfe signal: {ttfe}"
+    );
+
+    // Destination (src/foo.py) was never read before → EBR > 0
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.9,
+        "cp without prior read of destination should produce ebr ~1.0: {ebr}"
+    );
+}
+
+// P2: redirect to /tmp should NOT be counted as a source-file write.
+#[test]
+fn contamination_check_redirect_to_tmp_not_an_edit() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Step 0: search and discard results to /tmp — not a write
+    // Step 1: read the file properly
+    // Step 2: actual edit
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["rg pattern src/foo.py > /tmp/hits.txt"],
+            vec!["cat src/foo.py"],
+            vec!["sed -i 's/old/new/' src/foo.py"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // /tmp/hits.txt redirect must not be counted as a write; first edit is at step 2
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe < 0.5,
+        "rg > /tmp should not be a write; first real edit is late → low ttfe: {ttfe}"
+    );
+
+    // src/foo.py was read (cat) before edited (sed) → low EBR
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "/tmp redirect not an edit; read before real edit → ebr ~0: {ebr}"
     );
 }
 

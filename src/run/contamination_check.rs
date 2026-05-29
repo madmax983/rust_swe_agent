@@ -81,8 +81,20 @@ impl Default for ContaminationCheckConfig {
 }
 
 impl ContaminationCheckConfig {
-    /// Reject out-of-range or inverted threshold values.
+    /// Reject invalid weight or threshold values.
     fn validate(&self) -> Result<(), String> {
+        for (name, val) in [
+            ("weight_edit_before_read", self.weight_edit_before_read),
+            ("weight_patch_similarity", self.weight_patch_similarity),
+            ("weight_time_to_first_edit", self.weight_time_to_first_edit),
+            ("weight_verbatim_recall", self.weight_verbatim_recall),
+        ] {
+            if !val.is_finite() || val < 0.0 {
+                return Err(format!(
+                    "contamination-check: {name} must be a finite non-negative number, got {val}"
+                ));
+            }
+        }
         for (name, val) in [
             ("medium_threshold", self.medium_threshold),
             ("high_threshold", self.high_threshold),
@@ -729,7 +741,7 @@ fn is_write_tool(action: &str) -> bool {
             .iter()
             .any(|t| *t == "-i" || t.starts_with("-i") || *t == "--in-place");
     }
-    if matches!(head, "awk" | "patch" | "tee" | "dd") {
+    if matches!(head, "awk" | "patch" | "tee" | "dd" | "cp" | "mv") {
         return true;
     }
     if head == "git" && tokens.get(1).copied() == Some("apply") {
@@ -744,12 +756,25 @@ fn is_write_tool(action: &str) -> bool {
     false
 }
 
-/// True when a bash action string writes to at least one file.
+/// True when a path should never be treated as a source-file write target.
+///
+/// Covers pseudo-filesystems and well-known scratch/transient locations so
+/// that commands like `rg foo src/ > /tmp/hits.txt` are not scored as edits.
+fn is_discardable_path(path: &str) -> bool {
+    path.starts_with("/dev/")
+        || path.starts_with("/tmp/")
+        || path.starts_with("/var/tmp/")
+        || path.starts_with("/run/")
+        || path.starts_with("/proc/")
+        || path.starts_with("/sys/")
+}
+
+/// True when a bash action string writes to at least one source file.
 ///
 /// Returns `true` for known write tools **and** for redirect-based writes (`>`, `>>`).
 /// Also detects script interpreters used with heredoc input (`python - <<'PY'`).
-/// Redirects to `/dev/` special files (e.g. `>/dev/null`) are excluded — those
-/// discard output rather than creating real source files.
+/// Redirects to transient/pseudo-filesystem paths (e.g. `/dev/null`, `/tmp/…`) are
+/// excluded — those discard output rather than modifying repo source files.
 fn is_write_action(action: &str) -> bool {
     if is_write_tool(action) {
         return true;
@@ -767,15 +792,15 @@ fn is_write_action(action: &str) -> bool {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     for (i, token) in tokens.iter().enumerate() {
         if *token == ">" || *token == ">>" {
-            // Standalone redirect token: check whether target is a /dev/ device.
             let target = tokens.get(i + 1).copied().unwrap_or("");
-            if !target.starts_with("/dev/") {
+            if !is_discardable_path(target) {
                 return true;
             }
-        } else if token.starts_with('>') && !token.starts_with(">&") && !token.starts_with(">/dev/")
-        {
-            // Compact redirect token: `>file`, `>>file` (but not `>/dev/null` etc.)
-            return true;
+        } else if token.starts_with('>') && !token.starts_with(">&") {
+            let target = token.trim_start_matches('>');
+            if !is_discardable_path(target) {
+                return true;
+            }
         }
     }
     false
@@ -783,9 +808,9 @@ fn is_write_action(action: &str) -> bool {
 
 /// Extract only the files that are output-redirect targets (`>` / `>>`) of an action.
 ///
-/// Excludes `/dev/` device files (e.g. `/dev/null`).  Used together with
-/// `is_write_tool` to avoid counting non-redirect command arguments (e.g. the
-/// input files of `grep ... > /dev/null`) as edited files.
+/// Excludes transient/pseudo-filesystem paths (`/dev/`, `/tmp/`, etc.).  Used
+/// together with `is_write_tool` to avoid counting non-redirect command arguments
+/// (e.g. the input files of `grep … > /tmp/hits.txt`) as edited files.
 fn extract_redirect_targets(action: &str) -> Vec<String> {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     let mut targets = Vec::new();
@@ -794,16 +819,15 @@ fn extract_redirect_targets(action: &str) -> Vec<String> {
         if take_next {
             take_next = false;
             let unquoted = token.trim_matches(|c: char| c == '\'' || c == '"');
-            if !unquoted.starts_with("/dev/") && looks_like_path(unquoted) {
+            if !is_discardable_path(unquoted) && looks_like_path(unquoted) {
                 targets.push(normalize_path(unquoted));
             }
         } else if *token == ">" || *token == ">>" {
             take_next = true;
-        } else if token.starts_with('>') && !token.starts_with(">&") && !token.starts_with(">/dev/")
-        {
+        } else if token.starts_with('>') && !token.starts_with(">&") {
             let path = token.trim_start_matches('>');
             let unquoted = path.trim_matches(|c: char| c == '\'' || c == '"');
-            if !unquoted.is_empty() && looks_like_path(unquoted) {
+            if !unquoted.is_empty() && !is_discardable_path(unquoted) && looks_like_path(unquoted) {
                 targets.push(normalize_path(unquoted));
             }
         }
@@ -835,6 +859,17 @@ fn extract_file_args(action: &str) -> Vec<String> {
     // return a sentinel so the EBR signal fires for unread patch applications.
     if head == "patch" || (head == "git" && tokens.get(1).copied() == Some("apply")) {
         return vec!["<patch>".to_owned()];
+    }
+
+    // `cp` and `mv` write only to their destination (last positional argument).
+    if head == "cp" || head == "mv" {
+        let dest = tokens
+            .iter()
+            .rev()
+            .copied()
+            .find(|t| !t.starts_with('-') && looks_like_path(t) && !is_discardable_path(t))
+            .map(normalize_path);
+        return dest.map(|p| vec![p]).unwrap_or_default();
     }
 
     let mut paths = Vec::new();
@@ -873,11 +908,8 @@ fn extract_file_args(action: &str) -> Vec<String> {
         {
             continue;
         }
-        // Exclude special device/pseudo-filesystem paths (/dev/null, /proc/self/…, etc.)
-        if unquoted.starts_with("/dev/")
-            || unquoted.starts_with("/proc/")
-            || unquoted.starts_with("/sys/")
-        {
+        // Exclude transient/pseudo-filesystem paths.
+        if is_discardable_path(unquoted) {
             continue;
         }
         // Reject unquoted sed/awk substitution expressions like `s/old/new/` or `y/a/b/`
