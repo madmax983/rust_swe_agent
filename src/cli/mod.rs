@@ -1914,13 +1914,13 @@ fn print_contamination_adjusted_rate(
     })?;
 
     let total_resolved = usize::try_from(
-        contamination["summary"]["total_resolved"].as_u64().unwrap_or(0),
+        contamination["summary"]["total_resolved"]
+            .as_u64()
+            .unwrap_or(0),
     )
     .unwrap_or(usize::MAX);
-    let high_count = usize::try_from(
-        contamination["summary"]["high_count"].as_u64().unwrap_or(0),
-    )
-    .unwrap_or(usize::MAX);
+    let high_count = usize::try_from(contamination["summary"]["high_count"].as_u64().unwrap_or(0))
+        .unwrap_or(usize::MAX);
     let high_share = contamination["summary"]["high_risk_share"]
         .as_f64()
         .unwrap_or(0.0);

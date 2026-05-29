@@ -205,7 +205,10 @@ pub fn compute_edit_before_read_ratio<S: std::hash::BuildHasher>(
 /// - `first_edit_step`: `None` means no edit was found → returns `0.0`.
 /// - Higher return value = more suspicious (edit happened very early).
 /// - Formula: `1.0 - (first_edit_step / total_steps)`, clamped to `[0, 1]`.
-pub fn compute_time_to_first_edit_signal(first_edit_step: Option<usize>, total_steps: usize) -> f64 {
+pub fn compute_time_to_first_edit_signal(
+    first_edit_step: Option<usize>,
+    total_steps: usize,
+) -> f64 {
     match first_edit_step {
         None => 0.0,
         Some(step) if total_steps == 0 => {
@@ -391,9 +394,7 @@ struct TrajMessage {
 /// Load trajectory from `<sweep>/<id>/run-1.traj.json` or legacy `<sweep>/<id>.traj.json`.
 fn load_trajectory(sweep_dir: &Path, instance_id: &str) -> Result<TrajData, Error> {
     // Try nested path first, then legacy.
-    let nested = sweep_dir
-        .join(instance_id)
-        .join("run-1.traj.json");
+    let nested = sweep_dir.join(instance_id).join("run-1.traj.json");
     let legacy = sweep_dir.join(format!("{instance_id}.traj.json"));
 
     let path = if nested.exists() {
@@ -420,8 +421,8 @@ fn load_trajectory(sweep_dir: &Path, instance_id: &str) -> Result<TrajData, Erro
         )))
     })?;
 
-    let total_steps = usize::try_from(value["info"]["steps"].as_u64().unwrap_or(0))
-        .unwrap_or(usize::MAX);
+    let total_steps =
+        usize::try_from(value["info"]["steps"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
 
     let mut messages = Vec::new();
     if let Some(msgs) = value["messages"].as_array() {
@@ -464,7 +465,11 @@ fn load_gold_patch(sweep_dir: &Path, instance_id: &str) -> Option<String> {
 }
 
 /// Compute all four signals from a trajectory.
-fn compute_signals(traj: &TrajData, _gold_patch: Option<&str>, _cfg: &ContaminationCheckConfig) -> SignalBreakdown {
+fn compute_signals(
+    traj: &TrajData,
+    _gold_patch: Option<&str>,
+    _cfg: &ContaminationCheckConfig,
+) -> SignalBreakdown {
     // Signal 1: edit-before-read ratio (ordered walk).
     let ebr = compute_ebr_ordered(&traj.messages);
 
@@ -537,15 +542,18 @@ fn compute_ebr_ordered(messages: &[TrajMessage]) -> f64 {
         }
     }
 
-    compute_edit_before_read_ratio(&{
-        // The files read before any edit of them
-        let reads_before_edit: HashSet<String> = edited_all
-            .iter()
-            .filter(|p| !edited_unread.contains(*p))
-            .cloned()
-            .collect();
-        reads_before_edit
-    }, &edited_all.into_iter().collect::<Vec<_>>())
+    compute_edit_before_read_ratio(
+        &{
+            // The files read before any edit of them
+            let reads_before_edit: HashSet<String> = edited_all
+                .iter()
+                .filter(|p| !edited_unread.contains(*p))
+                .cloned()
+                .collect();
+            reads_before_edit
+        },
+        &edited_all.into_iter().collect::<Vec<_>>(),
+    )
 }
 
 /// Weighted sum of signal values, clamped to `[0.0, 1.0]`.
@@ -565,16 +573,7 @@ fn is_read_action(action: &str) -> bool {
     let head = action.split_whitespace().next().unwrap_or("");
     matches!(
         head,
-        "cat"
-            | "head"
-            | "tail"
-            | "less"
-            | "more"
-            | "bat"
-            | "nl"
-            | "od"
-            | "xxd"
-            | "wc"
+        "cat" | "head" | "tail" | "less" | "more" | "bat" | "nl" | "od" | "xxd" | "wc"
     )
 }
 
@@ -640,9 +639,8 @@ fn looks_like_path(token: &str) -> bool {
 
 fn has_common_extension(s: &str) -> bool {
     const EXTS: &[&str] = &[
-        ".py", ".rs", ".js", ".ts", ".go", ".java", ".c", ".h", ".cpp",
-        ".rb", ".php", ".sh", ".md", ".txt", ".toml", ".yaml", ".yml",
-        ".json", ".xml", ".html", ".css",
+        ".py", ".rs", ".js", ".ts", ".go", ".java", ".c", ".h", ".cpp", ".rb", ".php", ".sh",
+        ".md", ".txt", ".toml", ".yaml", ".yml", ".json", ".xml", ".html", ".css",
     ];
     EXTS.iter().any(|ext| s.ends_with(ext))
 }
