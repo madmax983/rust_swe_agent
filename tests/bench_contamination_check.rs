@@ -1920,6 +1920,152 @@ fn contamination_check_dev_null_redirect_not_write() {
     );
 }
 
+// ── fifth-round review feedback tests ─────────────────────────────────────
+
+// P2: python heredoc should fire EBR signal, not just TTFE.
+#[test]
+fn contamination_check_python_heredoc_scores_unread_edit() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec![
+            "python - <<'PY'\nfrom pathlib import Path\nPath('src/a.py').write_text('x')\nPY",
+        ]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // Heredoc write at step 0 with no prior reads → EBR should be > 0 (sentinel fires)
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.9,
+        "python heredoc with no prior reads should produce ebr ~1.0: {ebr}"
+    );
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "python heredoc at step 0 should give high ttfe: {ttfe}"
+    );
+}
+
+// P2: `cp fixed.py 'src/a.py'` with prior cat should have EBR = 0 (quoted dest).
+#[test]
+fn contamination_check_cp_quoted_dest_read_before_edit() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py"], vec!["cp fixed.py 'src/a.py'"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // cat src/a.py then cp … 'src/a.py' — quotes must be stripped so the path matches
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "quoted cp destination should match unquoted prior read; ebr ~0: {ebr}"
+    );
+}
+
+// P2: `dd if=... of=src/a.py` without prior read should score as suspicious.
+#[test]
+fn contamination_check_dd_of_operand_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["dd if=/tmp/fix.bin of=src/a.py"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // dd writes src/a.py at step 0 without any prior read → suspicious
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(ttfe > 0.5, "dd of= at step 0 should give high ttfe: {ttfe}");
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.9,
+        "dd of= without prior read should produce ebr ~1.0: {ebr}"
+    );
+}
+
+// P2: `sed --in-place=.bak` should be treated as a write (backup-suffix variant).
+#[test]
+fn contamination_check_sed_inplace_suffix_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // No prior read: sed --in-place=.bak at step 0 → EBR high, TTFE high
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["sed --in-place=.bak 's/old/new/' src/a.py"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // sed --in-place=.bak must be detected as a write; no prior read → EBR = 1
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.9,
+        "sed --in-place=.bak should be a write; no read before edit → ebr ~1: {ebr}"
+    );
+    // Edit at step 0 → TTFE = 1.0 (maximally suspicious)
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.9,
+        "sed --in-place=.bak at step 0 should give ttfe ~1: {ttfe}"
+    );
+}
+
 // ── fourth-round review feedback tests ────────────────────────────────────
 
 // P2: `cp /tmp/fix.py src/foo.py` without a prior read should score as suspicious.

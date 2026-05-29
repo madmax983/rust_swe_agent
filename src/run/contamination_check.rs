@@ -735,11 +735,11 @@ fn is_write_tool(action: &str) -> bool {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     let head = tokens.first().copied().unwrap_or("");
 
-    // `sed` is a write only when invoked with `-i` / `--in-place`.
+    // `sed` is a write only when invoked with `-i` / `--in-place[=SUFFIX]`.
     if head == "sed" {
         return tokens
             .iter()
-            .any(|t| *t == "-i" || t.starts_with("-i") || *t == "--in-place");
+            .any(|t| *t == "-i" || t.starts_with("-i") || t.starts_with("--in-place"));
     }
     if matches!(head, "awk" | "patch" | "tee" | "dd" | "cp" | "mv") {
         return true;
@@ -751,6 +751,12 @@ fn is_write_tool(action: &str) -> bool {
         return true;
     }
     if head.starts_with("write:") || head.starts_with("edit:") {
+        return true;
+    }
+    // Script interpreter + heredoc: `python - <<'PY'` / `python3 - <<EOF`
+    // Moved here (from is_write_action) so compute_ebr_ordered calls extract_file_args,
+    // which returns a sentinel that fires the EBR signal, not just time_to_first_edit.
+    if matches!(head, "python" | "python3" | "ruby" | "perl" | "node") && action.contains("<<") {
         return true;
     }
     false
@@ -771,23 +777,13 @@ fn is_discardable_path(path: &str) -> bool {
 
 /// True when a bash action string writes to at least one source file.
 ///
-/// Returns `true` for known write tools **and** for redirect-based writes (`>`, `>>`).
-/// Also detects script interpreters used with heredoc input (`python - <<'PY'`).
+/// Returns `true` for known write tools (including script interpreter heredocs)
+/// **and** for redirect-based writes (`>`, `>>`).
 /// Redirects to transient/pseudo-filesystem paths (e.g. `/dev/null`, `/tmp/…`) are
 /// excluded — those discard output rather than modifying repo source files.
 fn is_write_action(action: &str) -> bool {
     if is_write_tool(action) {
         return true;
-    }
-    // Script interpreter + heredoc: e.g. `python - <<'PY'\nPath(...).write_text(...)\nPY`
-    // We cannot extract the specific paths from the heredoc body, but the timing
-    // signal (time_to_first_edit) is still correctly recorded.
-    {
-        let head = action.split_whitespace().next().unwrap_or("");
-        if matches!(head, "python" | "python3" | "ruby" | "perl" | "node") && action.contains("<<")
-        {
-            return true;
-        }
     }
     let tokens: Vec<&str> = action.split_whitespace().collect();
     for (i, token) in tokens.iter().enumerate() {
@@ -861,15 +857,45 @@ fn extract_file_args(action: &str) -> Vec<String> {
         return vec!["<patch>".to_owned()];
     }
 
+    // Script interpreter + heredoc: we cannot parse paths from the body, so use a
+    // sentinel that ensures the EBR signal fires (body may write arbitrary files).
+    if matches!(head, "python" | "python3" | "ruby" | "perl" | "node") && action.contains("<<") {
+        return vec!["<heredoc>".to_owned()];
+    }
+
     // `cp` and `mv` write only to their destination (last positional argument).
+    // Strip balanced outer quotes so that `cp fixed.py 'src/a.py'` records
+    // `src/a.py` (matching a prior `cat src/a.py` read), not `'src/a.py'`.
     if head == "cp" || head == "mv" {
-        let dest = tokens
-            .iter()
-            .rev()
-            .copied()
-            .find(|t| !t.starts_with('-') && looks_like_path(t) && !is_discardable_path(t))
-            .map(normalize_path);
-        return dest.map(|p| vec![p]).unwrap_or_default();
+        for token in tokens.iter().rev().copied() {
+            if token.starts_with('-') {
+                continue;
+            }
+            let unquoted = if (token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2)
+                || (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
+            {
+                &token[1..token.len() - 1]
+            } else {
+                token
+            };
+            if looks_like_path(unquoted) && !is_discardable_path(unquoted) {
+                return vec![normalize_path(unquoted)];
+            }
+        }
+        return Vec::new();
+    }
+
+    // `dd` uses operand syntax: the edited file is specified as `of=<path>`.
+    if head == "dd" {
+        for token in tokens.iter().skip(1) {
+            if let Some(dest) = token.strip_prefix("of=") {
+                let unquoted = dest.trim_matches(|c: char| c == '\'' || c == '"');
+                if !is_discardable_path(unquoted) && looks_like_path(unquoted) {
+                    return vec![normalize_path(unquoted)];
+                }
+            }
+        }
+        return Vec::new();
     }
 
     let mut paths = Vec::new();
