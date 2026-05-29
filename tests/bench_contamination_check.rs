@@ -1097,6 +1097,35 @@ verbatim_recall_min_tokens = 30
         let result = ContaminationCheckConfig::from_toml_file(&cfg_path);
         assert!(result.is_err(), "invalid TOML should return Err");
     }
+
+    #[test]
+    fn config_out_of_range_threshold_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // high_threshold > 1.0 should be rejected
+        let path = dir.path().join("bad_high.toml");
+        std::fs::write(&path, "high_threshold = 10.0\n").unwrap();
+        let result = ContaminationCheckConfig::from_toml_file(&path);
+        assert!(result.is_err(), "high_threshold = 10.0 should return Err");
+
+        // medium_threshold < 0.0 should be rejected
+        let path2 = dir.path().join("bad_med.toml");
+        std::fs::write(&path2, "medium_threshold = -0.5\n").unwrap();
+        let result2 = ContaminationCheckConfig::from_toml_file(&path2);
+        assert!(
+            result2.is_err(),
+            "medium_threshold = -0.5 should return Err"
+        );
+
+        // inverted thresholds (medium >= high) should be rejected
+        let path3 = dir.path().join("inverted.toml");
+        std::fs::write(&path3, "medium_threshold = 0.80\nhigh_threshold = 0.40\n").unwrap();
+        let result3 = ContaminationCheckConfig::from_toml_file(&path3);
+        assert!(
+            result3.is_err(),
+            "medium_threshold >= high_threshold should return Err"
+        );
+    }
 }
 
 // ── additional integration tests for coverage ──────────────────────────────
@@ -1869,6 +1898,181 @@ fn contamination_check_dev_null_redirect_not_write() {
     assert!(
         ttfe < 0.5,
         "grep >/dev/null should not be a write; first real edit is late: {ttfe}"
+    );
+}
+
+// ── third-round review feedback tests ─────────────────────────────────────
+
+// P2: `|` inside double-quoted sed expression must not split the command.
+#[test]
+fn contamination_check_double_quoted_pipe_not_split() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // The `|` is inside a double-quoted sed expression — the command must NOT
+    // be split there.  If it were split, `sed` would lose its target path and
+    // the write would be missed, leaving the instance looking clean despite
+    // the file being edited without a prior read.
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["cat src/a.py"],
+            vec![r#"sed -i "s/foo|bar/baz/" src/a.py"#],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // cat then sed (double-quoted expression) — both in correct order → low EBR
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "double-quoted | should not split the command; read before edit → ebr ~0: {ebr}"
+    );
+}
+
+// P2: `grep` / `rg` before an edit should count as a read.
+#[test]
+fn contamination_check_grep_counts_as_read() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[
+            vec!["grep -n 'pattern' src/a.py"],
+            vec!["sed -i 's/old/new/' src/a.py"],
+        ],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // grep inspects the file before sed edits it → EBR should be 0
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "grep before sed should register as a pre-read; ebr should be ~0: {ebr}"
+    );
+}
+
+// P2: `python - <<'PY'` heredoc should count as a write (time_to_first_edit).
+#[test]
+fn contamination_check_python_heredoc_is_write() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        // Immediate python heredoc write — no prior reads
+        &[vec![
+            "python - <<'PY'\nfrom pathlib import Path\nPath('src/a.py').write_text('new')\nPY",
+        ]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // python <<'PY' at step 0 → time_to_first_edit should be non-zero
+    let ttfe = inst["signals"]["time_to_first_edit"].as_f64().unwrap();
+    assert!(
+        ttfe > 0.5,
+        "python - <<'PY' at step 0 should give high ttfe signal: {ttfe}"
+    );
+}
+
+// P2: unquoted sed expression `s/old/new/` must not be recorded as an edited path.
+#[test]
+fn contamination_check_sed_expression_not_a_path() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Unquoted sed expression — `s/old/new/` contains `/` and would previously
+    // pass `looks_like_path`, causing a bogus unread-edit entry.
+    write_trajectory(
+        sweep,
+        "test__repo-001",
+        &[vec!["cat src/a.py"], vec!["sed -i s/old/new/ src/a.py"]],
+    );
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // Only src/a.py (read before edit) should be recorded — not `s/old/new/`.
+    // EBR must be 0, not 0.5 (which would happen if the expression were counted).
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr < 0.1,
+        "sed expression s/old/new/ must not be recorded as an unread edit; ebr ~0: {ebr}"
+    );
+}
+
+// P2: `git apply` with no prior reads should contribute a non-zero EBR signal.
+#[test]
+fn contamination_check_git_apply_scores_unread_edit() {
+    let work = tempfile::tempdir().unwrap();
+    let sweep = work.path();
+
+    write_sweep(sweep, vec![resolved("test__repo-001")]);
+    // Agent applies a memorised patch without reading any files first.
+    write_trajectory(sweep, "test__repo-001", &[vec!["git apply fix.patch"]]);
+
+    let out = run_contamination_check(&["--sweep", sweep.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let content = std::fs::read_to_string(sweep.join("contamination.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let inst = &report["instances"][0];
+
+    // No reads before patch application → EBR should be 1.0 (sentinel <patch> unread)
+    let ebr = inst["signals"]["edit_before_read_ratio"].as_f64().unwrap();
+    assert!(
+        ebr > 0.9,
+        "git apply with no prior reads should produce ebr ~1.0: {ebr}"
     );
 }
 

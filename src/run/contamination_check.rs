@@ -81,6 +81,28 @@ impl Default for ContaminationCheckConfig {
 }
 
 impl ContaminationCheckConfig {
+    /// Reject out-of-range or inverted threshold values.
+    fn validate(&self) -> Result<(), String> {
+        for (name, val) in [
+            ("medium_threshold", self.medium_threshold),
+            ("high_threshold", self.high_threshold),
+        ] {
+            if !val.is_finite() || !(0.0..=1.0).contains(&val) {
+                return Err(format!(
+                    "contamination-check: {name} must be in [0.0, 1.0], got {val}"
+                ));
+            }
+        }
+        if self.medium_threshold >= self.high_threshold {
+            return Err(format!(
+                "contamination-check: medium_threshold ({}) must be less than \
+                 high_threshold ({})",
+                self.medium_threshold, self.high_threshold
+            ));
+        }
+        Ok(())
+    }
+
     /// Load from a TOML file. Missing keys fall back to defaults.
     pub fn from_toml_file(path: &Path) -> Result<Self, Error> {
         let text = std::fs::read_to_string(path).map_err(|e| {
@@ -95,6 +117,8 @@ impl ContaminationCheckConfig {
                 path.display()
             )))
         })?;
+        cfg.validate()
+            .map_err(|msg| Error::Config(crate::error::ConfigError::Invalid(msg)))?;
         Ok(cfg)
     }
 }
@@ -611,24 +635,29 @@ fn compute_weighted_score(signals: &SignalBreakdown, cfg: &ContaminationCheckCon
 // ── compound action splitting ─────────────────────────────────────────────
 
 /// Split a shell action string into individual commands at `&&`, `||`, `|`, `;`
-/// without breaking inside single-quoted strings.
+/// without breaking inside single- or double-quoted strings.
 ///
 /// For example:
 /// - `"cat a.py && sed -i 's/x/y/' a.py"` → `["cat a.py", "sed -i 's/x/y/' a.py"]`
 /// - `"cat a.py | tee b.py"` → `["cat a.py", "tee b.py"]`
+/// - `r#"sed -i "s/foo|bar/baz/" a.py"#` → `["sed -i \"s/foo|bar/baz/\" a.py"]` (not split)
 fn split_compound_action(action: &str) -> Vec<&str> {
     let bytes = action.as_bytes();
     let n = bytes.len();
     let mut parts: Vec<&str> = Vec::new();
     let mut start = 0usize;
     let mut in_single_quote = false;
+    let mut in_double_quote = false;
     let mut i = 0usize;
 
     while i < n {
-        if bytes[i] == b'\'' {
+        if bytes[i] == b'\'' && !in_double_quote {
             in_single_quote = !in_single_quote;
             i += 1;
-        } else if in_single_quote {
+        } else if bytes[i] == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+            i += 1;
+        } else if in_single_quote || in_double_quote {
             i += 1;
         } else if i + 1 < n
             && ((bytes[i] == b'&' && bytes[i + 1] == b'&')
@@ -660,11 +689,29 @@ fn split_compound_action(action: &str) -> Vec<&str> {
 // ── bash action classification ────────────────────────────────────────────
 
 /// True when a bash action string is primarily a file-read operation.
+///
+/// Includes pager/dump tools as well as file-search tools (`grep`, `rg`, `ag`, …)
+/// so that agents that inspect files via search before editing are not penalised.
 fn is_read_action(action: &str) -> bool {
     let head = action.split_whitespace().next().unwrap_or("");
     matches!(
         head,
-        "cat" | "head" | "tail" | "less" | "more" | "bat" | "nl" | "od" | "xxd" | "wc"
+        "cat"
+            | "head"
+            | "tail"
+            | "less"
+            | "more"
+            | "bat"
+            | "nl"
+            | "od"
+            | "xxd"
+            | "wc"
+            | "grep"
+            | "fgrep"
+            | "egrep"
+            | "rg"
+            | "ag"
+            | "ack"
     )
 }
 
@@ -700,11 +747,22 @@ fn is_write_tool(action: &str) -> bool {
 /// True when a bash action string writes to at least one file.
 ///
 /// Returns `true` for known write tools **and** for redirect-based writes (`>`, `>>`).
+/// Also detects script interpreters used with heredoc input (`python - <<'PY'`).
 /// Redirects to `/dev/` special files (e.g. `>/dev/null`) are excluded — those
 /// discard output rather than creating real source files.
 fn is_write_action(action: &str) -> bool {
     if is_write_tool(action) {
         return true;
+    }
+    // Script interpreter + heredoc: e.g. `python - <<'PY'\nPath(...).write_text(...)\nPY`
+    // We cannot extract the specific paths from the heredoc body, but the timing
+    // signal (time_to_first_edit) is still correctly recorded.
+    {
+        let head = action.split_whitespace().next().unwrap_or("");
+        if matches!(head, "python" | "python3" | "ruby" | "perl" | "node") && action.contains("<<")
+        {
+            return true;
+        }
     }
     let tokens: Vec<&str> = action.split_whitespace().collect();
     for (i, token) in tokens.iter().enumerate() {
@@ -755,6 +813,10 @@ fn extract_redirect_targets(action: &str) -> Vec<String> {
 
 /// Heuristically extract file-path arguments from a bash command.
 ///
+/// For `git apply` and `patch` commands the modified source files cannot be
+/// inferred from the command-line tokens alone; a synthetic sentinel `<patch>`
+/// is returned so that the EBR and time-to-first-edit signals still fire.
+///
 /// Conservative: only accepts tokens that plausibly are filesystem paths:
 /// - Not a shell flag (starts with `-`)
 /// - Quoted tokens have their outer quotes stripped; only accepted if result
@@ -765,6 +827,14 @@ fn extract_file_args(action: &str) -> Vec<String> {
     let tokens: Vec<&str> = action.split_whitespace().collect();
     if tokens.is_empty() {
         return Vec::new();
+    }
+
+    let head = tokens[0];
+
+    // `git apply` and `patch` modify source files not listed on the command line;
+    // return a sentinel so the EBR signal fires for unread patch applications.
+    if head == "patch" || (head == "git" && tokens.get(1).copied() == Some("apply")) {
+        return vec!["<patch>".to_owned()];
     }
 
     let mut paths = Vec::new();
@@ -808,6 +878,11 @@ fn extract_file_args(action: &str) -> Vec<String> {
             || unquoted.starts_with("/proc/")
             || unquoted.starts_with("/sys/")
         {
+            continue;
+        }
+        // Reject unquoted sed/awk substitution expressions like `s/old/new/` or `y/a/b/`
+        // that contain `/` and would otherwise pass `looks_like_path`.
+        if unquoted.starts_with("s/") || unquoted.starts_with("y/") {
             continue;
         }
         if looks_like_path(unquoted) {
