@@ -220,6 +220,7 @@ fn truncate_id(s: &str, max: usize) -> String {
 /// Higher severity replaces lower severity as the suite accumulates results.
 fn exit_code_severity(code: ExitCode) -> u8 {
     match code {
+        ExitCode::Interrupted | ExitCode::Killed => 5,
         ExitCode::VerificationFailure => 4,
         ExitCode::BudgetHalt => 3,
         ExitCode::TaskUnsuccessful | ExitCode::PreflightFailure => 2,
