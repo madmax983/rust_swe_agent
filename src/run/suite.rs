@@ -377,6 +377,12 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                     "task id must not be empty".into(),
                 )));
             }
+            if task.task.trim().is_empty() {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "task '{}': task description must not be empty",
+                    task.id
+                ))));
+            }
             if task.id.contains('/') || task.id.contains('\\') || task.id.contains("..") {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
                     "task id '{}' must not contain path separators or '..'",
@@ -596,16 +602,22 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         let task_exit = classify_task_exit(&result, &run_outcome, is_verification_error);
         suite_exit = merge_exit_code(suite_exit, task_exit);
 
+        // Remember whether mini failed before writing any trajectory — used to
+        // distinguish suite-level setup errors from ordinary task failures.
+        let is_pre_task_error = result.outcome == "error";
         task_results.push(result);
 
         // ── Propagate hard errors (env/preflight) that should stop the suite
         match &run_outcome {
             Err(e) if !is_verification_error => {
                 let code = ExitCode::from_error(e);
-                if matches!(
-                    code,
-                    ExitCode::PreflightFailure | ExitCode::UsageError | ExitCode::InternalError
-                ) {
+                // Only halt on InternalError when no trajectory was written; if
+                // mini returned InternalError *after* writing a trajectory (e.g.
+                // a wallclock-timeout wrapper), it is a task-scoped failure and
+                // should not abort the remaining suite tasks.
+                if matches!(code, ExitCode::PreflightFailure | ExitCode::UsageError)
+                    || (is_pre_task_error && matches!(code, ExitCode::InternalError))
+                {
                     early_halt_reason = Some("suite_preflight_halt");
                     break;
                 } else if matches!(code, ExitCode::Interrupted | ExitCode::Killed) {
@@ -692,7 +704,20 @@ fn classify_task_exit(
     }
     match run_outcome {
         Ok(()) => ExitCode::TaskUnsuccessful,
-        Err(e) => ExitCode::from_error(e),
+        Err(e) => {
+            let code = ExitCode::from_error(e);
+            // Agent-loop terminal conditions (stagnation) and Trajectory-wrapper
+            // errors (e.g. wallclock timeout maps to InternalError) are
+            // task-level failures in the suite exit matrix (only 0/4/5/7 are
+            // documented). Remap them when a trajectory was written.
+            if result.outcome != "error"
+                && matches!(code, ExitCode::AgentStagnation | ExitCode::InternalError)
+            {
+                ExitCode::TaskUnsuccessful
+            } else {
+                code
+            }
+        }
     }
 }
 
