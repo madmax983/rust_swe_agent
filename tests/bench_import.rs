@@ -728,3 +728,84 @@ fn import_triage_without_trajectories() {
         "all 4 imported instances should appear in triage totals"
     );
 }
+
+/// AC: importing into a directory that already has results.json must fail clearly.
+#[test]
+fn import_rejects_existing_output_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    // First import succeeds.
+    let status = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "first import should succeed");
+
+    // Second import into the same directory must fail.
+    let output = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            dataset_path(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "re-importing into an existing output dir should exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("results.json"),
+        "error should mention results.json; got: {stderr}"
+    );
+}
+
+/// AC: passing a malformed dataset file (rows without instance_id) must fail clearly.
+#[test]
+fn import_rejects_dataset_missing_instance_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("imported");
+
+    // Dataset where rows have no instance_id field.
+    let bad_dataset = tmp.path().join("bad_dataset.jsonl");
+    std::fs::write(&bad_dataset, "{\"task_id\":\"foo\"}\n").unwrap();
+
+    let output = Command::new(binary_path())
+        .args([
+            "bench",
+            "import",
+            "--predictions",
+            predictions_path(),
+            "--dataset-path",
+            bad_dataset.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "import with bad dataset should exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("instance_id"),
+        "error should mention instance_id; got: {stderr}"
+    );
+}

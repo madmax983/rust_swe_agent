@@ -167,8 +167,17 @@ fn load_dataset_instance_ids(bytes: &[u8]) -> Result<std::collections::HashSet<S
         }
         let val: serde_json::Value = serde_json::from_str(line)
             .map_err(|e| Error::Trajectory(format!("dataset line {}: {e}", i + 1)))?;
-        if let Some(id) = val.get("instance_id").and_then(|v| v.as_str()) {
-            ids.insert(id.to_owned());
+        match val.get("instance_id").and_then(|v| v.as_str()) {
+            Some(id) => {
+                ids.insert(id.to_owned());
+            }
+            None => {
+                return Err(Error::Trajectory(format!(
+                    "dataset line {} is missing required `instance_id` field; \
+                     verify --dataset-path points to a SWE-bench dataset JSONL",
+                    i + 1
+                )));
+            }
         }
     }
     Ok(ids)
@@ -264,7 +273,14 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
     let dataset_sha256 = sha256_hex(&dataset_bytes);
     let dataset_ids = load_dataset_instance_ids(&dataset_bytes)?;
 
-    // 4. Create output directory.
+    // 4. Create output directory — reject if a prior sweep already exists there.
+    if args.output.join("results.json").exists() {
+        return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+            "bench import: output directory '{}' already contains results.json from a \
+             previous sweep; specify a new directory or remove the existing one first",
+            args.output.display()
+        ))));
+    }
     std::fs::create_dir_all(&args.output)?;
 
     // 5. Process records, deduplicating on instance_id.

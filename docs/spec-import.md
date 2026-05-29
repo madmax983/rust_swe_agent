@@ -132,7 +132,8 @@ evaluator backend run:
 ```bash
 max bench evaluate \
   --sweep runs/imported/mini-swe-agent-v1.0 \
-  --dataset swe-bench-verified
+  --sb-subset swe-bench_verified \
+  --sb-split test
 ```
 
 ## Round-Trip Comparison
