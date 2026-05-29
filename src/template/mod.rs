@@ -12,6 +12,28 @@ use std::sync::Arc;
 
 use crate::error::Error;
 
+/// A lightweight Jinja2 template engine tailored for the terminal, not the browser.
+///
+/// In standard web frameworks, template engines safely escape characters like `<` or `&` to prevent XSS.
+/// However, when our agents generate raw shell scripts or format system prompts, an unexpected `&amp;`
+/// will completely break the bash command.
+///
+/// `Renderer` wraps a [`minijinja::Environment`] and strictly disables all auto-escaping callbacks.
+/// It also automatically injects a global `env` variable mapping, making `{{ env.USER }}` or `{{ env.PATH }}`
+/// seamlessly available in templates.
+///
+/// ## Examples
+///
+/// ```rust
+/// use maxwells_daemon::template::Renderer;
+/// use minijinja::context;
+///
+/// let renderer = Renderer::new();
+/// let rendered = renderer.render_with("echo {{ text }} > log.txt", context!(text => "<success>")).unwrap();
+///
+/// // Notice how `<` is preserved perfectly, not converted to `&lt;`
+/// assert_eq!(rendered, "echo <success> > log.txt");
+/// ```
 pub struct Renderer {
     env: Environment<'static>,
 }
@@ -23,6 +45,22 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    /// Instantiates a raw, auto-escape-free template environment.
+    ///
+    /// The environment is immediately pre-populated with all current operating system
+    /// environment variables under the global `env` dictionary.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// // PATH is heavily used by shell execution logic
+    /// let r = Renderer::new();
+    /// let out = r.render_with("{% if env.PATH is defined %}has_path{% endif %}", context!()).unwrap();
+    /// assert_eq!(out, "has_path");
+    /// ```
     pub fn new() -> Self {
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
@@ -43,6 +81,26 @@ impl Renderer {
             .map_err(Into::into)
     }
 
+    /// Renders a template against a dynamic `minijinja::Value` context.
+    ///
+    /// This is extremely useful when combining pre-defined templates (like an agent's system prompt)
+    /// with highly-variable execution context (like standard output or tool responses).
+    ///
+    /// Use the [`minijinja::context!`] macro to easily construct ad-hoc inputs.
+    ///
+    /// ## Examples
+    ///
+    /// ```rust
+    /// use maxwells_daemon::template::Renderer;
+    /// use minijinja::context;
+    ///
+    /// let r = Renderer::new();
+    /// let template = "{% if returncode != 0 %}Command failed: {{ output }}{% endif %}";
+    /// let ctx = context!(output => "permission denied", returncode => 1);
+    ///
+    /// let result = r.render_with(template, ctx).unwrap();
+    /// assert_eq!(result, "Command failed: permission denied");
+    /// ```
     pub fn render_with(&self, tmpl: &str, ctx: Value) -> Result<String, Error> {
         self.env.render_str(tmpl, ctx).map_err(Into::into)
     }
