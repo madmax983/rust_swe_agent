@@ -383,7 +383,9 @@ a valid trajectory in hand:
   `matrix.json` state, ranked `matrix-summary.json`, and `--resume` support.
 - [`agent scriptability`](docs/spec-scriptability.md): invocation-time MCP
   servers plus `PreToolUse` and `PostToolUse` hooks for A/B testing agent
-  toolsets without rebuilding Rust.
+  toolsets without rebuilding Rust. Includes `bench scriptability-check`
+  preflight (exit 23) — validate all servers and hooks at zero cost before
+  any paid sweep.
 - [`streaming`](docs/spec-streaming.md): SSE and webhook event surfaces for
   observing runs while they execute.
 - [`secret redaction`](docs/spec-secret-redaction.md): redaction guarantees for

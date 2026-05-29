@@ -95,6 +95,11 @@ pub enum ExitCode {
     /// `results.json`. The export still wrote whatever it had, but the mismatch
     /// signals a corrupt or incomplete sweep artifact.
     ArtifactIntegrityViolation = 22,
+    /// 23 — `bench scriptability-check` found at least one misconfigured MCP
+    /// server or hook. Zero model calls were made; the check is purely a wiring
+    /// preflight. Distinct from `preflight_failure` (3) so CI can route
+    /// scriptability misconfig separately from infrastructure failures.
+    ScriptabilityCheckFailure = 23,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -138,6 +143,7 @@ impl ExitCode {
             Self::AuditFailure => "audit_failure",
             Self::EvalGamingGateFailure => "eval_gaming_gate_failure",
             Self::ArtifactIntegrityViolation => "artifact_integrity_violation",
+            Self::ScriptabilityCheckFailure => "scriptability_check_failure",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

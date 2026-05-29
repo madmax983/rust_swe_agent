@@ -510,6 +510,12 @@ impl McpStdioServer {
             tools,
         })
     }
+
+    /// Returns the negotiated MCP protocol version string.
+    #[must_use]
+    pub fn protocol_version(&self) -> &str {
+        &self.protocol_version
+    }
 }
 
 #[async_trait]

@@ -637,6 +637,8 @@ pub enum BenchCmd {
     ExportCi(ExportCiCmd),
     /// Score each resolved instance for training-leakage risk using deterministic trajectory signals (zero-cost: reads only on-disk artifacts).
     ContaminationCheck(ContaminationCheckCmd),
+    /// Probe every configured MCP server and dry-run every configured hook before any model call.
+    ScriptabilityCheck(ScriptabilityCheckCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -2655,6 +2657,22 @@ pub enum AnnotateSubCmd {
 pub struct AnnotateCmd {
     #[command(subcommand)]
     pub cmd: AnnotateSubCmd,
+}
+
+/// `bench scriptability-check` — probe MCP servers and dry-run hooks before any model call.
+#[derive(Debug, Args)]
+pub struct ScriptabilityCheckCmd {
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Write the JSON artifact to `<output>/scriptability_check.json`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[cfg(test)]

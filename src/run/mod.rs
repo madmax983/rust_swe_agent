@@ -47,6 +47,7 @@ pub mod self_check;
 pub mod skills_preview;
 pub mod stagnation_report;
 pub mod suite;
+pub mod scriptability_check;
 pub mod swebench;
 pub mod tail;
 pub mod test_progress;

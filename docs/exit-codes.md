@@ -27,6 +27,8 @@ parsing human-oriented output.
 | 16   | `resume_manifest_missing` | `mini --resume` target trajectory is missing required fields (`task` and/or `model_name`). The file may pre-date the run-manifest schema; create a fresh run instead. |
 | 17   | `resume_invalid_prefix` | `mini --resume` target trajectory is structurally invalid for resume: message sequence is empty, too short (fewer than 2 messages), or ends in a partial assistant turn. |
 | 21   | `eval_gaming_gate_failure` | `bench compare --max-test-only-resolved-rate` threshold was exceeded by the candidate sweep. |
+| 22   | `artifact_integrity_violation` | `bench export-ci` detected that JUnit XML aggregate attributes do not match `results.json` counts. The export wrote whatever it had; the mismatch signals a corrupt or incomplete sweep artifact. |
+| 23   | `scriptability_check_failure` | `bench scriptability-check` found at least one misconfigured MCP server or hook. Zero model calls were made; this is a wiring preflight. Distinct from `preflight_failure` (3) so CI can route scriptability misconfig separately from infrastructure failures. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -76,6 +78,7 @@ coarse sweep-level result.
 | `bench bundle`                  | `success`, `usage_error`, `verification_failure`, `internal_error` |
 | `agent env preview`             | `success`, `usage_error`, `env_preview_warning`, `internal_error` |
 | `agent skills-preview`          | `success`, `usage_error`, `skills_preview_warning`, `internal_error` |
+| `bench scriptability-check`     | `success`, `usage_error`, `scriptability_check_failure`, `internal_error` |
 
 > **Note:** `hello-world` does not produce distinct outcome classes beyond
 > `success` / `internal_error`; it is an interactive debugging surface.
