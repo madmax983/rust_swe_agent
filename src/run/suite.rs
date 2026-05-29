@@ -55,7 +55,7 @@ impl TaskFileFormat {
     }
 
     /// Parse from the CLI `--format` string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "yaml" | "yml" => Some(Self::Yaml),
             "jsonl" | "ndjson" => Some(Self::Jsonl),
@@ -70,10 +70,7 @@ impl TaskFileFormat {
 /// JSONL: one JSON object per line.
 /// YAML: a YAML sequence of task objects.
 /// TOML: `[[tasks]]` array of tables.
-pub fn parse_task_file(
-    content: &str,
-    format: TaskFileFormat,
-) -> Result<Vec<SuiteTaskSpec>, Error> {
+pub fn parse_task_file(content: &str, format: TaskFileFormat) -> Result<Vec<SuiteTaskSpec>, Error> {
     match format {
         TaskFileFormat::Jsonl => {
             let mut tasks = Vec::new();
@@ -182,9 +179,7 @@ impl SuiteResults {
             let cost_str = t
                 .cost_usd
                 .map_or_else(|| "-".to_owned(), |c| format!("{c:.4}"));
-            let steps_str = t
-                .steps
-                .map_or_else(|| "-".to_owned(), |s| s.to_string());
+            let steps_str = t.steps.map_or_else(|| "-".to_owned(), |s| s.to_string());
             let _ = writeln!(
                 &mut out,
                 "{:<30} {:<22} {:<12} {:>8} {:>7}",
@@ -258,10 +253,12 @@ fn count_unchanged_failures(invocations: &[TestInvocation]) -> u32 {
         return 0;
     }
     let last_exit = tail.last().map_or(0, |t| t.exit_code);
-    tail.iter()
+    let n = tail
+        .iter()
         .rev()
         .take_while(|t| t.exit_code == last_exit)
-        .count() as u32
+        .count();
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Net verifier score: passed minus failed. `None` when no checks ran.
@@ -269,8 +266,9 @@ fn compute_verifier_delta(results: &[VerificationResult]) -> Option<i32> {
     if results.is_empty() {
         return None;
     }
-    let passed = results.iter().filter(|v| v.passed).count() as i32;
-    let failed = results.len() as i32 - passed;
+    let passed = i32::try_from(results.iter().filter(|v| v.passed).count()).unwrap_or(i32::MAX);
+    let total = i32::try_from(results.len()).unwrap_or(i32::MAX);
+    let failed = total - passed;
     Some(passed - failed)
 }
 
@@ -285,11 +283,7 @@ fn derive_stop_reason(traj: &Trajectory) -> Option<String> {
 }
 
 /// Derive a `SuiteTaskResult` from a completed trajectory.
-fn task_result_from_trajectory(
-    id: &str,
-    traj: &Trajectory,
-    traj_path: &Path,
-) -> SuiteTaskResult {
+fn task_result_from_trajectory(id: &str, traj: &Trajectory, traj_path: &Path) -> SuiteTaskResult {
     let outcome = traj
         .info
         .outcome
@@ -336,10 +330,11 @@ pub struct SuiteArgs {
 }
 
 /// Run the suite and return the final exit code.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     // ── Resolve task file format ──────────────────────────────────────────
     let format = if let Some(ref s) = args.format_override {
-        TaskFileFormat::from_str(s).ok_or_else(|| {
+        TaskFileFormat::parse(s).ok_or_else(|| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "--format '{s}' is not valid; use yaml, jsonl, or toml"
             )))
@@ -374,8 +369,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
     // ── Parse suite-level verify checks ──────────────────────────────────
     let suite_verify = parse_verify_checks(&args.verify)?;
 
-    let redactor =
-        crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+    let redactor = crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
 
     let started_at = Utc::now().to_rfc3339();
     let wall_start = std::time::Instant::now();
@@ -395,10 +389,9 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         if args.resume && traj_path.exists() {
             if let Some(existing) = try_load_terminal_trajectory(&traj_path) {
                 let result = task_result_from_trajectory(&task.id, &existing, &traj_path);
-                let is_resolved =
-                    result.outcome == crate::trajectory::outcome::SUBMITTED;
-                let is_verified = result.verification_status
-                    == crate::trajectory::verification_status::VERIFIED;
+                let is_resolved = result.outcome == crate::trajectory::outcome::SUBMITTED;
+                let is_verified =
+                    result.verification_status == crate::trajectory::verification_status::VERIFIED;
                 total_cost += result.cost_usd.unwrap_or(0.0);
                 cumulative_cost += result.cost_usd.unwrap_or(0.0);
                 if is_resolved {
@@ -480,25 +473,23 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         };
 
         let run_outcome = crate::run::mini::run(mini_args).await;
-        let is_verification_error =
-            matches!(run_outcome, Err(crate::error::Error::VerificationFailed(..)));
+        let is_verification_error = matches!(
+            run_outcome,
+            Err(crate::error::Error::VerificationFailed(..))
+        );
 
         // ── Load trajectory from disk ─────────────────────────────────────
         let result = if let Some(traj) = try_load_terminal_trajectory(&traj_path) {
             let r = task_result_from_trajectory(&task.id, &traj, &traj_path);
             // Apply redaction to trajectory_path string
-            let _ = redactor.redact_text(
-                &r.trajectory_path,
-                crate::redaction::surface::EXPORT,
-            );
+            let _ = redactor.redact_text(&r.trajectory_path, crate::redaction::surface::EXPORT);
             r
         } else {
             // Mini errored before writing a trajectory (env/preflight failure).
             SuiteTaskResult {
                 id: task.id.clone(),
                 outcome: "error".to_owned(),
-                verification_status: crate::trajectory::verification_status::UNVERIFIED
-                    .to_owned(),
+                verification_status: crate::trajectory::verification_status::UNVERIFIED.to_owned(),
                 steps: None,
                 cost_usd: None,
                 duration_secs: None,
@@ -597,8 +588,7 @@ fn classify_task_exit(
         return ExitCode::BudgetHalt;
     }
     if is_verification_error
-        || result.verification_status
-            == crate::trajectory::verification_status::VERIFICATION_FAILED
+        || result.verification_status == crate::trajectory::verification_status::VERIFICATION_FAILED
     {
         return ExitCode::VerificationFailure;
     }
@@ -687,9 +677,8 @@ fn redact_json_strings(v: &mut serde_json::Value, redactor: &Redactor) {
 /// Atomically write bytes to `path` via a sibling temp file.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
     use std::io::Write as _;
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let mut tmp =
-        tempfile::NamedTempFile::new_in(parent).map_err(Error::Io)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(Error::Io)?;
     tmp.write_all(data).map_err(Error::Io)?;
     tmp.flush().map_err(Error::Io)?;
     tmp.persist(path).map_err(|e| Error::Io(e.error))?;
@@ -700,6 +689,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     // ── RED: parse_task_file ───────────────────────────────────────────────
@@ -771,31 +761,22 @@ mod tests {
             TaskFileFormat::from_extension(Path::new("tasks.toml")),
             Some(TaskFileFormat::Toml)
         );
-        assert_eq!(
-            TaskFileFormat::from_extension(Path::new("tasks.txt")),
-            None
-        );
+        assert_eq!(TaskFileFormat::from_extension(Path::new("tasks.txt")), None);
     }
 
     #[test]
     fn format_detection_from_str() {
-        assert_eq!(TaskFileFormat::from_str("yaml"), Some(TaskFileFormat::Yaml));
-        assert_eq!(
-            TaskFileFormat::from_str("jsonl"),
-            Some(TaskFileFormat::Jsonl)
-        );
-        assert_eq!(TaskFileFormat::from_str("toml"), Some(TaskFileFormat::Toml));
-        assert_eq!(TaskFileFormat::from_str("csv"), None);
+        assert_eq!(TaskFileFormat::parse("yaml"), Some(TaskFileFormat::Yaml));
+        assert_eq!(TaskFileFormat::parse("jsonl"), Some(TaskFileFormat::Jsonl));
+        assert_eq!(TaskFileFormat::parse("toml"), Some(TaskFileFormat::Toml));
+        assert_eq!(TaskFileFormat::parse("csv"), None);
     }
 
     // ── RED: loop behaviour fields ────────────────────────────────────────
 
     #[test]
     fn unchanged_failure_count_zero_when_no_failures() {
-        let invocations = vec![
-            make_invocation(0, 0),
-            make_invocation(1, 0),
-        ];
+        let invocations = vec![make_invocation(0, 0), make_invocation(1, 0)];
         assert_eq!(count_unchanged_failures(&invocations), 0);
     }
 
@@ -961,7 +942,7 @@ mod tests {
         VerificationResult {
             name: "check".to_owned(),
             command: "echo ok".to_owned(),
-            exit_code: if passed { 0 } else { 1 },
+            exit_code: i32::from(!passed),
             duration_ms: 10,
             passed,
             stdout_preview: String::new(),
