@@ -453,6 +453,12 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
                 // Resumed tasks must still contribute to suite exit code.
                 let task_exit = classify_task_exit(&result, &Ok(()), false);
                 suite_exit = merge_exit_code(suite_exit, task_exit);
+                // Also check if resumed cost pushed us over the suite cap.
+                if let Some(limit) = args.suite_cost_limit_usd {
+                    if cumulative_cost >= limit {
+                        suite_exit = merge_exit_code(suite_exit, ExitCode::BudgetHalt);
+                    }
+                }
                 task_results.push(result);
                 continue;
             }
@@ -517,7 +523,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             webhook_headers: vec![],
             event_log: None,
             event_log_instance_id: None,
-            local_workdir: None,
+            local_workdir: std::env::current_dir().ok(),
             read_only: false,
             allow_mcp_in_read_only: false,
             rehearsal_gold_patch: None,
@@ -596,7 +602,10 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         match &run_outcome {
             Err(e) if !is_verification_error => {
                 let code = ExitCode::from_error(e);
-                if matches!(code, ExitCode::PreflightFailure) {
+                if matches!(
+                    code,
+                    ExitCode::PreflightFailure | ExitCode::UsageError | ExitCode::InternalError
+                ) {
                     early_halt_reason = Some("suite_preflight_halt");
                     break;
                 } else if matches!(code, ExitCode::Interrupted | ExitCode::Killed) {
@@ -674,7 +683,12 @@ fn classify_task_exit(
         return ExitCode::VerificationFailure;
     }
     if result.outcome == crate::trajectory::outcome::SUBMITTED {
-        return ExitCode::Success;
+        // If mini returned a non-verification error even after writing a submitted
+        // trajectory (e.g. post-save I/O failure), propagate that exit code.
+        return match run_outcome {
+            Ok(()) => ExitCode::Success,
+            Err(e) => ExitCode::from_error(e),
+        };
     }
     match run_outcome {
         Ok(()) => ExitCode::TaskUnsuccessful,
