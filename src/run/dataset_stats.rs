@@ -81,7 +81,7 @@ pub fn compute_stats(
         let repo = inst.repo.clone().unwrap_or_else(|| "unknown".to_owned());
         *repo_counts.entry(repo).or_insert(0) += 1;
     }
-    let mut repos = Vec::new();
+    let mut repos = Vec::with_capacity(repo_counts.len());
     for (repo, count) in repo_counts {
         #[allow(clippy::cast_precision_loss)]
         let percent_share = if total_instances > 0 {
@@ -100,7 +100,7 @@ pub fn compute_stats(
 
     // 2. Count tokens in problem statement using TokenCounter
     let counter = TokenCounter::new();
-    let mut slice_tokens = Vec::new();
+    let mut slice_tokens = Vec::with_capacity(slice_instances.len());
     for inst in slice_instances {
         let text = inst.problem_statement.as_deref().unwrap_or("");
         let count = match counter.count_completion_tokens(model, text) {
@@ -119,7 +119,7 @@ pub fn compute_stats(
     };
 
     // Calculate full dataset median for token length skew checking
-    let mut full_tokens = Vec::new();
+    let mut full_tokens = Vec::with_capacity(full_instances.len());
     for inst in full_instances {
         let text = inst.problem_statement.as_deref().unwrap_or("");
         let count = match counter.count_completion_tokens(model, text) {
@@ -132,7 +132,7 @@ pub fn compute_stats(
     let full_median = median(&full_tokens);
 
     // 3. Count expected tests from FAIL_TO_PASS and PASS_TO_PASS
-    let mut expected_tests_list = Vec::new();
+    let mut expected_tests_list = Vec::with_capacity(slice_instances.len());
     for inst in slice_instances {
         expected_tests_list.push(get_expected_tests_count(inst));
     }
@@ -394,7 +394,7 @@ fn analyze_historical_resolved_rates(
         }
     }
 
-    let mut rates = Vec::new();
+    let mut rates = Vec::with_capacity(instances.len());
     for inst in instances {
         if let Some(&(resolved, runs)) = hist_map.get(&inst.instance_id) {
             if runs > 0 {
