@@ -144,7 +144,7 @@ fn apply_to_non_git_target_returns_not_git_tree_error() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: not_git.clone(),
+        target: not_git,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -171,7 +171,7 @@ fn apply_empty_patch_exits_0_with_no_changes() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -204,7 +204,7 @@ fn apply_dirty_tree_refused_by_default() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -241,7 +241,7 @@ fn apply_dirty_tree_allowed_with_allow_dirty() {
         allow_dirty: true,
         dry_run: false,
         three_way: false,
-        report_path: Some(report_path.clone()),
+        report_path: Some(report_path),
     };
     let report = run_agent_apply(opts).unwrap();
     assert!(report.applied);
@@ -273,7 +273,7 @@ fn apply_check_failed_returns_check_failed_error() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -417,7 +417,7 @@ fn apply_success_report_contains_schema_version() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -454,7 +454,7 @@ fn apply_report_written_to_custom_path() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -479,7 +479,7 @@ fn apply_report_lines_added_removed_are_correct() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -514,7 +514,7 @@ fn apply_selector_from_trajectory_resolves_sibling_patch() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::TrajectoryFile(traj_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -546,7 +546,7 @@ fn apply_selector_sweep_instance_nested_layout() {
             sweep: sweep_dir,
             instance: "my-instance".into(),
         },
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -577,7 +577,7 @@ fn apply_selector_from_sweep_instance_resolves_patch() {
             sweep: sweep_dir,
             instance: "my-instance".into(),
         },
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -635,7 +635,7 @@ fn apply_patch_inside_repo_not_gitignored_does_not_trip_dirty_gate() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false, // <-- strict; patch inside repo should be excluded
         dry_run: false,
@@ -668,7 +668,7 @@ fn apply_redacted_patch_content_refused_by_default() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -705,7 +705,7 @@ fn apply_redacted_patch_content_allowed_with_flag() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: true,
         allow_dirty: false,
         dry_run: false,
@@ -730,7 +730,7 @@ fn apply_3way_flag_is_accepted() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -774,7 +774,7 @@ fn apply_trajectory_with_patch_submission_redaction_refused() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::TrajectoryFile(traj_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -818,7 +818,7 @@ fn apply_trajectory_with_patch_submission_redaction_allowed_with_flag() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::TrajectoryFile(traj_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: true,
         allow_dirty: false,
         dry_run: false,
