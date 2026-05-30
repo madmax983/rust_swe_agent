@@ -34,6 +34,104 @@ When operator-supplied verification checks are run after the agent finishes (see
 
 **Warning:** verification command output is subject to the same redaction contract as agent observations, but only configured literals, structured secret shapes, and current-process environment variables are masked. If a verification command prints a secret that does not match any of those patterns (e.g. a raw password from a test fixture file), it will appear in plain text in the trajectory artifact and `bench inspect` output. Until issue #86 (comprehensive DLP) is complete, do not run verification commands that may print secrets that fall outside the configured redaction patterns.
 
+## Verifying your redaction config
+
+Use `agent redact-check` to confirm that your configured literals, custom regex patterns,
+and structured shapes actually match a representative payload before paying for a sweep.
+The command makes no model call and launches no environment.
+
+```bash
+# Check a literal string
+max agent redact-check --text "token: ghp_AAAAAAAAAAAAAAAAAAAAAA"
+
+# Check a file (e.g. a shell env dump or log snippet)
+max agent redact-check --file /tmp/env-dump.txt
+
+# Audit an existing trajectory artifact without mutating it
+max agent redact-check --trajectory ./runs/my-sweep/i1/trajectory.json
+
+# Pipe from stdin
+env | max agent redact-check
+
+# Machine-readable output with byte offsets
+max agent redact-check --text "..." --json
+
+# Fail CI if any custom_patterns entry had zero matches
+max agent redact-check --file sample.log --strict
+```
+
+### Input sources
+
+Exactly one source must be provided; supplying multiple is a usage error.
+
+| Flag | Description |
+|------|-------------|
+| `--text TEXT` | Literal string on the command line |
+| `--file PATH` | Path to a file |
+| `--trajectory PATH` | Trajectory artifact (read-only; same view-time pass as `bench inspect`) |
+| *(none)* | Read from stdin |
+
+### Output formats
+
+**Human (default):** Shows each match with byte range, source label, and the stable
+redaction marker.  The redacted output follows.  Raw secret values are never printed.
+
+**JSON (`--json`):** Emits a stable structured document.  Schema:
+
+```json
+{
+  "artifact_kind": "redact_check",
+  "schema_version": { "major": 1, "minor": 0 },
+  "matches": [
+    {
+      "start": 7,
+      "end": 47,
+      "marker": "[REDACTED:github_token:medium:abc123def456]",
+      "source": "structured:github_token"
+    }
+  ],
+  "unmatched_literal_indices": [],
+  "unmatched_pattern_indices": [],
+  "redacted": "token: [REDACTED:github_token:medium:abc123def456]"
+}
+```
+
+Source label values:
+
+| Source label | Meaning |
+|---|---|
+| `literal` | Matched a `secret_literals` entry |
+| `custom_pattern[N]` | Matched `custom_patterns[N]` (0-based index) |
+| `structured:pem` | PEM private-key block |
+| `structured:bearer` | `Bearer <token>` header value |
+| `structured:github_token` | GitHub token (`ghp_*`, `github_pat_*`) |
+| `structured:api_key` | API key (`sk-*`, `sk-ant-*`, `AKIA*`) |
+| `structured:env_assignment` | `.env`-style assignment with a sensitive name |
+| `env:NAME` | Current-process env var whose name looks sensitive |
+
+Source labels **never** contain raw secret values.  For env vars, the label references
+the variable *name* only; for custom patterns, the *index* only.
+
+### Exit codes
+
+| Code | Outcome class | Meaning |
+|------|--------------|---------|
+| `0` | `success` | All configured `secret_literals` entries matched at least once (or none were configured) |
+| `24` | `redact_check_stale_literals` | One or more `secret_literals` entries produced **zero** matches — likely stale |
+| `25` | `redact_check_strict_fail` | `--strict`: one or more `custom_patterns` entries produced zero matches |
+
+Exit 25 takes priority over exit 24 when both conditions hold.
+
+### `--strict` flag
+
+Pass `--strict` to additionally exit non-zero if any compiled entry in `custom_patterns`
+produced zero matches.  Useful in CI to catch a regex typo or a renamed token format
+before burning model spend:
+
+```bash
+max agent redact-check --file sample.log --strict || exit 1
+```
+
 ## Limitations
 
 This is deterministic masking for known values and structured secrets, not an enterprise DLP system. It does not provide semantic PII detection, license scanning, retroactive rewriting of old artifacts, or a guarantee that a model cannot infer a secret from surrounding context.

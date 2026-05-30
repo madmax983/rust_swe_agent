@@ -148,6 +148,36 @@ pub struct SuiteCmd {
     pub resume: bool,
 }
 
+/// `agent redact-check` — zero-cost preflight for the secret-redaction config (issue #321).
+#[derive(Debug, Args)]
+pub struct RedactCheckCmd {
+    /// Optional path to a TOML config file (overlays defaults).
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Sample text to redact. Exactly one of `--text`, `--file`, `--trajectory`,
+    /// or stdin must be used.
+    #[arg(long, conflicts_with_all = &["file", "trajectory"])]
+    pub text: Option<String>,
+
+    /// Path to a file whose contents are used as sample input.
+    #[arg(long, conflicts_with_all = &["text", "trajectory"])]
+    pub file: Option<std::path::PathBuf>,
+
+    /// Path to a trajectory artifact. The configured redactor is applied to the
+    /// file content, mirroring the view-time pass used by `bench inspect`.
+    #[arg(long, conflicts_with_all = &["text", "file"])]
+    pub trajectory: Option<std::path::PathBuf>,
+
+    /// Output format: `human` (default) or `json`.
+    #[arg(long, default_value = "human")]
+    pub format: String,
+
+    /// Exit non-zero if any `custom_patterns` entry produced zero matches.
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -156,6 +186,8 @@ pub enum AgentCmd {
         #[command(subcommand)]
         cmd: AgentEnvCmd,
     },
+    /// Verify the secret-redaction config against sample input (zero-cost, no model call).
+    RedactCheck(RedactCheckCmd),
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.

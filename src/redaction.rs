@@ -14,6 +14,35 @@ use sha2::{Digest, Sha256};
 use crate::config::RedactionCfg;
 use crate::stream::{StreamEvent, StreamSink};
 
+// ── Public check types ────────────────────────────────────────────────────────
+
+/// A single redaction match produced by [`Redactor::check`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckMatch {
+    /// Byte offset in the original input where the match starts.
+    pub start: usize,
+    /// Byte offset (exclusive) where the match ends.
+    pub end: usize,
+    /// The stable redaction marker that replaces the matched bytes.
+    pub marker: String,
+    /// Source label: `"literal"`, `"custom_pattern[N]"`, `"structured:KIND"`, `"env:NAME"`.
+    pub source: String,
+}
+
+/// Result returned by [`Redactor::check`].
+#[derive(Debug, Clone, Default)]
+pub struct CheckResult {
+    /// The input with all matched secrets replaced by markers.
+    pub redacted: String,
+    /// All matches found (after overlap filtering, same order as in the text).
+    pub matches: Vec<CheckMatch>,
+    /// 0-based indices of `secret_literals` entries (deduplicated) that produced
+    /// no match against the sample. Non-empty means at least one literal is stale.
+    pub unmatched_literal_indices: Vec<usize>,
+    /// 0-based indices of `custom_patterns` entries that produced no match.
+    pub unmatched_pattern_indices: Vec<usize>,
+}
+
 pub mod surface {
     pub const TRAJECTORY: &str = "trajectory";
     pub const MODEL_OBSERVATION: &str = "model_observation";
@@ -72,11 +101,20 @@ struct RedactorInner {
     blocking_literals: Vec<String>,
     markers: Mutex<BTreeMap<String, String>>,
     counts: Mutex<BTreeMap<(String, String), u64>>,
+    /// Number of unique non-empty `secret_literals` rules actually created.
+    configured_literal_count: usize,
+    /// Number of `custom_patterns` rules created.
+    custom_pattern_count: usize,
 }
 
 #[derive(Clone)]
 struct RedactionRule {
     kind: String,
+    /// Human-readable source label for `redact-check` annotations.
+    source_label: String,
+    /// For configured literals and custom patterns: 0-based index among rules of
+    /// that type.  `None` for default structured rules and env-var rules.
+    config_index: Option<usize>,
     matcher: RuleMatcher,
 }
 
@@ -98,6 +136,8 @@ struct RedactionMatch {
     end: usize,
     kind: String,
     raw: String,
+    source_label: String,
+    config_index: Option<usize>,
 }
 
 impl Redactor {
@@ -105,16 +145,23 @@ impl Redactor {
         let mut rules = Vec::new();
         let mut blocking_literals = Vec::new();
         let mut seen_literals = BTreeSet::new();
+        let mut configured_literal_count = 0usize;
+        let mut custom_pattern_count = 0usize;
 
         if cfg.enabled {
             for literal in cfg.secret_literals.iter().filter(|value| !value.is_empty()) {
-                push_literal_rule(
+                let added = push_literal_rule(
                     &mut rules,
                     &mut blocking_literals,
                     &mut seen_literals,
                     KIND_CONFIGURED_LITERAL,
+                    "literal".to_owned(),
+                    Some(configured_literal_count),
                     literal.clone(),
                 );
+                if added {
+                    configured_literal_count += 1;
+                }
             }
 
             for (name_os, value_os) in std::env::vars_os() {
@@ -126,6 +173,8 @@ impl Redactor {
                         &mut blocking_literals,
                         &mut seen_literals,
                         kind,
+                        format!("env:{name}"),
+                        None,
                         value,
                     );
                 }
@@ -133,14 +182,17 @@ impl Redactor {
 
             rules.extend(default_rules()?);
 
-            for pattern in &cfg.custom_patterns {
+            for (idx, pattern) in cfg.custom_patterns.iter().enumerate() {
                 rules.push(RedactionRule {
                     kind: KIND_CUSTOM_PATTERN.to_owned(),
+                    source_label: format!("custom_pattern[{idx}]"),
+                    config_index: Some(idx),
                     matcher: RuleMatcher::Regex {
                         regex: Regex::new(pattern)?,
                         capture_group: None,
                     },
                 });
+                custom_pattern_count += 1;
             }
         }
 
@@ -153,6 +205,8 @@ impl Redactor {
                 blocking_literals,
                 markers: Mutex::new(BTreeMap::new()),
                 counts: Mutex::new(BTreeMap::new()),
+                configured_literal_count,
+                custom_pattern_count,
             }),
         })
     }
@@ -175,6 +229,8 @@ impl Redactor {
                 blocking_literals: Vec::new(),
                 markers: Mutex::new(BTreeMap::new()),
                 counts: Mutex::new(BTreeMap::new()),
+                configured_literal_count: 0,
+                custom_pattern_count: 0,
             }),
         }
     }
@@ -326,20 +382,106 @@ impl Redactor {
         for rule in &self.inner.rules {
             match &rule.matcher {
                 RuleMatcher::Literal(literal) => {
-                    collect_literal_matches(input, literal, &rule.kind, &mut out);
+                    collect_literal_matches(
+                        input,
+                        literal,
+                        &rule.kind,
+                        &rule.source_label,
+                        rule.config_index,
+                        &mut out,
+                    );
                 }
                 RuleMatcher::Regex {
                     regex,
                     capture_group,
                 } => {
-                    collect_regex_matches(input, regex, *capture_group, &rule.kind, &mut out);
+                    collect_regex_matches(
+                        input,
+                        regex,
+                        *capture_group,
+                        &rule.kind,
+                        &rule.source_label,
+                        rule.config_index,
+                        &mut out,
+                    );
                 }
                 RuleMatcher::EnvAssignment { regex } => {
-                    collect_env_assignment_matches(input, regex, &rule.kind, &mut out);
+                    collect_env_assignment_matches(
+                        input,
+                        regex,
+                        &rule.kind,
+                        &rule.source_label,
+                        &mut out,
+                    );
                 }
             }
         }
         out
+    }
+
+    /// Run redaction and return per-match annotations for operator verification.
+    ///
+    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// counts and does not require a surface label. It is designed for the
+    /// `agent redact-check` preflight command.
+    #[must_use]
+    pub fn check(&self, input: &str) -> CheckResult {
+        if !self.inner.enabled {
+            return CheckResult {
+                redacted: input.to_owned(),
+                ..Default::default()
+            };
+        }
+
+        let mut raw_matches = self.collect_matches(input);
+        raw_matches.sort_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then_with(|| b.end.cmp(&a.end))
+                .then_with(|| a.kind.cmp(&b.kind))
+        });
+        let filtered = Self::filter_overlapping_matches(raw_matches);
+
+        let mut out_text = String::with_capacity(input.len());
+        let mut check_matches = Vec::new();
+        let mut matched_literal_indices = BTreeSet::new();
+        let mut matched_pattern_indices = BTreeSet::new();
+        let mut last = 0usize;
+
+        for m in &filtered {
+            out_text.push_str(&input[last..m.start]);
+            let marker = self.marker_for(&m.raw, &m.kind);
+            check_matches.push(CheckMatch {
+                start: m.start,
+                end: m.end,
+                marker: marker.clone(),
+                source: m.source_label.clone(),
+            });
+            out_text.push_str(&marker);
+            if let Some(idx) = m.config_index {
+                if m.source_label == "literal" {
+                    matched_literal_indices.insert(idx);
+                } else {
+                    matched_pattern_indices.insert(idx);
+                }
+            }
+            last = m.end;
+        }
+        out_text.push_str(&input[last..]);
+
+        let unmatched_literal_indices = (0..self.inner.configured_literal_count)
+            .filter(|i| !matched_literal_indices.contains(i))
+            .collect();
+        let unmatched_pattern_indices = (0..self.inner.custom_pattern_count)
+            .filter(|i| !matched_pattern_indices.contains(i))
+            .collect();
+
+        CheckResult {
+            redacted: out_text,
+            matches: check_matches,
+            unmatched_literal_indices,
+            unmatched_pattern_indices,
+        }
     }
 
     fn marker_for(&self, raw: &str, kind: &str) -> String {
@@ -514,6 +656,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
     Ok(vec![
         RedactionRule {
             kind: KIND_PRIVATE_KEY.to_owned(),
+            source_label: "structured:pem".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(
                     r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -523,6 +667,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_BEARER_TOKEN.to_owned(),
+            source_label: "structured:bearer".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{16,})")?,
                 capture_group: Some(1),
@@ -530,6 +676,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_GITHUB_TOKEN.to_owned(),
+            source_label: "structured:github_token".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(
                     r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
@@ -539,6 +687,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_API_KEY.to_owned(),
+            source_label: "structured:api_key".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::Regex {
                 regex: Regex::new(
                     r"\b(?:sk-[A-Za-z0-9][A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16})\b",
@@ -548,6 +698,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
+            source_label: "structured:env_assignment".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::EnvAssignment {
                 regex: Regex::new(
                     r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*([^ \t\r\n'";]{4,})[ \t]*(?:#.*)?$"#,
@@ -556,6 +708,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
+            source_label: "structured:env_assignment".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::EnvAssignment {
                 regex: Regex::new(
                     r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*"([^"\r\n]{4,})"[ \t]*(?:#.*)?$"#,
@@ -564,6 +718,8 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
         },
         RedactionRule {
             kind: KIND_ENV_ASSIGNMENT.to_owned(),
+            source_label: "structured:env_assignment".to_owned(),
+            config_index: None,
             matcher: RuleMatcher::EnvAssignment {
                 regex: Regex::new(
                     r#"(?m)^[+\- ]?(?:export\s+)?([A-Z][A-Z0-9_-]*)\s*=\s*'([^'\r\n]{4,})'[ \t]*(?:#.*)?$"#,
@@ -573,7 +729,14 @@ fn default_rules() -> Result<Vec<RedactionRule>, regex::Error> {
     ])
 }
 
-fn collect_literal_matches(input: &str, literal: &str, kind: &str, out: &mut Vec<RedactionMatch>) {
+fn collect_literal_matches(
+    input: &str,
+    literal: &str,
+    kind: &str,
+    source_label: &str,
+    config_index: Option<usize>,
+    out: &mut Vec<RedactionMatch>,
+) {
     if literal.is_empty() {
         return;
     }
@@ -586,26 +749,34 @@ fn collect_literal_matches(input: &str, literal: &str, kind: &str, out: &mut Vec
             end,
             kind: kind.to_owned(),
             raw: literal.to_owned(),
+            source_label: source_label.to_owned(),
+            config_index,
         });
         search_start = end;
     }
 }
 
+/// Returns `true` if a new rule was added (i.e., not a duplicate or empty).
 fn push_literal_rule(
     rules: &mut Vec<RedactionRule>,
     blocking_literals: &mut Vec<String>,
     seen_literals: &mut BTreeSet<String>,
     kind: &str,
+    source_label: String,
+    config_index: Option<usize>,
     literal: String,
-) {
+) -> bool {
     if literal.is_empty() || !seen_literals.insert(literal.clone()) {
-        return;
+        return false;
     }
     rules.push(RedactionRule {
         kind: kind.to_owned(),
+        source_label,
+        config_index,
         matcher: RuleMatcher::Literal(literal.clone()),
     });
     blocking_literals.push(literal);
+    true
 }
 
 fn new_salt() -> String {
@@ -683,6 +854,8 @@ fn collect_regex_matches(
     regex: &Regex,
     capture_group: Option<usize>,
     kind: &str,
+    source_label: &str,
+    config_index: Option<usize>,
     out: &mut Vec<RedactionMatch>,
 ) {
     for captures in regex.captures_iter(input) {
@@ -696,6 +869,8 @@ fn collect_regex_matches(
                     end: matched.end(),
                     kind: kind.to_owned(),
                     raw: matched.as_str().to_owned(),
+                    source_label: source_label.to_owned(),
+                    config_index,
                 });
             }
         }
@@ -706,6 +881,7 @@ fn collect_env_assignment_matches(
     input: &str,
     regex: &Regex,
     kind: &str,
+    source_label: &str,
     out: &mut Vec<RedactionMatch>,
 ) {
     for captures in regex.captures_iter(input) {
@@ -718,6 +894,8 @@ fn collect_env_assignment_matches(
                 end: value.end(),
                 kind: kind.to_owned(),
                 raw: value.as_str().to_owned(),
+                source_label: source_label.to_owned(),
+                config_index: None,
             });
         }
     }

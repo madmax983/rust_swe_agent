@@ -100,6 +100,14 @@ pub enum ExitCode {
     /// preflight. Distinct from `preflight_failure` (3) so CI can route
     /// scriptability misconfig separately from infrastructure failures.
     ScriptabilityCheckFailure = 23,
+    /// 24 — `agent redact-check` found that at least one configured `secret_literals`
+    /// entry produced zero matches against the sample input. This signals that the
+    /// configured literal is likely stale and may not be redacting anything.
+    RedactCheckStaleLiterals = 24,
+    /// 25 — `agent redact-check --strict` found that at least one `custom_patterns`
+    /// entry compiled successfully but produced zero matches against the sample input.
+    /// Useful in CI to catch a regex typo or a renamed token format before a sweep.
+    RedactCheckStrictFail = 25,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -144,6 +152,8 @@ impl ExitCode {
             Self::EvalGamingGateFailure => "eval_gaming_gate_failure",
             Self::ArtifactIntegrityViolation => "artifact_integrity_violation",
             Self::ScriptabilityCheckFailure => "scriptability_check_failure",
+            Self::RedactCheckStaleLiterals => "redact_check_stale_literals",
+            Self::RedactCheckStrictFail => "redact_check_strict_fail",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

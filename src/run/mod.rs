@@ -38,6 +38,7 @@ pub mod patch_stats;
 pub mod policy_impact;
 pub mod power;
 pub mod rate_limit;
+pub mod redact_check;
 pub mod render_only;
 pub mod replay;
 pub mod report;
