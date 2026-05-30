@@ -13,6 +13,7 @@
 //! `feature_unavailable` (exit code 24).
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -121,18 +122,19 @@ pub async fn run(args: UiArgs) -> Result<(), Error> {
         );
     }
 
-    let bind_addr: SocketAddr = format!("{}:{}", args.bind, args.port)
-        .parse()
-        .map_err(|e: std::net::AddrParseError| {
-            Error::Config(crate::error::ConfigError::Invalid(format!(
-                "ui: invalid bind address `{}:{}`: {e}",
-                args.bind, args.port
-            )))
-        })?;
+    let bind_addr: SocketAddr =
+        format!("{}:{}", args.bind, args.port)
+            .parse()
+            .map_err(|e: std::net::AddrParseError| {
+                Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "ui: invalid bind address `{}:{}`: {e}",
+                    args.bind, args.port
+                )))
+            })?;
 
     let server = UiServer::start(bind_addr, instances)
         .await
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
     let local = server.local_addr();
     let url = format!("http://{}:{}", local.ip(), local.port());
@@ -166,7 +168,7 @@ pub fn discover_instances(sweep_dir: &Path) -> Result<Vec<InstanceEntry>, Error>
     })?;
 
     for dir_entry in read_dir {
-        let dir_entry = dir_entry.map_err(std::io::Error::from)?;
+        let dir_entry = dir_entry?;
         let path = dir_entry.path();
 
         // Only process files whose name ends with `.traj.json`.
@@ -191,10 +193,7 @@ pub fn discover_instances(sweep_dir: &Path) -> Result<Vec<InstanceEntry>, Error>
             }
         };
 
-        let instance_id = name
-            .strip_suffix(".traj.json")
-            .unwrap_or(&name)
-            .to_owned();
+        let instance_id = name.strip_suffix(".traj.json").unwrap_or(&name).to_owned();
 
         entries.push(InstanceEntry {
             instance_id,
@@ -313,15 +312,16 @@ fn serve_index(instances: &[InstanceEntry]) -> String {
         let safe_cost = html_escape(&cost);
         let safe_duration = html_escape(&duration);
 
-        rows.push_str(&format!(
+        let _ = writeln!(
+            rows,
             "<tr>\
              <td><a href=\"/instance/{safe_id}\">{safe_id}</a></td>\
              <td>{safe_outcome}</td>\
              <td>{safe_steps}</td>\
              <td>{safe_cost}</td>\
              <td>{safe_duration}</td>\
-             </tr>\n"
-        ));
+             </tr>"
+        );
     }
 
     let body = format!(
@@ -461,9 +461,8 @@ async fn read_request_path(stream: &mut TcpStream) -> std::io::Result<String> {
         }
     }
 
-    let text = std::str::from_utf8(&buf[..total]).map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "non-UTF-8 request")
-    })?;
+    let text = std::str::from_utf8(&buf[..total])
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "non-UTF-8 request"))?;
 
     // Extract path from the first request line, e.g. "GET /path HTTP/1.1".
     // URL-decode percent-encoded characters so %2F stays as "/" (path traversal).
@@ -474,9 +473,7 @@ async fn read_request_path(stream: &mut TcpStream) -> std::io::Result<String> {
         .unwrap_or("/");
 
     // Only strip query strings; keep the path as-is.
-    let path = raw_path
-        .split_once('?')
-        .map_or(raw_path, |(p, _)| p);
+    let path = raw_path.split_once('?').map_or(raw_path, |(p, _)| p);
 
     Ok(path.to_owned())
 }
@@ -551,27 +548,42 @@ mod tests {
     #[test]
     fn dispatch_unknown_path_returns_404() {
         let resp = dispatch("/admin/secret", &[]);
-        assert!(resp.starts_with("HTTP/1.1 404"), "expected 404, got: {resp:.80}");
+        assert!(
+            resp.starts_with("HTTP/1.1 404"),
+            "expected 404, got: {resp:.80}"
+        );
     }
 
     #[test]
     fn dispatch_healthz_returns_200() {
         let resp = dispatch("/healthz", &[]);
-        assert!(resp.starts_with("HTTP/1.1 200"), "expected 200, got: {resp:.80}");
-        assert!(resp.contains("application/json"), "expected JSON content-type");
+        assert!(
+            resp.starts_with("HTTP/1.1 200"),
+            "expected 200, got: {resp:.80}"
+        );
+        assert!(
+            resp.contains("application/json"),
+            "expected JSON content-type"
+        );
     }
 
     #[test]
     fn dispatch_index_returns_200() {
         let resp = dispatch("/", &[]);
-        assert!(resp.starts_with("HTTP/1.1 200"), "expected 200, got: {resp:.80}");
+        assert!(
+            resp.starts_with("HTTP/1.1 200"),
+            "expected 200, got: {resp:.80}"
+        );
         assert!(resp.contains("text/html"), "expected HTML content-type");
     }
 
     #[test]
     fn dispatch_unknown_instance_returns_404() {
         let resp = dispatch("/instance/does-not-exist", &[]);
-        assert!(resp.starts_with("HTTP/1.1 404"), "expected 404, got: {resp:.80}");
+        assert!(
+            resp.starts_with("HTTP/1.1 404"),
+            "expected 404, got: {resp:.80}"
+        );
     }
 
     #[test]

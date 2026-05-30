@@ -63,12 +63,24 @@ async fn index_returns_200_html_with_instance_rows() {
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(ct.contains("text/html"), "Content-Type should be text/html, got: {ct}");
+    assert!(
+        ct.contains("text/html"),
+        "Content-Type should be text/html, got: {ct}"
+    );
 
     let body = resp.text().await.unwrap();
-    assert!(body.contains("django__django-12345"), "index should list instance ID");
-    assert!(body.contains("flask__flask-99"), "index should list instance ID");
-    assert!(body.contains("submitted"), "index should show outcome column");
+    assert!(
+        body.contains("django__django-12345"),
+        "index should list instance ID"
+    );
+    assert!(
+        body.contains("flask__flask-99"),
+        "index should list instance ID"
+    );
+    assert!(
+        body.contains("submitted"),
+        "index should show outcome column"
+    );
 
     server.shutdown().await;
 }
@@ -89,8 +101,14 @@ async fn index_rows_are_sorted_by_instance_id_ascending() {
     let pos_middle = body.find("mmm-middle").expect("mmm-middle missing");
     let pos_last = body.find("zzz-last").expect("zzz-last missing");
 
-    assert!(pos_first < pos_middle, "aaa-first must precede mmm-middle in HTML");
-    assert!(pos_middle < pos_last, "mmm-middle must precede zzz-last in HTML");
+    assert!(
+        pos_first < pos_middle,
+        "aaa-first must precede mmm-middle in HTML"
+    );
+    assert!(
+        pos_middle < pos_last,
+        "mmm-middle must precede zzz-last in HTML"
+    );
 
     server.shutdown().await;
 }
@@ -118,10 +136,16 @@ async fn instance_page_returns_200_html() {
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(ct.contains("text/html"), "instance should be text/html, got: {ct}");
+    assert!(
+        ct.contains("text/html"),
+        "instance should be text/html, got: {ct}"
+    );
 
     let body = resp.text().await.unwrap();
-    assert!(body.contains("<!DOCTYPE html>"), "should be a full HTML page");
+    assert!(
+        body.contains("<!DOCTYPE html>"),
+        "should be a full HTML page"
+    );
     assert!(
         body.contains("Trajectory Export"),
         "should contain HtmlExporter title"
@@ -155,11 +179,7 @@ async fn nonexistent_instance_returns_404() {
     let resp = reqwest::get(format!("{url}/instance/does-not-exist"))
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        404,
-        "nonexistent instance should return 404"
-    );
+    assert_eq!(resp.status(), 404, "nonexistent instance should return 404");
 
     server.shutdown().await;
 }
