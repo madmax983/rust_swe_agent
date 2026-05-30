@@ -268,20 +268,15 @@ fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
         None => Config::defaults()?,
     };
 
-    // Resolve input source; exactly one of --commands-file / --stdin / --command.
+    // Resolve input source; exactly one of --commands-file / --stdin / --command (required).
     let source = match (&p.commands_file, p.stdin, p.command.is_empty()) {
         (Some(path), false, true) => PolicyCheckSource::CommandsFile(path.clone()),
         (None, true, true) => PolicyCheckSource::Stdin,
         (None, false, false) => PolicyCheckSource::Commands(p.command.clone()),
         (None, false, true) => {
-            // No explicit source: fall back to stdin if piped, else error.
-            if std::io::stdin().is_terminal() {
-                return Err(Error::Config(crate::error::ConfigError::Usage(
-                    "no input source; use --commands-file, --command, or pipe to --stdin"
-                        .to_owned(),
-                )));
-            }
-            PolicyCheckSource::Stdin
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "no input source; use --commands-file, --command, or --stdin".to_owned(),
+            )));
         }
         _ => {
             return Err(Error::Config(crate::error::ConfigError::Usage(

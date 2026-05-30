@@ -148,7 +148,7 @@ pub fn run_policy_check(cfg: &Config, opts: &PolicyCheckOpts) -> Result<PolicyCh
     let engine = PolicyEngine::from_cfg(&cfg.root.policy)
         .map_err(|e| Error::Config(ConfigError::Invalid(format!("invalid policy config: {e}"))))?;
 
-    let profile = cfg.root.policy.profile.clone();
+    let profile = engine.profile().as_str().to_owned();
     let commands = read_source(&opts.source)?;
 
     let verdicts: Vec<CommandVerdict> = commands
