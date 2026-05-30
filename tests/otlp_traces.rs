@@ -134,6 +134,8 @@ fn swebench_args_has_otlp_endpoint_field() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     };
     assert!(args.otlp_endpoint.is_none());
 }
@@ -306,6 +308,8 @@ async fn no_otlp_traffic_when_endpoint_unset() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None, // <-- OTLP disabled
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     };
 
     // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
@@ -400,6 +404,8 @@ async fn trace_id_written_to_instance_result_and_trajectory() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     };
 
     let results = run(args).await.unwrap();
@@ -505,6 +511,8 @@ async fn export_failure_does_not_fail_sweep_and_increments_counter() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None, // dead endpoint
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     };
 
     // Must not panic or return Err.
@@ -679,6 +687,8 @@ async fn env_var_activates_otlp_tracing() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None, // env var activates instead of CLI flag
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     };
 
     let results = run(args).await.unwrap();

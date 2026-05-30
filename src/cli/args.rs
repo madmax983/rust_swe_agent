@@ -1969,6 +1969,16 @@ pub struct SwebenchCmd {
     /// Compare the current rehearsal artifacts against a saved one and surface drift.
     #[arg(long, value_name = "PATH")]
     pub diff: Option<PathBuf>,
+
+    /// Post sweep-level events (sweep_started, instance_completed, etc.) to
+    /// this URL as JSON POSTs.  Optional; when absent, behavior is unchanged.
+    #[arg(long = "notify-webhook", value_name = "URL")]
+    pub notify_webhook: Option<String>,
+
+    /// Inject a custom HTTP header on every sweep webhook POST.  Repeatable.
+    /// Format: `"Name: Value"`.  Header values are not logged or echoed.
+    #[arg(long = "notify-webhook-headers", value_name = "HEADER")]
+    pub notify_webhook_headers: Vec<String>,
 }
 
 #[derive(Debug, Args)]

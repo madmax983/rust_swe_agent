@@ -1350,6 +1350,12 @@ pub struct SwebenchArgs {
     pub sb_subset: Option<String>,
     pub sb_split: Option<String>,
     pub eval_timeout_secs: Option<u64>,
+    /// Optional sweep-level webhook URL.  When `Some`, sweep-level events
+    /// (`sweep_started`, `instance_completed`, etc.) are POSTed as JSON.
+    pub notify_webhook_url: Option<String>,
+    /// Raw header strings (`"Name: Value"`) injected on every sweep webhook
+    /// POST.  Not logged or echoed.
+    pub notify_webhook_headers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1804,6 +1810,83 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     )
     .unwrap_or(u64::MAX);
 
+    // Sweep-level webhook sink.  Created here so sweep_started can be
+    // emitted before the first worker is dispatched.
+    #[cfg(feature = "webhook")]
+    let sweep_webhook: Option<crate::stream::SweepWebhookSink> =
+        if let Some(ref url) = args.notify_webhook_url {
+            let parsed_headers: Vec<(String, String)> = args
+                .notify_webhook_headers
+                .iter()
+                .enumerate()
+                .map(|(i, h)| {
+                    let (name, value) = h.split_once(':').ok_or_else(|| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "--notify-webhook-headers at position {} is missing `:` separator \
+                             (use `Name: Value`)",
+                            i + 1
+                        )))
+                    })?;
+                    Ok((name.trim().to_owned(), value.trim().to_owned()))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            match crate::stream::SweepWebhookSink::new(
+                url.clone(),
+                &parsed_headers,
+                redactor.clone(),
+                sweep_id.clone(),
+            ) {
+                Ok(sink) => {
+                    let safe_url = reqwest::Url::parse(url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(|h| format!("{}://{}", u.scheme(), h)))
+                        .unwrap_or_else(|| "<url>".to_owned());
+                    tracing::info!(url = %safe_url, "sweep webhook notifications enabled");
+                    Some(sink)
+                }
+                Err(e) => {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "sweep webhook sink: {e}"
+                    ))));
+                }
+            }
+        } else {
+            None
+        };
+    #[cfg(not(feature = "webhook"))]
+    let _sweep_webhook: Option<()> = {
+        if args.notify_webhook_url.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--notify-webhook requires the `webhook` Cargo feature; \
+                 rebuild with --features webhook"
+                    .into(),
+            )));
+        }
+        None
+    };
+
+    // Emit sweep_started before first dispatch.
+    #[cfg(feature = "webhook")]
+    if let Some(ref sw) = sweep_webhook {
+        sw.emit(crate::stream::SweepNotificationEvent::SweepStarted {
+            total_instances: total,
+            model: model_name.clone(),
+        });
+    }
+
+    // Cost-threshold tracker: fires at 25 / 50 / 75 / 100 % of the cost cap.
+    // Index 0 = 25 %, 1 = 50 %, 2 = 75 %, 3 = 100 %.
+    #[cfg(feature = "webhook")]
+    let cost_threshold_shares: [f64; 4] = [0.25, 0.50, 0.75, 1.00];
+    #[cfg(feature = "webhook")]
+    let mut cost_thresholds_fired = [false; 4];
+
+    // Milestone tracker: fires at 25 / 50 / 75 % of total completed.
+    #[cfg(feature = "webhook")]
+    let milestone_shares: [f64; 3] = [0.25, 0.50, 0.75];
+    #[cfg(feature = "webhook")]
+    let mut milestones_fired = [false; 3];
+
     let mut in_flight: usize = 0;
     let (force_cancel_tx, force_cancel_rx) = watch::channel(false);
     let mut cancellation: Option<CancellationSnapshot> = None;
@@ -2088,7 +2171,82 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                 );
                             }
                         }
+                        // Capture webhook fields before r is moved into results.
+                        #[cfg(feature = "webhook")]
+                        let (
+                            wh_instance_id,
+                            wh_resolved,
+                            wh_failure_category,
+                            wh_cost_usd,
+                            wh_duration_secs,
+                        ) = (
+                            r.result.instance_id.clone(),
+                            r.result.outcome.as_deref() == Some(outcome::SUBMITTED),
+                            r.result.failure_category.and_then(|c| {
+                                serde_json::to_value(c)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(str::to_owned))
+                            }),
+                            r.result.cost_usd,
+                            r.result.duration_secs,
+                        );
                         results.push(r);
+
+                        // Emit instance_completed webhook event.
+                        #[cfg(feature = "webhook")]
+                        if let Some(ref sw) = sweep_webhook {
+                            sw.emit(crate::stream::SweepNotificationEvent::InstanceCompleted {
+                                instance_id: wh_instance_id,
+                                resolved: wh_resolved,
+                                failure_category: wh_failure_category,
+                                cost_usd: wh_cost_usd,
+                                duration_secs: wh_duration_secs,
+                            });
+                        }
+
+                        // Check cost thresholds (at 25/50/75/100 % of limit).
+                        #[cfg(feature = "webhook")]
+                        if let (Some(sw), Some(limit_usd)) = (&sweep_webhook, limit) {
+                            for (i, &share) in cost_threshold_shares.iter().enumerate() {
+                                if !cost_thresholds_fired[i] && cumulative_cost >= limit_usd * share
+                                {
+                                    cost_thresholds_fired[i] = true;
+                                    sw.emit(
+                                        crate::stream::SweepNotificationEvent::CostThresholdCrossed {
+                                            threshold_share: share,
+                                            cumulative_cost_usd: cumulative_cost,
+                                            cost_limit_usd: limit_usd,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+
+                        // Check sweep milestones (25 / 50 / 75 % of total completed).
+                        #[cfg(feature = "webhook")]
+                        if let Some(ref sw) = sweep_webhook {
+                            let completed_so_far = results
+                                .iter()
+                                .filter(|rr| rr.result.exit_reason != EXIT_REASON_BUDGET_HALT)
+                                .count();
+                            if total > 0 {
+                                #[allow(clippy::cast_precision_loss)]
+                                let completed_share = completed_so_far as f64 / total as f64;
+                                for (i, &ms) in milestone_shares.iter().enumerate() {
+                                    if !milestones_fired[i] && completed_share >= ms {
+                                        milestones_fired[i] = true;
+                                        sw.emit(
+                                            crate::stream::SweepNotificationEvent::SweepMilestone {
+                                                completed_share: ms,
+                                                completed: completed_so_far,
+                                                total,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         // Circuit-breaker check: after each live result, test
                         // whether a dominant actionable failure pattern has
                         // emerged. Skip if already halted (cost or systemic).
@@ -2134,6 +2292,21 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                     "systemic-failure circuit breaker tripped — halting sweep"
                                 );
                                 write_halt_report_atomic(&args.output_dir, &report)?;
+                                // Emit systemic_halt_tripped webhook event.
+                                #[cfg(feature = "webhook")]
+                                if let Some(ref sw) = sweep_webhook {
+                                    #[allow(clippy::cast_precision_loss)]
+                                    let share_fraction = share_pct / 100.0;
+                                    sw.emit(
+                                        crate::stream::SweepNotificationEvent::SystemicHaltTripped {
+                                            dominant_category: serde_json::to_value(cat)
+                                                .ok()
+                                                .and_then(|v| v.as_str().map(str::to_owned))
+                                                .unwrap_or_else(|| format!("{cat:?}")),
+                                            share: share_fraction,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -2546,6 +2719,43 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         sweep.sweep_status = SWEEP_STATUS_SYSTEMIC_HALT.into();
         sweep.not_started = systemic_halt_not_started;
     }
+
+    // Emit sweep_completed with the final drop count, then flush the sink.
+    #[cfg(feature = "webhook")]
+    if let Some(sw) = sweep_webhook {
+        #[allow(clippy::cast_precision_loss)]
+        let wallclock_secs = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX)
+        .saturating_sub(sweep_start_nanos) as f64
+            / 1_000_000_000.0;
+        let total_resolved: usize = sweep
+            .instances
+            .iter()
+            .map(|r| r.resolved_count as usize)
+            .sum();
+        let total_attempted = sweep.submitted + sweep.errored;
+        let total_cost_usd = sweep.actual_cost_usd.unwrap_or(sweep.estimated_cost_usd);
+        let terminal_reason = sweep.sweep_status.clone();
+        // Capture drop count before the final emit consumes the channel slot.
+        let dropped_so_far = sw.dropped_count();
+        sw.emit(crate::stream::SweepNotificationEvent::SweepCompleted {
+            total_resolved,
+            total_attempted,
+            total_cost_usd,
+            wallclock_secs,
+            terminal_reason,
+            // +1 would over-count; the completed event itself is in-flight
+            // and will not be dropped unless the buffer is pathologically small.
+            webhook_events_dropped: dropped_so_far,
+        });
+        sw.shutdown().await;
+    }
+
     write_sweep_results_atomic(&summary_path, &sweep)?;
 
     Ok(sweep)
@@ -5224,6 +5434,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -6117,6 +6329,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6200,6 +6414,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6294,6 +6510,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6428,6 +6646,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -7111,6 +7331,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));
@@ -7757,5 +7979,188 @@ instance = "inst"
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid instance_id"));
+    }
+
+    /// Integration test: drives a 2-instance sweep with DeterministicModel +
+    /// a local mock HTTP server, then asserts the full event sequence in order
+    /// (sweep_started → 2 × instance_completed → sweep_completed) and that
+    /// every payload carries the schema-version envelope (AC #8 from #315).
+    #[cfg(feature = "webhook")]
+    #[tokio::test]
+    async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // ─── mock HTTP server ──────────────────────────────────────────────
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let collected: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_bg = collected.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = match socket.read(&mut chunk).await {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let req_str = String::from_utf8_lossy(&buf);
+                    let Some(end) = req_str.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let cl = req_str[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + cl {
+                        break;
+                    }
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                let req_str = String::from_utf8_lossy(&buf);
+                if let Some(body) = req_str.split_once("\r\n\r\n").map(|(_, b)| b) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+                        collected_bg.lock().unwrap().push(v);
+                    }
+                }
+            }
+        });
+
+        // ─── 2-instance sweep with DeterministicModel ─────────────────────
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+        let dataset = tmp.path().join("dataset.jsonl");
+        write_test_dataset(&dataset, &["alpha", "beta"]);
+        let output = tmp.path().join("out");
+
+        let args = SwebenchArgs {
+            dataset_source: crate::run::dataset::DatasetSource::LocalPath(dataset),
+            dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
+            output_dir: output.clone(),
+            parallel: 1,
+            reruns: 1,
+            config: test_config_with_workdir(&repo),
+            resume: false,
+            cost_limit_usd: None,
+            task_timeout_secs: None,
+            instance_ids: None,
+            limit: None,
+            sample: None,
+            seed: None,
+            stratify_by: None,
+            stratify_mode: StratifyMode::Proportional,
+            max_retries: 0,
+            retry_on: None,
+            retry_backoff_base_ms: 0,
+            retry_backoff_cap_s: 0,
+            retry_on_resume: false,
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nok\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            config_overlay_paths: Vec::new(),
+            dry_run: false,
+            skip_preflight: true,
+            preflight_format: "text".into(),
+            skip_model_probe: true,
+            preflight_check_timeout_s: 10,
+            preflight_total_timeout_s: 60,
+            preflight_mode: "test".into(),
+            skip_patch_validation: true,
+            event_log: None,
+            max_rpm: None,
+            max_input_tpm: None,
+            cancel_deadline_secs: 30,
+            install_os_signal_handlers: false,
+            cancellation_signals: None,
+            github_pr: None,
+            reproduced_from: None,
+            abort_on_systemic_failure: false,
+            systemic_failure_min_samples: 5,
+            systemic_failure_share_pct: 80,
+            otlp_endpoint: None,
+            rehearse: false,
+            skip_evaluator: false,
+            eval_backend: "rehearsal".to_string(),
+            sb_subset: None,
+            sb_split: None,
+            eval_timeout_secs: None,
+            notify_webhook_url: Some(format!("http://127.0.0.1:{port}")),
+            notify_webhook_headers: vec![],
+        };
+
+        let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
+            .await
+            .expect("sweep timed out")
+            .expect("sweep failed");
+
+        assert_eq!(results.submitted, 2, "both instances must submit");
+
+        // Give the background sender time to flush all POSTs to the mock server.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let payloads = collected.lock().unwrap().clone();
+        assert!(
+            payloads.len() >= 4,
+            "expected at least sweep_started + 2×instance_completed + sweep_completed; \
+             got {} payloads",
+            payloads.len()
+        );
+
+        // Every payload must carry the schema-version envelope fields.
+        for (i, p) in payloads.iter().enumerate() {
+            assert_eq!(
+                p["schema_version"]["major"], 1,
+                "payload {i} missing schema_version.major=1"
+            );
+            assert!(p.get("sweep_id").is_some(), "payload {i} missing sweep_id");
+            assert!(
+                p.get("emitted_at").is_some(),
+                "payload {i} missing emitted_at"
+            );
+        }
+
+        // Assert the required event-type sequence.
+        let event_types: Vec<&str> = payloads
+            .iter()
+            .filter_map(|p| p["event"]["type"].as_str())
+            .collect();
+
+        assert_eq!(
+            event_types.first().copied(),
+            Some("sweep_started"),
+            "first event must be sweep_started; got: {event_types:?}"
+        );
+        assert_eq!(
+            event_types
+                .iter()
+                .filter(|&&t| t == "instance_completed")
+                .count(),
+            2,
+            "expected 2 instance_completed events; got: {event_types:?}"
+        );
+        assert_eq!(
+            event_types.last().copied(),
+            Some("sweep_completed"),
+            "last event must be sweep_completed; got: {event_types:?}"
+        );
     }
 }

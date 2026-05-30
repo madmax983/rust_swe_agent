@@ -1209,6 +1209,31 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
             print_env_preview_text(&preview);
         }
     }
+
+    // Non-fatal webhook reachability check (issue #315).  Gated on the flag
+    // being present; the only paid network call doctor makes.
+    #[cfg(feature = "webhook")]
+    if let Some(ref url) = s.notify_webhook {
+        if output_format != "json" {
+            let display = match reqwest::Url::parse(url) {
+                Ok(u) => format!("{}://{}", u.scheme(), u.host_str().unwrap_or("<unknown>")),
+                Err(_) => "<invalid url>".to_owned(),
+            };
+            let headers: Vec<(String, String)> = s
+                .notify_webhook_headers
+                .iter()
+                .filter_map(|h| {
+                    let mut parts = h.splitn(2, ':');
+                    let name = parts.next()?.trim().to_owned();
+                    let value = parts.next()?.trim().to_owned();
+                    Some((name, value))
+                })
+                .collect();
+            let status = doctor_probe_webhook(url, &headers).await;
+            println!("[bench doctor] Webhook reachability: {display} — {status}");
+        }
+    }
+
     let results = Box::pin(crate::run::swebench::run(swebench_args_from_cmd(
         s, cfg, "doctor",
     )?))
@@ -1699,6 +1724,8 @@ fn swebench_args_from_cmd(
         sb_subset: s.sb_subset,
         sb_split: s.sb_split,
         eval_timeout_secs: s.eval_timeout_secs,
+        notify_webhook_url: s.notify_webhook,
+        notify_webhook_headers: s.notify_webhook_headers,
     })
 }
 
@@ -2602,6 +2629,8 @@ fn reproduce_swebench_args(
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
 }
 
@@ -4300,6 +4329,8 @@ fn retry_swebench_args(
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
 }
 
@@ -4410,6 +4441,40 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
 }
 
 /// Print a non-fatal skills-preview informational section for `bench doctor`.
+/// POST a `doctor_probe` event to the webhook URL and return a short status
+/// string for the non-fatal doctor output line.  Best-effort; never aborts.
+#[cfg(feature = "webhook")]
+async fn doctor_probe_webhook(url: &str, headers: &[(String, String)]) -> String {
+    use serde_json::json;
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5));
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(n), Ok(v)) = (
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            header_map.insert(n, v);
+        }
+    }
+    builder = builder.default_headers(header_map);
+    let client = match builder.build() {
+        Ok(c) => c,
+        Err(e) => return format!("client build failed: {e}"),
+    };
+    let payload = json!({
+        "schema_version": { "major": 1, "minor": 0 },
+        "sweep_id": "doctor_probe",
+        "event": { "type": "doctor_probe", "sweep_id": "doctor_probe" },
+        "emitted_at": chrono::Utc::now().to_rfc3339(),
+    });
+    match client.post(url).json(&payload).send().await {
+        Ok(resp) => format!("HTTP {}", resp.status().as_u16()),
+        Err(e) if e.is_timeout() => "timeout".to_owned(),
+        Err(e) if e.is_connect() => "connection refused".to_owned(),
+        Err(_) => "network error".to_owned(),
+    }
+}
+
 fn print_doctor_skills_preview(cfg: &crate::config::Config) {
     let redactor = crate::redaction::Redactor::from_config_lossy(&cfg.root.redaction);
     println!("\n--- skills-preview (informational) ---");
@@ -4987,6 +5052,81 @@ mod tests {
     use crate::trajectory::{Trajectory, outcome};
     use clap::Parser as _;
     use std::path::{Path, PathBuf};
+
+    // ── doctor_probe_webhook tests (feature = "webhook") ──────────────────
+
+    #[cfg(feature = "webhook")]
+    mod webhook_doctor {
+        use super::super::doctor_probe_webhook;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn accept_respond(listener: &TcpListener, status: u16) {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let resp =
+                format!("HTTP/1.1 {status} OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = sock.write_all(resp.as_bytes()).await;
+        }
+
+        #[tokio::test]
+        async fn returns_http_200_on_success() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let url = format!("http://{addr}");
+            let server = tokio::spawn(async move { accept_respond(&listener, 200).await });
+            let result = doctor_probe_webhook(&url, &[]).await;
+            let _ = server.await;
+            assert_eq!(result, "HTTP 200");
+        }
+
+        #[tokio::test]
+        async fn returns_http_401_on_non_success() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let url = format!("http://{addr}");
+            let server = tokio::spawn(async move { accept_respond(&listener, 401).await });
+            let result = doctor_probe_webhook(&url, &[]).await;
+            let _ = server.await;
+            assert_eq!(result, "HTTP 401");
+        }
+
+        #[tokio::test]
+        async fn returns_connection_refused_when_no_listener() {
+            // Bind to get a free port, then drop the listener so nothing accepts.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let url = format!("http://{addr}");
+            let result = doctor_probe_webhook(&url, &[]).await;
+            assert_eq!(result, "connection refused");
+        }
+
+        #[tokio::test]
+        async fn passes_custom_headers() {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let url = format!("http://{addr}");
+            let headers = vec![("X-Test".to_owned(), "my-value".to_owned())];
+            let server = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                // Verify header was forwarded
+                assert!(
+                    req.contains("x-test: my-value") || req.contains("X-Test: my-value"),
+                    "header not found in request: {req}"
+                );
+                let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(resp).await;
+            });
+            let result = doctor_probe_webhook(&url, &headers).await;
+            let _ = server.await;
+            assert_eq!(result, "HTTP 200");
+        }
+    }
 
     #[test]
     fn observation_head_ratio_accepts_closed_unit_interval() {

@@ -173,6 +173,8 @@ async fn sweep_halts_when_cumulative_cost_reaches_limit() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -359,6 +361,8 @@ async fn zero_stored_cost_still_trips_budget_from_tokens() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -453,6 +457,8 @@ async fn unknown_actual_zero_cost_still_trips_budget_from_tokens() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -550,6 +556,8 @@ async fn free_tier_zero_cost_does_not_trip_sweep_budget_from_tokens() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -637,6 +645,8 @@ async fn sweep_without_limit_runs_all_tasks() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -719,6 +729,8 @@ async fn cached_sweep_cost_stays_within_ten_percent_of_anthropic_oracle() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -864,6 +876,8 @@ async fn resume_skipped_costs_count_against_budget() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -1057,6 +1071,8 @@ async fn resume_uses_prior_results_token_totals_for_budget_accounting() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -1238,6 +1254,8 @@ async fn retry_on_resume_instances_are_precharged_before_rerun() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -1424,6 +1442,8 @@ async fn stale_results_json_is_not_trusted_over_newer_trajectory() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -1528,6 +1548,8 @@ async fn per_task_budget_terminates_task_with_budget_exhausted_category() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -1639,6 +1661,8 @@ async fn per_task_budget_absent_means_no_enforcement() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

@@ -174,6 +174,8 @@ fn base_args(
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     }
 }
 

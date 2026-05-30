@@ -90,6 +90,8 @@ async fn sweep_wallclock_timeout_finalizes_trajectory_and_reclaims_worker() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

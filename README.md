@@ -326,6 +326,26 @@ max mini --task "…" --event-log runs/events.jsonl
 tail -f runs/events.jsonl | jq -c '{event_type, instance_id}'
 ```
 
+### Sweep-Level Webhook Notifications
+
+`bench swebench` can POST milestone events to a separate endpoint via
+`--notify-webhook <URL>`. Unlike `--webhook-url` (which fires on every
+agent turn), this fires only at coarse sweep boundaries:
+
+```bash
+bench swebench --dataset-path swe-bench-lite.jsonl --model claude-opus-4-7 \
+  --output runs/sweep \
+  --notify-webhook https://hooks.example.com/sweep-events \
+  --notify-webhook-headers "Authorization: Bearer $TOKEN"
+```
+
+Events: `sweep_started`, `sweep_milestone` (at 25/50/75 % completion),
+`instance_completed` (with resolved, cost, duration), `systemic_halt_tripped`,
+`cost_threshold_crossed` (at 25/50/75/100 % of `--cost-limit-usd`), and
+`sweep_completed` (with `webhook_events_dropped`). Delivery is best-effort
+and non-blocking; secrets are redacted before every POST.
+See [`docs/spec-sweep-notifications.md`](docs/spec-sweep-notifications.md).
+
 For a real SWE-bench sweep, run `bench doctor` first, then `bench forecast`
 with a cost cap, then `bench swebench` only after the forecast clears your
 budget, and finally `bench calibrate` against the completed `results.json`.

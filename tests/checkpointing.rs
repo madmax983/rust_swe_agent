@@ -421,6 +421,8 @@ async fn resume_classifies_partial_trajectory_and_reruns_not_skips() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -508,6 +510,8 @@ async fn resume_corrupted_trajectory_reruns_from_step_zero() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -915,6 +919,8 @@ async fn sweep_summary_table_shows_partial_count() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
