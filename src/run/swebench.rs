@@ -923,7 +923,7 @@ impl SweepResults {
     /// Render the post-sweep summary table. A flat plain-text block so it
     /// reads cleanly in CI logs and from a tail of stdout.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     pub fn summary_table(&self) -> String {
         let submit_rate_pct = self.submit_rate_pct();
         let tokens = self.token_breakdown();
@@ -6439,7 +6439,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     fn prompt_template_hash_changes_when_overlay_edits_prompt() {
         let cfg_a = Config::from_toml_str(
             r#"
@@ -7987,6 +7987,7 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8005,11 +8006,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
