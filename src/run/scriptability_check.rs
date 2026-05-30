@@ -128,7 +128,14 @@ async fn run_inner(config: &Config, config_label: &str) -> Result<ScriptabilityC
 
     let mut servers = Vec::new();
     for (i, server_cfg) in config.root.agent.mcp_servers.iter().enumerate() {
-        let result = check_mcp_server(&env, server_cfg, i, &redactor).await;
+        let result = check_mcp_server(
+            &env,
+            server_cfg,
+            i,
+            config.root.agent.tool_hook_timeout_secs,
+            &redactor,
+        )
+        .await;
         servers.push(result);
     }
 
@@ -163,7 +170,7 @@ async fn run_inner(config: &Config, config_label: &str) -> Result<ScriptabilityC
     Ok(ScriptabilityCheckReport {
         artifact_kind: ArtifactKind::ScriptabilityCheck,
         schema_version: ArtifactSchemaVersion::CURRENT,
-        generated_at: chrono_now_utc(),
+        generated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         config: config_label.to_owned(),
         servers,
         hooks,
@@ -171,20 +178,22 @@ async fn run_inner(config: &Config, config_label: &str) -> Result<ScriptabilityC
     })
 }
 
+#[allow(clippy::cast_possible_truncation)]
 async fn check_mcp_server(
     env: &LocalEnvironment,
     cfg: &crate::config::McpServerCfg,
     index: usize,
+    default_timeout_secs: u64,
     redactor: &Redactor,
 ) -> McpServerCheckResult {
     let name = format!("mcp-{index}");
     let command_display = redactor.redact_text(&cfg.command, surface::INSPECT).text;
     let started = Instant::now();
 
-    match crate::tool::McpStdioServer::discover(env, cfg, 30, None).await {
+    match crate::tool::McpStdioServer::discover(env, cfg, default_timeout_secs, None).await {
         Ok(server) => {
             let duration_ms = started.elapsed().as_millis() as u64;
-            let tools = server
+            let tools: Vec<McpToolCheckResult> = server
                 .tools()
                 .iter()
                 .map(|tool| {
@@ -192,7 +201,7 @@ async fn check_mcp_server(
                     let schema_valid = tool
                         .input_schema
                         .as_ref()
-                        .map_or(false, |v: &serde_json::Value| v.is_object());
+                        .is_some_and(serde_json::Value::is_object);
                     McpToolCheckResult {
                         name: tool.name.clone(),
                         has_input_schema,
@@ -200,14 +209,28 @@ async fn check_mcp_server(
                     }
                 })
                 .collect();
+            // Fail the server if any tool has an invalid inputSchema.
+            let invalid_schema = tools.iter().any(|t| t.has_input_schema && !t.schema_valid);
+            let ok = !invalid_schema;
+            let error = if invalid_schema {
+                Some(format!(
+                    "{} tool(s) have invalid inputSchema (expected JSON object)",
+                    tools
+                        .iter()
+                        .filter(|t| t.has_input_schema && !t.schema_valid)
+                        .count()
+                ))
+            } else {
+                None
+            };
             McpServerCheckResult {
                 name,
                 command: command_display,
-                ok: true,
+                ok,
                 negotiated_protocol_version: Some(server.protocol_version().to_owned()),
                 tools,
                 duration_ms,
-                error: None,
+                error,
             }
         }
         Err(err) => {
@@ -228,6 +251,16 @@ async fn check_mcp_server(
     }
 }
 
+/// Returns `Some(true)` when this phase is a blocking phase (pre_tool_use), else `None`.
+fn pre_tool_blocking(phase: &str, blocks: bool) -> Option<bool> {
+    if phase == "pre_tool_use" {
+        Some(blocks)
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
 async fn check_hook(
     env: &LocalEnvironment,
     hook: &crate::config::ToolHookCfg,
@@ -239,50 +272,46 @@ async fn check_hook(
     let context = synthetic_hook_context(hook, phase);
     let started = Instant::now();
 
-    // Attempt to render the template.
     let rendered_command = match renderer.render_str(&hook.command, &context) {
         Ok(cmd) => cmd,
         Err(err) => {
-            let duration_ms = started.elapsed().as_millis() as u64;
             return HookCheckResult {
                 name: hook.name.clone(),
                 phase: phase.to_owned(),
                 ok: false,
                 exit_code: None,
-                duration_ms,
+                duration_ms: started.elapsed().as_millis() as u64,
                 template_render_ok: false,
-                blocking: if phase == "pre_tool_use" {
-                    Some(true)
-                } else {
-                    None
-                },
+                blocking: pre_tool_blocking(phase, true),
                 stdout_bytes: 0,
                 stderr_bytes: 0,
-                error: Some(redactor.redact_text(&err.to_string(), surface::INSPECT).text),
+                error: Some(
+                    redactor
+                        .redact_text(&err.to_string(), surface::INSPECT)
+                        .text,
+                ),
             };
         }
     };
 
-    // Build env vars for the hook.
     let env_vars = match build_hook_env(&context) {
         Ok(v) => v,
         Err(err) => {
-            let duration_ms = started.elapsed().as_millis() as u64;
             return HookCheckResult {
                 name: hook.name.clone(),
                 phase: phase.to_owned(),
                 ok: false,
                 exit_code: None,
-                duration_ms,
+                duration_ms: started.elapsed().as_millis() as u64,
                 template_render_ok: true,
-                blocking: if phase == "pre_tool_use" {
-                    Some(true)
-                } else {
-                    None
-                },
+                blocking: pre_tool_blocking(phase, true),
                 stdout_bytes: 0,
                 stderr_bytes: 0,
-                error: Some(redactor.redact_text(&err.to_string(), surface::INSPECT).text),
+                error: Some(
+                    redactor
+                        .redact_text(&err.to_string(), surface::INSPECT)
+                        .text,
+                ),
             };
         }
     };
@@ -295,17 +324,23 @@ async fn check_hook(
     let result: Result<crate::env::RunResult, crate::error::EnvError> = env.run(req).await;
     let duration_ms = started.elapsed().as_millis() as u64;
 
+    hook_result_from_run(hook, phase, result, duration_ms, timeout_secs, redactor)
+}
+
+fn hook_result_from_run(
+    hook: &crate::config::ToolHookCfg,
+    phase: &str,
+    result: Result<crate::env::RunResult, crate::error::EnvError>,
+    duration_ms: u64,
+    timeout_secs: u64,
+    redactor: &Redactor,
+) -> HookCheckResult {
     match result {
         Ok(run_result) => {
             let ok = run_result.exit_code == 0 && !run_result.timed_out;
-            let stdout_bytes = run_result.stdout.len();
-            let stderr_bytes = run_result.stderr.len();
-            let blocking = if phase == "pre_tool_use" {
-                Some(!ok)
-            } else {
+            let error = if ok {
                 None
-            };
-            let error = if !ok {
+            } else {
                 let raw = if run_result.timed_out {
                     format!("hook timed out after {timeout_secs}s")
                 } else {
@@ -317,8 +352,6 @@ async fn check_hook(
                     }
                 };
                 Some(redactor.redact_text(&raw, surface::INSPECT).text)
-            } else {
-                None
             };
             HookCheckResult {
                 name: hook.name.clone(),
@@ -327,14 +360,16 @@ async fn check_hook(
                 exit_code: Some(run_result.exit_code),
                 duration_ms,
                 template_render_ok: true,
-                blocking,
-                stdout_bytes,
-                stderr_bytes,
+                blocking: pre_tool_blocking(phase, !ok),
+                stdout_bytes: run_result.stdout.len(),
+                stderr_bytes: run_result.stderr.len(),
                 error,
             }
         }
         Err(err) => {
-            let error_msg = redactor.redact_text(&err.to_string(), surface::INSPECT).text;
+            let error_msg = redactor
+                .redact_text(&err.to_string(), surface::INSPECT)
+                .text;
             HookCheckResult {
                 name: hook.name.clone(),
                 phase: phase.to_owned(),
@@ -342,11 +377,7 @@ async fn check_hook(
                 exit_code: None,
                 duration_ms,
                 template_render_ok: true,
-                blocking: if phase == "pre_tool_use" {
-                    Some(true)
-                } else {
-                    None
-                },
+                blocking: pre_tool_blocking(phase, true),
                 stdout_bytes: 0,
                 stderr_bytes: 0,
                 error: Some(error_msg),
@@ -384,24 +415,92 @@ fn synthetic_hook_context(hook: &crate::config::ToolHookCfg, phase: &str) -> ser
     })
 }
 
-fn build_hook_env(
-    context: &serde_json::Value,
-) -> Result<BTreeMap<String, String>, Error> {
+fn build_hook_env(context: &serde_json::Value) -> Result<BTreeMap<String, String>, Error> {
     let mut env = BTreeMap::new();
-    insert_hook_env_str(&mut env, "MAXWELL_HOOK_NAME", "RUST_SWE_AGENT_HOOK_NAME", &context["hook"]["name"]);
-    insert_hook_env_str(&mut env, "MAXWELL_HOOK_PHASE", "RUST_SWE_AGENT_HOOK_PHASE", &context["hook"]["phase"]);
-    insert_hook_env_str(&mut env, "MAXWELL_TOOL_NAME", "RUST_SWE_AGENT_TOOL_NAME", &context["tool"]["name"]);
-    insert_hook_env_str(&mut env, "MAXWELL_TASK", "RUST_SWE_AGENT_TASK", &context["task"]);
-    insert_hook_env_str(&mut env, "MAXWELL_MODEL", "RUST_SWE_AGENT_MODEL", &context["model"]);
-    insert_hook_env_str(&mut env, "MAXWELL_STEP", "RUST_SWE_AGENT_STEP", &context["step"]);
-    insert_hook_env_str(&mut env, "MAXWELL_COMMAND", "RUST_SWE_AGENT_COMMAND", &context["command"]);
-    insert_hook_env_str(&mut env, "MAXWELL_TOOL_INPUT", "RUST_SWE_AGENT_TOOL_INPUT", &context["tool_input"]);
-    insert_hook_env_str(&mut env, "MAXWELL_EXIT_CODE", "RUST_SWE_AGENT_EXIT_CODE", &context["returncode"]);
-    insert_hook_env_str(&mut env, "MAXWELL_STDOUT", "RUST_SWE_AGENT_STDOUT", &context["stdout"]);
-    insert_hook_env_str(&mut env, "MAXWELL_STDERR", "RUST_SWE_AGENT_STDERR", &context["stderr"]);
-    insert_hook_env_str(&mut env, "MAXWELL_OUTPUT", "RUST_SWE_AGENT_OUTPUT", &context["output"]);
-    insert_hook_env_str(&mut env, "MAXWELL_TIMED_OUT", "RUST_SWE_AGENT_TIMED_OUT", &context["timed_out"]);
-    insert_hook_env_str(&mut env, "MAXWELL_TOTAL_COST_USD", "RUST_SWE_AGENT_TOTAL_COST_USD", &context["total_cost_usd"]);
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_HOOK_NAME",
+        "RUST_SWE_AGENT_HOOK_NAME",
+        &context["hook"]["name"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_HOOK_PHASE",
+        "RUST_SWE_AGENT_HOOK_PHASE",
+        &context["hook"]["phase"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_TOOL_NAME",
+        "RUST_SWE_AGENT_TOOL_NAME",
+        &context["tool"]["name"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_TASK",
+        "RUST_SWE_AGENT_TASK",
+        &context["task"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_MODEL",
+        "RUST_SWE_AGENT_MODEL",
+        &context["model"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_STEP",
+        "RUST_SWE_AGENT_STEP",
+        &context["step"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_COMMAND",
+        "RUST_SWE_AGENT_COMMAND",
+        &context["command"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_TOOL_INPUT",
+        "RUST_SWE_AGENT_TOOL_INPUT",
+        &context["tool_input"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_EXIT_CODE",
+        "RUST_SWE_AGENT_EXIT_CODE",
+        &context["returncode"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_STDOUT",
+        "RUST_SWE_AGENT_STDOUT",
+        &context["stdout"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_STDERR",
+        "RUST_SWE_AGENT_STDERR",
+        &context["stderr"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_OUTPUT",
+        "RUST_SWE_AGENT_OUTPUT",
+        &context["output"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_TIMED_OUT",
+        "RUST_SWE_AGENT_TIMED_OUT",
+        &context["timed_out"],
+    );
+    insert_hook_env_str(
+        &mut env,
+        "MAXWELL_TOTAL_COST_USD",
+        "RUST_SWE_AGENT_TOTAL_COST_USD",
+        &context["total_cost_usd"],
+    );
     let ctx_json = serde_json::to_string(context)?;
     env.insert("MAXWELL_CONTEXT_JSON".to_owned(), ctx_json.clone());
     env.insert("RUST_SWE_AGENT_CONTEXT_JSON".to_owned(), ctx_json);
@@ -437,63 +536,6 @@ fn write_artifact(output_dir: &Path, report: &ScriptabilityCheckReport) -> Resul
     Ok(())
 }
 
-fn chrono_now_utc() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Format as ISO 8601 UTC without external deps.
-    let s = secs;
-    let mins = s / 60;
-    let hours = mins / 60;
-    let days_since_epoch = hours / 24;
-    // Approximate — good enough for an audit timestamp.
-    let _ = days_since_epoch; // suppress unused
-    format_unix_ts(secs)
-}
-
-fn format_unix_ts(secs: u64) -> String {
-    // Simple UTC formatter without chrono.
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    let total_days = secs / 86400;
-
-    // Compute Gregorian date from days since 1970-01-01
-    let (year, month, day) = days_to_ymd(total_days);
-    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let year_days = if is_leap(year) { 366 } else { 365 };
-        if days < year_days {
-            break;
-        }
-        days -= year_days;
-        year += 1;
-    }
-    let month_days: &[u64] = if is_leap(year) {
-        &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        &[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 1u64;
-    for &md in month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-    (year, month, days + 1)
-}
-
-const fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
 // ── text renderer ─────────────────────────────────────────────────────────────
 
 pub fn render_text(report: &ScriptabilityCheckReport) -> String {
@@ -515,15 +557,13 @@ pub fn render_text(report: &ScriptabilityCheckReport) -> String {
                 let _ = write!(out, "  protocol={ver}");
             }
             let _ = writeln!(out, "  {}ms", server.duration_ms);
-            if !server.tools.is_empty() {
-                for tool in &server.tools {
-                    let schema_str = match (tool.has_input_schema, tool.schema_valid) {
-                        (false, _) => "no-schema",
-                        (true, false) => "invalid-schema",
-                        (true, true) => "schema-ok",
-                    };
-                    let _ = writeln!(out, "      tool: {}  [{}]", tool.name, schema_str);
-                }
+            for tool in &server.tools {
+                let schema_str = match (tool.has_input_schema, tool.schema_valid) {
+                    (false, _) => "no-schema",
+                    (true, false) => "invalid-schema",
+                    (true, true) => "schema-ok",
+                };
+                let _ = writeln!(out, "      tool: {}  [{}]", tool.name, schema_str);
             }
             if let Some(err) = &server.error {
                 let _ = writeln!(out, "      error: {err}");

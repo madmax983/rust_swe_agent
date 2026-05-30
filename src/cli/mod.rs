@@ -125,9 +125,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Import(i) => bench_import(i),
             args::BenchCmd::ExportCi(c) => bench_export_ci(c),
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
-            args::BenchCmd::ScriptabilityCheck(s) => {
-                Box::pin(bench_scriptability_check(s)).await
-            }
+            args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3472,15 +3470,8 @@ fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error
 async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(), Error> {
     use crate::run::scriptability_check::{ScriptabilityCheckArgs, render_text};
 
-    let is_json = match cmd.format.as_str() {
-        "text" => false,
-        "json" => true,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "scriptability-check: unknown --format `{other}` (expected `text` or `json`)"
-            ))));
-        }
-    };
+    // value_parser = ["text", "json"] on the arg ensures only valid values reach here.
+    let is_json = cmd.format == "json";
 
     let args = ScriptabilityCheckArgs {
         config_path: cmd.config,

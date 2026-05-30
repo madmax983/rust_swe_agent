@@ -2671,7 +2671,7 @@ pub struct ScriptabilityCheckCmd {
     pub output: Option<PathBuf>,
 
     /// Output format: `text` (default) or `json`.
-    #[arg(long, default_value = "text")]
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
 }
 

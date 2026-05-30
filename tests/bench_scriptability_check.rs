@@ -118,7 +118,10 @@ fn report_fields_exist() {
 #[test]
 fn artifact_kind_scriptability_check_label() {
     use maxwells_daemon::artifact::ArtifactKind;
-    assert_eq!(ArtifactKind::ScriptabilityCheck.label(), "scriptability_check");
+    assert_eq!(
+        ArtifactKind::ScriptabilityCheck.label(),
+        "scriptability_check"
+    );
 }
 
 // ── run() with empty config ───────────────────────────────────────────────────
@@ -193,7 +196,11 @@ command = "true"
     assert!(hook.ok, "hook should be ok");
     assert_eq!(hook.phase, "pre_tool_use");
     assert!(hook.template_render_ok);
-    assert_eq!(hook.blocking, Some(false), "passing pre_tool_use hook should not be blocking");
+    assert_eq!(
+        hook.blocking,
+        Some(false),
+        "passing pre_tool_use hook should not be blocking"
+    );
     assert_eq!(hook.exit_code, Some(0));
 }
 
@@ -216,7 +223,11 @@ command = "false"
     assert_eq!(report.hooks.len(), 1);
     let hook = &report.hooks[0];
     assert!(!hook.ok, "hook should not be ok");
-    assert_eq!(hook.blocking, Some(true), "failing pre_tool_use hook should be blocking");
+    assert_eq!(
+        hook.blocking,
+        Some(true),
+        "failing pre_tool_use hook should be blocking"
+    );
 }
 
 #[tokio::test]
@@ -237,7 +248,10 @@ command = "echo done"
     assert_eq!(report.hooks.len(), 1);
     let hook = &report.hooks[0];
     assert_eq!(hook.phase, "post_tool_use");
-    assert_eq!(hook.blocking, None, "post_tool_use hooks have no blocking field");
+    assert_eq!(
+        hook.blocking, None,
+        "post_tool_use hooks have no blocking field"
+    );
 }
 
 #[tokio::test]
@@ -257,7 +271,10 @@ command = "{{ unclosed_brace"
 
     assert_eq!(report.hooks.len(), 1);
     let hook = &report.hooks[0];
-    assert!(!hook.template_render_ok, "template render should have failed");
+    assert!(
+        !hook.template_render_ok,
+        "template render should have failed"
+    );
     assert!(!hook.ok, "hook with render failure should not be ok");
     assert!(hook.error.is_some(), "error should be recorded");
 }
@@ -279,7 +296,10 @@ command = "echo hello"
 
     assert_eq!(report.hooks.len(), 1);
     let hook = &report.hooks[0];
-    assert!(hook.stdout_bytes > 0, "stdout_bytes should be > 0 for 'echo hello'");
+    assert!(
+        hook.stdout_bytes > 0,
+        "stdout_bytes should be > 0 for 'echo hello'"
+    );
 }
 
 // ── MCP server checks ─────────────────────────────────────────────────────────
@@ -466,13 +486,7 @@ fn cli_scriptability_check_writes_artifact_when_output_given() {
     let outdir = tempfile::tempdir().unwrap();
 
     let out = Command::new(binary_path())
-        .args([
-            "--log",
-            "error",
-            "bench",
-            "scriptability-check",
-            "--output",
-        ])
+        .args(["--log", "error", "bench", "scriptability-check", "--output"])
         .arg(outdir.path())
         .output()
         .unwrap();
@@ -484,7 +498,10 @@ fn cli_scriptability_check_writes_artifact_when_output_given() {
     );
 
     let artifact_path = outdir.path().join("scriptability_check.json");
-    assert!(artifact_path.exists(), "artifact should be written to output dir");
+    assert!(
+        artifact_path.exists(),
+        "artifact should be written to output dir"
+    );
 
     let json: serde_json::Value =
         serde_json::from_reader(std::fs::File::open(&artifact_path).unwrap()).unwrap();
@@ -515,4 +532,29 @@ timeout_secs = 1
         stderr.contains("scriptability_check_failure"),
         "stderr should contain outcome_class: {stderr}"
     );
+}
+
+// ── invalid schema marks server as failed ─────────────────────────────────────
+
+#[test]
+fn mcp_server_check_result_ok_false_when_has_invalid_schema_tools() {
+    // A server that succeeded but has a tool with invalid schema should not be ok.
+    let result = McpServerCheckResult {
+        name: "mcp-0".into(),
+        command: "my-server".into(),
+        ok: false,
+        negotiated_protocol_version: Some("2025-11-25".into()),
+        tools: vec![McpToolCheckResult {
+            name: "broken-tool".into(),
+            has_input_schema: true,
+            schema_valid: false,
+        }],
+        duration_ms: 10,
+        error: Some("1 tool(s) have invalid inputSchema (expected JSON object)".into()),
+    };
+    assert!(
+        !result.ok,
+        "server with invalid-schema tool should not be ok"
+    );
+    assert!(result.error.is_some());
 }
