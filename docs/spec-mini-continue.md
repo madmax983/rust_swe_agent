@@ -42,7 +42,7 @@ A trajectory is valid for `--continue` if and only if it is **terminal**:
 - `outcome` is present (any value), OR
 - `exit_reason` is present (any value)
 
-A trajectory is invalid for `--continue` (exit 27, `continue_non_terminal`) if:
+A trajectory is invalid for `--continue` (exit 28, `continue_non_terminal`) if:
 - `partial: true` AND `outcome` is absent AND `exit_reason` is absent
 
 Additionally, the trajectory must contain `task` and `model_name` fields
@@ -127,7 +127,7 @@ mounting a volume that already has the patch applied, or by running
 | 2 | `usage_error` | `--continue` without `--task`, or with conflicting flags |
 | 15 | `resume_already_terminal` | *(never emitted by `--continue`)* |
 | 16 | `resume_manifest_missing` | Parent trajectory missing `task`/`model_name` |
-| 27 | `continue_non_terminal` | Parent trajectory is non-terminal (use `--resume` instead) |
+| 28 | `continue_non_terminal` | Parent trajectory is non-terminal (use `--resume` instead) |
 
 See `docs/exit-codes.md` for the full contract.
 

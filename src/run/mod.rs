@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod annotate;
+pub mod assert;
 pub mod audit;
 pub mod behavior;
 pub mod bisect;
@@ -36,6 +37,7 @@ pub mod matrix;
 pub mod mini;
 pub mod near_miss;
 pub mod patch_stats;
+pub mod policy_check;
 pub mod policy_impact;
 pub mod power;
 pub mod rate_limit;

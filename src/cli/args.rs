@@ -182,6 +182,47 @@ pub struct RedactCheckCmd {
     pub strict: bool,
 }
 
+/// Output format for `agent policy-check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PolicyCheckFormatArg {
+    Text,
+    Json,
+}
+
+/// `agent policy-check` — zero-cost preflight for the command policy config (issue #335).
+#[derive(Debug, Args)]
+pub struct PolicyCheckCmd {
+    /// Optional path to a TOML config file containing a `[policy]` block.
+    /// Defaults to the harness default policy when omitted.
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Read one command per line from a file (blank lines and `#` comments ignored).
+    #[arg(long, value_name = "PATH", conflicts_with_all = &["stdin", "command"])]
+    pub commands_file: Option<std::path::PathBuf>,
+
+    /// Read commands from stdin (one per line).
+    #[arg(long, conflicts_with_all = &["commands_file", "command"])]
+    pub stdin: bool,
+
+    /// Ad-hoc command to check (repeatable). Exactly one input source is required.
+    #[arg(long = "command", value_name = "CMD", conflicts_with_all = &["commands_file", "stdin"])]
+    pub command: Vec<String>,
+
+    /// Output format: `text` (default, human-readable table) or `json` (schema-versioned).
+    #[arg(long, default_value = "text")]
+    pub format: PolicyCheckFormatArg,
+
+    /// Assert an expected verdict for a command: `CMD:VERDICT` (repeatable).
+    /// VERDICT must be one of `allow`, `ask`, `deny`. Mismatch causes non-zero exit.
+    #[arg(long = "expect", value_name = "CMD:VERDICT")]
+    pub expect: Vec<String>,
+
+    /// Write output to this file instead of stdout.
+    #[arg(long)]
+    pub output: Option<std::path::PathBuf>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -196,6 +237,8 @@ pub enum AgentCmd {
     SkillsPreview(SkillsPreviewCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.
     Suite(Box<SuiteCmd>),
+    /// Check a command corpus against the policy config (zero-cost, no model call).
+    PolicyCheck(PolicyCheckCmd),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -720,6 +763,40 @@ pub enum BenchCmd {
     ScriptabilityCheck(ScriptabilityCheckCmd),
     /// Rank unresolved sweep instances by gold-patch proximity (zero-cost: reads only evaluation.json).
     NearMiss(NearMissCmd),
+    /// Evaluate operator-declared SLO rules against a completed sweep's artifacts and gate CI (zero-cost: read-only).
+    Assert(AssertCmd),
+}
+
+/// `bench assert` — evaluate operator-declared SLO rules against a completed sweep.
+///
+/// Reads sweep artifacts (results.json, evaluation.json) and checks each rule
+/// against the extracted metrics. Writes assertions.json. Exits 0 only when all
+/// rules pass; exits 27 when at least one rule fails; exits 2 on bad invocation.
+#[derive(Debug, Args, Clone)]
+pub struct AssertCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Path to a TOML file containing an array of `[[rule]]` entries.
+    /// Mutually exclusive with `--rule`.
+    #[arg(long, conflicts_with = "rule")]
+    pub rules: Option<std::path::PathBuf>,
+
+    /// Inline rule shorthand, e.g. `resolved_rate>=0.38`. Repeatable.
+    /// Mutually exclusive with `--rules`.
+    #[arg(long, conflicts_with = "rules")]
+    pub rule: Vec<String>,
+
+    /// Print PASSED rules line-by-line in addition to the summary header.
+    /// By default only failed rules are printed.
+    #[arg(long, default_value_t = false)]
+    pub verbose: bool,
+
+    /// When a rule's required source artifact is missing, count the rule as
+    /// skipped (record-only) rather than failed. Default: fail-closed.
+    #[arg(long, default_value_t = false)]
+    pub allow_missing_artifacts: bool,
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.

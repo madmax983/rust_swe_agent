@@ -1,0 +1,20 @@
+# Nightly SWE-bench smoke SLO rules (issue #308).
+#
+# These rules gate the daily cron on a richer signal than the old
+# `errored == 0` check.  Adding rules here (e.g. resolved_rate >= 0.05)
+# narrows the gap between "it ran" and "it worked".
+#
+# Exit codes:
+#   0  — all rules passed → smoke green
+#   27 — at least one rule failed → smoke red (auto-files an issue)
+#   2  — bad invocation or unknown metric → fix the workflow/rules
+
+[[rule]]
+# The harness must not have crashed on any instance.
+# resolved_count / resolved_rate rules are intentionally omitted here: they
+# require evaluation.json which is only present when bench evaluate has run.
+# Add them in a separate post-evaluate job if needed.
+name = "errored_zero"
+metric = "errored_count"
+op = "=="
+threshold = 0

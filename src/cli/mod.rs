@@ -129,6 +129,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
             args::BenchCmd::NearMiss(n) => bench_near_miss(n),
+            args::BenchCmd::Assert(a) => bench_assert(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -137,6 +138,7 @@ pub async fn run() -> Result<(), Error> {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
+            args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
         },
         Command::Ui(u) => ui_cmd(u).await,
         #[cfg(feature = "docker")]
@@ -252,6 +254,90 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
 
     if exit_code != ExitCode::Success {
         exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
+    use crate::run::policy_check::{
+        ExpectAssertion, PolicyCheckOpts, PolicyCheckSource, VerdictKind, format_json, format_text,
+        run_policy_check,
+    };
+
+    let cfg = match &p.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+
+    // Resolve input source; exactly one of --commands-file / --stdin / --command (required).
+    let source = match (&p.commands_file, p.stdin, p.command.is_empty()) {
+        (Some(path), false, true) => PolicyCheckSource::CommandsFile(path.clone()),
+        (None, true, true) => PolicyCheckSource::Stdin,
+        (None, false, false) => PolicyCheckSource::Commands(p.command.clone()),
+        (None, false, true) => {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "no input source; use --commands-file, --command, or --stdin".to_owned(),
+            )));
+        }
+        _ => {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "supply exactly one of --commands-file, --stdin, or --command (repeatable)"
+                    .to_owned(),
+            )));
+        }
+    };
+
+    // Parse --expect CMD:VERDICT assertions (split on last ':' to handle colons in commands).
+    let expect: Vec<ExpectAssertion> = p
+        .expect
+        .iter()
+        .map(|raw| {
+            let last_colon = raw.rfind(':').ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Usage(format!(
+                    "--expect must be in CMD:VERDICT format (allow/ask/deny), got '{raw}'"
+                )))
+            })?;
+            let cmd = raw[..last_colon].to_owned();
+            let verdict_str = &raw[last_colon + 1..];
+            let expected = VerdictKind::parse(verdict_str).ok_or_else(|| {
+                Error::Config(crate::error::ConfigError::Usage(format!(
+                    "--expect verdict must be 'allow', 'ask', or 'deny', got '{verdict_str}'"
+                )))
+            })?;
+            Ok(ExpectAssertion {
+                command: cmd,
+                expected,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    let opts = PolicyCheckOpts { source, expect };
+    let output = run_policy_check(&cfg, &opts)?;
+
+    let formatted = match p.format {
+        args::PolicyCheckFormatArg::Json => {
+            let json_val = format_json(&output).map_err(Error::Json)?;
+            serde_json::to_string_pretty(&json_val).map_err(Error::Json)?
+        }
+        args::PolicyCheckFormatArg::Text => format_text(&output),
+    };
+
+    if let Some(out_path) = &p.output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(out_path, &formatted)?;
+    } else {
+        print!("{formatted}");
+    }
+
+    if output.has_mismatches() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "policy-check: --expect assertions failed",
+        );
     }
     Ok(())
 }
@@ -3951,6 +4037,37 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
         NearMissFormat::Json => println!("{}", render_json(&report)?),
     }
 
+    Ok(())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
+    use crate::run::assert::{AssertArgs, run_assert};
+
+    let args = AssertArgs {
+        sweep: a.sweep,
+        rules_file: a.rules,
+        inline_rules: a.rule,
+        verbose: a.verbose,
+        allow_missing_artifacts: a.allow_missing_artifacts,
+    };
+
+    let report = run_assert(&args).unwrap_or_else(|e| {
+        let code = if matches!(e, Error::Config(_)) {
+            ExitCode::UsageError
+        } else {
+            ExitCode::InternalError
+        };
+        exit_with_outcome(code, &format!("bench assert: {e}"));
+    });
+
+    print!("{}", report.stdout);
+    if !report.all_passed {
+        exit_with_outcome(
+            ExitCode::SloRuleFailure,
+            "bench assert: at least one SLO rule failed",
+        );
+    }
     Ok(())
 }
 

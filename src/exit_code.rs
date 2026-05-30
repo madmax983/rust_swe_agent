@@ -111,10 +111,15 @@ pub enum ExitCode {
     /// entry compiled successfully but produced zero matches against the sample input.
     /// Useful in CI to catch a regex typo or a renamed token format before a sweep.
     RedactCheckStrictFail = 26,
-    /// 27 — `mini --continue` target trajectory is non-terminal (still
+    /// 27 — `bench assert` evaluated all rules and at least one rule failed.
+    /// Distinct from `usage_error` (2) so CI can distinguish "your gate failed"
+    /// from "your invocation is broken". All rules were evaluated; the gate is wired
+    /// correctly but the sweep did not meet the declared SLO.
+    SloRuleFailure = 27,
+    /// 28 — `mini --continue` target trajectory is non-terminal (still
     /// partial/in-progress); cannot issue a follow-up instruction to an
     /// unfinished run. Use `--resume` to recover a partial run instead.
-    ContinueNonTerminal = 27,
+    ContinueNonTerminal = 28,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -162,6 +167,7 @@ impl ExitCode {
             Self::FeatureUnavailable => "feature_unavailable",
             Self::RedactCheckStaleLiterals => "redact_check_stale_literals",
             Self::RedactCheckStrictFail => "redact_check_strict_fail",
+            Self::SloRuleFailure => "slo_rule_failure",
             Self::ContinueNonTerminal => "continue_non_terminal",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
@@ -416,8 +422,8 @@ mod tests {
     // ── RED-phase: continue exit codes ───────────────────────────────────
 
     #[test]
-    fn continue_non_terminal_exit_code_is_27() {
-        assert_eq!(ExitCode::ContinueNonTerminal.as_i32(), 27);
+    fn continue_non_terminal_exit_code_is_28() {
+        assert_eq!(ExitCode::ContinueNonTerminal.as_i32(), 28);
         assert_eq!(
             ExitCode::ContinueNonTerminal.outcome_class(),
             "continue_non_terminal"

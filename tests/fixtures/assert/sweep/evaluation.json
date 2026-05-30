@@ -1,0 +1,41 @@
+{
+  "artifact_kind": "evaluation_results",
+  "schema_version": {
+    "major": 1,
+    "minor": 3
+  },
+  "instances": [
+    {
+      "instance_id": "alpha",
+      "resolved": true,
+      "runs": 1,
+      "tests_passed": ["test_alpha"],
+      "tests_failed": [],
+      "eval_exit_reason": "resolved"
+    },
+    {
+      "instance_id": "beta",
+      "resolved": true,
+      "runs": 1,
+      "tests_passed": ["test_beta"],
+      "tests_failed": [],
+      "eval_exit_reason": "resolved"
+    },
+    {
+      "instance_id": "gamma",
+      "resolved": false,
+      "runs": 1,
+      "tests_passed": [],
+      "tests_failed": ["test_gamma"],
+      "eval_exit_reason": "unresolved"
+    },
+    {
+      "instance_id": "delta",
+      "resolved": false,
+      "runs": 1,
+      "tests_passed": [],
+      "tests_failed": ["test_delta"],
+      "eval_exit_reason": "unresolved"
+    }
+  ]
+}
