@@ -518,7 +518,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         let mut history = parent.messages_as_model_history();
         history.push(crate::model::Message {
             role: crate::model::Role::User,
-            content: cont.follow_up_task.clone(),
+            content: cont.follow_up_task,
             cache_hint: crate::model::CacheHint::None,
             extra: Default::default(),
         });
