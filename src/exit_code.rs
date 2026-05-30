@@ -407,4 +407,70 @@ mod tests {
         assert_eq!(ExitCode::AuditFailure.as_i32(), 20);
         assert_eq!(ExitCode::AuditFailure.outcome_class(), "audit_failure");
     }
+
+    #[test]
+    fn from_error_agent_stagnation_is_agent_stagnation() {
+        assert_eq!(
+            ExitCode::from_error(&Error::AgentStagnation { count: 3, window: 10 }),
+            ExitCode::AgentStagnation
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_budget_exhausted_is_bisect_budget_exhausted() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectBudgetExhausted),
+            ExitCode::BisectBudgetExhausted
+        );
+    }
+
+    #[test]
+    fn from_error_bisect_schema_break_is_bisect_schema_break() {
+        assert_eq!(
+            ExitCode::from_error(&Error::BisectSchemaBreak),
+            ExitCode::BisectSchemaBreak
+        );
+    }
+
+    #[test]
+    fn from_error_audit_is_audit_failure() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Audit("failure".into())),
+            ExitCode::AuditFailure
+        );
+    }
+
+    #[test]
+    fn from_error_template_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Template(minijinja::Error::new(minijinja::ErrorKind::SyntaxError, "error"))),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_trajectory_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Trajectory("error".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    fn from_error_github_is_internal_error() {
+        assert_eq!(
+            ExitCode::from_error(&Error::Github("error".into())),
+            ExitCode::InternalError
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn from_error_json_is_internal_error() {
+        let err: serde_json::Error = serde_json::from_reader::<_, serde_json::Value>(std::io::Cursor::new(b"")).unwrap_err();
+        assert_eq!(
+            ExitCode::from_error(&Error::Json(err)),
+            ExitCode::InternalError
+        );
+    }
 }
