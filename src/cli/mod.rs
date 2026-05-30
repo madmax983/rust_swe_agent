@@ -993,6 +993,14 @@ fn validate_continue_or_exit(traj: &crate::trajectory::Trajectory, path: &std::p
                 path.display()
             ),
         ),
+        Err(ContinueValidationError::InvalidPrefix(reason)) => exit_with_outcome(
+            ExitCode::ResumeInvalidPrefix,
+            &format!(
+                "--continue: `{}` has an invalid message prefix: {}",
+                path.display(),
+                reason
+            ),
+        ),
     }
 }
 
@@ -1080,10 +1088,11 @@ async fn mini_continue_cmd(
     let traj = load_resume_traj(&continue_path)?;
     validate_continue_or_exit(&traj, &continue_path);
 
-    // Inherit model name, step limit, and timeout from parent trajectory.
+    // Inherit model name, fallback list, step limit, and timeout from parent.
     cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
     if let Some(manifest) = &traj.info.manifest {
         cfg.root.agent.step_limit = manifest.step_limit;
+        cfg.root.model.fallback_models = manifest.fallback_models.clone();
     }
     // task_timeout_secs lives on MiniArgs, not cfg; compute effective value here.
     let effective_task_timeout = m.task_timeout_secs.or_else(|| {

@@ -555,6 +555,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         parent.info.redaction = None;
         parent.info.trace_id = None;
         parent.info.other.clear();
+        parent.info.policy_counts = Default::default();
         // Overwrite the task to the redacted follow-up instruction.
         parent.info.task = Some(redacted_follow_up);
 
@@ -1608,6 +1609,9 @@ pub enum ContinueValidationError {
     /// The trajectory is missing required fields (`task`, `model_name`) that
     /// are needed to reconstruct the run configuration.
     ManifestMissing,
+    /// The message sequence is structurally invalid: too short to contain a
+    /// valid system+user prefix, making it unsafe to continue.
+    InvalidPrefix(String),
 }
 
 /// Validate that `traj` is a valid candidate for `mini --continue`.
@@ -1629,6 +1633,16 @@ pub fn validate_continue_trajectory(
     // Manifest-fields check.
     if traj.info.task.is_none() || traj.info.model_name.is_none() {
         return Err(ContinueValidationError::ManifestMissing);
+    }
+
+    // Structural validity — need at least system + user initial messages so
+    // the model receives a valid conversation prefix when we append the
+    // follow-up turn.
+    if traj.messages.len() < 2 {
+        return Err(ContinueValidationError::InvalidPrefix(format!(
+            "trajectory has {} message(s); need at least 2 (system + user)",
+            traj.messages.len()
+        )));
     }
 
     Ok(())
@@ -2557,6 +2571,16 @@ index 8a1218a..24c5735 100644\n\
             validate_continue_trajectory(&traj),
             Err(ContinueValidationError::ManifestMissing)
         );
+    }
+
+    #[test]
+    fn validate_continue_rejects_trajectory_with_too_few_messages() {
+        let mut traj = make_minimal_terminal_traj();
+        traj.messages.clear(); // zero messages — no valid prefix
+        assert!(matches!(
+            validate_continue_trajectory(&traj),
+            Err(ContinueValidationError::InvalidPrefix(_))
+        ));
     }
 
     // ── Integration test: mini --continue (deterministic hello-world) ─────────
