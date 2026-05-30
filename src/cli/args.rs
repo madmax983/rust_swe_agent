@@ -182,6 +182,47 @@ pub struct RedactCheckCmd {
     pub strict: bool,
 }
 
+/// Output format for `agent policy-check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PolicyCheckFormatArg {
+    Text,
+    Json,
+}
+
+/// `agent policy-check` — zero-cost preflight for the command policy config (issue #335).
+#[derive(Debug, Args)]
+pub struct PolicyCheckCmd {
+    /// Optional path to a TOML config file containing a `[policy]` block.
+    /// Defaults to the harness default policy when omitted.
+    #[arg(long)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Read one command per line from a file (blank lines and `#` comments ignored).
+    #[arg(long, value_name = "PATH", conflicts_with_all = &["stdin", "command"])]
+    pub commands_file: Option<std::path::PathBuf>,
+
+    /// Read commands from stdin (one per line).
+    #[arg(long, conflicts_with_all = &["commands_file", "command"])]
+    pub stdin: bool,
+
+    /// Ad-hoc command to check (repeatable). Exactly one input source is required.
+    #[arg(long = "command", value_name = "CMD", conflicts_with_all = &["commands_file", "stdin"])]
+    pub command: Vec<String>,
+
+    /// Output format: `text` (default, human-readable table) or `json` (schema-versioned).
+    #[arg(long, default_value = "text")]
+    pub format: PolicyCheckFormatArg,
+
+    /// Assert an expected verdict for a command: `CMD:VERDICT` (repeatable).
+    /// VERDICT must be one of `allow`, `ask`, `deny`. Mismatch causes non-zero exit.
+    #[arg(long = "expect", value_name = "CMD:VERDICT")]
+    pub expect: Vec<String>,
+
+    /// Write output to this file instead of stdout.
+    #[arg(long)]
+    pub output: Option<std::path::PathBuf>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -196,6 +237,8 @@ pub enum AgentCmd {
     SkillsPreview(SkillsPreviewCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.
     Suite(Box<SuiteCmd>),
+    /// Check a command corpus against the policy config (zero-cost, no model call).
+    PolicyCheck(PolicyCheckCmd),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

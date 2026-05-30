@@ -79,7 +79,7 @@ impl PolicyProfile {
         }
     }
 
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Safe => "safe",
             Self::Ask => "ask",
@@ -136,6 +136,24 @@ pub enum PolicyDecision {
     /// Block the command.  `label` is a short human-readable rule identifier
     /// persisted in the trajectory.
     Deny { label: String },
+}
+
+/// Detailed result of evaluating a single command, including the matching rule
+/// label.  Returned by [`PolicyEngine::evaluate`] and
+/// [`PolicyEngine::evaluate_non_interactive`]; used by `agent policy-check`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyEvaluation {
+    /// The policy decision for this command.
+    pub decision: PolicyDecision,
+    /// Label of the rule that produced this decision.
+    ///
+    /// Sentinels when no explicit rule matched:
+    /// - `"default-allow"` — safe / yolo profile, no rule matched
+    /// - `"default-ask"`   — ask profile, no explicit-allow rule matched
+    /// - `"yolo-bypass"`   — yolo profile (shortcircuits rule evaluation)
+    /// - `"ask-non-interactive"` — ask decision resolved to deny for a
+    ///   non-interactive caller (see [`PolicyEngine::evaluate_non_interactive`])
+    pub matching_rule: String,
 }
 
 // ── Policy rules ─────────────────────────────────────────────────────────────
@@ -1076,8 +1094,24 @@ impl PolicyEngine {
     /// - `ask`   → Ask
     /// - `yolo`  → Allow (counted as yolo-bypass by caller)
     pub fn check_command(&self, command: &str) -> PolicyDecision {
+        self.evaluate(command).decision
+    }
+
+    /// Like [`Self::check_command`] but resolves `Ask` to `Deny` for non-interactive
+    /// contexts (CI, unattended sweeps).  Guarantees no process is launched.
+    pub fn check_command_non_interactive(&self, command: &str) -> PolicyDecision {
+        self.evaluate_non_interactive(command).decision
+    }
+
+    /// Like [`Self::check_command`] but also returns the matching rule label.
+    ///
+    /// See [`PolicyEvaluation`] for the label sentinel values.
+    pub fn evaluate(&self, command: &str) -> PolicyEvaluation {
         if self.profile == PolicyProfile::Yolo {
-            return PolicyDecision::Allow;
+            return PolicyEvaluation {
+                decision: PolicyDecision::Allow,
+                matching_rule: "yolo-bypass".into(),
+            };
         }
 
         // Heredoc bodies are data fed to a tool (e.g. `cat`), not commands
@@ -1097,30 +1131,45 @@ impl PolicyEngine {
 
         for rule in &self.rules {
             if rule.matches(&normalized) {
-                return match rule.decision {
+                let decision = match rule.decision {
                     RuleDecision::Allow => PolicyDecision::Allow,
                     RuleDecision::Ask => PolicyDecision::Ask,
                     RuleDecision::Deny => PolicyDecision::Deny {
                         label: rule.label.clone(),
                     },
                 };
+                return PolicyEvaluation {
+                    decision,
+                    matching_rule: rule.label.clone(),
+                };
             }
         }
 
         match self.profile {
-            PolicyProfile::Ask => PolicyDecision::Ask,
-            PolicyProfile::Safe | PolicyProfile::Yolo => PolicyDecision::Allow,
+            PolicyProfile::Ask => PolicyEvaluation {
+                decision: PolicyDecision::Ask,
+                matching_rule: "default-ask".into(),
+            },
+            PolicyProfile::Safe | PolicyProfile::Yolo => PolicyEvaluation {
+                decision: PolicyDecision::Allow,
+                matching_rule: "default-allow".into(),
+            },
         }
     }
 
-    /// Like [`Self::check_command`] but resolves `Ask` to `Deny` for non-interactive
+    /// Like [`Self::evaluate`] but resolves `Ask` to `Deny` for non-interactive
     /// contexts (CI, unattended sweeps).  Guarantees no process is launched.
-    pub fn check_command_non_interactive(&self, command: &str) -> PolicyDecision {
-        match self.check_command(command) {
-            PolicyDecision::Ask => PolicyDecision::Deny {
-                label: "ask-non-interactive".into(),
-            },
-            other => other,
+    pub fn evaluate_non_interactive(&self, command: &str) -> PolicyEvaluation {
+        let eval = self.evaluate(command);
+        if eval.decision == PolicyDecision::Ask {
+            PolicyEvaluation {
+                decision: PolicyDecision::Deny {
+                    label: "ask-non-interactive".into(),
+                },
+                matching_rule: "ask-non-interactive".into(),
+            }
+        } else {
+            eval
         }
     }
 

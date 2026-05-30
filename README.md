@@ -395,6 +395,11 @@ a valid trajectory in hand:
   and cost aggregated by outcome bucket, delta view for resolved-vs-unresolved
   comparison, and the `command-stats.json` schema.
 - [`bench policy-impact`](docs/spec-policy-impact.md): measure security policy impact on sweep outcomes.
+- [`agent policy-check`](docs/spec-policy-check.md): zero-cost preflight — feed a corpus of
+  bash commands through your `[policy]` config and see the per-command verdict (allow / ask / deny)
+  plus the matching rule label, before spending a dollar on a sweep. Supports `--format json` for
+  CI snapshot diffing and `--expect CMD:VERDICT` for regression assertions. See also
+  `--render-only` and `bench doctor` for other preflight checks.
 - [`bench grep`](docs/spec-grep.md): regex search across all trajectory messages
   in a sweep — filter by role, instance, or outcome; redaction-safe; zero-cost
   (reads only on-disk artifacts).
