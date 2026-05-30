@@ -729,3 +729,53 @@ custom_patterns = ["NOMATCH-[0-9]+"]
         "expected strict warning even when sample has no matches:\n{text}"
     );
 }
+
+#[test]
+fn unmatched_literal_index_preserved_with_preceding_empty_and_duplicate_entries() {
+    // Regression: when secret_literals contains empty strings or duplicate values
+    // before a stale entry, the reported unmatched index must point to the stale
+    // entry's *original* config position, not the compacted rule-array position.
+    //
+    // Config positions:
+    //   0: ""           (empty — skipped, no rule created)
+    //   1: "dup"        (first occurrence)
+    //   2: "dup"        (duplicate — no second rule created)
+    //   3: "stale-xyz"  (stale — not present in sample)
+    //
+    // Without the fix, the stale literal would be reported at index 1 (its compacted
+    // rule index) instead of index 3 (its original config position).
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["", "dup", "dup", "stale-xyz"]
+"#,
+    )
+    .unwrap();
+    let redactor = Redactor::from_config(&cfg.root.redaction).unwrap();
+    // Input matches "dup" (indices 1 and 2) but not "stale-xyz" (index 3).
+    let result = redactor.check("value: dup here");
+    assert!(
+        result.unmatched_literal_indices.contains(&3),
+        "stale literal at config position 3 should be in unmatched_literal_indices; \
+         got: {:?}",
+        result.unmatched_literal_indices
+    );
+    assert!(
+        !result.unmatched_literal_indices.contains(&0),
+        "empty entry at position 0 should not appear in unmatched_literal_indices; \
+         got: {:?}",
+        result.unmatched_literal_indices
+    );
+    // "dup" matched — indices 1 and 2 should not appear as unmatched.
+    assert!(
+        !result.unmatched_literal_indices.contains(&1),
+        "matched dup at position 1 should not be in unmatched; got: {:?}",
+        result.unmatched_literal_indices
+    );
+    assert!(
+        !result.unmatched_literal_indices.contains(&2),
+        "matched dup at position 2 should not be in unmatched; got: {:?}",
+        result.unmatched_literal_indices
+    );
+}
