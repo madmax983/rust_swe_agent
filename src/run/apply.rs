@@ -351,8 +351,7 @@ fn is_git_tree(dir: &Path) -> bool {
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(dir)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Return dirty paths, excluding any paths that resolve to an entry in
