@@ -122,22 +122,24 @@ pub async fn run(args: UiArgs) -> Result<(), Error> {
         );
     }
 
-    let bind_addr: SocketAddr =
-        format!("{}:{}", args.bind, args.port)
-            .parse()
-            .map_err(|e: std::net::AddrParseError| {
-                Error::Config(crate::error::ConfigError::Invalid(format!(
-                    "ui: invalid bind address `{}:{}`: {e}",
-                    args.bind, args.port
-                )))
-            })?;
+    let bind_ip: std::net::IpAddr = args.bind.parse().map_err(|e: std::net::AddrParseError| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "ui: invalid bind address `{}`: {e}",
+            args.bind
+        )))
+    })?;
+    let bind_addr = SocketAddr::new(bind_ip, args.port);
 
     let server = UiServer::start(bind_addr, instances)
         .await
         .map_err(Error::Io)?;
 
     let local = server.local_addr();
-    let url = format!("http://{}:{}", local.ip(), local.port());
+    let url = if local.is_ipv6() {
+        format!("http://[{}]:{}", local.ip(), local.port())
+    } else {
+        format!("http://{}:{}", local.ip(), local.port())
+    };
     println!("ui ready at {url}");
 
     if args.open {

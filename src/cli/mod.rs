@@ -2153,6 +2153,7 @@ async fn ui_cmd(u: args::UiCmd) -> Result<(), Error> {
 }
 
 #[cfg(not(feature = "ui-server"))]
+#[allow(clippy::unused_async)]
 async fn ui_cmd(_u: args::UiCmd) -> Result<(), Error> {
     exit_with_outcome(
         ExitCode::FeatureUnavailable,
