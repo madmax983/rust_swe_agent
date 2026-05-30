@@ -223,6 +223,74 @@ pub struct PolicyCheckCmd {
     pub output: Option<std::path::PathBuf>,
 }
 
+/// `agent apply` — apply a captured patch artifact to a working tree.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AgentApplyCmd {
+    // ── Patch selectors (exactly one required) ────────────────────────────────
+
+    /// Direct path to a `.patch` file. Mutually exclusive with `--trajectory`
+    /// and `--sweep`.
+    #[arg(long, value_name = "PATH", conflicts_with_all = &["trajectory", "sweep"])]
+    pub patch: Option<PathBuf>,
+
+    /// Path to a `.traj.json` trajectory file; the sibling `.patch` is
+    /// resolved automatically. Mutually exclusive with `--patch` and
+    /// `--sweep`.
+    #[arg(long, value_name = "PATH", conflicts_with_all = &["patch", "sweep"])]
+    pub trajectory: Option<PathBuf>,
+
+    /// Sweep output directory. Used with `--instance` to locate
+    /// `<sweep>/<instance>.patch`. Mutually exclusive with `--patch` and
+    /// `--trajectory`.
+    #[arg(
+        long,
+        value_name = "DIR",
+        requires = "instance",
+        conflicts_with_all = &["patch", "trajectory"]
+    )]
+    pub sweep: Option<PathBuf>,
+
+    /// Instance ID within the sweep (used with `--sweep`).
+    #[arg(long, value_name = "ID", requires = "sweep")]
+    pub instance: Option<String>,
+
+    // ── Target ────────────────────────────────────────────────────────────────
+
+    /// Git working tree to apply into. Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub target: Option<PathBuf>,
+
+    // ── Safety gates ──────────────────────────────────────────────────────────
+
+    /// Allow applying a patch that contains `[REDACTED:…]` markers or whose
+    /// source trajectory recorded redaction on the patch-submission surface.
+    #[arg(long, default_value_t = false)]
+    pub allow_redacted: bool,
+
+    /// Allow applying to a working tree that has uncommitted changes.
+    #[arg(long, default_value_t = false)]
+    pub allow_dirty: bool,
+
+    // ── Operation modes ───────────────────────────────────────────────────────
+
+    /// Print the files and hunk counts that would change without modifying the
+    /// tree. Exits 0.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
+    /// Delegate to `git apply --3way` for fuzzy three-way merge application.
+    #[arg(long = "3way", default_value_t = false)]
+    pub three_way: bool,
+
+    // ── Report ────────────────────────────────────────────────────────────────
+
+    /// Where to write `apply-report.json`. Defaults to `apply-report.json`
+    /// next to the target directory.
+    #[arg(long, value_name = "PATH")]
+    pub report: Option<PathBuf>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -239,6 +307,8 @@ pub enum AgentCmd {
     Suite(Box<SuiteCmd>),
     /// Check a command corpus against the policy config (zero-cost, no model call).
     PolicyCheck(PolicyCheckCmd),
+    /// Apply a captured patch artifact to a working tree (issue #473).
+    Apply(AgentApplyCmd),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

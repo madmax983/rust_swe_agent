@@ -116,6 +116,19 @@ pub enum ExitCode {
     /// from "your invocation is broken". All rules were evaluated; the gate is wired
     /// correctly but the sweep did not meet the declared SLO.
     SloRuleFailure = 27,
+    /// 28 — `agent apply` ran `git apply --check` and the patch was rejected.
+    /// The tree is byte-for-byte unchanged; the rejected hunks were printed to
+    /// stderr. Distinct from `internal_error` (1) so automation can distinguish
+    /// "the patch is inapplicable" from "something else went wrong".
+    ApplyCheckFailed = 28,
+    /// 29 — `agent apply` refused because the source trajectory recorded
+    /// redaction on the `patch_submission` surface, meaning the patch file
+    /// contains `[REDACTED:…]` markers that would corrupt the working tree.
+    /// Pass `--allow-redacted` to override.
+    ApplyRedactedRefused = 29,
+    /// 30 — `agent apply` refused because the target working tree has
+    /// uncommitted changes. Pass `--allow-dirty` to override.
+    ApplyDirtyTreeRefused = 30,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -164,6 +177,9 @@ impl ExitCode {
             Self::RedactCheckStaleLiterals => "redact_check_stale_literals",
             Self::RedactCheckStrictFail => "redact_check_strict_fail",
             Self::SloRuleFailure => "slo_rule_failure",
+            Self::ApplyCheckFailed => "apply_check_failed",
+            Self::ApplyRedactedRefused => "apply_redacted_refused",
+            Self::ApplyDirtyTreeRefused => "apply_dirty_tree_refused",
             Self::Interrupted => "interrupted",
             Self::Killed => "killed",
         }

@@ -150,7 +150,9 @@ cargo run --quiet -- --log error bench inspect --sweep runs/quickstart --instanc
 
 This is the core operator loop before any sweep: run one task, inspect the
 trajectory, then decide whether the model, prompt, budget, and environment are
-ready for a broader run.
+ready for a broader run. To apply a produced patch to your local checkout, use
+`agent apply` — see [`docs/spec-agent-apply.md`](docs/spec-agent-apply.md) for
+the full selector rules, safety gates, and exit-code matrix.
 
 Export the same trajectory as shareable Markdown in one command:
 
