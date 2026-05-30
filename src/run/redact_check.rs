@@ -4,6 +4,7 @@
 //! input and reports exactly what would be masked, by source. No model call is
 //! made and no environment is launched.
 
+use std::fmt::Write as _;
 use std::io::Read as _;
 use std::path::PathBuf;
 
@@ -144,20 +145,22 @@ pub fn format_human(output: &RedactCheckOutput) -> String {
         out.push_str("redact-check: no matches found\n");
         out.push_str("  redacted: (unchanged)\n");
     } else {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "redact-check: {} match(es) found\n\n",
             output.check.matches.len()
-        ));
+        );
 
         out.push_str("matches:\n");
         for m in &output.check.matches {
-            out.push_str(&format!(
-                "  [{start}..{end}] source={source}  marker={marker}\n",
+            let _ = writeln!(
+                out,
+                "  [{start}..{end}] source={source}  marker={marker}",
                 start = m.start,
                 end = m.end,
                 source = m.source,
                 marker = m.marker,
-            ));
+            );
         }
 
         // Suppress redacted body when there are config failures: unmatched
@@ -184,22 +187,24 @@ pub fn format_human(output: &RedactCheckOutput) -> String {
     // sample produced zero matches, since that is the most common stale case.
     if !output.check.unmatched_literal_indices.is_empty() {
         out.push('\n');
-        out.push_str(&format!(
+        let _ = writeln!(
+            out,
             "warning: {} configured secret_literals entry(ies) produced no match \
-             (indices: {:?}) — these may be stale\n",
+             (indices: {:?}) — these may be stale",
             output.check.unmatched_literal_indices.len(),
             output.check.unmatched_literal_indices,
-        ));
+        );
     }
 
     if output.strict && !output.check.unmatched_pattern_indices.is_empty() {
         out.push('\n');
-        out.push_str(&format!(
+        let _ = writeln!(
+            out,
             "warning: {} custom_patterns entry(ies) produced no match \
-             (indices: {:?}) — check for typos or renamed token formats\n",
+             (indices: {:?}) — check for typos or renamed token formats",
             output.check.unmatched_pattern_indices.len(),
             output.check.unmatched_pattern_indices,
-        ));
+        );
     }
 
     out

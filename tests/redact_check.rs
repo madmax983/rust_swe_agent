@@ -28,7 +28,7 @@ secret_literals = ["my-secret-value"]
     let result = redactor.check("prefix my-secret-value suffix");
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "literal"),
+        sources.contains(&"literal"),
         "expected a 'literal' source match, got: {sources:?}"
     );
 }
@@ -41,7 +41,7 @@ fn check_github_token_annotated_as_structured_github_token() {
     let result = redactor.check(&format!("token: {token}"));
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "structured:github_token"),
+        sources.contains(&"structured:github_token"),
         "expected 'structured:github_token', got: {sources:?}"
     );
 }
@@ -53,7 +53,7 @@ fn check_bearer_token_annotated_as_structured_bearer() {
     let result = redactor.check("Authorization: Bearer abcdefghijklmnopqrstuvwx");
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "structured:bearer"),
+        sources.contains(&"structured:bearer"),
         "expected 'structured:bearer', got: {sources:?}"
     );
 }
@@ -88,7 +88,7 @@ fn check_env_assignment_annotated_as_structured_env_assignment() {
     let result = redactor.check("API_KEY=super-secret-value-here\n");
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "structured:env_assignment"),
+        sources.contains(&"structured:env_assignment"),
         "expected 'structured:env_assignment', got: {sources:?}"
     );
 }
@@ -101,7 +101,7 @@ fn check_pem_block_annotated_as_structured_pem() {
     let result = redactor.check(pem);
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "structured:pem"),
+        sources.contains(&"structured:pem"),
         "expected 'structured:pem', got: {sources:?}"
     );
 }
@@ -113,7 +113,7 @@ fn check_api_key_annotated_as_structured_api_key() {
     let result = redactor.check("key: sk-ant-AAAAAAAAAAAAAAAAAAAAAA");
     let sources: Vec<&str> = result.matches.iter().map(|m| m.source.as_str()).collect();
     assert!(
-        sources.iter().any(|s| *s == "structured:api_key"),
+        sources.contains(&"structured:api_key"),
         "expected 'structured:api_key', got: {sources:?}"
     );
 }
@@ -739,7 +739,7 @@ secret_literals = ["not-in-sample"]
         "expected stale-literal warning even when sample has no matches:\n{text}"
     );
     assert!(
-        text.contains("0"),
+        text.contains('0'),
         "expected index 0 mentioned in warning:\n{text}"
     );
 }
