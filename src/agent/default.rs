@@ -593,6 +593,14 @@ impl DefaultAgentBuilder {
             }
             traj.info.partial = false;
             traj.info.partial_reason = None;
+            // For `--continue`, info.other was cleared so the parent's toolset
+            // was wiped. Stamp the child run's actual toolset from the freshly
+            // built trajectory so bench tool-coverage sees the correct registry.
+            if resume.is_continue {
+                if let Some(toolset) = trajectory.info.other.get("toolset").cloned() {
+                    traj.info.other.insert("toolset".into(), toolset);
+                }
+            }
             (
                 resume.history,
                 traj,

@@ -2588,8 +2588,8 @@ index 8a1218a..24c5735 100644\n\
     // AC spec: a 2-turn continuation records the parent's N steps plus the
     // new turn and a valid `parent_trajectory` link at $0.
 
-    #[tokio::test]
     #[allow(clippy::too_many_lines)]
+    #[tokio::test]
     async fn mini_continue_2turn_deterministic_hello_world() {
         let work = tempfile::tempdir().unwrap();
         let runs_dir = work.path().join("runs");
