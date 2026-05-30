@@ -342,9 +342,11 @@ impl SweepWebhookSink {
 
     /// Drops the sender (signals EOF to the background task) and waits for
     /// it to finish draining and sending all queued events before returning.
+    /// Bounded to 30 seconds so a slow/unresponsive endpoint cannot stall the
+    /// sweep indefinitely.
     pub async fn shutdown(self) {
         drop(self.tx);
-        let _ = self.join_handle.await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), self.join_handle).await;
     }
 }
 
