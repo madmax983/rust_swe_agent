@@ -2589,6 +2589,7 @@ index 8a1218a..24c5735 100644\n\
     // new turn and a valid `parent_trajectory` link at $0.
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn mini_continue_2turn_deterministic_hello_world() {
         let work = tempfile::tempdir().unwrap();
         let runs_dir = work.path().join("runs");
@@ -2734,7 +2735,7 @@ index 8a1218a..24c5735 100644\n\
 
         // AC: child must NOT have a resume_history entry (continue uses parent_trajectory).
         let resume_history = child_json["info"]["resume_history"].as_array();
-        let resume_count = resume_history.map_or(0, |v| v.len());
+        let resume_count = resume_history.map_or(0, Vec::len);
         assert_eq!(
             resume_count, 0,
             "continue trajectory must not have resume_history entries; got {resume_count}"
