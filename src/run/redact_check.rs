@@ -130,33 +130,33 @@ pub fn format_human(output: &RedactCheckOutput) -> String {
     if output.check.matches.is_empty() {
         out.push_str("redact-check: no matches found\n");
         out.push_str("  redacted: (unchanged)\n");
-        return out;
-    }
-
-    out.push_str(&format!(
-        "redact-check: {} match(es) found\n\n",
-        output.check.matches.len()
-    ));
-
-    // Print each match with annotation
-    out.push_str("matches:\n");
-    for m in &output.check.matches {
+    } else {
         out.push_str(&format!(
-            "  [{start}..{end}] source={source}  marker={marker}\n",
-            start = m.start,
-            end = m.end,
-            source = m.source,
-            marker = m.marker,
+            "redact-check: {} match(es) found\n\n",
+            output.check.matches.len()
         ));
-    }
 
-    out.push('\n');
-    out.push_str("redacted output:\n");
-    out.push_str(&output.check.redacted);
-    if !output.check.redacted.ends_with('\n') {
+        out.push_str("matches:\n");
+        for m in &output.check.matches {
+            out.push_str(&format!(
+                "  [{start}..{end}] source={source}  marker={marker}\n",
+                start = m.start,
+                end = m.end,
+                source = m.source,
+                marker = m.marker,
+            ));
+        }
+
         out.push('\n');
+        out.push_str("redacted output:\n");
+        out.push_str(&output.check.redacted);
+        if !output.check.redacted.ends_with('\n') {
+            out.push('\n');
+        }
     }
 
+    // Always print stale-config warnings — these must appear even when the
+    // sample produced zero matches, since that is the most common stale case.
     if !output.check.unmatched_literal_indices.is_empty() {
         out.push('\n');
         out.push_str(&format!(

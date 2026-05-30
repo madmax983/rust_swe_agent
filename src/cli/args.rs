@@ -173,6 +173,10 @@ pub struct RedactCheckCmd {
     #[arg(long, default_value = "human")]
     pub format: String,
 
+    /// Emit JSON output (shorthand for `--format json`).
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+
     /// Exit non-zero if any `custom_patterns` entry produced zero matches.
     #[arg(long, default_value_t = false)]
     pub strict: bool,

@@ -190,7 +190,17 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
         (Some(text), None, None) => RedactCheckSource::Text(text.clone()),
         (None, Some(path), None) => RedactCheckSource::File(path.clone()),
         (None, None, Some(path)) => RedactCheckSource::Trajectory(path.clone()),
-        (None, None, None) => RedactCheckSource::Stdin,
+        (None, None, None) => {
+            // Block on stdin only when it is actually a pipe/redirect; reject
+            // interactive TTYs immediately so forgotten flags fail fast.
+            if std::io::stdin().is_terminal() {
+                return Err(Error::Config(crate::error::ConfigError::Usage(
+                    "no input source provided; use --text, --file, --trajectory, or pipe to stdin"
+                        .to_owned(),
+                )));
+            }
+            RedactCheckSource::Stdin
+        }
         _ => {
             return Err(Error::Config(crate::error::ConfigError::Usage(
                 "supply exactly one of --text, --file, or --trajectory (or pipe to stdin)"
@@ -199,13 +209,18 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
         }
     };
 
-    let format = match r.format.as_str() {
-        "json" => RedactCheckFormat::Json,
-        "human" | "" => RedactCheckFormat::Human,
-        other => {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-                "--format '{other}' is not valid; use 'human' or 'json'"
-            ))));
+    // --json is a convenient shorthand for --format json.
+    let format = if r.json {
+        RedactCheckFormat::Json
+    } else {
+        match r.format.as_str() {
+            "json" => RedactCheckFormat::Json,
+            "human" | "" => RedactCheckFormat::Human,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--format '{other}' is not valid; use 'human' or 'json'"
+                ))));
+            }
         }
     };
 

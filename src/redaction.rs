@@ -440,12 +440,27 @@ impl Redactor {
                 .then_with(|| b.end.cmp(&a.end))
                 .then_with(|| a.kind.cmp(&b.kind))
         });
+
+        // Collect matched config indices from ALL raw matches *before* overlap
+        // filtering.  A configured literal that overlaps with a structured rule
+        // (e.g. an `sk-ant-*` API key also listed in `secret_literals`) would
+        // otherwise be dropped by the filter and incorrectly reported as stale.
+        let mut matched_literal_indices = BTreeSet::new();
+        let mut matched_pattern_indices = BTreeSet::new();
+        for m in &raw_matches {
+            if let Some(idx) = m.config_index {
+                if m.source_label == "literal" {
+                    matched_literal_indices.insert(idx);
+                } else {
+                    matched_pattern_indices.insert(idx);
+                }
+            }
+        }
+
         let filtered = Self::filter_overlapping_matches(raw_matches);
 
         let mut out_text = String::with_capacity(input.len());
         let mut check_matches = Vec::new();
-        let mut matched_literal_indices = BTreeSet::new();
-        let mut matched_pattern_indices = BTreeSet::new();
         let mut last = 0usize;
 
         for m in &filtered {
@@ -458,13 +473,6 @@ impl Redactor {
                 source: m.source_label.clone(),
             });
             out_text.push_str(&marker);
-            if let Some(idx) = m.config_index {
-                if m.source_label == "literal" {
-                    matched_literal_indices.insert(idx);
-                } else {
-                    matched_pattern_indices.insert(idx);
-                }
-            }
             last = m.end;
         }
         out_text.push_str(&input[last..]);

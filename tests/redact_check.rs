@@ -650,3 +650,82 @@ custom_patterns = ["ALSO-MISSING-[0-9]+"]
         "strict fail should take priority over stale literals"
     );
 }
+
+// ── Regression tests for post-review fixes ────────────────────────────────────
+
+#[test]
+fn configured_literal_overlapping_structured_rule_not_reported_stale() {
+    // Regression: a configured literal that also matches a structured rule
+    // (e.g. an API key in secret_literals) was being reported as stale because
+    // overlap filtering dropped the literal match before its config_index was
+    // recorded.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["sk-ant-AAAABBBBCCCCDDDDEEEE"]
+"#,
+    )
+    .unwrap();
+    let redactor = Redactor::from_config(&cfg.root.redaction).unwrap();
+    let result = redactor.check("key: sk-ant-AAAABBBBCCCCDDDDEEEE end");
+    assert!(
+        result.unmatched_literal_indices.is_empty(),
+        "configured literal overlapping with api_key structured rule should not be stale; \
+         got unmatched: {:?}",
+        result.unmatched_literal_indices
+    );
+}
+
+#[test]
+fn format_human_prints_stale_warning_even_when_no_matches() {
+    // Regression: format_human was returning early when matches were empty,
+    // skipping the stale-literal warning block.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["not-in-sample"]
+"#,
+    )
+    .unwrap();
+    let opts = RedactCheckOpts {
+        source: RedactCheckSource::Text("nothing here".into()),
+        format: RedactCheckFormat::Human,
+        strict: false,
+    };
+    let output = run_redact_check(&cfg, &opts).unwrap();
+    let text = format_human(&output);
+    assert!(
+        text.contains("warning"),
+        "expected stale-literal warning even when sample has no matches:\n{text}"
+    );
+    assert!(
+        text.contains("0"),
+        "expected index 0 mentioned in warning:\n{text}"
+    );
+}
+
+#[test]
+fn format_human_prints_strict_warning_even_when_no_matches() {
+    // Regression: format_human skipped the --strict warning when matches were empty.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+custom_patterns = ["NOMATCH-[0-9]+"]
+"#,
+    )
+    .unwrap();
+    let opts = RedactCheckOpts {
+        source: RedactCheckSource::Text("nothing here".into()),
+        format: RedactCheckFormat::Human,
+        strict: true,
+    };
+    let output = run_redact_check(&cfg, &opts).unwrap();
+    let text = format_human(&output);
+    assert!(
+        text.contains("warning"),
+        "expected strict warning even when sample has no matches:\n{text}"
+    );
+}
