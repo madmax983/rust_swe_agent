@@ -829,3 +829,74 @@ fn apply_trajectory_with_patch_submission_redaction_allowed_with_flag() {
     let report = run_agent_apply(opts).unwrap();
     assert!(report.applied);
 }
+
+#[test]
+fn apply_report_missing_parent_dir_is_created() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Point report at a nested directory that does not exist yet.
+    let report_path = work
+        .path()
+        .join("artifacts")
+        .join("subdir")
+        .join("report.json");
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path.clone()),
+    };
+    // Should succeed: parent directories are created before the apply runs.
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+    assert!(
+        report_path.exists(),
+        "report must be written even when parent did not exist"
+    );
+}
+
+#[test]
+fn apply_trajectory_file_inside_repo_not_dirty() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Place both the trajectory and the patch *inside* the repo (untracked).
+    let traj_path = repo.join("task.traj.json");
+    let patch_path = repo.join("task.patch");
+    std::fs::write(
+        &traj_path,
+        r#"{"format":"mini-swe-agent-1.3","info":{},"messages":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::TrajectoryFile(traj_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false, // strict — both artifacts must be excluded
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    // Should succeed: both the .traj.json and the sibling .patch are excluded
+    // from the dirty-tree gate.
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+}

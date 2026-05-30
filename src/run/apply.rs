@@ -4,7 +4,7 @@
 //! 1. Patch selector must be unambiguous (exit 2 on ambiguity).
 //! 2. Target must be a git working tree (exit 2 before any mutation).
 //! 3. Working tree must be clean unless `--allow-dirty` (exit 30).
-//!    The selected patch file is excluded from the dirty check.
+//!    The selected patch file and trajectory file are excluded from the dirty check.
 //! 4. Patch must not contain `[REDACTED:…]` markers, and the source
 //!    trajectory (when available) must not record patch-submission
 //!    redaction, unless `--allow-redacted` (exit 29).
@@ -134,7 +134,8 @@ impl From<std::io::Error> for ApplyError {
 /// unchanged.
 pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> {
     // ── 1. Resolve patch path and optionally check trajectory redaction ────────
-    let (patch_path, trajectory_redacted) = resolve_patch_and_redaction(&opts.selector);
+    let (patch_path, traj_path_opt, trajectory_redacted) =
+        resolve_patch_and_redaction(&opts.selector);
 
     // Canonicalize the patch path so that relative paths are anchored to the
     // caller's CWD before any `current_dir()` changes in git subprocess calls.
@@ -145,7 +146,13 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         return Err(ApplyError::NotGitTree(opts.target));
     }
 
-    // ── 3. Compute default report destination (next to, not inside, target) ───
+    // ── 3. Resolve the git worktree root ─────────────────────────────────────
+    // All git apply commands must run from the worktree root. Running from a
+    // subdirectory causes git apply to silently skip patches for paths outside
+    // that subdirectory (it prints "Skipped patch" and exits 0).
+    let git_root = git_toplevel(&opts.target).unwrap_or_else(|| opts.target.clone());
+
+    // ── 4. Compute default report destination (next to, not inside, target) ───
     // Placing the report in the parent of the target prevents it from
     // colliding with any file the applied patch adds at the repo root.
     let report_dest = opts.report_path.clone().unwrap_or_else(|| {
@@ -155,20 +162,30 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
             .join("apply-report.json")
     });
 
-    // ── 4. Dirty-tree gate ────────────────────────────────────────────────────
-    // Exclude the patch file itself so that an untracked (but non-gitignored)
-    // patch inside the target doesn't trip the gate for the normal workflow.
+    // ── 5. Dirty-tree gate ────────────────────────────────────────────────────
+    // Exclude the patch file AND the trajectory file (when using the
+    // trajectory or sweep selectors) so that an untracked artifact bundle
+    // sitting inside the target repo doesn't trip the gate.
     if !opts.allow_dirty {
-        let dirty = dirty_paths_excluding(&opts.target, &[&patch_path])?;
+        let traj_canon = traj_path_opt
+            .as_deref()
+            .map(|tp| std::fs::canonicalize(tp).unwrap_or_else(|_| tp.to_owned()));
+
+        let mut exclude: Vec<&Path> = vec![patch_path.as_path()];
+        if let Some(ref tc) = traj_canon {
+            exclude.push(tc.as_path());
+        }
+
+        let dirty = dirty_paths_excluding(&git_root, &opts.target, &exclude)?;
         if !dirty.is_empty() {
             return Err(ApplyError::DirtyTree(dirty));
         }
     }
 
-    // ── 5. Read patch content ─────────────────────────────────────────────────
+    // ── 6. Read patch content ─────────────────────────────────────────────────
     let patch_text = std::fs::read_to_string(&patch_path)?;
 
-    // ── 6. Redaction gate ─────────────────────────────────────────────────────
+    // ── 7. Redaction gate ─────────────────────────────────────────────────────
     if !opts.allow_redacted {
         let patch_has_markers = patch_text.contains(REDACTION_MARKER);
         if patch_has_markers || trajectory_redacted {
@@ -176,9 +193,9 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         }
     }
 
-    // ── 7. Empty-patch fast path ──────────────────────────────────────────────
+    // ── 8. Empty-patch fast path ──────────────────────────────────────────────
     if patch_text.trim().is_empty() {
-        let target_sha = git_head_sha(&opts.target);
+        let target_sha = git_head_sha(&git_root);
         let report = ApplyReport {
             schema_version: ArtifactSchemaVersion::CURRENT,
             artifact_kind: ArtifactKind::ApplyReport,
@@ -195,18 +212,18 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         return Ok(report);
     }
 
-    // ── 8. git apply --check [--3way] ─────────────────────────────────────────
+    // ── 9. git apply --check [--3way] ─────────────────────────────────────────
     // Pass --3way to the preflight check when requested so that patches that
     // only succeed via three-way merge are not falsely rejected here.
-    if let Err(msg) = git_apply_check(&opts.target, &patch_path, opts.three_way) {
+    if let Err(msg) = git_apply_check(&git_root, &patch_path, opts.three_way) {
         return Err(ApplyError::CheckFailed(msg));
     }
 
-    // ── 9. Collect diff stats from patch text ─────────────────────────────────
+    // ── 10. Collect diff stats from patch text ────────────────────────────────
     let (files_changed, lines_added, lines_removed) = parse_diff_stats(&patch_text);
-    let target_sha = git_head_sha(&opts.target);
+    let target_sha = git_head_sha(&git_root);
 
-    // ── 10. Dry-run: report without mutating ──────────────────────────────────
+    // ── 11. Dry-run: report without mutating ──────────────────────────────────
     if opts.dry_run {
         let report = ApplyReport {
             schema_version: ArtifactSchemaVersion::CURRENT,
@@ -224,21 +241,21 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         return Ok(report);
     }
 
-    // ── 11. Apply the patch ───────────────────────────────────────────────────
-    let mut cmd = Command::new("git");
-    cmd.arg("apply");
-    if opts.three_way {
-        cmd.arg("--3way");
-    }
-    // patch_path is canonicalized (absolute), so current_dir does not affect it.
-    cmd.arg(&patch_path).current_dir(&opts.target);
-    let output = cmd.output()?;
-    if !output.status.success() {
-        let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(ApplyError::CheckFailed(msg));
+    // ── 12. Ensure report parent directory exists before mutating the tree ────
+    // Detecting a missing directory now prevents an I/O error from leaving
+    // the tree mutated with no report written.
+    if let Some(parent) = report_dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
 
-    // ── 12. Write report ──────────────────────────────────────────────────────
+    // ── 13. Apply the patch ───────────────────────────────────────────────────
+    // patch_path is canonicalized (absolute); git_root avoids silent skips
+    // when --target is a repo subdirectory.
+    apply_patch(&git_root, &patch_path, opts.three_way)?;
+
+    // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
         schema_version: ArtifactSchemaVersion::CURRENT,
         artifact_kind: ArtifactKind::ApplyReport,
@@ -258,17 +275,18 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Resolve the patch `PathBuf` from the selector and check whether the source
-/// trajectory recorded patch-submission redaction.
+/// Resolve the patch `PathBuf` and the trajectory `PathBuf` (if any) from the
+/// selector, and check whether the source trajectory recorded patch-submission
+/// redaction.
 ///
-/// Returns `(patch_path, trajectory_recorded_redaction)`.
-fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, bool) {
+/// Returns `(patch_path, trajectory_path_opt, trajectory_recorded_redaction)`.
+fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<PathBuf>, bool) {
     match selector {
-        PatchSelector::PatchFile(p) => (p.clone(), false),
+        PatchSelector::PatchFile(p) => (p.clone(), None, false),
         PatchSelector::TrajectoryFile(traj_path) => {
             let patch_path = sibling_patch_of_trajectory(traj_path);
             let redacted = trajectory_has_patch_submission_redaction(traj_path);
-            (patch_path, redacted)
+            (patch_path, Some(traj_path.clone()), redacted)
         }
         PatchSelector::SweepInstance { sweep, instance } => {
             // Canonical nested layout: <sweep>/<instance>/run-1.patch
@@ -285,7 +303,7 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, bool) {
             };
 
             let redacted = trajectory_has_patch_submission_redaction(&traj_path);
-            (patch_path, redacted)
+            (patch_path, Some(traj_path), redacted)
         }
     }
 }
@@ -354,22 +372,25 @@ fn is_git_tree(dir: &Path) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// Return dirty paths, excluding any paths that resolve to an entry in
-/// `exclude_abs`. The patch file itself is excluded so that an untracked
-/// patch inside the target does not trip the clean-tree gate.
-fn dirty_paths_excluding(dir: &Path, exclude_abs: &[&Path]) -> Result<Vec<String>, ApplyError> {
-    // Get the git root so we can compute absolute paths for comparison.
-    let git_root = Command::new("git")
+/// Return the absolute path of the git worktree root containing `dir`.
+fn git_toplevel(dir: &Path) -> Option<PathBuf> {
+    Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map_or_else(
-            || dir.to_owned(),
-            |o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_owned()),
-        );
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_owned()))
+}
 
+/// Return dirty paths, excluding any paths that resolve to an entry in
+/// `exclude_abs`. The patch file and trajectory file are excluded so that an
+/// untracked artifact bundle inside the target does not trip the clean-tree gate.
+fn dirty_paths_excluding(
+    git_root: &Path,
+    dir: &Path,
+    exclude_abs: &[&Path],
+) -> Result<Vec<String>, ApplyError> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(dir)
@@ -397,13 +418,13 @@ fn dirty_paths_excluding(dir: &Path, exclude_abs: &[&Path]) -> Result<Vec<String
 /// Run `git apply --check [--3way]` and return `Ok(())` on success.
 /// Passing `three_way` ensures patches that only apply via three-way merge
 /// are not falsely rejected during the preflight check.
-fn git_apply_check(dir: &Path, patch_path: &Path, three_way: bool) -> Result<(), String> {
+fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Result<(), String> {
     let mut cmd = Command::new("git");
     cmd.args(["apply", "--check"]);
     if three_way {
         cmd.arg("--3way");
     }
-    cmd.arg(patch_path).current_dir(dir);
+    cmd.arg(patch_path).current_dir(apply_dir);
     let output = cmd.output().map_err(|e| e.to_string())?;
 
     if output.status.success() {
@@ -467,6 +488,33 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     }
 
     (files, added, removed)
+}
+
+/// Run `git apply [--3way]` from `git_root` and return `Ok(())` on success.
+///
+/// On failure with `--3way`: `git apply --check --3way` can exit 0 even when
+/// the real merge has conflicts; when the actual apply then exits non-zero it
+/// may have written conflict markers. This function restores tracked files to
+/// HEAD so the safety contract (failed apply = checkout unchanged) holds.
+fn apply_patch(git_root: &Path, patch_path: &Path, three_way: bool) -> Result<(), ApplyError> {
+    let mut cmd = Command::new("git");
+    cmd.arg("apply");
+    if three_way {
+        cmd.arg("--3way");
+    }
+    cmd.arg(patch_path).current_dir(git_root);
+    let output = cmd.output()?;
+    if !output.status.success() {
+        if three_way {
+            let _ = Command::new("git")
+                .args(["checkout", "--", "."])
+                .current_dir(git_root)
+                .output();
+        }
+        let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(ApplyError::CheckFailed(msg));
+    }
+    Ok(())
 }
 
 /// Serialize and write the report JSON to `path`.
