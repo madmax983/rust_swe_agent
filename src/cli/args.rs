@@ -228,7 +228,6 @@ pub struct PolicyCheckCmd {
 #[allow(clippy::struct_excessive_bools)]
 pub struct AgentApplyCmd {
     // ── Patch selectors (exactly one required) ────────────────────────────────
-
     /// Direct path to a `.patch` file. Mutually exclusive with `--trajectory`
     /// and `--sweep`.
     #[arg(long, value_name = "PATH", conflicts_with_all = &["trajectory", "sweep"])]
@@ -256,13 +255,11 @@ pub struct AgentApplyCmd {
     pub instance: Option<String>,
 
     // ── Target ────────────────────────────────────────────────────────────────
-
     /// Git working tree to apply into. Defaults to the current directory.
     #[arg(long, value_name = "DIR")]
     pub target: Option<PathBuf>,
 
     // ── Safety gates ──────────────────────────────────────────────────────────
-
     /// Allow applying a patch that contains `[REDACTED:…]` markers or whose
     /// source trajectory recorded redaction on the patch-submission surface.
     #[arg(long, default_value_t = false)]
@@ -273,7 +270,6 @@ pub struct AgentApplyCmd {
     pub allow_dirty: bool,
 
     // ── Operation modes ───────────────────────────────────────────────────────
-
     /// Print the files and hunk counts that would change without modifying the
     /// tree. Exits 0.
     #[arg(long, default_value_t = false)]
@@ -284,7 +280,6 @@ pub struct AgentApplyCmd {
     pub three_way: bool,
 
     // ── Report ────────────────────────────────────────────────────────────────
-
     /// Where to write `apply-report.json`. Defaults to `apply-report.json`
     /// next to the target directory.
     #[arg(long, value_name = "PATH")]

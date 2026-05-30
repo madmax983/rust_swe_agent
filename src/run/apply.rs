@@ -32,13 +32,11 @@ pub enum PatchSelector {
     TrajectoryFile(PathBuf),
     /// Sweep output directory + instance ID; patch is at
     /// `<sweep>/<instance>.patch`.
-    SweepInstance {
-        sweep: PathBuf,
-        instance: String,
-    },
+    SweepInstance { sweep: PathBuf, instance: String },
 }
 
 /// Options for a single `agent apply` invocation.
+#[allow(clippy::struct_excessive_bools)]
 pub struct AgentApplyOpts {
     pub selector: PatchSelector,
     /// Git working tree to apply into. Defaults to CWD at the call site.
@@ -57,7 +55,7 @@ pub struct AgentApplyOpts {
 }
 
 /// Schema-versioned report written on every non-error outcome.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApplyReport {
     pub schema_version: ArtifactSchemaVersion,
     pub artifact_kind: ArtifactKind,
@@ -94,10 +92,18 @@ impl std::fmt::Display for ApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotGitTree(p) => {
-                write!(f, "target '{}' is not inside a git working tree", p.display())
+                write!(
+                    f,
+                    "target '{}' is not inside a git working tree",
+                    p.display()
+                )
             }
             Self::DirtyTree(paths) => {
-                write!(f, "target tree has uncommitted changes: {}", paths.join(", "))
+                write!(
+                    f,
+                    "target tree has uncommitted changes: {}",
+                    paths.join(", ")
+                )
             }
             Self::RedactedRefused => write!(
                 f,
@@ -126,11 +132,11 @@ impl From<std::io::Error> for ApplyError {
 /// unchanged.
 pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> {
     // ── 1. Resolve patch path and optionally load the sibling trajectory ──────
-    let (patch_path, trajectory_redacted) = resolve_patch_and_redaction(&opts.selector)?;
+    let (patch_path, trajectory_redacted) = resolve_patch_and_redaction(&opts.selector);
 
     // ── 2. Verify target is a git working tree ────────────────────────────────
     if !is_git_tree(&opts.target) {
-        return Err(ApplyError::NotGitTree(opts.target.clone()));
+        return Err(ApplyError::NotGitTree(opts.target));
     }
 
     // ── 3. Dirty-tree gate ────────────────────────────────────────────────────
@@ -175,9 +181,8 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
 
     // ── 7. git apply --check ──────────────────────────────────────────────────
     let check_result = git_apply_check(&opts.target, &patch_path);
-    match check_result {
-        Err(msg) => return Err(ApplyError::CheckFailed(msg)),
-        Ok(()) => {}
+    if let Err(msg) = check_result {
+        return Err(ApplyError::CheckFailed(msg));
     }
 
     // ── 8. Collect diff stats from patch text ─────────────────────────────────
@@ -231,9 +236,9 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         dry_run: false,
     };
 
-    let report_dest = opts.report_path.unwrap_or_else(|| {
-        opts.target.join("apply-report.json")
-    });
+    let report_dest = opts
+        .report_path
+        .unwrap_or_else(|| opts.target.join("apply-report.json"));
     write_report(&report_dest, &report)?;
 
     Ok(report)
@@ -245,23 +250,19 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
 /// trajectory recorded patch-submission redaction.
 ///
 /// Returns `(patch_path, trajectory_recorded_redaction)`.
-fn resolve_patch_and_redaction(
-    selector: &PatchSelector,
-) -> Result<(PathBuf, bool), ApplyError> {
+fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, bool) {
     match selector {
-        PatchSelector::PatchFile(p) => Ok((p.clone(), false)),
+        PatchSelector::PatchFile(p) => (p.clone(), false),
         PatchSelector::TrajectoryFile(traj_path) => {
-            // Derive sibling .patch path
             let patch_path = sibling_patch_of_trajectory(traj_path);
             let redacted = trajectory_has_patch_submission_redaction(traj_path);
-            Ok((patch_path, redacted))
+            (patch_path, redacted)
         }
         PatchSelector::SweepInstance { sweep, instance } => {
             let patch_path = sweep.join(format!("{instance}.patch"));
-            // Try to load the sibling trajectory for redaction info
             let traj_path = sweep.join(format!("{instance}.traj.json"));
             let redacted = trajectory_has_patch_submission_redaction(&traj_path);
-            Ok((patch_path, redacted))
+            (patch_path, redacted)
         }
     }
 }
@@ -296,13 +297,11 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
 /// Return `true` if the trajectory file at `traj_path` records at least one
 /// redaction event on the `patch_submission` surface.
 fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
-    let text = match std::fs::read_to_string(traj_path) {
-        Ok(t) => t,
-        Err(_) => return false,
+    let Ok(text) = std::fs::read_to_string(traj_path) else {
+        return false;
     };
-    let value: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => return false,
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
     };
     // Check info.redaction.counts[*].surface == "patch_submission"
     if let Some(counts) = value
@@ -310,11 +309,7 @@ fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
         .and_then(|v| v.as_array())
     {
         for entry in counts {
-            if entry
-                .get("surface")
-                .and_then(|s| s.as_str())
-                == Some("patch_submission")
-            {
+            if entry.get("surface").and_then(|s| s.as_str()) == Some("patch_submission") {
                 return true;
             }
         }
@@ -374,7 +369,11 @@ fn git_apply_check(dir: &Path, patch_path: &Path) -> Result<(), String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let msg = if stdout.is_empty() { stderr } else { format!("{stderr}\n{stdout}") };
+        let msg = if stdout.is_empty() {
+            stderr
+        } else {
+            format!("{stderr}\n{stdout}")
+        };
         Err(msg)
     }
 }
@@ -455,9 +454,7 @@ pub fn error_outcome_class(e: &ApplyError) -> &'static str {
         ApplyError::RedactedRefused => {
             crate::exit_code::ExitCode::ApplyRedactedRefused.outcome_class()
         }
-        ApplyError::CheckFailed(_) => {
-            crate::exit_code::ExitCode::ApplyCheckFailed.outcome_class()
-        }
+        ApplyError::CheckFailed(_) => crate::exit_code::ExitCode::ApplyCheckFailed.outcome_class(),
         ApplyError::Io(_) => crate::exit_code::ExitCode::InternalError.outcome_class(),
     }
 }

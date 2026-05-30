@@ -136,7 +136,11 @@ fn apply_to_non_git_target_returns_not_git_tree_error() {
 
     // Create a patch file (content doesn't matter for this test)
     let patch_path = work.path().join("task.patch");
-    std::fs::write(&patch_path, "--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new\n").unwrap();
+    std::fs::write(
+        &patch_path,
+        "--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    .unwrap();
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
@@ -290,8 +294,7 @@ fn apply_check_failed_leaves_tree_unchanged() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let original_content =
-        std::fs::read_to_string(repo.join("hello.txt")).unwrap();
+    let original_content = std::fs::read_to_string(repo.join("hello.txt")).unwrap();
 
     let bad_patch = concat!(
         "diff --git a/nonexistent.rs b/nonexistent.rs\n",
@@ -501,8 +504,11 @@ fn apply_selector_from_trajectory_resolves_sibling_patch() {
     // Write both sibling files: task.traj.json and task.patch
     let traj_path = work.path().join("task.traj.json");
     let patch_path = work.path().join("task.patch");
-    std::fs::write(&traj_path, r#"{"format":"mini-swe-agent-1.3","info":{},"messages":[]}"#)
-        .unwrap();
+    std::fs::write(
+        &traj_path,
+        r#"{"format":"mini-swe-agent-1.3","info":{},"messages":[]}"#,
+    )
+    .unwrap();
     std::fs::write(&patch_path, &patch_content).unwrap();
 
     let report_path = work.path().join("apply-report.json");
