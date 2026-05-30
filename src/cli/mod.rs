@@ -1030,6 +1030,27 @@ async fn mini_continue_cmd(
     continue_path: std::path::PathBuf,
     follow_up_task: String,
 ) -> Result<(), Error> {
+    // Reject GitHub PR flags — same rationale as --resume.
+    let pr_flags: &[(&str, bool)] = &[
+        ("--open-pr", m.github_pr.open_pr),
+        ("--github-pr-dry-run", m.github_pr.github_pr_dry_run),
+        ("--target-repo", m.github_pr.target_repo.is_some()),
+        ("--target-branch", m.github_pr.target_branch.is_some()),
+    ];
+    let set_pr_flags: Vec<&str> = pr_flags
+        .iter()
+        .filter_map(|&(name, set)| set.then_some(name))
+        .collect();
+    if !set_pr_flags.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--continue: GitHub PR flags are not supported on continue invocations: {}",
+                set_pr_flags.join(", ")
+            ),
+        );
+    }
+
     // Reject MCP server overrides — same rationale as --resume.
     if !m.mcp_servers.is_empty() {
         exit_with_outcome(
@@ -1059,9 +1080,23 @@ async fn mini_continue_cmd(
     let traj = load_resume_traj(&continue_path)?;
     validate_continue_or_exit(&traj, &continue_path);
 
-    // Inherit model name from parent trajectory.
+    // Inherit model name, step limit, and timeout from parent trajectory.
     cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
+    if let Some(manifest) = &traj.info.manifest {
+        cfg.root.agent.step_limit = manifest.step_limit;
+    }
+    // task_timeout_secs lives on MiniArgs, not cfg; compute effective value here.
+    let effective_task_timeout = m.task_timeout_secs.or_else(|| {
+        traj.info
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.task_timeout_secs)
+    });
     apply_read_only_policy(&m, &cfg)?;
+
+    if m.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
 
     if m.continue_allow_step_bump {
         if let Some(v) = m.step_limit {
@@ -1126,7 +1161,7 @@ async fn mini_continue_cmd(
         trajectory_name: child_traj_name,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
-        task_timeout_secs: m.task_timeout_secs,
+        task_timeout_secs: effective_task_timeout,
         cancellation: None,
         stream_addr,
         patch_capture: None,

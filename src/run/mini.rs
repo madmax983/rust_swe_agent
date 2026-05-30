@@ -504,9 +504,16 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
 
         // Append the follow-up instruction as a new user turn to both the
         // message list (for trajectory recording) and the history (for model).
+        // Redact the follow-up text before writing it to the trajectory, just
+        // as the normal fresh-run path redacts every message it records.
+        let follow_up_redactor =
+            crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
+        let redacted_follow_up = follow_up_redactor
+            .redact_text(&cont.follow_up_task, surface::TRAJECTORY)
+            .text;
         parent.messages.push(crate::trajectory::MessageRecord {
             role: "user".into(),
-            content: cont.follow_up_task.clone(),
+            content: redacted_follow_up.clone(),
             extra: Default::default(),
         });
         let history = parent.messages_as_model_history();
@@ -526,7 +533,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         parent.info.total_cost_usd = None;
         parent.info.token_usage = None;
         parent.info.duration_secs = None;
-        parent.info.started_at = None;
+        parent.info.started_at = Some(chrono::Utc::now().to_rfc3339());
         parent.info.ended_at = None;
         parent.info.verification_status = None;
         parent.info.verification_results.clear();
@@ -537,8 +544,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         parent.info.fallback_summary = None;
         parent.info.redaction = None;
         parent.info.trace_id = None;
-        // Overwrite the task to the follow-up instruction.
-        parent.info.task = Some(cont.follow_up_task);
+        parent.info.other.clear();
+        // Overwrite the task to the redacted follow-up instruction.
+        parent.info.task = Some(redacted_follow_up);
 
         Some(Box::new(crate::agent::default::ResumeState {
             trajectory: parent,
