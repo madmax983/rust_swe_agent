@@ -488,13 +488,12 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         let mut parent = cont.parent_trajectory;
 
         // Record the lineage link before building the child trajectory.
-        parent.info.parent_trajectory =
-            Some(crate::trajectory::ParentTrajectoryLink {
-                parent_path: cont.parent_path,
-                parent_trajectory_id: cont.parent_trajectory_id,
-                parent_outcome: parent.info.outcome.clone(),
-                parent_steps: parent.info.steps,
-            });
+        parent.info.parent_trajectory = Some(crate::trajectory::ParentTrajectoryLink {
+            parent_path: cont.parent_path,
+            parent_trajectory_id: cont.parent_trajectory_id,
+            parent_outcome: parent.info.outcome.clone(),
+            parent_steps: parent.info.steps,
+        });
 
         // Clear terminal-state markers — the child run will set its own.
         parent.info.outcome = None;
@@ -515,7 +514,9 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         // in `history` since `messages_as_model_history()` converts from
         // `parent.messages`. Verify this defensively.
         debug_assert!(
-            history.last().is_some_and(|m| matches!(m.role, crate::model::Role::User)),
+            history
+                .last()
+                .is_some_and(|m| matches!(m.role, crate::model::Role::User)),
             "follow-up user message must be the last entry in history"
         );
 
