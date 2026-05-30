@@ -308,7 +308,10 @@ fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
                     "--expect verdict must be 'allow', 'ask', or 'deny', got '{verdict_str}'"
                 )))
             })?;
-            Ok(ExpectAssertion { command: cmd, expected })
+            Ok(ExpectAssertion {
+                command: cmd,
+                expected,
+            })
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -335,7 +338,10 @@ fn agent_policy_check_cmd(p: &args::PolicyCheckCmd) -> Result<(), Error> {
     }
 
     if output.has_mismatches() {
-        exit_with_outcome(ExitCode::UsageError, "policy-check: --expect assertions failed");
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "policy-check: --expect assertions failed",
+        );
     }
     Ok(())
 }

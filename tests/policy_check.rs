@@ -28,8 +28,15 @@ fn check_one(cfg: &Config, cmd: &str) -> maxwells_daemon::run::policy_check::Com
 fn builtin_deny_corpus_returns_deny() {
     let cfg = Config::defaults().unwrap();
     let v = check_one(&cfg, "rm -rf /");
-    assert_eq!(v.verdict, VerdictKind::Deny, "rm -rf / must be denied by built-in corpus");
-    assert!(!v.matching_rule.is_empty(), "matching_rule must be non-empty for a deny");
+    assert_eq!(
+        v.verdict,
+        VerdictKind::Deny,
+        "rm -rf / must be denied by built-in corpus"
+    );
+    assert!(
+        !v.matching_rule.is_empty(),
+        "matching_rule must be non-empty for a deny"
+    );
 }
 
 // ── AC: operator allow-rule overrides built-in deny ───────────────────────────
@@ -96,8 +103,15 @@ fn yolo_profile_allows_everything() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.policy.profile = "yolo".to_owned();
     let v = check_one(&cfg, "rm -rf /");
-    assert_eq!(v.verdict, VerdictKind::Allow, "yolo profile must allow all commands");
-    assert_eq!(v.matching_rule, "yolo-bypass", "yolo must carry 'yolo-bypass' label");
+    assert_eq!(
+        v.verdict,
+        VerdictKind::Allow,
+        "yolo profile must allow all commands"
+    );
+    assert_eq!(
+        v.matching_rule, "yolo-bypass",
+        "yolo must carry 'yolo-bypass' label"
+    );
 }
 
 // ── AC: `--expect` regression assertion fails closed ─────────────────────────
@@ -139,7 +153,10 @@ fn expect_correct_verdict_has_no_mismatch() {
         },
     )
     .unwrap();
-    assert!(output.mismatches.is_empty(), "correct --expect must not produce mismatches");
+    assert!(
+        output.mismatches.is_empty(),
+        "correct --expect must not produce mismatches"
+    );
 }
 
 #[test]
@@ -156,7 +173,10 @@ fn expect_deny_on_actually_denied_command() {
         },
     )
     .unwrap();
-    assert!(output.mismatches.is_empty(), "expect deny on a denied command must not mismatch");
+    assert!(
+        output.mismatches.is_empty(),
+        "expect deny on a denied command must not mismatch"
+    );
 }
 
 // ── AC: blank lines and # comments in corpus file are ignored ─────────────────
@@ -180,7 +200,11 @@ fn corpus_file_ignores_blank_and_comments() {
         },
     )
     .unwrap();
-    assert_eq!(output.verdicts.len(), 1, "only 'ls' should survive filtering");
+    assert_eq!(
+        output.verdicts.len(),
+        1,
+        "only 'ls' should survive filtering"
+    );
     assert_eq!(output.verdicts[0].command, "ls");
 }
 
@@ -203,8 +227,14 @@ fn json_format_includes_schema_version_and_artifact_kind() {
         Some("policy_check"),
         "JSON must have artifact_kind = 'policy_check'"
     );
-    assert!(json_val.get("schema_version").is_some(), "JSON must have schema_version");
-    assert!(json_val.get("verdicts").is_some(), "JSON must have verdicts array");
+    assert!(
+        json_val.get("schema_version").is_some(),
+        "JSON must have schema_version"
+    );
+    assert!(
+        json_val.get("verdicts").is_some(),
+        "JSON must have verdicts array"
+    );
     assert!(json_val.get("profile").is_some(), "JSON must have profile");
 }
 
@@ -216,10 +246,7 @@ fn text_format_includes_all_commands_and_verdicts() {
     let output = run_policy_check(
         &cfg,
         &PolicyCheckOpts {
-            source: PolicyCheckSource::Commands(vec![
-                "ls".to_owned(),
-                "rm -rf /".to_owned(),
-            ]),
+            source: PolicyCheckSource::Commands(vec!["ls".to_owned(), "rm -rf /".to_owned()]),
             expect: vec![],
         },
     )
@@ -227,8 +254,14 @@ fn text_format_includes_all_commands_and_verdicts() {
     assert_eq!(output.verdicts.len(), 2);
     let text = format_text(&output);
     assert!(text.contains("ls"), "text output must include 'ls'");
-    assert!(text.contains("allow"), "text output must include 'allow' verdict");
-    assert!(text.contains("deny"), "text output must include 'deny' verdict");
+    assert!(
+        text.contains("allow"),
+        "text output must include 'allow' verdict"
+    );
+    assert!(
+        text.contains("deny"),
+        "text output must include 'deny' verdict"
+    );
 }
 
 // ── AC: effective profile is reported on each verdict ────────────────────────
@@ -238,7 +271,10 @@ fn verdict_reports_effective_profile() {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.policy.profile = "ask".to_owned();
     let v = check_one(&cfg, "ls");
-    assert_eq!(v.profile, "ask", "each verdict must carry the effective profile");
+    assert_eq!(
+        v.profile, "ask",
+        "each verdict must carry the effective profile"
+    );
 }
 
 // ── AC: Zero network/model calls — no API key needed ─────────────────────────
@@ -253,7 +289,10 @@ fn no_api_key_required() {
             expect: vec![],
         },
     );
-    assert!(result.is_ok(), "policy-check must succeed without any API key");
+    assert!(
+        result.is_ok(),
+        "policy-check must succeed without any API key"
+    );
 }
 
 // ── AC: safe profile allows ordinary commands by default ─────────────────────
@@ -262,7 +301,11 @@ fn no_api_key_required() {
 fn safe_profile_allows_ordinary_commands() {
     let cfg = Config::defaults().unwrap();
     let v = check_one(&cfg, "ls -la");
-    assert_eq!(v.verdict, VerdictKind::Allow, "ls -la must be allowed under safe profile");
+    assert_eq!(
+        v.verdict,
+        VerdictKind::Allow,
+        "ls -la must be allowed under safe profile"
+    );
     assert_eq!(v.matching_rule, "default-allow");
     assert_eq!(v.profile, "safe");
 }

@@ -144,9 +144,8 @@ impl PolicyCheckOutput {
 /// Resolves the [`PolicyEngine`] from `cfg.root.policy` (same precedence as a
 /// real agent run). No model call, no environment, no side effects.
 pub fn run_policy_check(cfg: &Config, opts: &PolicyCheckOpts) -> Result<PolicyCheckOutput, Error> {
-    let engine = PolicyEngine::from_cfg(&cfg.root.policy).map_err(|e| {
-        Error::Config(ConfigError::Invalid(format!("invalid policy config: {e}")))
-    })?;
+    let engine = PolicyEngine::from_cfg(&cfg.root.policy)
+        .map_err(|e| Error::Config(ConfigError::Invalid(format!("invalid policy config: {e}"))))?;
 
     let profile = cfg.root.policy.profile.clone();
     let commands = read_source(&opts.source)?;
