@@ -139,6 +139,11 @@ pub struct MiniArgs {
     /// than starting fresh. Budget accounting and message history are seeded
     /// from the checkpoint.
     pub resume_from: Option<crate::trajectory::Trajectory>,
+    /// When `Some`, the agent continues from a **terminal** parent trajectory
+    /// with a new follow-up instruction (inverse of `resume_from`). The child
+    /// run gets a fresh budget and step counter; only message history is
+    /// inherited. Mutually exclusive with `resume_from`.
+    pub continue_from: Option<ContinueState>,
     /// Issue #312 — operator interaction mode for this run.
     pub interactive_mode: InteractiveMode,
     /// OpenTelemetry trace ID assigned by the sweep runner when OTLP export
@@ -476,7 +481,79 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         (None, None)
     };
 
-    let resume_state = args.resume_from.map(|traj| {
+    let resume_state = if let Some(cont) = args.continue_from {
+        // ── `mini --continue`: resume from a terminal parent trajectory ──────
+        // Build a child trajectory that carries the parent's message history
+        // plus the new follow-up user turn. Budget/step counters start fresh.
+        let mut parent = cont.parent_trajectory;
+
+        // Record the lineage link before building the child trajectory.
+        parent.info.parent_trajectory =
+            Some(crate::trajectory::ParentTrajectoryLink {
+                parent_path: cont.parent_path,
+                parent_trajectory_id: cont.parent_trajectory_id,
+                parent_outcome: parent.info.outcome.clone(),
+                parent_steps: parent.info.steps,
+            });
+
+        // Clear terminal-state markers — the child run will set its own.
+        parent.info.outcome = None;
+        parent.info.exit_reason = None;
+        parent.info.failure_category = None;
+        parent.info.partial = false;
+        parent.info.partial_reason = None;
+
+        // Append the follow-up instruction as a new user turn to both the
+        // message list (for trajectory recording) and the history (for model).
+        parent.messages.push(crate::trajectory::MessageRecord {
+            role: "user".into(),
+            content: cont.follow_up_task.clone(),
+            extra: Default::default(),
+        });
+        let history = parent.messages_as_model_history();
+        // The follow-up user message (pushed just above) is already included
+        // in `history` since `messages_as_model_history()` converts from
+        // `parent.messages`. Verify this defensively.
+        debug_assert!(
+            history.last().is_some_and(|m| matches!(m.role, crate::model::Role::User)),
+            "follow-up user message must be the last entry in history"
+        );
+
+        // Reset per-run accounting — child trajectory has its own budget.
+        parent.info.steps = Some(0);
+        parent.info.actual_cost_usd = None;
+        parent.info.total_cost_usd = None;
+        parent.info.token_usage = None;
+        parent.info.duration_secs = None;
+        parent.info.started_at = None;
+        parent.info.ended_at = None;
+        parent.info.verification_status = None;
+        parent.info.verification_results.clear();
+        parent.info.resume_history.clear();
+        parent.info.test_invocations.clear();
+        parent.info.tests_run_before_submit = false;
+        parent.info.last_tests_passed = None;
+        parent.info.fallback_summary = None;
+        parent.info.redaction = None;
+        parent.info.trace_id = None;
+        // Overwrite the task to the follow-up instruction.
+        parent.info.task = Some(cont.follow_up_task);
+
+        Some(Box::new(crate::agent::default::ResumeState {
+            trajectory: parent,
+            history,
+            steps: 0,
+            total_cost_usd: 0.0,
+            prompt_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            completion_tokens: 0,
+            resumed_at: chrono::Utc::now().to_rfc3339(),
+            harness_git_sha: current_git_sha(),
+            is_continue: true,
+        }))
+    } else if let Some(traj) = args.resume_from {
+        // ── `mini --resume`: resume from a partial (in-progress) trajectory ─
         let history = traj.messages_as_model_history();
         let steps = traj.info.steps.unwrap_or(0);
         let total_cost_usd = traj.info.actual_cost_usd.unwrap_or(0.0);
@@ -489,7 +566,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     t.completion_tokens,
                 )
             });
-        Box::new(crate::agent::default::ResumeState {
+        Some(Box::new(crate::agent::default::ResumeState {
             trajectory: traj,
             history,
             steps,
@@ -500,8 +577,11 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             completion_tokens,
             resumed_at: chrono::Utc::now().to_rfc3339(),
             harness_git_sha: current_git_sha(),
-        })
-    });
+            is_continue: false,
+        }))
+    } else {
+        None
+    };
     let (confirm_callback, dashboard) = build_interactive_pieces(args.interactive_mode)?;
 
     // Redact the webhook sink so secrets are stripped before each POST.
@@ -1500,6 +1580,54 @@ pub enum ResumeValidationError {
     InvalidPrefix(String),
 }
 
+/// Errors produced when validating a terminal trajectory for `mini --continue`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ContinueValidationError {
+    /// The trajectory is NOT terminal — it is still partial/in-progress.
+    /// Use `--resume` instead to recover a partial run.
+    NonTerminal,
+    /// The trajectory is missing required fields (`task`, `model_name`) that
+    /// are needed to reconstruct the run configuration.
+    ManifestMissing,
+}
+
+/// Validate that `traj` is a valid candidate for `mini --continue`.
+///
+/// The inverse of `validate_resume_trajectory`: requires a **terminal**
+/// trajectory — one that reached a final outcome (`submitted`, `error`, etc.)
+/// or was cancelled. Returns `Ok(())` when the trajectory may be continued,
+/// or a `ContinueValidationError` describing the first violation found.
+pub fn validate_continue_trajectory(
+    traj: &crate::trajectory::Trajectory,
+) -> Result<(), ContinueValidationError> {
+    // Must be terminal: NOT partial, OR has outcome/exit_reason.
+    // A trajectory is non-terminal only if partial=true AND both outcome and
+    // exit_reason are absent (still running or interrupted without clean shutdown).
+    if traj.info.partial && traj.info.outcome.is_none() && traj.info.exit_reason.is_none() {
+        return Err(ContinueValidationError::NonTerminal);
+    }
+
+    // Manifest-fields check.
+    if traj.info.task.is_none() || traj.info.model_name.is_none() {
+        return Err(ContinueValidationError::ManifestMissing);
+    }
+
+    Ok(())
+}
+
+/// State passed to `mini::run()` when a `--continue` invocation is requested.
+pub struct ContinueState {
+    /// The terminal parent trajectory to continue from.
+    pub parent_trajectory: crate::trajectory::Trajectory,
+    /// Absolute (or operator-relative) path of the parent trajectory file.
+    /// Recorded in the child trajectory's `parent_trajectory` lineage link.
+    pub parent_path: String,
+    /// File-stem of the parent trajectory (used as the trajectory ID in lineage).
+    pub parent_trajectory_id: String,
+    /// The operator-supplied follow-up instruction to append as a new user turn.
+    pub follow_up_task: String,
+}
+
 /// Validate that `traj` is a valid candidate for `mini --resume`.
 ///
 /// Returns `Ok(())` when the trajectory may be resumed, or a
@@ -2299,6 +2427,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
 
         run(args).await.unwrap();
@@ -2343,6 +2472,235 @@ index 8a1218a..24c5735 100644\n\
             Some("submitted"),
             "expected submitted outcome; traj:\n{traj_json}"
         );
+    }
+
+    // ── RED-phase: continue validation ───────────────────────────────────────
+
+    fn make_minimal_terminal_traj() -> crate::trajectory::Trajectory {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.partial = false;
+        traj.info.partial_reason = None;
+        traj.info.outcome = Some("submitted".into());
+        traj
+    }
+
+    #[test]
+    fn validate_continue_accepts_submitted_terminal_trajectory() {
+        let traj = make_minimal_terminal_traj();
+        assert!(validate_continue_trajectory(&traj).is_ok());
+    }
+
+    #[test]
+    fn validate_continue_accepts_error_terminal_trajectory() {
+        let mut traj = make_minimal_terminal_traj();
+        traj.info.outcome = Some("error".into());
+        assert!(validate_continue_trajectory(&traj).is_ok());
+    }
+
+    #[test]
+    fn validate_continue_accepts_step_limit_reached_trajectory() {
+        let mut traj = make_minimal_terminal_traj();
+        traj.info.outcome = Some("step_limit_reached".into());
+        assert!(validate_continue_trajectory(&traj).is_ok());
+    }
+
+    #[test]
+    fn validate_continue_accepts_cancelled_trajectory() {
+        let mut traj = make_minimal_partial_traj();
+        traj.info.exit_reason = Some("cancelled".into());
+        assert!(validate_continue_trajectory(&traj).is_ok());
+    }
+
+    #[test]
+    fn validate_continue_rejects_non_terminal_partial_trajectory() {
+        let traj = make_minimal_partial_traj();
+        assert_eq!(
+            validate_continue_trajectory(&traj),
+            Err(ContinueValidationError::NonTerminal)
+        );
+    }
+
+    #[test]
+    fn validate_continue_rejects_missing_task() {
+        let mut traj = make_minimal_terminal_traj();
+        traj.info.task = None;
+        assert_eq!(
+            validate_continue_trajectory(&traj),
+            Err(ContinueValidationError::ManifestMissing)
+        );
+    }
+
+    #[test]
+    fn validate_continue_rejects_missing_model_name() {
+        let mut traj = make_minimal_terminal_traj();
+        traj.info.model_name = None;
+        assert_eq!(
+            validate_continue_trajectory(&traj),
+            Err(ContinueValidationError::ManifestMissing)
+        );
+    }
+
+    // ── Integration test: mini --continue (deterministic hello-world) ─────────
+    //
+    // AC spec: a 2-turn continuation records the parent's N steps plus the
+    // new turn and a valid `parent_trajectory` link at $0.
+
+    #[tokio::test]
+    async fn mini_continue_2turn_deterministic_hello_world() {
+        let work = tempfile::tempdir().unwrap();
+        let runs_dir = work.path().join("runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+
+        let mut cfg = crate::config::Config::defaults().unwrap();
+        cfg.root.agent.step_limit = 10;
+
+        // Step 1: Run the "parent" with a deterministic submit, producing a
+        // terminal trajectory.
+        let parent_args = MiniArgs {
+            task: "fix the original bug".into(),
+            extra_context: None,
+            config: cfg.clone(),
+            output_dir: runs_dir.clone(),
+            trajectory_name: "parent-run".into(),
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\noriginal fix\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            continue_from: None,
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+            parent_sweep_run_id: None,
+        };
+        run(parent_args).await.unwrap();
+
+        // Verify the parent trajectory is terminal.
+        let parent_traj_path = runs_dir.join("parent-run.traj.json");
+        let parent_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&parent_traj_path).unwrap()).unwrap();
+        assert_eq!(
+            parent_json["info"]["outcome"].as_str(),
+            Some("submitted"),
+            "parent must be terminal (submitted)"
+        );
+        let parent_steps = parent_json["info"]["steps"].as_u64().unwrap_or(0);
+
+        // Step 2: Load the terminal trajectory and build a ContinueState.
+        let parent_traj: crate::trajectory::Trajectory =
+            serde_json::from_str(&std::fs::read_to_string(&parent_traj_path).unwrap()).unwrap();
+        let parent_msg_count = parent_traj.messages.len();
+
+        let continue_state = ContinueState {
+            parent_trajectory: parent_traj,
+            parent_path: parent_traj_path.to_string_lossy().to_string(),
+            parent_trajectory_id: "parent-run".into(),
+            follow_up_task: "also fix the edge case".into(),
+        };
+
+        // Step 3: Run the continuation — one deterministic submit response.
+        let child_args = MiniArgs {
+            task: "also fix the edge case".into(),
+            extra_context: None,
+            config: cfg,
+            output_dir: runs_dir.clone(),
+            trajectory_name: "child-continue".into(),
+            deterministic_responses: Some(vec![
+                "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nedge case fixed\n```".into(),
+            ]),
+            deterministic_usage_per_call: None,
+            task_timeout_secs: Some(30),
+            cancellation: None,
+            stream_addr: None,
+            patch_capture: None,
+            verification_checks: vec![],
+            verification_timeout_secs: 60,
+            resume_from: None,
+            continue_from: Some(continue_state),
+            interactive_mode: InteractiveMode::Off,
+            trace_id: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            event_log: None,
+            event_log_instance_id: None,
+            local_workdir: None,
+            read_only: false,
+            allow_mcp_in_read_only: false,
+            rehearsal_gold_patch: None,
+            no_step_persist: false,
+            parent_sweep_run_id: None,
+        };
+        run(child_args).await.unwrap();
+
+        // Step 4: Validate the child trajectory.
+        let child_traj_path = runs_dir.join("child-continue.traj.json");
+        let child_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&child_traj_path).unwrap()).unwrap();
+
+        // AC: child must reach submitted outcome.
+        assert_eq!(
+            child_json["info"]["outcome"].as_str(),
+            Some("submitted"),
+            "child continuation must reach submitted outcome; child:\n{}",
+            serde_json::to_string_pretty(&child_json).unwrap()
+        );
+
+        // AC: valid parent_trajectory link.
+        let link = &child_json["info"]["parent_trajectory"];
+        assert!(
+            !link.is_null(),
+            "child trajectory must have parent_trajectory lineage link"
+        );
+        assert_eq!(
+            link["parent_trajectory_id"].as_str(),
+            Some("parent-run"),
+            "parent_trajectory_id must match"
+        );
+        assert_eq!(
+            link["parent_outcome"].as_str(),
+            Some("submitted"),
+            "parent_outcome must be recorded"
+        );
+        assert_eq!(
+            link["parent_steps"].as_u64(),
+            Some(parent_steps),
+            "parent_steps must match parent trajectory's step count"
+        );
+
+        // AC: child messages include all parent messages + follow-up user msg +
+        // new assistant response(s). At minimum: parent_msg_count + 1 (follow-up) + 1 (submit).
+        let child_msg_count = child_json["messages"].as_array().unwrap().len();
+        assert!(
+            child_msg_count > parent_msg_count,
+            "child must have more messages than parent (parent={parent_msg_count}, child={child_msg_count})"
+        );
+
+        // AC: child must NOT have a resume_history entry (continue uses parent_trajectory).
+        let resume_history = child_json["info"]["resume_history"].as_array();
+        let resume_count = resume_history.map_or(0, |v| v.len());
+        assert_eq!(
+            resume_count, 0,
+            "continue trajectory must not have resume_history entries; got {resume_count}"
+        );
+
+        // AC: model was only queried for the new turn — if it were queried for
+        // all parent turns too, the 1-response queue would exhaust and the run
+        // would fail. Success here proves prefix reuse (no re-billing).
+        // (Implicit: run() above would have errored with ResponsesExhausted.)
     }
 
     // ── End-to-end tests through mini::run() ──────────────────────────────
@@ -2401,6 +2759,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
 
         run(args).await.unwrap();
@@ -2498,6 +2857,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
 
         run(args).await.unwrap();
@@ -2586,6 +2946,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: true,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
         run(args).await.unwrap();
 
@@ -2653,6 +3014,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
         run(args).await.unwrap();
 
@@ -2722,6 +3084,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
 
         run(args).await.unwrap();
@@ -2837,6 +3200,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         }
     }
 

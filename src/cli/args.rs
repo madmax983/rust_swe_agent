@@ -316,11 +316,12 @@ pub struct MiniCmd {
 
     /// Resume from a partial (in-progress) trajectory file instead of starting a new run.
     /// The trajectory is the sole source of truth for task, model, env, and budget settings.
-    /// Mutually exclusive with `--task`, `--task-file`, `--render-only`, and `--trajectory-name`.
+    /// Mutually exclusive with `--task`, `--task-file`, `--render-only`, `--trajectory-name`,
+    /// and `--continue`.
     #[arg(
         long = "resume",
         value_name = "PATH",
-        conflicts_with_all = ["render_only", "trajectory_name"]
+        conflicts_with_all = ["render_only", "trajectory_name", "continue_from"]
     )]
     pub resume_from: Option<PathBuf>,
 
@@ -329,6 +330,25 @@ pub struct MiniCmd {
     /// supplying any of those flags on resume exits 2.
     #[arg(long, default_value_t = false, requires = "resume_from")]
     pub resume_allow_step_bump: bool,
+
+    /// Continue from a **terminal** trajectory file with a new follow-up instruction.
+    /// Loads the completed run's full message history and appends `--task` as a new
+    /// user turn, enabling iterative refinement without restarting from scratch.
+    /// Inverse of `--resume` (which requires a non-terminal trajectory).
+    /// Requires `--task`. Mutually exclusive with `--resume`, `--render-only`,
+    /// `--interactive`, and `--trajectory-name`.
+    #[arg(
+        long = "continue",
+        value_name = "PATH",
+        conflicts_with_all = ["resume_from", "render_only", "interactive", "trajectory_name"]
+    )]
+    pub continue_from: Option<PathBuf>,
+
+    /// Allow raising `--step-limit`, `--task-timeout-secs`, or `--per-task-budget-usd`
+    /// on a continue invocation. Without this flag, supplying any of those flags
+    /// on `--continue` exits 2.
+    #[arg(long, default_value_t = false, requires = "continue_from")]
+    pub continue_allow_step_bump: bool,
 
     /// Additional context appended to the instance prompt.
     #[arg(long)]
