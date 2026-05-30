@@ -90,7 +90,7 @@ impl SkillRegistry {
         }
         skill_files.sort();
 
-        let mut manifests = Vec::new();
+        let mut manifests = Vec::with_capacity(skill_files.len());
         let mut seen_names = BTreeSet::new();
         for path in skill_files {
             let text = std::fs::read_to_string(&path)?;

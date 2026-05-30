@@ -569,27 +569,26 @@ pub fn top_diverging_failure_categories(
     let mut counts: HashMap<String, usize> = HashMap::new();
 
     for entry in instances {
-        let diverging = match (entry.original_resolved, entry.replay_resolved) {
+        match (entry.original_resolved, entry.replay_resolved) {
             (true, false) => {
-                // flipped to unresolved — note the new failure category
-                entry.replay_failure_category.iter().collect::<Vec<_>>()
+                if let Some(cat) = &entry.replay_failure_category {
+                    *counts.entry(cat.clone()).or_insert(0) += 1;
+                }
             }
             (false, true) => {
-                // flipped to resolved — note what was failing before
-                entry.original_failure_category.iter().collect::<Vec<_>>()
+                if let Some(cat) = &entry.original_failure_category {
+                    *counts.entry(cat.clone()).or_insert(0) += 1;
+                }
             }
             (false, false) if entry.original_failure_category != entry.replay_failure_category => {
-                // same unresolved outcome but different category — note both
-                entry
-                    .original_failure_category
-                    .iter()
-                    .chain(entry.replay_failure_category.iter())
-                    .collect::<Vec<_>>()
+                if let Some(cat) = &entry.original_failure_category {
+                    *counts.entry(cat.clone()).or_insert(0) += 1;
+                }
+                if let Some(cat) = &entry.replay_failure_category {
+                    *counts.entry(cat.clone()).or_insert(0) += 1;
+                }
             }
-            _ => vec![],
-        };
-        for cat in diverging {
-            *counts.entry(cat.clone()).or_insert(0) += 1;
+            _ => {}
         }
     }
 
