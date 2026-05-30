@@ -499,33 +499,43 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         parent.info.outcome = None;
         parent.info.exit_reason = None;
         parent.info.failure_category = None;
+        parent.info.final_output = None;
         parent.info.partial = false;
         parent.info.partial_reason = None;
 
-        // Append the follow-up instruction as a new user turn to both the
-        // message list (for trajectory recording) and the history (for model).
-        // Redact the follow-up text before writing it to the trajectory, just
-        // as the normal fresh-run path redacts every message it records.
+        // Redact the follow-up text for the saved trajectory. The model history
+        // receives the raw (unredacted) text so the agent acts on the actual
+        // instruction — matching how the fresh-run path keeps the raw task in
+        // memory while only writing a redacted copy to the trajectory file.
         let follow_up_redactor =
             crate::redaction::Redactor::from_config_lossy(&args.config.root.redaction);
         let redacted_follow_up = follow_up_redactor
             .redact_text(&cont.follow_up_task, surface::TRAJECTORY)
             .text;
-        parent.messages.push(crate::trajectory::MessageRecord {
-            role: "user".into(),
-            content: redacted_follow_up.clone(),
+
+        // Build model history from the parent messages first, then append the
+        // raw follow-up so the model sees the unredacted instruction.
+        let mut history = parent.messages_as_model_history();
+        history.push(crate::model::Message {
+            role: crate::model::Role::User,
+            content: cont.follow_up_task.clone(),
+            cache_hint: crate::model::CacheHint::None,
             extra: Default::default(),
         });
-        let history = parent.messages_as_model_history();
-        // The follow-up user message (pushed just above) is already included
-        // in `history` since `messages_as_model_history()` converts from
-        // `parent.messages`. Verify this defensively.
         debug_assert!(
             history
                 .last()
                 .is_some_and(|m| matches!(m.role, crate::model::Role::User)),
             "follow-up user message must be the last entry in history"
         );
+
+        // Append the redacted version to the trajectory message list (written
+        // to the .traj.json file).
+        parent.messages.push(crate::trajectory::MessageRecord {
+            role: "user".into(),
+            content: redacted_follow_up.clone(),
+            extra: Default::default(),
+        });
 
         // Reset per-run accounting — child trajectory has its own budget.
         parent.info.steps = Some(0);
