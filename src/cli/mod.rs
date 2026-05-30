@@ -3546,25 +3546,19 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
         format,
     };
 
-    let report = run(&args).map_err(|e| {
-        // Trajectory error = missing evaluation.json → exit 2 (usage error).
-        match &e {
-            Error::Trajectory(_) => {
-                exit_with_outcome(
-                    ExitCode::UsageError,
-                    &format!("bench near-miss: {e}"),
-                );
-            }
-            _ => {}
-        }
-        e
-    })?;
+    let report = run(&args).unwrap_or_else(|e| {
+        // Missing evaluation.json → usage error (exit 2); parse failure → internal error (exit 1).
+        let code = if matches!(e, Error::Trajectory(_)) {
+            ExitCode::UsageError
+        } else {
+            ExitCode::InternalError
+        };
+        exit_with_outcome(code, &format!("bench near-miss: {e}"));
+    });
 
     match format {
         NearMissFormat::Text => print!("{}", render_text(&report)),
-        NearMissFormat::Json => {
-            println!("{}", render_json(&report)?);
-        }
+        NearMissFormat::Json => println!("{}", render_json(&report)?),
     }
 
     Ok(())

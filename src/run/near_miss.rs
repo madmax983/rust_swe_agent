@@ -15,8 +15,6 @@
 //!   3. `(gold_size_ratio - 1.0).abs()` asc  (tertiary — penalise shotgun/bloated)
 //!   4. `instance_id` asc  (tiebreak for determinism)
 
-#![allow(clippy::cast_precision_loss)]
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
