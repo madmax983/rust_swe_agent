@@ -54,6 +54,7 @@ pub struct RedactCheckOpts {
 }
 
 /// The output of a `redact-check` run.
+#[derive(Debug)]
 pub struct RedactCheckOutput {
     /// The original, un-redacted sample text.
     pub original: String,
@@ -111,7 +112,12 @@ fn read_source(source: &RedactCheckSource) -> Result<String, Error> {
     match source {
         RedactCheckSource::Text(text) => Ok(text.clone()),
         RedactCheckSource::File(path) | RedactCheckSource::Trajectory(path) => {
-            std::fs::read_to_string(path).map_err(Error::Io)
+            std::fs::read_to_string(path).map_err(|e| {
+                Error::Config(ConfigError::Usage(format!(
+                    "cannot read sample file '{}': {e}",
+                    path.display()
+                )))
+            })
         }
         RedactCheckSource::Stdin => {
             let mut buf = String::new();

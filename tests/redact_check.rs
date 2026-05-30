@@ -288,6 +288,35 @@ fn check_no_literals_configured_returns_empty_unmatched() {
 // ── run_redact_check (integration-level) ──────────────────────────────────────
 
 #[test]
+fn run_redact_check_missing_file_returns_usage_error() {
+    // A missing --file path must produce a usage/config error (exit 2), not an
+    // internal I/O error (exit 1), so CI wrappers can distinguish typos from
+    // infrastructure failures.
+    let cfg = Config::from_toml_str("[redaction]\nenabled = true").unwrap();
+    let opts = RedactCheckOpts {
+        source: RedactCheckSource::File("/nonexistent/path/sample.txt".into()),
+        format: RedactCheckFormat::Human,
+        strict: false,
+    };
+    let result = run_redact_check(&cfg, &opts);
+    assert!(result.is_err(), "expected an error for missing file");
+    let err = result.unwrap_err();
+    let err_str = format!("{err}");
+    assert!(
+        err_str.contains("sample.txt") || err_str.contains("cannot read"),
+        "expected usage error mentioning the path, got: {err_str}"
+    );
+    // Must be a Config/Usage error, not a bare Io error.
+    assert!(
+        matches!(
+            err,
+            maxwells_daemon::Error::Config(maxwells_daemon::error::ConfigError::Usage(_))
+        ),
+        "expected Config(Usage(...)) error variant, got: {err:?}"
+    );
+}
+
+#[test]
 fn run_redact_check_text_source_produces_matches() {
     let cfg = Config::from_toml_str(
         r#"
