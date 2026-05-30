@@ -589,6 +589,38 @@ fn apply_selector_from_sweep_instance_resolves_patch() {
 }
 
 #[test]
+fn apply_selector_sweep_bundle_patches_layout() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Bundle layout: <sweep>/patches/<instance>.patch (from spec-bundle.md)
+    let sweep_dir = work.path().join("sweep_bundle");
+    let patches_dir = sweep_dir.join("patches");
+    std::fs::create_dir_all(&patches_dir).unwrap();
+    std::fs::write(patches_dir.join("my-instance.patch"), &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::SweepInstance {
+            sweep: sweep_dir,
+            instance: "my-instance".into(),
+        },
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+}
+
+#[test]
 fn apply_dry_run_without_report_flag_writes_default_report() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
