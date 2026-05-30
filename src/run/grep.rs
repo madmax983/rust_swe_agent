@@ -138,16 +138,27 @@ pub fn run(args: &GrepArgs) -> Result<GrepReport, Error> {
     })
 }
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 pub fn render_text(report: &GrepReport) -> String {
-    let mut out = String::new();
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Instance ID", "Turn", "Role", "Snippet"]);
+
     for m in &report.matches {
         let snippet = m.snippet.replace(['\n', '\r', '\t'], " ");
-        let _ = writeln!(
-            out,
-            "{}\t{}\t{}\t{}",
-            m.instance_id, m.turn_index, m.role, snippet
-        );
+        table.add_row(vec![
+            m.instance_id.clone(),
+            m.turn_index.to_string(),
+            m.role.clone(),
+            snippet,
+        ]);
     }
+
+    let mut out = String::new();
+    let _ = writeln!(out, "{table}");
     out
 }
 
