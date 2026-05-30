@@ -123,6 +123,7 @@ fn write_results_json(dir: &Path) {
 /// - `no_gold`:    gold_files_iou=null (missing gold)  → `no_gold` bucket
 /// - `empty_patch`: patch_stats.is_empty=true          → `empty_patch` bucket
 /// - `no_stats`:   patch_stats=null                    → `no_stats` bucket
+#[allow(clippy::too_many_lines)]
 fn write_evaluation_json_full(dir: &Path) {
     let payload = serde_json::json!({
         "artifact_kind": "evaluation_results",
@@ -261,7 +262,12 @@ fn near_miss_exits_2_when_no_evaluation_json() {
     write_results_json(dir.path());
 
     let out = Command::new(binary_path())
-        .args(["bench", "near-miss", "--sweep", dir.path().to_str().unwrap()])
+        .args([
+            "bench",
+            "near-miss",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
@@ -282,7 +288,12 @@ fn near_miss_exits_0_on_success() {
     write_evaluation_json_full(dir.path());
 
     let out = Command::new(binary_path())
-        .args(["bench", "near-miss", "--sweep", dir.path().to_str().unwrap()])
+        .args([
+            "bench",
+            "near-miss",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
@@ -303,7 +314,12 @@ fn near_miss_ranking_is_deterministic_and_correct() {
     write_evaluation_json_full(dir.path());
 
     let out = Command::new(binary_path())
-        .args(["bench", "near-miss", "--sweep", dir.path().to_str().unwrap()])
+        .args([
+            "bench",
+            "near-miss",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
@@ -311,21 +327,21 @@ fn near_miss_ranking_is_deterministic_and_correct() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // iou_1 must be ranked first (gold_files_iou=1.0)
-    let pos_iou1 = stdout.find("iou_1").unwrap_or(usize::MAX);
-    let pos_iou05 = stdout.find("iou_0_5").unwrap_or(usize::MAX);
-    let pos_iou01 = stdout.find("iou_0_1").unwrap_or(usize::MAX);
-    let pos_iou00 = stdout.find("iou_0_0").unwrap_or(usize::MAX);
+    let rank_iou_full = stdout.find("iou_1").unwrap_or(usize::MAX);
+    let rank_iou_half = stdout.find("iou_0_5").unwrap_or(usize::MAX);
+    let rank_iou_tenth = stdout.find("iou_0_1").unwrap_or(usize::MAX);
+    let rank_iou_zero = stdout.find("iou_0_0").unwrap_or(usize::MAX);
 
     assert!(
-        pos_iou1 < pos_iou05,
+        rank_iou_full < rank_iou_half,
         "iou_1 (IoU=1.0) should appear before iou_0_5 (IoU=0.5); stdout:\n{stdout}"
     );
     assert!(
-        pos_iou05 < pos_iou01,
+        rank_iou_half < rank_iou_tenth,
         "iou_0_5 (IoU=0.5) should appear before iou_0_1 (IoU=0.1); stdout:\n{stdout}"
     );
     assert!(
-        pos_iou01 < pos_iou00,
+        rank_iou_tenth < rank_iou_zero,
         "iou_0_1 (IoU=0.1) should appear before iou_0_0 (IoU=0.0); stdout:\n{stdout}"
     );
 }
@@ -339,7 +355,12 @@ fn near_miss_buckets_are_correct_in_text_output() {
     write_evaluation_json_full(dir.path());
 
     let out = Command::new(binary_path())
-        .args(["bench", "near-miss", "--sweep", dir.path().to_str().unwrap()])
+        .args([
+            "bench",
+            "near-miss",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
@@ -511,7 +532,12 @@ fn near_miss_output_contains_no_patch_text() {
     write_evaluation_json_full(dir.path());
 
     let out = Command::new(binary_path())
-        .args(["bench", "near-miss", "--sweep", dir.path().to_str().unwrap()])
+        .args([
+            "bench",
+            "near-miss",
+            "--sweep",
+            dir.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 
@@ -531,6 +557,7 @@ fn near_miss_output_contains_no_patch_text() {
 
 // ── AC: bench compare text output has near-miss referral line ─────────────────
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn bench_compare_text_output_has_near_miss_referral() {
     // Construct a sweep with one regression (pass->fail) to trigger the

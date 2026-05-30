@@ -105,13 +105,12 @@ fn eval_exit_reason_label(reason: &crate::run::evaluate::EvalExitReason) -> &'st
 /// - `Error::Trajectory` when `evaluation.json` is missing (caller maps to exit 2).
 /// - `Error::Json` on parse failures (caller maps to exit 1).
 pub fn run(args: &NearMissArgs) -> Result<NearMissReport, Error> {
-    let eval = load_evaluation_results(&args.sweep)?
-        .ok_or_else(|| {
-            Error::Trajectory(format!(
-                "near-miss: {} does not contain evaluation.json",
-                args.sweep.display()
-            ))
-        })?;
+    let eval = load_evaluation_results(&args.sweep)?.ok_or_else(|| {
+        Error::Trajectory(format!(
+            "near-miss: {} does not contain evaluation.json",
+            args.sweep.display()
+        ))
+    })?;
 
     let mut eligible: Vec<NearMissRow> = Vec::new();
     let mut no_gold: usize = 0;
@@ -130,7 +129,11 @@ pub fn run(args: &NearMissArgs) -> Result<NearMissReport, Error> {
             empty_patch += 1;
             continue;
         }
-        match (stats.gold_files_iou, stats.gold_lines_overlap, stats.gold_size_ratio) {
+        match (
+            stats.gold_files_iou,
+            stats.gold_lines_overlap,
+            stats.gold_size_ratio,
+        ) {
             (Some(iou), Some(overlap), Some(size_ratio)) => {
                 eligible.push(NearMissRow {
                     rank: 0, // assigned after sort
@@ -241,8 +244,13 @@ pub fn render_text(report: &NearMissReport) -> String {
     let _ = writeln!(
         s,
         "{:<6} {:<40} {:>10} {:>14} {:>12} {:>20} {:>14}",
-        "rank", "instance_id", "files_iou", "lines_overlap", "size_ratio",
-        "failure_category", "lines_changed"
+        "rank",
+        "instance_id",
+        "files_iou",
+        "lines_overlap",
+        "size_ratio",
+        "failure_category",
+        "lines_changed"
     );
     let _ = writeln!(s, "{}", "-".repeat(120));
     for row in &report.ranked {
@@ -266,20 +274,26 @@ pub fn render_text(report: &NearMissReport) -> String {
 
 /// Render the report as a versioned JSON artifact.
 pub fn render_json(report: &NearMissReport) -> Result<String, Error> {
-    crate::artifact::to_string_pretty(ArtifactKind::NearMissReport, report)
-        .map_err(Error::Json)
+    crate::artifact::to_string_pretty(ArtifactKind::NearMissReport, report).map_err(Error::Json)
 }
 
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
     fn format_parse_round_trips() {
-        assert_eq!("text".parse::<NearMissFormat>().unwrap(), NearMissFormat::Text);
-        assert_eq!("json".parse::<NearMissFormat>().unwrap(), NearMissFormat::Json);
+        assert_eq!(
+            "text".parse::<NearMissFormat>().unwrap(),
+            NearMissFormat::Text
+        );
+        assert_eq!(
+            "json".parse::<NearMissFormat>().unwrap(),
+            NearMissFormat::Json
+        );
         assert!("bad".parse::<NearMissFormat>().is_err());
     }
 
