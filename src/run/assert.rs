@@ -731,14 +731,12 @@ pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
     // Load evaluation.json only when at least one rule actually needs it; a
     // stale or malformed evaluation artifact must not break results-only gates.
     let needs_evaluation = rules.iter().any(|rule| {
-        parse_metric(&rule.metric)
-            .map(|m| {
-                matches!(
-                    metric_source(&m),
-                    SourceArtifact::Evaluation | SourceArtifact::Both
-                )
-            })
-            .unwrap_or(false)
+        parse_metric(&rule.metric).is_ok_and(|m| {
+            matches!(
+                metric_source(&m),
+                SourceArtifact::Evaluation | SourceArtifact::Both
+            )
+        })
     });
     let evaluation_path = args.sweep.join("evaluation.json");
     let evaluation: Option<Value> = if needs_evaluation && evaluation_path.exists() {
