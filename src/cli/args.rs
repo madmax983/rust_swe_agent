@@ -662,6 +662,8 @@ pub enum BenchCmd {
     ContaminationCheck(ContaminationCheckCmd),
     /// Probe every configured MCP server and dry-run every configured hook before any model call.
     ScriptabilityCheck(ScriptabilityCheckCmd),
+    /// Rank unresolved sweep instances by gold-patch proximity (zero-cost: reads only evaluation.json).
+    NearMiss(NearMissCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -2702,6 +2704,24 @@ pub struct ScriptabilityCheckCmd {
     /// Write the JSON artifact to `<output>/scriptability_check.json`.
     #[arg(long)]
     pub output: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// `bench near-miss` — rank unresolved sweep instances by gold-patch proximity.
+#[derive(Debug, Args, Clone)]
+pub struct NearMissCmd {
+    /// Completed sweep directory produced by `bench swebench` (must contain
+    /// `evaluation.json`). The command reads only that file; it does not invoke
+    /// the evaluator, model, or agent.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Show at most N eligible instances in the ranked table. Default: 20.
+    #[arg(long, default_value_t = 20)]
+    pub top: usize,
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
