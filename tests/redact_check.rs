@@ -332,7 +332,10 @@ secret_literals = ["toplevel-secret"]
         strict: false,
     };
     let output = run_redact_check(&cfg, &opts).unwrap();
-    assert!(!output.check.matches.is_empty(), "expected at least one match");
+    assert!(
+        !output.check.matches.is_empty(),
+        "expected at least one match"
+    );
     assert!(
         !output.check.redacted.contains("toplevel-secret"),
         "raw secret leaked: {}",
@@ -344,7 +347,11 @@ secret_literals = ["toplevel-secret"]
 fn run_redact_check_file_source_reads_and_redacts() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("sample.txt");
-    std::fs::write(&file_path, "token: ghp_0123456789ABCDEF0123456789ABCDEF0123\n").unwrap();
+    std::fs::write(
+        &file_path,
+        "token: ghp_0123456789ABCDEF0123456789ABCDEF0123\n",
+    )
+    .unwrap();
 
     let cfg = Config::from_toml_str("[redaction]\nenabled = true").unwrap();
     let opts = RedactCheckOpts {
