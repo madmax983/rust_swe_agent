@@ -1,0 +1,107 @@
+# Rules that all PASS against the assert fixture sweep.
+# Fixture metrics:
+#   resolved_rate = 0.5 (2/4)
+#   resolved_count = 2
+#   unresolved_count = 2
+#   errored_count = 2
+#   total_cost_usd = 8.40
+#   mean_cost_per_instance_usd = 2.10
+#   cost_per_resolved_instance_usd = 4.20
+#   mean_steps = 12.5
+#   p95_steps = 19.25
+#   wallclock_total_s = 3600
+#   failure_category_count[step_limit] = 2
+#   failure_category_share[step_limit] = 0.5
+#   at_cap_count[steps] = 2  (gamma+delta have failure_category=step_limit)
+#   at_cap_count[cost] = 0
+#   at_cap_count[wallclock] = 0
+
+[[rule]]
+name = "resolved_rate_floor"
+metric = "resolved_rate"
+op = ">="
+threshold = 0.40
+
+[[rule]]
+name = "resolved_count_floor"
+metric = "resolved_count"
+op = ">="
+threshold = 2
+
+[[rule]]
+name = "unresolved_ceiling"
+metric = "unresolved_count"
+op = "<="
+threshold = 3
+
+[[rule]]
+name = "errored_ceiling"
+metric = "errored_count"
+op = "<="
+threshold = 3
+
+[[rule]]
+name = "cost_ceiling"
+metric = "total_cost_usd"
+op = "<="
+threshold = 10.00
+
+[[rule]]
+name = "mean_cost_ceiling"
+metric = "mean_cost_per_instance_usd"
+op = "<="
+threshold = 3.00
+
+[[rule]]
+name = "cost_per_resolved_ceiling"
+metric = "cost_per_resolved_instance_usd"
+op = "<="
+threshold = 5.00
+
+[[rule]]
+name = "mean_steps_ceiling"
+metric = "mean_steps"
+op = "<="
+threshold = 15.0
+
+[[rule]]
+name = "p95_steps_ceiling"
+metric = "p95_steps"
+op = "<="
+threshold = 20.0
+
+[[rule]]
+name = "wallclock_ceiling"
+metric = "wallclock_total_s"
+op = "<="
+threshold = 7200.0
+
+[[rule]]
+name = "step_limit_count_ceiling"
+metric = "failure_category_count[step_limit]"
+op = "<="
+threshold = 3
+
+[[rule]]
+name = "step_limit_share_ceiling"
+metric = "failure_category_share[step_limit]"
+op = "<="
+threshold = 0.6
+
+[[rule]]
+name = "at_cap_steps_ceiling"
+metric = "at_cap_count[steps]"
+op = "<="
+threshold = 3
+
+[[rule]]
+name = "at_cap_cost_zero"
+metric = "at_cap_count[cost]"
+op = "=="
+threshold = 0
+
+[[rule]]
+name = "at_cap_wallclock_zero"
+metric = "at_cap_count[wallclock]"
+op = "=="
+threshold = 0

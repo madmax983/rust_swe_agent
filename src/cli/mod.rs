@@ -129,6 +129,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
             args::BenchCmd::NearMiss(n) => bench_near_miss(n),
+            args::BenchCmd::Assert(a) => bench_assert(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3665,6 +3666,37 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
         NearMissFormat::Json => println!("{}", render_json(&report)?),
     }
 
+    Ok(())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
+    use crate::run::assert::{AssertArgs, run_assert};
+
+    let args = AssertArgs {
+        sweep: a.sweep,
+        rules_file: a.rules,
+        inline_rules: a.rule,
+        verbose: a.verbose,
+        allow_missing_artifacts: a.allow_missing_artifacts,
+    };
+
+    let report = run_assert(&args).unwrap_or_else(|e| {
+        let code = if matches!(e, Error::Config(_)) {
+            ExitCode::UsageError
+        } else {
+            ExitCode::InternalError
+        };
+        exit_with_outcome(code, &format!("bench assert: {e}"));
+    });
+
+    print!("{}", report.stdout);
+    if !report.all_passed {
+        exit_with_outcome(
+            ExitCode::SloRuleFailure,
+            "bench assert: at least one SLO rule failed",
+        );
+    }
     Ok(())
 }
 

@@ -66,6 +66,12 @@ fn eval_gaming_gate_failure_code_is_21() {
     assert_eq!(ExitCode::EvalGamingGateFailure.as_i32(), 21);
 }
 
+#[test]
+fn slo_rule_failure_code_is_27() {
+    assert_eq!(ExitCode::SloRuleFailure.as_i32(), 27);
+    assert_eq!(ExitCode::SloRuleFailure.outcome_class(), "slo_rule_failure");
+}
+
 // ── outcome_class strings ─────────────────────────────────────────────────────
 
 #[test]

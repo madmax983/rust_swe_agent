@@ -700,6 +700,40 @@ pub enum BenchCmd {
     ScriptabilityCheck(ScriptabilityCheckCmd),
     /// Rank unresolved sweep instances by gold-patch proximity (zero-cost: reads only evaluation.json).
     NearMiss(NearMissCmd),
+    /// Evaluate operator-declared SLO rules against a completed sweep's artifacts and gate CI (zero-cost: read-only).
+    Assert(AssertCmd),
+}
+
+/// `bench assert` — evaluate operator-declared SLO rules against a completed sweep.
+///
+/// Reads sweep artifacts (results.json, evaluation.json) and checks each rule
+/// against the extracted metrics. Writes assertions.json. Exits 0 only when all
+/// rules pass; exits 27 when at least one rule fails; exits 2 on bad invocation.
+#[derive(Debug, Args, Clone)]
+pub struct AssertCmd {
+    /// Completed sweep directory produced by `bench swebench`.
+    #[arg(long)]
+    pub sweep: std::path::PathBuf,
+
+    /// Path to a TOML file containing an array of `[[rule]]` entries.
+    /// Mutually exclusive with `--rule`.
+    #[arg(long, conflicts_with = "rule")]
+    pub rules: Option<std::path::PathBuf>,
+
+    /// Inline rule shorthand, e.g. `resolved_rate>=0.38`. Repeatable.
+    /// Mutually exclusive with `--rules`.
+    #[arg(long, conflicts_with = "rules")]
+    pub rule: Vec<String>,
+
+    /// Print PASSED rules line-by-line in addition to the summary header.
+    /// By default only failed rules are printed.
+    #[arg(long, default_value_t = false)]
+    pub verbose: bool,
+
+    /// When a rule's required source artifact is missing, count the rule as
+    /// skipped (record-only) rather than failed. Default: fail-closed.
+    #[arg(long, default_value_t = false)]
+    pub allow_missing_artifacts: bool,
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.

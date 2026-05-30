@@ -1,0 +1,14 @@
+# Exactly one rule FAILS against the assert fixture sweep.
+# resolved_rate = 0.5; the floor of 0.80 fails.
+
+[[rule]]
+name = "errored_zero"
+metric = "errored_count"
+op = "<="
+threshold = 3
+
+[[rule]]
+name = "resolved_rate_high_floor"
+metric = "resolved_rate"
+op = ">="
+threshold = 0.80
