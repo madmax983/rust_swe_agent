@@ -309,3 +309,40 @@ fn safe_profile_allows_ordinary_commands() {
     assert_eq!(v.matching_rule, "default-allow");
     assert_eq!(v.profile, "safe");
 }
+
+// ── Empty corpus with --expect still shows failures ───────────────────────────
+
+#[test]
+fn empty_corpus_with_expect_shows_failures_in_text() {
+    use std::io::Write as _;
+    // File with only comments — produces zero commands.
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    writeln!(tmp, "# only comments").unwrap();
+    let path = tmp.path().to_owned();
+
+    let cfg = Config::defaults().unwrap();
+    let output = run_policy_check(
+        &cfg,
+        &PolicyCheckOpts {
+            source: PolicyCheckSource::CommandsFile(path),
+            expect: vec![ExpectAssertion {
+                command: "ls".to_owned(),
+                expected: VerdictKind::Deny,
+            }],
+        },
+    )
+    .unwrap();
+
+    // Mismatches are recorded even though the corpus is empty.
+    assert_eq!(output.verdicts.len(), 0);
+    assert_eq!(output.mismatches.len(), 1);
+    assert_eq!(output.mismatches[0].actual, None, "command not in corpus → None");
+
+    // Text output must include the EXPECT FAILURES section.
+    let text = format_text(&output);
+    assert!(
+        text.contains("EXPECT FAILURES"),
+        "text output must include EXPECT FAILURES block when corpus is empty"
+    );
+    assert!(text.contains("ls"), "EXPECT FAILURES must name the missing command");
+}

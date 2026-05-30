@@ -240,7 +240,22 @@ pub fn format_text(output: &PolicyCheckOutput) -> String {
     use std::fmt::Write as _;
 
     if output.verdicts.is_empty() {
-        return "policy-check: no commands to evaluate\n".to_owned();
+        let mut out = "policy-check: no commands to evaluate\n".to_owned();
+        if !output.mismatches.is_empty() {
+            out.push('\n');
+            out.push_str("EXPECT FAILURES:\n");
+            for m in &output.mismatches {
+                let actual_str = m.actual.as_ref().map_or("not_found", |v| v.as_str());
+                let _ = writeln!(
+                    out,
+                    "  command='{}': expected={} actual={}",
+                    m.command,
+                    m.expected.as_str(),
+                    actual_str,
+                );
+            }
+        }
+        return out;
     }
 
     let cmd_width = output
