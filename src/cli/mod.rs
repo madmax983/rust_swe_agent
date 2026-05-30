@@ -132,6 +132,7 @@ pub async fn run() -> Result<(), Error> {
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
+            args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -173,6 +174,84 @@ fn agent_env_preview_cmd(p: &args::EnvPreviewCmd) -> Result<(), Error> {
             ExitCode::EnvPreviewWarning,
             "env preview has risky findings",
         );
+    }
+    Ok(())
+}
+
+fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
+    use crate::run::redact_check::{
+        RedactCheckFormat, RedactCheckOpts, RedactCheckSource, format_human, format_json,
+        run_redact_check,
+    };
+
+    let cfg = match &r.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+
+    // Resolve input source; exactly one of --text/--file/--trajectory/stdin.
+    let source = match (&r.text, &r.file, &r.trajectory) {
+        (Some(text), None, None) => RedactCheckSource::Text(text.clone()),
+        (None, Some(path), None) => RedactCheckSource::File(path.clone()),
+        (None, None, Some(path)) => RedactCheckSource::Trajectory(path.clone()),
+        (None, None, None) => {
+            // Block on stdin only when it is actually a pipe/redirect; reject
+            // interactive TTYs immediately so forgotten flags fail fast.
+            if std::io::stdin().is_terminal() {
+                return Err(Error::Config(crate::error::ConfigError::Usage(
+                    "no input source provided; use --text, --file, --trajectory, or pipe to stdin"
+                        .to_owned(),
+                )));
+            }
+            RedactCheckSource::Stdin
+        }
+        _ => {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "supply exactly one of --text, --file, or --trajectory (or pipe to stdin)"
+                    .to_owned(),
+            )));
+        }
+    };
+
+    // --json is a convenient shorthand for --format json.
+    let format = if r.json {
+        RedactCheckFormat::Json
+    } else {
+        match r.format.as_str() {
+            "json" => RedactCheckFormat::Json,
+            "human" | "" => RedactCheckFormat::Human,
+            other => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "--format '{other}' is not valid; use 'human' or 'json'"
+                ))));
+            }
+        }
+    };
+
+    let opts = RedactCheckOpts {
+        source,
+        format,
+        strict: r.strict,
+    };
+
+    let output = run_redact_check(&cfg, &opts)?;
+    let exit_code = output.exit_code();
+
+    match format {
+        RedactCheckFormat::Json => {
+            let json_val = format_json(&output).map_err(Error::Json)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json_val).map_err(Error::Json)?
+            );
+        }
+        RedactCheckFormat::Human => {
+            print!("{}", format_human(&output));
+        }
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
     }
     Ok(())
 }
