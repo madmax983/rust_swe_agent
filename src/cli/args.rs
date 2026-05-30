@@ -523,6 +523,29 @@ pub struct HelloWorldCmd {
     pub config: Option<PathBuf>,
 }
 
+/// `ui` — serve a read-only local sweep browser (requires the `ui-server` feature).
+#[derive(Debug, Args)]
+pub struct UiCmd {
+    /// Path to a completed sweep directory containing `*.traj.json` files.
+    /// The directory must exist and contain at least one trajectory file.
+    #[arg(long, value_name = "DIR")]
+    pub sweep: PathBuf,
+
+    /// TCP port to listen on. `0` lets the OS pick an available port.
+    /// The actual bound port is printed to stdout on startup.
+    #[arg(long, default_value_t = 0, value_name = "PORT")]
+    pub port: u16,
+
+    /// IP address to bind the server to. Default is loopback-only for safety.
+    #[arg(long, default_value = "127.0.0.1", value_name = "ADDR")]
+    pub bind: String,
+
+    /// Best-effort: open the index URL in the system browser after binding.
+    /// Launch failures are logged as warnings and are not fatal.
+    #[arg(long, default_value_t = false)]
+    pub open: bool,
+}
+
 #[derive(Debug, Args)]
 pub struct ReplayCmd {
     /// Path to the original trajectory JSON file.
@@ -675,6 +698,8 @@ pub enum BenchCmd {
     ContaminationCheck(ContaminationCheckCmd),
     /// Probe every configured MCP server and dry-run every configured hook before any model call.
     ScriptabilityCheck(ScriptabilityCheckCmd),
+    /// Rank unresolved sweep instances by gold-patch proximity (zero-cost: reads only evaluation.json).
+    NearMiss(NearMissCmd),
 }
 
 /// `bench failure-digest` — self-contained failure summary for one sweep instance.
@@ -2715,6 +2740,24 @@ pub struct ScriptabilityCheckCmd {
     /// Write the JSON artifact to `<output>/scriptability_check.json`.
     #[arg(long)]
     pub output: Option<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// `bench near-miss` — rank unresolved sweep instances by gold-patch proximity.
+#[derive(Debug, Args, Clone)]
+pub struct NearMissCmd {
+    /// Completed sweep directory produced by `bench swebench` (must contain
+    /// `evaluation.json`). The command reads only that file; it does not invoke
+    /// the evaluator, model, or agent.
+    #[arg(long)]
+    pub sweep: PathBuf,
+
+    /// Show at most N eligible instances in the ranked table. Default: 20.
+    #[arg(long, default_value_t = 20)]
+    pub top: usize,
 
     /// Output format: `text` (default) or `json`.
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]

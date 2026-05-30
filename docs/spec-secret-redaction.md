@@ -117,10 +117,10 @@ the variable *name* only; for custom patterns, the *index* only.
 | Code | Outcome class | Meaning |
 |------|--------------|---------|
 | `0` | `success` | All configured `secret_literals` entries matched at least once (or none were configured) |
-| `24` | `redact_check_stale_literals` | One or more `secret_literals` entries produced **zero** matches — likely stale |
-| `25` | `redact_check_strict_fail` | `--strict`: one or more `custom_patterns` entries produced zero matches |
+| `25` | `redact_check_stale_literals` | One or more `secret_literals` entries produced **zero** matches — likely stale |
+| `26` | `redact_check_strict_fail` | `--strict`: one or more `custom_patterns` entries produced zero matches |
 
-Exit 25 takes priority over exit 24 when both conditions hold.
+Exit 26 takes priority over exit 25 when both conditions hold.
 
 ### `--strict` flag
 

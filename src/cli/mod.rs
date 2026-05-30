@@ -51,6 +51,8 @@ pub enum Command {
         #[command(subcommand)]
         cmd: Box<args::AgentCmd>,
     },
+    /// Serve a read-only local sweep browser (requires the `ui-server` feature).
+    Ui(args::UiCmd),
     /// Reap leftover Maxwell's Daemon containers, including legacy labels.
     Cleanup,
 }
@@ -126,6 +128,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ExportCi(c) => bench_export_ci(c),
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
+            args::BenchCmd::NearMiss(n) => bench_near_miss(n),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -135,6 +138,7 @@ pub async fn run() -> Result<(), Error> {
             } => agent_env_preview_cmd(p),
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
         },
+        Command::Ui(u) => ui_cmd(u).await,
         #[cfg(feature = "docker")]
         Command::Cleanup => cleanup_cmd().await,
         #[cfg(not(feature = "docker"))]
@@ -2217,6 +2221,28 @@ fn print_trajectory_diff(
     Ok(())
 }
 
+#[cfg(feature = "ui-server")]
+async fn ui_cmd(u: args::UiCmd) -> Result<(), Error> {
+    crate::run::ui::run(crate::run::ui::UiArgs {
+        sweep: u.sweep,
+        port: u.port,
+        bind: u.bind,
+        open: u.open,
+    })
+    .await
+}
+
+#[cfg(not(feature = "ui-server"))]
+#[allow(clippy::unused_async)]
+async fn ui_cmd(_u: args::UiCmd) -> Result<(), Error> {
+    exit_with_outcome(
+        ExitCode::FeatureUnavailable,
+        "the `ui` command requires the `ui-server` Cargo feature, which was not compiled in. \
+         Rebuild with `cargo build --features ui-server`. \
+         See docs/spec-web-ui.md for details.",
+    );
+}
+
 #[cfg(feature = "docker")]
 async fn cleanup_cmd() -> Result<(), Error> {
     let reaped = crate::env::docker::cleanup_orphans().await?;
@@ -3604,6 +3630,39 @@ async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(
                  {failed_hooks} hook(s) had failures"
             ),
         );
+    }
+
+    Ok(())
+}
+
+fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
+    use crate::run::near_miss::{NearMissArgs, NearMissFormat, render_json, render_text, run};
+
+    let format: NearMissFormat = n.format.parse().map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench near-miss: {e}"
+        )))
+    })?;
+
+    let args = NearMissArgs {
+        sweep: n.sweep,
+        top: n.top,
+        format,
+    };
+
+    let report = run(&args).unwrap_or_else(|e| {
+        // Missing evaluation.json → usage error (exit 2); parse failure → internal error (exit 1).
+        let code = if matches!(e, Error::Trajectory(_)) {
+            ExitCode::UsageError
+        } else {
+            ExitCode::InternalError
+        };
+        exit_with_outcome(code, &format!("bench near-miss: {e}"));
+    });
+
+    match format {
+        NearMissFormat::Text => print!("{}", render_text(&report)),
+        NearMissFormat::Json => println!("{}", render_json(&report)?),
     }
 
     Ok(())
