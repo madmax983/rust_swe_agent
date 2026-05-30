@@ -12,6 +12,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::error::{ConfigError, Error};
 
 // ── args ─────────────────────────────────────────────────────────────────────
@@ -148,6 +149,17 @@ fn parse_metric(raw: &str) -> Result<ParsedMetric, Error> {
             return Err(Error::Config(ConfigError::Invalid(format!(
                 "metric '{raw}' has empty parameter"
             ))));
+        }
+        // at_cap_count only defines three cap dimensions; reject typos as usage errors.
+        if base == "at_cap_count" {
+            match param.as_str() {
+                "steps" | "cost" | "wallclock" => {}
+                other => {
+                    return Err(Error::Config(ConfigError::Invalid(format!(
+                        "unknown parameter '{other}' for at_cap_count; valid values: steps, cost, wallclock"
+                    ))));
+                }
+            }
         }
         return Ok(ParsedMetric {
             base,
@@ -343,12 +355,15 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
         "at_cap_count" => {
             let param = metric.param.as_deref().unwrap_or("");
             let instances = results["instances"].as_array()?;
-            // steps caps are recorded as failure_category="step_limit";
-            // cost and wallclock caps set exit_reason instead.
+            // Modern artifacts: steps caps use failure_category="step_limit"; cost/wallclock caps
+            // use exit_reason. Legacy artifacts may only have exit_reason for step caps too.
             Some(count_f64(match param {
                 "steps" => instances
                     .iter()
-                    .filter(|i| i["failure_category"].as_str() == Some("step_limit"))
+                    .filter(|i| {
+                        i["failure_category"].as_str() == Some("step_limit")
+                            || i["exit_reason"].as_str() == Some("step_limit")
+                    })
                     .count(),
                 other => {
                     let exit_reason = cap_exit_reason(other);
@@ -597,23 +612,13 @@ fn evaluate_rules(rules: &[Rule], artifacts: &Artifacts) -> Result<Vec<RuleRecor
 
 // ── artifact validation ───────────────────────────────────────────────────────
 
-fn validate_artifact_schema(v: &Value, expected_kind: &str, path: &Path) -> Result<(), Error> {
-    let kind = v["artifact_kind"].as_str().unwrap_or("(missing)");
-    if kind != expected_kind {
-        return Err(Error::Config(ConfigError::Invalid(format!(
-            "'{}': expected artifact_kind '{}', found '{kind}'",
-            path.display(),
-            expected_kind
-        ))));
-    }
-    let major = v["schema_version"]["major"].as_u64().unwrap_or(0);
-    if major != 1 {
-        return Err(Error::Config(ConfigError::Invalid(format!(
-            "'{}': unsupported schema_version.major {major}; only major=1 is supported",
-            path.display()
-        ))));
-    }
-    Ok(())
+/// Delegate to the shared artifact classifier so that pre-versioning legacy
+/// artifacts (missing both artifact_kind and schema_version) are accepted just
+/// as they are by all other public readers in this codebase.
+fn validate_artifact(v: &Value, kind: ArtifactKind, path: &Path) -> Result<(), Error> {
+    classify_json_value(v, kind, path.display().to_string())
+        .map(|_| ())
+        .map_err(|e| Error::Config(ConfigError::Invalid(e.to_string())))
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -658,14 +663,25 @@ pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
     }
     let results_text = fs::read_to_string(&results_path)?;
     let results: Value = serde_json::from_str(&results_text)?;
-    validate_artifact_schema(&results, "sweep_results", &results_path)?;
+    validate_artifact(&results, ArtifactKind::SweepResults, &results_path)?;
 
-    // Load evaluation.json (optional; absence triggers skip/fail depending on flag).
+    // Load evaluation.json only when at least one rule actually needs it; a
+    // stale or malformed evaluation artifact must not break results-only gates.
+    let needs_evaluation = rules.iter().any(|rule| {
+        parse_metric(&rule.metric)
+            .map(|m| {
+                matches!(
+                    metric_source(&m),
+                    SourceArtifact::Evaluation | SourceArtifact::Both
+                )
+            })
+            .unwrap_or(false)
+    });
     let evaluation_path = args.sweep.join("evaluation.json");
-    let evaluation: Option<Value> = if evaluation_path.exists() {
+    let evaluation: Option<Value> = if needs_evaluation && evaluation_path.exists() {
         let text = fs::read_to_string(&evaluation_path)?;
         let v: Value = serde_json::from_str(&text)?;
-        validate_artifact_schema(&v, "evaluation_results", &evaluation_path)?;
+        validate_artifact(&v, ArtifactKind::EvaluationResults, &evaluation_path)?;
         Some(v)
     } else {
         None
