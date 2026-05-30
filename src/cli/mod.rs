@@ -3669,6 +3669,7 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
     use crate::run::assert::{AssertArgs, run_assert};
 
@@ -3680,23 +3681,23 @@ fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
         allow_missing_artifacts: a.allow_missing_artifacts,
     };
 
-    match run_assert(&args) {
-        Ok(report) => {
-            print!("{}", report.stdout);
-            if !report.all_passed {
-                exit_with_outcome(ExitCode::SloRuleFailure, "bench assert: at least one SLO rule failed");
-            }
-            Ok(())
-        }
-        Err(e) => {
-            // Distinguish usage errors (bad metric, bad op, bad invocation) from internal errors.
-            let code = match &e {
-                Error::Config(_) => ExitCode::UsageError,
-                _ => ExitCode::InternalError,
-            };
-            exit_with_outcome(code, &format!("bench assert: {e}"));
-        }
+    let report = run_assert(&args).unwrap_or_else(|e| {
+        let code = if matches!(e, Error::Config(_)) {
+            ExitCode::UsageError
+        } else {
+            ExitCode::InternalError
+        };
+        exit_with_outcome(code, &format!("bench assert: {e}"));
+    });
+
+    print!("{}", report.stdout);
+    if !report.all_passed {
+        exit_with_outcome(
+            ExitCode::SloRuleFailure,
+            "bench assert: at least one SLO rule failed",
+        );
     }
+    Ok(())
 }
 
 fn bench_import(i: args::ImportCmd) -> Result<(), Error> {

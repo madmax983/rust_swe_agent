@@ -4,6 +4,7 @@
 //! against the extracted metrics. Writes assertions.json next to results.json.
 //! See `docs/spec-assert.md` for the full contract.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -63,8 +64,20 @@ impl RuleOp {
 
     fn evaluate(self, observed: f64, threshold: f64) -> bool {
         match self {
-            Self::Eq => (observed - threshold).abs() < f64::EPSILON * 1000.0,
-            Self::Ne => (observed - threshold).abs() >= f64::EPSILON * 1000.0,
+            Self::Eq => {
+                if observed.is_nan() || threshold.is_nan() {
+                    false
+                } else {
+                    (observed - threshold).abs() < f64::EPSILON * 1000.0
+                }
+            }
+            Self::Ne => {
+                if observed.is_nan() || threshold.is_nan() {
+                    true
+                } else {
+                    (observed - threshold).abs() >= f64::EPSILON * 1000.0
+                }
+            }
             Self::Lt => observed < threshold,
             Self::Le => observed <= threshold,
             Self::Gt => observed > threshold,
@@ -173,18 +186,12 @@ fn metric_source(metric: &ParsedMetric) -> SourceArtifact {
 
 fn metric_source_field_path(metric: &ParsedMetric) -> String {
     match metric.base.as_str() {
-        "resolved_rate" => {
-            "evaluation.json: resolved instances / total instances".to_owned()
-        }
+        "resolved_rate" => "evaluation.json: resolved instances / total instances".to_owned(),
         "resolved_count" => "evaluation.json: count of instances where resolved=true".to_owned(),
-        "unresolved_count" => {
-            "evaluation.json: count of instances where resolved=false".to_owned()
-        }
+        "unresolved_count" => "evaluation.json: count of instances where resolved=false".to_owned(),
         "errored_count" => "results.json: .errored".to_owned(),
         "total_cost_usd" => "results.json: .total_cost_usd".to_owned(),
-        "mean_cost_per_instance_usd" => {
-            "results.json: .total_cost_usd / .total".to_owned()
-        }
+        "mean_cost_per_instance_usd" => "results.json: .total_cost_usd / .total".to_owned(),
         "cost_per_resolved_instance_usd" => {
             "results.json: .total_cost_usd / evaluation.json resolved count".to_owned()
         }
@@ -204,16 +211,30 @@ fn metric_source_field_path(metric: &ParsedMetric) -> String {
         }
         "at_cap_count" => {
             let param = metric.param.as_deref().unwrap_or("?");
-            let failure_cat = cap_failure_category(param);
-            format!("results.json: count of .instances[] where failure_category=\"{failure_cat}\"")
+            match param {
+                "steps" => {
+                    "results.json: count of .instances[] where failure_category=\"step_limit\""
+                        .to_owned()
+                }
+                "cost" => "results.json: count of .instances[] where exit_reason=\"budget_halt\""
+                    .to_owned(),
+                "wallclock" => {
+                    "results.json: count of .instances[] where exit_reason=\"wallclock_timeout\""
+                        .to_owned()
+                }
+                other => {
+                    format!("results.json: count of .instances[] where exit_reason=\"{other}\"")
+                }
+            }
         }
         other => format!("unknown metric: {other}"),
     }
 }
 
-fn cap_failure_category(param: &str) -> &str {
+/// Maps an `at_cap_count` parameter to the `exit_reason` value used in results.json
+/// for cost and wallclock caps (which set exit_reason, not failure_category).
+fn cap_exit_reason(param: &str) -> &str {
     match param {
-        "steps" => "step_limit",
         "cost" => "budget_halt",
         "wallclock" => "wallclock_timeout",
         other => other,
@@ -227,103 +248,89 @@ struct Artifacts {
     evaluation: Option<Value>,
 }
 
+/// Convert a count to f64; clamps at u32::MAX so large-but-realistic sweeps
+/// still work without precision-loss on platforms where usize == 64 bits.
+fn count_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+fn compute_mean_steps(steps: &[f64]) -> f64 {
+    if steps.is_empty() {
+        return 0.0;
+    }
+    steps.iter().sum::<f64>() / count_f64(steps.len())
+}
+
+fn compute_p95_steps(steps: &[f64]) -> f64 {
+    if steps.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = steps.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    if n == 1 {
+        return sorted[0];
+    }
+    // (n-1) linear interpolation matching NumPy/pandas default percentile method.
+    // For [5,10,15,20]: pos = 0.95*3 = 2.85 → 15 + 0.85*(20-15) = 19.25.
+    let pos = 0.95 * count_f64(n - 1);
+    let lo = pos.floor();
+    let frac = pos - lo;
+    // pos is bounded to [0, n-2] by construction; cast is safe.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lo_idx = (lo as usize).min(n - 2);
+    sorted[lo_idx] + frac * (sorted[lo_idx + 1] - sorted[lo_idx])
+}
+
 fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
     let results = &artifacts.results;
     match metric.base.as_str() {
-        "resolved_rate" => {
-            let eval = artifacts.evaluation.as_ref()?;
-            let instances = eval["instances"].as_array()?;
-            let total = instances.len();
-            if total == 0 {
-                return Some(0.0);
-            }
-            let resolved = instances
-                .iter()
-                .filter(|i| i["resolved"] == true)
-                .count();
-            Some(resolved as f64 / total as f64)
-        }
+        "resolved_rate" => extract_resolved_rate(artifacts, results),
         "resolved_count" => {
-            let eval = artifacts.evaluation.as_ref()?;
-            let instances = eval["instances"].as_array()?;
-            let resolved = instances
-                .iter()
-                .filter(|i| i["resolved"] == true)
-                .count();
-            Some(resolved as f64)
+            let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+            Some(count_f64(
+                instances.iter().filter(|i| i["resolved"] == true).count(),
+            ))
         }
         "unresolved_count" => {
-            let eval = artifacts.evaluation.as_ref()?;
-            let instances = eval["instances"].as_array()?;
-            let unresolved = instances
-                .iter()
-                .filter(|i| i["resolved"] == false)
-                .count();
-            Some(unresolved as f64)
+            let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+            Some(count_f64(
+                instances.iter().filter(|i| i["resolved"] == false).count(),
+            ))
         }
         "errored_count" => results["errored"].as_f64(),
         "total_cost_usd" => results["total_cost_usd"].as_f64(),
         "mean_cost_per_instance_usd" => {
             let total_cost = results["total_cost_usd"].as_f64()?;
             let total = results["total"].as_f64()?;
-            if total == 0.0 {
-                Some(0.0)
-            } else {
-                Some(total_cost / total)
-            }
+            (total > 0.0).then(|| total_cost / total).or(Some(0.0))
         }
         "cost_per_resolved_instance_usd" => {
             let total_cost = results["total_cost_usd"].as_f64()?;
-            let eval = artifacts.evaluation.as_ref()?;
-            let instances = eval["instances"].as_array()?;
-            let resolved = instances
-                .iter()
-                .filter(|i| i["resolved"] == true)
-                .count();
+            let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+            let resolved = instances.iter().filter(|i| i["resolved"] == true).count();
             if resolved == 0 {
                 Some(f64::INFINITY)
             } else {
-                Some(total_cost / resolved as f64)
+                Some(total_cost / count_f64(resolved))
             }
         }
         "mean_steps" => {
-            let instances = results["instances"].as_array()?;
-            let steps: Vec<f64> = instances
-                .iter()
-                .filter_map(|i| i["steps"].as_f64())
-                .collect();
-            if steps.is_empty() {
-                return Some(0.0);
-            }
-            Some(steps.iter().sum::<f64>() / steps.len() as f64)
+            let steps = collect_steps(results)?;
+            Some(compute_mean_steps(&steps))
         }
         "p95_steps" => {
-            let instances = results["instances"].as_array()?;
-            let mut steps: Vec<f64> = instances
-                .iter()
-                .filter_map(|i| i["steps"].as_f64())
-                .collect();
-            if steps.is_empty() {
-                return Some(0.0);
-            }
-            steps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let idx = ((steps.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
-            let idx = idx.min(steps.len() - 1);
-            Some(steps[idx])
+            let steps = collect_steps(results)?;
+            Some(compute_p95_steps(&steps))
         }
-        "wallclock_total_s" => {
-            let started = results["manifest"]["runtime"]["started_at_utc"].as_str()?;
-            let finished = results["manifest"]["runtime"]["finished_at_utc"].as_str()?;
-            let started_dt = chrono::DateTime::parse_from_rfc3339(started).ok()?;
-            let finished_dt = chrono::DateTime::parse_from_rfc3339(finished).ok()?;
-            let duration = finished_dt.signed_duration_since(started_dt);
-            Some(duration.num_seconds() as f64)
-        }
+        "wallclock_total_s" => extract_wallclock(results),
         "failure_category_count" => {
             let param = metric.param.as_deref().unwrap_or("");
-            results["failures_by_category"][param]
-                .as_f64()
-                .or(Some(0.0))
+            Some(
+                results["failures_by_category"][param]
+                    .as_f64()
+                    .unwrap_or(0.0),
+            )
         }
         "failure_category_share" => {
             let param = metric.param.as_deref().unwrap_or("");
@@ -331,24 +338,63 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
                 .as_f64()
                 .unwrap_or(0.0);
             let total = results["total"].as_f64()?;
-            if total == 0.0 {
-                Some(0.0)
-            } else {
-                Some(count / total)
-            }
+            (total > 0.0).then(|| count / total).or(Some(0.0))
         }
         "at_cap_count" => {
             let param = metric.param.as_deref().unwrap_or("");
-            let failure_cat = cap_failure_category(param);
             let instances = results["instances"].as_array()?;
-            let count = instances
-                .iter()
-                .filter(|i| i["failure_category"].as_str() == Some(failure_cat))
-                .count();
-            Some(count as f64)
+            // steps caps are recorded as failure_category="step_limit";
+            // cost and wallclock caps set exit_reason instead.
+            Some(count_f64(match param {
+                "steps" => instances
+                    .iter()
+                    .filter(|i| i["failure_category"].as_str() == Some("step_limit"))
+                    .count(),
+                other => {
+                    let exit_reason = cap_exit_reason(other);
+                    instances
+                        .iter()
+                        .filter(|i| i["exit_reason"].as_str() == Some(exit_reason))
+                        .count()
+                }
+            }))
         }
         _ => None,
     }
+}
+
+fn extract_resolved_rate(artifacts: &Artifacts, results: &Value) -> Option<f64> {
+    let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+    // Use results["total"] so instances missing from evaluation.json count against
+    // the denominator (spec requirement: trajectories missing from evaluation.json
+    // count against the denominator).
+    let total = results["total"].as_f64()?;
+    if total == 0.0 {
+        return Some(0.0);
+    }
+    let resolved = instances.iter().filter(|i| i["resolved"] == true).count();
+    Some(count_f64(resolved) / total)
+}
+
+fn collect_steps(results: &Value) -> Option<Vec<f64>> {
+    Some(
+        results["instances"]
+            .as_array()?
+            .iter()
+            .filter_map(|i| i["steps"].as_f64())
+            .collect(),
+    )
+}
+
+fn extract_wallclock(results: &Value) -> Option<f64> {
+    let started = results["manifest"]["runtime"]["started_at_utc"].as_str()?;
+    let finished = results["manifest"]["runtime"]["finished_at_utc"].as_str()?;
+    let started_dt = chrono::DateTime::parse_from_rfc3339(started).ok()?;
+    let finished_dt = chrono::DateTime::parse_from_rfc3339(finished).ok()?;
+    let secs = finished_dt.signed_duration_since(started_dt).num_seconds();
+    // Wallclock durations fit easily in f64; precision loss is irrelevant.
+    #[allow(clippy::cast_precision_loss)]
+    Some(secs as f64)
 }
 
 // ── rule parsing ──────────────────────────────────────────────────────────────
@@ -474,6 +520,102 @@ pub struct AssertReport {
     pub all_passed: bool,
 }
 
+// ── rule evaluation ───────────────────────────────────────────────────────────
+
+fn evaluate_rules(rules: &[Rule], artifacts: &Artifacts) -> Result<Vec<RuleRecord>, Error> {
+    let mut records: Vec<RuleRecord> = Vec::new();
+
+    for rule in rules {
+        let parsed_metric = parse_metric(&rule.metric)?;
+        let source = metric_source(&parsed_metric);
+        let source_field = metric_source_field_path(&parsed_metric);
+
+        let evaluation_needed = matches!(source, SourceArtifact::Evaluation | SourceArtifact::Both);
+        if evaluation_needed && artifacts.evaluation.is_none() {
+            // Both fail-closed and --allow-missing-artifacts produce passed=null.
+            // The distinction is in the all_passed calculation in run_assert.
+            records.push(RuleRecord {
+                name: rule.name.clone(),
+                metric: rule.metric.clone(),
+                op: rule.op.to_string(),
+                threshold: rule.threshold,
+                observed_value: None,
+                passed: None,
+                source_field_path: source_field,
+                reason_if_failed_or_skipped: Some("missing_artifact: evaluation.json".to_owned()),
+            });
+            continue;
+        }
+
+        match extract_metric(&parsed_metric, artifacts) {
+            None => {
+                records.push(RuleRecord {
+                    name: rule.name.clone(),
+                    metric: rule.metric.clone(),
+                    op: rule.op.to_string(),
+                    threshold: rule.threshold,
+                    observed_value: None,
+                    passed: Some(false),
+                    source_field_path: source_field,
+                    reason_if_failed_or_skipped: Some(format!(
+                        "metric '{}' could not be extracted",
+                        rule.metric
+                    )),
+                });
+            }
+            Some(val) => {
+                let pass = rule.op.evaluate(val, rule.threshold);
+                // Non-finite values (∞, NaN) cannot be serialized as JSON numbers;
+                // store None so the artifact is valid, but keep passed=Some(pass)
+                // so downstream consumers don't confuse it with a skipped rule.
+                let observed_value = if val.is_finite() { Some(val) } else { None };
+                // Rust formats f64::INFINITY as "inf", NEG_INFINITY as "-inf"
+                let reason = if pass {
+                    None
+                } else {
+                    Some(format!(
+                        "observed {val} {} {} is false",
+                        rule.op.as_str(),
+                        rule.threshold
+                    ))
+                };
+                records.push(RuleRecord {
+                    name: rule.name.clone(),
+                    metric: rule.metric.clone(),
+                    op: rule.op.to_string(),
+                    threshold: rule.threshold,
+                    observed_value,
+                    passed: Some(pass),
+                    source_field_path: source_field,
+                    reason_if_failed_or_skipped: reason,
+                });
+            }
+        }
+    }
+    Ok(records)
+}
+
+// ── artifact validation ───────────────────────────────────────────────────────
+
+fn validate_artifact_schema(v: &Value, expected_kind: &str, path: &Path) -> Result<(), Error> {
+    let kind = v["artifact_kind"].as_str().unwrap_or("(missing)");
+    if kind != expected_kind {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "'{}': expected artifact_kind '{}', found '{kind}'",
+            path.display(),
+            expected_kind
+        ))));
+    }
+    let major = v["schema_version"]["major"].as_u64().unwrap_or(0);
+    if major != 1 {
+        return Err(Error::Config(ConfigError::Invalid(format!(
+            "'{}': unsupported schema_version.major {major}; only major=1 is supported",
+            path.display()
+        ))));
+    }
+    Ok(())
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
 pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
@@ -482,6 +624,11 @@ pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
         return Err(Error::Config(ConfigError::Usage(
             "supply exactly one of --rules <file> or one or more --rule <metric><op><threshold>"
                 .to_owned(),
+        )));
+    }
+    if args.rules_file.is_some() && !args.inline_rules.is_empty() {
+        return Err(Error::Config(ConfigError::Usage(
+            "cannot supply both --rules and --rule; choose one".to_owned(),
         )));
     }
 
@@ -511,12 +658,15 @@ pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
     }
     let results_text = fs::read_to_string(&results_path)?;
     let results: Value = serde_json::from_str(&results_text)?;
+    validate_artifact_schema(&results, "sweep_results", &results_path)?;
 
     // Load evaluation.json (optional; absence triggers skip/fail depending on flag).
     let evaluation_path = args.sweep.join("evaluation.json");
     let evaluation: Option<Value> = if evaluation_path.exists() {
         let text = fs::read_to_string(&evaluation_path)?;
-        Some(serde_json::from_str(&text)?)
+        let v: Value = serde_json::from_str(&text)?;
+        validate_artifact_schema(&v, "evaluation_results", &evaluation_path)?;
+        Some(v)
     } else {
         None
     };
@@ -529,99 +679,14 @@ pub fn run_assert(args: &AssertArgs) -> Result<AssertReport, Error> {
     // Determine sweep_id from manifest or path.
     let sweep_id = artifacts.results["manifest"]["harness"]["git_sha"]
         .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| args.sweep.display().to_string());
+        .map_or_else(|| args.sweep.display().to_string(), String::from);
 
     // Evaluate each rule.
-    let mut records: Vec<RuleRecord> = Vec::new();
-
-    for rule in &rules {
-        let parsed_metric = parse_metric(&rule.metric)?;
-        let source = metric_source(&parsed_metric);
-        let source_field = metric_source_field_path(&parsed_metric);
-
-        // Check if required artifact is available.
-        let evaluation_needed = matches!(source, SourceArtifact::Evaluation | SourceArtifact::Both);
-        if evaluation_needed && artifacts.evaluation.is_none() {
-            let reason = "missing_artifact: evaluation.json".to_owned();
-            if args.allow_missing_artifacts {
-                // Skip (passed = null).
-                records.push(RuleRecord {
-                    name: rule.name.clone(),
-                    metric: rule.metric.clone(),
-                    op: rule.op.to_string(),
-                    threshold: rule.threshold,
-                    observed_value: None,
-                    passed: None,
-                    source_field_path: source_field,
-                    reason_if_failed_or_skipped: Some(reason),
-                });
-            } else {
-                // Fail-closed (passed = null, counted as failure for exit code).
-                records.push(RuleRecord {
-                    name: rule.name.clone(),
-                    metric: rule.metric.clone(),
-                    op: rule.op.to_string(),
-                    threshold: rule.threshold,
-                    observed_value: None,
-                    passed: None,
-                    source_field_path: source_field,
-                    reason_if_failed_or_skipped: Some(reason),
-                });
-            }
-            continue;
-        }
-
-        // Extract metric value.
-        let observed = extract_metric(&parsed_metric, &artifacts);
-        match observed {
-            None => {
-                let reason = format!("metric '{}' could not be extracted", rule.metric);
-                records.push(RuleRecord {
-                    name: rule.name.clone(),
-                    metric: rule.metric.clone(),
-                    op: rule.op.to_string(),
-                    threshold: rule.threshold,
-                    observed_value: None,
-                    passed: Some(false),
-                    source_field_path: source_field,
-                    reason_if_failed_or_skipped: Some(reason),
-                });
-            }
-            Some(val) => {
-                let pass = rule.op.evaluate(val, rule.threshold);
-                let reason = if pass {
-                    None
-                } else {
-                    Some(format!(
-                        "observed {val} {op} {threshold} is false",
-                        op = rule.op.as_str(),
-                        threshold = rule.threshold
-                    ))
-                };
-                records.push(RuleRecord {
-                    name: rule.name.clone(),
-                    metric: rule.metric.clone(),
-                    op: rule.op.to_string(),
-                    threshold: rule.threshold,
-                    observed_value: Some(val),
-                    passed: Some(pass),
-                    source_field_path: source_field,
-                    reason_if_failed_or_skipped: reason,
-                });
-            }
-        }
-    }
+    let records = evaluate_rules(&rules, &artifacts)?;
 
     // Compute counts.
-    let passed_count = records
-        .iter()
-        .filter(|r| r.passed == Some(true))
-        .count();
-    let failed_count = records
-        .iter()
-        .filter(|r| r.passed == Some(false))
-        .count();
+    let passed_count = records.iter().filter(|r| r.passed == Some(true)).count();
+    let failed_count = records.iter().filter(|r| r.passed == Some(false)).count();
     let skipped_count = records.iter().filter(|r| r.passed.is_none()).count();
 
     // Fail-closed: skipped counts as failure for the overall result.
@@ -658,58 +723,67 @@ fn build_stdout(artifact: &AssertionsArtifact, args: &AssertArgs) -> String {
     let mut out = String::new();
 
     // Pytest-style header.
-    let header = if artifact.skipped_count > 0 {
-        format!(
-            "bench assert: {} — {} passed, {} failed, {} skipped\n",
+    if artifact.skipped_count > 0 {
+        let _ = writeln!(
+            out,
+            "bench assert: {} — {} passed, {} failed, {} skipped",
             args.sweep.display(),
             artifact.passed_count,
             artifact.failed_count,
             artifact.skipped_count
-        )
+        );
     } else {
-        format!(
-            "bench assert: {} — {} passed, {} failed\n",
+        let _ = writeln!(
+            out,
+            "bench assert: {} — {} passed, {} failed",
             args.sweep.display(),
             artifact.passed_count,
             artifact.failed_count
-        )
-    };
-    out.push_str(&header);
+        );
+    }
 
     // Rule lines.
     for r in &artifact.rules {
+        let val_str = |v: Option<f64>| v.map_or_else(|| "N/A".to_owned(), |f| format!("{f:.6}"));
         match r.passed {
             Some(true) => {
                 if args.verbose {
-                    out.push_str(&format!(
-                        "PASSED {name}: {metric}{op}{threshold}: observed {val:.6} ({source})\n",
-                        name = r.name,
-                        metric = r.metric,
-                        op = r.op,
-                        threshold = r.threshold,
-                        val = r.observed_value.unwrap_or(0.0),
-                        source = r.source_field_path,
-                    ));
+                    let _ = writeln!(
+                        out,
+                        "PASSED {}: {}{}{}: observed {} ({})",
+                        r.name,
+                        r.metric,
+                        r.op,
+                        r.threshold,
+                        val_str(r.observed_value),
+                        r.source_field_path,
+                    );
                 }
             }
             Some(false) => {
-                out.push_str(&format!(
-                    "FAILED {name}: {metric}{op}{threshold}: observed {val:.6} ({source})\n",
-                    name = r.name,
-                    metric = r.metric,
-                    op = r.op,
-                    threshold = r.threshold,
-                    val = r.observed_value.unwrap_or(0.0),
-                    source = r.source_field_path,
-                ));
+                let reason_str = r
+                    .reason_if_failed_or_skipped
+                    .as_deref()
+                    .map_or_else(String::new, |s| format!(" — {s}"));
+                let _ = writeln!(
+                    out,
+                    "FAILED {}: {}{}{}: observed {} ({}){reason_str}",
+                    r.name,
+                    r.metric,
+                    r.op,
+                    r.threshold,
+                    val_str(r.observed_value),
+                    r.source_field_path,
+                );
             }
             None => {
-                out.push_str(&format!(
-                    "SKIPPED {name}: {metric}: {reason}\n",
-                    name = r.name,
-                    metric = r.metric,
-                    reason = r.reason_if_failed_or_skipped.as_deref().unwrap_or(""),
-                ));
+                let _ = writeln!(
+                    out,
+                    "SKIPPED {}: {}: {}",
+                    r.name,
+                    r.metric,
+                    r.reason_if_failed_or_skipped.as_deref().unwrap_or(""),
+                );
             }
         }
     }

@@ -88,7 +88,13 @@ fn assert_help_shows_expected_flags() {
         .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--sweep", "--rules", "--rule", "--verbose", "--allow-missing-artifacts"] {
+    for flag in [
+        "--sweep",
+        "--rules",
+        "--rule",
+        "--verbose",
+        "--allow-missing-artifacts",
+    ] {
         assert!(
             stdout.contains(flag),
             "bench assert --help missing {flag}:\n{stdout}"
@@ -190,13 +196,13 @@ fn one_rule_fails_assertions_json_records_failure() {
 
     let artifact = read_assertions_json(&sweep);
     assert_eq!(artifact["passed"], false, "overall passed should be false");
-    assert_eq!(artifact["failed_count"], 1, "exactly 1 failed rule expected");
+    assert_eq!(
+        artifact["failed_count"], 1,
+        "exactly 1 failed rule expected"
+    );
 
     let rules = artifact["rules"].as_array().unwrap();
-    let failed: Vec<_> = rules
-        .iter()
-        .filter(|r| r["passed"] == false)
-        .collect();
+    let failed: Vec<_> = rules.iter().filter(|r| r["passed"] == false).collect();
     assert_eq!(failed.len(), 1, "exactly one rule should be failed");
     let f = &failed[0];
     assert_eq!(
@@ -301,7 +307,10 @@ fn missing_evaluation_json_fails_closed_by_default() {
     // But per the spec: skipped rules have passed=null; failed rules have passed=false.
     // Fail-closed means missing_artifact → passed=null counted as a failure for exit code,
     // but the record itself shows passed=null with reason="missing_artifact: evaluation.json".
-    assert!(!skipped.is_empty(), "missing artifact should produce a null-passed record");
+    assert!(
+        !skipped.is_empty(),
+        "missing artifact should produce a null-passed record"
+    );
     let r = &skipped[0];
     let reason = r["reason_if_failed_or_skipped"].as_str().unwrap_or("");
     assert!(
@@ -536,7 +545,10 @@ fn each_rule_record_has_required_fields() {
         assert!(r["name"].is_string(), "rule {metric}: missing 'name'");
         assert!(r["metric"].is_string(), "rule {metric}: missing 'metric'");
         assert!(r["op"].is_string(), "rule {metric}: missing 'op'");
-        assert!(r["threshold"].is_number(), "rule {metric}: missing 'threshold'");
+        assert!(
+            r["threshold"].is_number(),
+            "rule {metric}: missing 'threshold'"
+        );
         assert!(
             r["observed_value"].is_number(),
             "rule {metric}: missing 'observed_value'"
