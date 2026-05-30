@@ -136,7 +136,7 @@ fn expect_mismatch_is_reported() {
     );
     assert_eq!(output.mismatches[0].command, "ls");
     assert_eq!(output.mismatches[0].expected, VerdictKind::Deny);
-    assert_eq!(output.mismatches[0].actual, VerdictKind::Allow);
+    assert_eq!(output.mismatches[0].actual, Some(VerdictKind::Allow));
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn corpus_file_ignores_blank_and_comments() {
     use std::io::Write as _;
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
     writeln!(tmp, "# this is a comment").unwrap();
-    writeln!(tmp, "").unwrap();
+    writeln!(tmp).unwrap();
     writeln!(tmp, "  ").unwrap(); // whitespace-only
     writeln!(tmp, "ls").unwrap();
     writeln!(tmp, "# another comment").unwrap();

@@ -104,7 +104,8 @@ pub struct ExpectAssertion {
 pub struct ExpectMismatch {
     pub command: String,
     pub expected: VerdictKind,
-    pub actual: VerdictKind,
+    /// The actual verdict, or `None` when the command was not found in the corpus.
+    pub actual: Option<VerdictKind>,
 }
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -178,15 +179,14 @@ pub fn run_policy_check(cfg: &Config, opts: &PolicyCheckOpts) -> Result<PolicyCh
                 Some(act) => Some(ExpectMismatch {
                     command: assertion.command.clone(),
                     expected: assertion.expected.clone(),
-                    actual: act,
+                    actual: Some(act),
                 }),
                 None => {
                     // Command in `--expect` was not found in the corpus.
-                    // The assertion can't be satisfied; treat as mismatch.
                     Some(ExpectMismatch {
                         command: assertion.command.clone(),
                         expected: assertion.expected.clone(),
-                        actual: VerdictKind::Allow, // sentinel for "not found"
+                        actual: None,
                     })
                 }
             }
@@ -295,12 +295,13 @@ pub fn format_text(output: &PolicyCheckOutput) -> String {
         out.push('\n');
         out.push_str("EXPECT FAILURES:\n");
         for m in &output.mismatches {
+            let actual_str = m.actual.as_ref().map_or("not_found", |v| v.as_str());
             let _ = writeln!(
                 out,
                 "  command='{}': expected={} actual={}",
                 m.command,
                 m.expected.as_str(),
-                m.actual.as_str(),
+                actual_str,
             );
         }
     }
@@ -334,7 +335,7 @@ pub fn format_json(output: &PolicyCheckOutput) -> Result<serde_json::Value, serd
             serde_json::json!({
                 "command": m.command,
                 "expected": m.expected.as_str(),
-                "actual": m.actual.as_str(),
+                "actual": m.actual.as_ref().map_or("not_found", |v| v.as_str()),
             })
         })
         .collect();
