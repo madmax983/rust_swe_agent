@@ -87,6 +87,8 @@ html-export = []
 webhook = []
 csv-export = []
 mermaid-export = []
+# Enables the `max ui` local sweep browser. Requires `html-export` for rendering.
+ui-server = ["html-export"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

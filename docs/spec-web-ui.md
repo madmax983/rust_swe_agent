@@ -1,27 +1,191 @@
-# 🔭 Vantage: Spec for Web UI for Inspecting Trajectories
+# Spec: `max ui` — Local Sweep Browser
 
-## 👤 User Story
-"As a Developer running the agent locally, I want a full UI web application to inspect trajectories, so that I can easily debug, visualize, and analyze agent behavior without digging through raw JSON files."
+## Overview
 
-## ❓ The "So What?" (Business Problem)
-The current CLI-based trajectory inspection (`bench inspect`) requires scanning through long terminal outputs or parsing JSON arrays manually. As trajectories grow to 50+ steps with large code blocks, the terminal interface becomes a severe bottleneck. A visual UI dramatically speeds up debugging and review, ultimately reducing developer iteration time on prompts and tools. This directly reduces the cost of debugging complex agent behavior.
+`max ui` starts a read-only, single-binary HTTP server that lists every
+trajectory in a finished sweep and renders each one as HTML.  It is the
+fastest way to triage a completed sweep: one command opens a browser with
+every instance's outcome, cost, and step count.  Clicking an instance
+renders the full trajectory through the same `HtmlExporter` pipeline that
+`bench inspect --format html` uses.
 
-## 🎯 Metric Definition
-Success = An operator can find the specific step where the agent failed (or executed an unexpected command) within 30 seconds of opening the UI for a 50-step trajectory, compared to >2 minutes currently spent grepping JSON files.
+**This command requires the `ui-server` Cargo feature** (off by default).
+See [Feature Gate](#feature-gate).
 
-## ✅ Acceptance Criteria
-- Must provide a web-based interface (e.g., served locally or built as a static app) capable of loading `.traj.json` files.
-- Must visualize the timeline of steps (System Prompt, Assistant Message, Bash Command, Bash Output, etc.).
-- Must support collapsible/expandable sections for large text blocks (e.g., long standard output, multi-file diffs).
-- Must display run metadata prominently (Outcome, Total Cost USD, Token Usage, Failure Category).
-- Must be zero-config to run (e.g. `max ui --port 8080`).
+---
 
-## 🚫 Out of Scope
-- Real-time streaming UI integration (Phase 3).
-- Remote backend for aggregating sweeps (This is local-first).
-- Editing or modifying trajectories directly.
+## Quickstart
 
-## 🕳️ Gap Analysis
-- **mini-swe-agent**: Has a basic Python/Flask viewer.
-- **SWE-agent**: Has an interactive web UI.
-- **maxwells-daemon today**: Only has the terminal-based `bench inspect` subcommand. While functional, it is not scalable for reading full multi-turn coding sessions. Adding a built-in UI brings it to parity with SWE-agent for developer experience.
+```sh
+# Build with the feature enabled:
+cargo build --features ui-server
+
+# Serve a sweep and open the browser immediately:
+./target/debug/max ui --sweep runs/quickstart --port 0 --open
+# ui ready at http://127.0.0.1:XXXXX
+```
+
+---
+
+## CLI Reference
+
+```
+max ui --sweep <DIR> [--port <PORT>] [--bind <ADDR>] [--open]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sweep <DIR>` | *(required)* | Path to a completed sweep directory containing `*.traj.json` files. |
+| `--port <PORT>` | `0` | TCP port to listen on. `0` means the OS assigns an available port. |
+| `--bind <ADDR>` | `127.0.0.1` | IP address to bind to. Default is loopback-only for safety. |
+| `--open` | off | Best-effort: launch the system browser to the index URL after binding. Launch failures are logged as warnings and are not fatal. |
+
+---
+
+## Routes
+
+| Path | Status | Content-Type | Description |
+|------|--------|--------------|-------------|
+| `GET /` | 200 | `text/html; charset=UTF-8` | Index page listing all discovered instances. |
+| `GET /instance/<id>` | 200 | `text/html; charset=UTF-8` | Full trajectory rendered by `HtmlExporter`. `<id>` must match a discovered `instance_id` exactly (case-sensitive). |
+| `GET /healthz` | 200 | `application/json` | `{"status":"ok"}`. Useful for process supervisors and smoke tests. |
+| Anything else | 404 | `text/plain` | All other paths return 404. |
+
+### Index page columns
+
+Instances are listed in an HTML table, **sorted by `instance_id` ascending**.
+Columns:
+
+| Column | Source field | Format |
+|--------|-------------|--------|
+| `instance_id` | Filename stem of `*.traj.json` | Clickable link to `/instance/<id>` |
+| `outcome` | `trajectory.info.outcome` | Raw string, e.g. `submitted`, `error` |
+| `steps` | `trajectory.info.steps` | Integer |
+| `total_cost_usd` | `trajectory.info.total_cost_usd` | 4 decimal places |
+| `duration_seconds` | `trajectory.info.duration_secs` | 1 decimal place |
+
+Missing values are displayed as `-`.
+
+### Query parameters
+
+None defined in this version.
+
+### Error model
+
+| Condition | HTTP status |
+|-----------|-------------|
+| Sweep directory missing or not a directory | Process exits before binding (exit 2) |
+| Instance trajectory unreadable at serve time | 500 Internal Server Error |
+| `instance_id` not in the discovered set | 404 Not Found |
+| All other unknown paths | 404 Not Found |
+
+---
+
+## Security
+
+### No directory traversal
+
+`instance_id` values in `/instance/<id>` are **validated against the set of
+instances discovered at startup**.  They are never used as filesystem paths.
+A request for `/instance/../../etc/passwd` returns 404; the server never
+opens any file path derived from the URL.
+
+### No network egress
+
+The server makes **zero outbound connections**.  It binds only to `--bind`
+(default `127.0.0.1`) and never connects to any external host.  This is a
+local-dev tool.  For remote access, SSH tunnel.
+
+---
+
+## Redaction
+
+Every byte rendered to the browser passes through the same pipeline as
+`bench inspect --format html` (see `docs/spec-secret-redaction.md`):
+
+```
+Redactor::default_enabled() + surface::EXPORT
+```
+
+The `HtmlExporter` applies this pipeline internally on every message field
+before writing HTML.  The index page contains only structured metadata
+(`instance_id`, `outcome`, `steps`, `cost`, `duration`), which are not
+arbitrary agent-generated text.
+
+---
+
+## Sweep Discovery
+
+At startup the server scans `--sweep` for all files matching `*.traj.json`.
+Files that cannot be parsed as valid trajectory JSON are skipped with a
+`WARN`-level log message.  The resulting list is sorted by `instance_id`
+ascending.  The scan is performed once at startup; the server does not watch
+for new trajectories while running.
+
+---
+
+## Feature Gate
+
+`max ui` is compiled only when the `ui-server` Cargo feature is enabled:
+
+```toml
+# Cargo.toml
+ui-server = ["html-export"]
+```
+
+When built **without** `ui-server`, any invocation of `max ui` exits
+immediately with:
+
+```
+outcome_class: feature_unavailable
+error: the `ui` command requires the `ui-server` Cargo feature, ...
+```
+
+Exit code: **24** (`feature_unavailable`).
+
+---
+
+## Exit Codes
+
+| Code | Label | Trigger |
+|------|-------|---------|
+| 0 | `success` | Server stopped cleanly after SIGINT / Ctrl-C. |
+| 2 | `usage_error` | Invalid `--bind` address, or `--sweep` directory not found. |
+| 24 | `feature_unavailable` | Binary built without `ui-server` feature. |
+
+---
+
+## Lifecycle
+
+1. Parse and validate CLI flags.
+2. Scan `--sweep` directory, build the instance list, sort by `instance_id`.
+3. Bind TCP listener on `--bind:--port` (port 0 = OS picks).
+4. Print `ui ready at http://<bind>:<port>` to **stdout** on a single line.
+5. If `--open`, attempt to launch the system browser (non-fatal on failure).
+6. Serve requests until SIGINT / Ctrl-C.
+7. Signal the accept loop to stop, drain in-flight connections, exit 0.
+
+---
+
+## Gap Analysis
+
+| Harness | Browsable UI? |
+|---------|---------------|
+| mini-swe-agent | Python/Flask viewer with collapsible panels |
+| SWE-agent (Princeton) | Interactive web UI used in published papers |
+| OpenHands | HTML session logs written by default, linked in CI |
+| Maxwell's Daemon (before this issue) | Terminal-only `bench inspect`; HTML exporter merged but not served |
+| **Maxwell's Daemon (this issue)** | **`max ui` — static HTML sweep browser** |
+
+---
+
+## Out of Scope (first slice)
+
+- Real-time streaming / live-tail of an in-flight sweep.
+- Multi-sweep dashboards or cross-sweep comparison views.
+- Editing, re-running, or annotating trajectories from the UI.
+- Remote / hosted deployment, auth, RBAC, or TLS.
+- Custom themes, syntax highlighting beyond what `HtmlExporter` emits.
+- JavaScript frameworks; inline HTML + CSS only.
+- New exporter formats (this wires the existing `HtmlExporter` only).
+- Pagination or server-side filtering of the index.
