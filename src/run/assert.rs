@@ -4,6 +4,7 @@
 //! against the extracted metrics. Writes assertions.json next to results.json.
 //! See `docs/spec-assert.md` for the full contract.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -298,18 +299,8 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
     let results = &artifacts.results;
     match metric.base.as_str() {
         "resolved_rate" => extract_resolved_rate(artifacts, results),
-        "resolved_count" => {
-            let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
-            Some(count_f64(
-                instances.iter().filter(|i| i["resolved"] == true).count(),
-            ))
-        }
-        "unresolved_count" => {
-            let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
-            Some(count_f64(
-                instances.iter().filter(|i| i["resolved"] == false).count(),
-            ))
-        }
+        "resolved_count" => count_resolved_in_sweep(artifacts, results, true),
+        "unresolved_count" => count_resolved_in_sweep(artifacts, results, false),
         "errored_count" => results["errored"].as_f64(),
         "total_cost_usd" => results["total_cost_usd"].as_f64(),
         "mean_cost_per_instance_usd" => {
@@ -320,7 +311,16 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
         "cost_per_resolved_instance_usd" => {
             let total_cost = results["total_cost_usd"].as_f64()?;
             let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
-            let resolved = instances.iter().filter(|i| i["resolved"] == true).count();
+            let sweep_ids = sweep_instance_ids(results);
+            let resolved = instances
+                .iter()
+                .filter(|i| {
+                    i["instance_id"]
+                        .as_str()
+                        .is_some_and(|id| sweep_ids.contains(id))
+                        && i["resolved"] == true
+                })
+                .count();
             if resolved == 0 {
                 Some(f64::INFINITY)
             } else {
@@ -329,11 +329,22 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
         }
         "mean_steps" => {
             let steps = collect_steps(results)?;
-            Some(compute_mean_steps(&steps))
+            // Return None rather than 0.0 when no step data exists (e.g. all
+            // rows from bench import have null steps): a ceiling rule would
+            // falsely pass with an empty sample.
+            if steps.is_empty() {
+                None
+            } else {
+                Some(compute_mean_steps(&steps))
+            }
         }
         "p95_steps" => {
             let steps = collect_steps(results)?;
-            Some(compute_p95_steps(&steps))
+            if steps.is_empty() {
+                None
+            } else {
+                Some(compute_p95_steps(&steps))
+            }
         }
         "wallclock_total_s" => extract_wallclock(results),
         "failure_category_count" => {
@@ -378,8 +389,40 @@ fn extract_metric(metric: &ParsedMetric, artifacts: &Artifacts) -> Option<f64> {
     }
 }
 
+/// Collect instance_ids from results.json for cross-sweep filtering.
+///
+/// A stale evaluation.json from a previous or larger sweep can contain
+/// instance IDs not in the current results.json.  Restricting evaluation
+/// counts to the current sweep prevents inflated resolved_rate / resolved_count.
+fn sweep_instance_ids(results: &Value) -> HashSet<&str> {
+    results["instances"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i["instance_id"].as_str())
+        .collect()
+}
+
+/// Count evaluation instances filtered to the current sweep that have the given
+/// resolved status.  `resolved=true` → resolved_count; `false` → unresolved_count.
+fn count_resolved_in_sweep(artifacts: &Artifacts, results: &Value, resolved: bool) -> Option<f64> {
+    let eval_instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+    let sweep_ids = sweep_instance_ids(results);
+    Some(count_f64(
+        eval_instances
+            .iter()
+            .filter(|i| {
+                i["instance_id"]
+                    .as_str()
+                    .is_some_and(|id| sweep_ids.contains(id))
+                    && i["resolved"].as_bool() == Some(resolved)
+            })
+            .count(),
+    ))
+}
+
 fn extract_resolved_rate(artifacts: &Artifacts, results: &Value) -> Option<f64> {
-    let instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
+    let eval_instances = artifacts.evaluation.as_ref()?["instances"].as_array()?;
     // Use results["total"] so instances missing from evaluation.json count against
     // the denominator (spec requirement: trajectories missing from evaluation.json
     // count against the denominator).
@@ -387,7 +430,16 @@ fn extract_resolved_rate(artifacts: &Artifacts, results: &Value) -> Option<f64> 
     if total == 0.0 {
         return Some(0.0);
     }
-    let resolved = instances.iter().filter(|i| i["resolved"] == true).count();
+    let sweep_ids = sweep_instance_ids(results);
+    let resolved = eval_instances
+        .iter()
+        .filter(|i| {
+            i["instance_id"]
+                .as_str()
+                .is_some_and(|id| sweep_ids.contains(id))
+                && i["resolved"] == true
+        })
+        .count();
     Some(count_f64(resolved) / total)
 }
 
@@ -443,6 +495,11 @@ fn parse_inline_rule(raw: &str) -> Result<Rule, Error> {
                     "invalid threshold '{threshold_raw}' in rule '{raw}'"
                 )))
             })?;
+            if !threshold.is_finite() {
+                return Err(Error::Config(ConfigError::Invalid(format!(
+                    "threshold '{threshold_raw}' is non-finite; only finite numbers are valid thresholds"
+                ))));
+            }
             let full_metric = if let Some(ref p) = parsed_metric.param {
                 format!("{}[{}]", parsed_metric.base, p)
             } else {
@@ -480,6 +537,12 @@ fn load_rules_from_file(path: &Path) -> Result<Vec<Rule>, Error> {
             // Validate metric
             let parsed = parse_metric(&r.metric)?;
             let op = parse_op(&r.op)?;
+            if !r.threshold.is_finite() {
+                return Err(Error::Config(ConfigError::Invalid(format!(
+                    "rule '{}': threshold {} is non-finite; only finite numbers are valid thresholds",
+                    r.name, r.threshold
+                ))));
+            }
             let full_metric = if let Some(ref p) = parsed.param {
                 format!("{}[{}]", parsed.base, p)
             } else {
