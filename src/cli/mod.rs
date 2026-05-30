@@ -1213,8 +1213,23 @@ async fn bench_doctor(mut s: args::SwebenchCmd) -> Result<(), Error> {
     #[cfg(feature = "webhook")]
     if let Some(ref url) = s.notify_webhook {
         if output_format != "json" {
-            let status = doctor_probe_webhook(url).await;
-            println!("[bench doctor] Webhook reachability: {url} — {status}");
+            let parsed = reqwest::Url::parse(url);
+            let display = parsed
+                .as_ref()
+                .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("<unknown>")))
+                .unwrap_or_else(|_| "<invalid url>".to_owned());
+            let headers: Vec<(String, String)> = s
+                .notify_webhook_headers
+                .iter()
+                .filter_map(|h| {
+                    let mut parts = h.splitn(2, ':');
+                    let name = parts.next()?.trim().to_owned();
+                    let value = parts.next()?.trim().to_owned();
+                    Some((name, value))
+                })
+                .collect();
+            let status = doctor_probe_webhook(url, &headers).await;
+            println!("[bench doctor] Webhook reachability: {display} — {status}");
         }
     }
 
@@ -4256,12 +4271,20 @@ fn parse_env_kind(kind: &str) -> Result<crate::config::EnvKind, Error> {
 /// POST a `doctor_probe` event to the webhook URL and return a short status
 /// string for the non-fatal doctor output line.  Best-effort; never aborts.
 #[cfg(feature = "webhook")]
-async fn doctor_probe_webhook(url: &str) -> String {
+async fn doctor_probe_webhook(url: &str, headers: &[(String, String)]) -> String {
     use serde_json::json;
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5));
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(n), Ok(v)) = (
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            header_map.insert(n, v);
+        }
+    }
+    builder = builder.default_headers(header_map);
+    let client = match builder.build() {
         Ok(c) => c,
         Err(e) => return format!("client build failed: {e}"),
     };

@@ -150,6 +150,8 @@ async fn sweep_emits_patch_artifact_for_modifying_agent() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -265,6 +267,8 @@ async fn sweep_emits_empty_patch_when_agent_changes_nothing() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -373,6 +377,8 @@ async fn benign_key_substring_assignments_do_not_trigger_secret_leak() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -478,6 +484,8 @@ async fn missing_workdir_marks_outcome_as_error() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

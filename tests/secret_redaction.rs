@@ -373,6 +373,8 @@ secret_literals = ["{configured_secret}"]
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -486,6 +488,8 @@ name = "scripted-test-model"
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

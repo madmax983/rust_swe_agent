@@ -110,6 +110,8 @@ fn base_rehearsal_args(dataset_source: DatasetSource, output_dir: PathBuf) -> Sw
         sb_split: None,
         eval_timeout_secs: None,
         event_log: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     }
 }
 

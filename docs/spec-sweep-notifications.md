@@ -93,7 +93,7 @@ Fired once when the circuit breaker halts the sweep early.
 ### `cost_threshold_crossed`
 
 Fired when cumulative cost crosses 25 %, 50 %, 75 %, or 100 % of
-`--cost-limit-usd`. Only fires if `--cost-limit-usd` is set.
+`--sweep-cost-limit-usd`. Only fires if `--sweep-cost-limit-usd` is set.
 
 ```json
 {

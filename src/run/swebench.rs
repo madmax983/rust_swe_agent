@@ -1854,7 +1854,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             None
         };
     #[cfg(not(feature = "webhook"))]
-    let sweep_webhook: Option<()> = {
+    let _sweep_webhook: Option<()> = {
         if args.notify_webhook_url.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
                 "--notify-webhook requires the `webhook` Cargo feature; \
@@ -1876,11 +1876,15 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
 
     // Cost-threshold tracker: fires at 25 / 50 / 75 / 100 % of the cost cap.
     // Index 0 = 25 %, 1 = 50 %, 2 = 75 %, 3 = 100 %.
+    #[cfg(feature = "webhook")]
     let cost_threshold_shares: [f64; 4] = [0.25, 0.50, 0.75, 1.00];
+    #[cfg(feature = "webhook")]
     let mut cost_thresholds_fired = [false; 4];
 
     // Milestone tracker: fires at 25 / 50 / 75 % of total completed.
+    #[cfg(feature = "webhook")]
     let milestone_shares: [f64; 3] = [0.25, 0.50, 0.75];
+    #[cfg(feature = "webhook")]
     let mut milestones_fired = [false; 3];
 
     let mut in_flight: usize = 0;
@@ -2178,7 +2182,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         ) = (
                             r.result.instance_id.clone(),
                             r.result.outcome.as_deref() == Some(outcome::SUBMITTED),
-                            r.result.failure_category.map(|c| format!("{c:?}")),
+                            r.result.failure_category.and_then(|c| {
+                                serde_json::to_value(c)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(str::to_owned))
+                            }),
                             r.result.cost_usd,
                             r.result.duration_secs,
                         );
@@ -2291,7 +2299,10 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                                     let share_fraction = share_pct / 100.0;
                                     sw.emit(
                                         crate::stream::SweepNotificationEvent::SystemicHaltTripped {
-                                            dominant_category: format!("{cat:?}"),
+                                            dominant_category: serde_json::to_value(cat)
+                                                .ok()
+                                                .and_then(|v| v.as_str().map(str::to_owned))
+                                                .unwrap_or_else(|| format!("{cat:?}")),
                                             share: share_fraction,
                                         },
                                     );

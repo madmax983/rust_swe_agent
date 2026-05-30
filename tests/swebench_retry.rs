@@ -131,6 +131,8 @@ async fn instance_cost_prefers_recorded_trajectory_cost() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -199,6 +201,8 @@ async fn retries_on_injected_transient_category_then_recovers() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -274,6 +278,8 @@ async fn max_retries_zero_disables_retry() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -353,6 +359,8 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -412,6 +420,8 @@ async fn max_retries_cap_stops_without_infinite_loop_and_non_retryable_is_not_re
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -487,6 +497,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -567,6 +579,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -622,6 +636,8 @@ async fn cost_cap_can_trip_mid_retry_and_retry_on_resume_round_trip() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

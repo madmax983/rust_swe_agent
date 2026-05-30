@@ -189,6 +189,8 @@ async fn resume_skips_valid_trajectory_and_reruns_invalid() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -305,6 +307,8 @@ async fn resume_reruns_submitted_trajectory_with_missing_patch() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -390,6 +394,8 @@ async fn without_resume_existing_trajectories_are_overwritten() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -475,6 +481,8 @@ async fn malformed_results_json_does_not_block_new_non_resume_sweep() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -587,6 +595,8 @@ async fn resume_uses_on_disk_patch_flags_even_if_prior_summary_is_false() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -673,6 +683,8 @@ async fn resume_raw_secret_patch_downgrades_instance_and_writes_results() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -796,6 +808,8 @@ async fn resume_raw_secret_patch_blocks_github_pr_publication_before_publish() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
@@ -907,6 +921,8 @@ async fn resume_skipped_submitted_runs_still_attempt_github_pr_publication() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();

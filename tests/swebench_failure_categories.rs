@@ -151,6 +151,8 @@ async fn sweep_counts_failure_categories_and_preserves_legacy_unclassified() {
         sb_subset: None,
         sb_split: None,
         eval_timeout_secs: None,
+        notify_webhook_url: None,
+        notify_webhook_headers: vec![],
     })
     .await
     .unwrap();
