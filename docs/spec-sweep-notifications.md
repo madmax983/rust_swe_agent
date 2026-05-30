@@ -127,7 +127,7 @@ dropped because the internal buffer was full (see Delivery Guarantees).
 
 - **Best-effort, non-blocking.** The sweep loop never waits for a POST to
   complete. If the endpoint is slow or unreachable, the sweep continues.
-- **Bounded buffer.** Events are queued in a 256-slot channel. If the channel
+- **Bounded buffer.** Events are queued in a 1024-slot channel. If the channel
   is full (endpoint too slow), the event is dropped and counted; the final
   `sweep_completed` event reports the total.
 - **5-second timeout** per POST attempt. No retries on failure.

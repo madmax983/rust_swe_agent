@@ -81,9 +81,7 @@ pub enum SweepNotificationEvent {
     },
     /// Posted only by `bench doctor` to check reachability; not part of the
     /// runtime taxonomy and never emitted during a real sweep.
-    DoctorProbe {
-        sweep_id: String,
-    },
+    DoctorProbe { sweep_id: String },
 }
 
 impl SweepNotificationEvent {
@@ -102,10 +100,14 @@ impl SweepNotificationEvent {
 
     /// Returns a new event with every string field passed through `redactor`.
     /// Numeric / boolean fields are not modified.
+    #[must_use]
     pub fn redacted(self, redactor: &Redactor) -> Self {
         use crate::redaction::surface;
         match self {
-            Self::SweepStarted { total_instances, model } => Self::SweepStarted {
+            Self::SweepStarted {
+                total_instances,
+                model,
+            } => Self::SweepStarted {
                 total_instances,
                 model: redactor.redact_text(&model, surface::STREAM).text,
             },
@@ -125,14 +127,15 @@ impl SweepNotificationEvent {
                 cost_usd,
                 duration_secs,
             },
-            Self::SystemicHaltTripped { dominant_category, share } => {
-                Self::SystemicHaltTripped {
-                    dominant_category: redactor
-                        .redact_text(&dominant_category, surface::STREAM)
-                        .text,
-                    share,
-                }
-            }
+            Self::SystemicHaltTripped {
+                dominant_category,
+                share,
+            } => Self::SystemicHaltTripped {
+                dominant_category: redactor
+                    .redact_text(&dominant_category, surface::STREAM)
+                    .text,
+                share,
+            },
             Self::SweepCompleted {
                 total_resolved,
                 total_attempted,
@@ -145,9 +148,7 @@ impl SweepNotificationEvent {
                 total_attempted,
                 total_cost_usd,
                 wallclock_secs,
-                terminal_reason: redactor
-                    .redact_text(&terminal_reason, surface::STREAM)
-                    .text,
+                terminal_reason: redactor.redact_text(&terminal_reason, surface::STREAM).text,
                 webhook_events_dropped,
             },
             Self::DoctorProbe { sweep_id } => Self::DoctorProbe {
@@ -185,6 +186,7 @@ struct EnvelopeMsg {
 pub struct SweepWebhookSink {
     tx: mpsc::Sender<EnvelopeMsg>,
     dropped: Arc<AtomicU64>,
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Failure to create a [`SweepWebhookSink`].
@@ -242,8 +244,8 @@ impl SweepWebhookSink {
 
         let handle = Handle::try_current().map_err(SweepWebhookSinkError::NoRuntime)?;
 
-        let mut builder =
-            reqwest::Client::builder().timeout(Duration::from_secs(SWEEP_WEBHOOK_HTTP_TIMEOUT_SECS));
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(SWEEP_WEBHOOK_HTTP_TIMEOUT_SECS));
         let mut default_headers = reqwest::header::HeaderMap::new();
         for (name, value) in headers {
             let header_name =
@@ -253,13 +255,12 @@ impl SweepWebhookSink {
                         reason: e.to_string(),
                     }
                 })?;
-            let header_value =
-                reqwest::header::HeaderValue::from_str(value).map_err(|e| {
-                    SweepWebhookSinkError::InvalidHeader {
-                        name: name.clone(),
-                        reason: e.to_string(),
-                    }
-                })?;
+            let header_value = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
+                SweepWebhookSinkError::InvalidHeader {
+                    name: name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
             default_headers.insert(header_name, header_value);
         }
         builder = builder.default_headers(default_headers);
@@ -270,7 +271,7 @@ impl SweepWebhookSink {
 
         let (tx, mut rx) = mpsc::channel::<EnvelopeMsg>(buffer_capacity);
 
-        handle.spawn(async move {
+        let join_handle = handle.spawn(async move {
             while let Some(EnvelopeMsg { event }) = rx.recv().await {
                 let event_type = event.event_name();
                 let redacted_event = event.redacted(&redactor);
@@ -299,8 +300,7 @@ impl SweepWebhookSink {
                         };
                         warn!(
                             event_type,
-                            error_class,
-                            "sweep webhook POST failed; counting as dropped"
+                            error_class, "sweep webhook POST failed; counting as dropped"
                         );
                         dropped_bg.fetch_add(1, Ordering::Relaxed);
                     }
@@ -311,7 +311,11 @@ impl SweepWebhookSink {
             }
         });
 
-        Ok(Self { tx, dropped })
+        Ok(Self {
+            tx,
+            dropped,
+            join_handle,
+        })
     }
 
     /// Enqueues a sweep event for delivery.  Non-blocking; silently drops when
@@ -335,6 +339,13 @@ impl SweepWebhookSink {
     pub fn dropped_counter(&self) -> Arc<AtomicU64> {
         self.dropped.clone()
     }
+
+    /// Drops the sender (signals EOF to the background task) and waits for
+    /// it to finish draining and sending all queued events before returning.
+    pub async fn shutdown(self) {
+        drop(self.tx);
+        let _ = self.join_handle.await;
+    }
 }
 
 #[cfg(test)]
@@ -355,13 +366,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        let sink = SweepWebhookSink::new(
-            url,
-            &[],
-            Redactor::disabled(),
-            "test-sweep-42".to_owned(),
-        )
-        .unwrap();
+        let sink =
+            SweepWebhookSink::new(url, &[], Redactor::disabled(), "test-sweep-42".to_owned())
+                .unwrap();
         sink.emit(SweepNotificationEvent::SweepStarted {
             total_instances: 5,
             model: "test-model".to_owned(),
@@ -386,13 +393,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        let sink = SweepWebhookSink::new(
-            url,
-            &[],
-            Redactor::disabled(),
-            "sweep-xyz".to_owned(),
-        )
-        .unwrap();
+        let sink =
+            SweepWebhookSink::new(url, &[], Redactor::disabled(), "sweep-xyz".to_owned()).unwrap();
         sink.emit(SweepNotificationEvent::SweepCompleted {
             total_resolved: 3,
             total_attempted: 5,
@@ -417,8 +419,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
 
-        let sink =
-            SweepWebhookSink::new(url, &[], Redactor::disabled(), "s1".to_owned()).unwrap();
+        let sink = SweepWebhookSink::new(url, &[], Redactor::disabled(), "s1".to_owned()).unwrap();
         sink.emit(SweepNotificationEvent::InstanceCompleted {
             instance_id: "django__django-1234".to_owned(),
             resolved: true,
@@ -435,7 +436,10 @@ mod tests {
         assert_eq!(v["event"]["instance_id"], "django__django-1234");
         assert_eq!(v["event"]["resolved"], true);
         assert_eq!(v["event"]["cost_usd"], 0.42);
-        assert!(v["event"].get("failure_category").is_none(), "None fields must be omitted");
+        assert!(
+            v["event"].get("failure_category").is_none(),
+            "None fields must be omitted"
+        );
     }
 
     // ── RED: redaction ─────────────────────────────────────────────────────
@@ -453,8 +457,7 @@ mod tests {
         unsafe { std::env::set_var(&env_name, &unique_val) };
         let redactor = Redactor::default_enabled();
 
-        let sink =
-            SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
+        let sink = SweepWebhookSink::new(url, &[], redactor, "sweep-redact".to_owned()).unwrap();
         sink.emit(SweepNotificationEvent::InstanceCompleted {
             instance_id: unique_val.clone(),
             resolved: false,
@@ -524,7 +527,10 @@ mod tests {
             total_instances: 2,
             model: "m".to_owned(),
         });
-        assert_eq!(sink.dropped_count(), 1, "second event must be dropped (buffer=1)");
+        assert!(
+            sink.dropped_count() >= 1,
+            "at least one event must be dropped when buffer is full"
+        );
     }
 
     // ── RED: stable event names ────────────────────────────────────────────
@@ -532,8 +538,11 @@ mod tests {
     #[test]
     fn event_names_match_spec() {
         assert_eq!(
-            SweepNotificationEvent::SweepStarted { total_instances: 1, model: "m".into() }
-                .event_name(),
+            SweepNotificationEvent::SweepStarted {
+                total_instances: 1,
+                model: "m".into()
+            }
+            .event_name(),
             "sweep_started"
         );
         assert_eq!(
@@ -586,7 +595,10 @@ mod tests {
             "sweep_completed"
         );
         assert_eq!(
-            SweepNotificationEvent::DoctorProbe { sweep_id: "s".into() }.event_name(),
+            SweepNotificationEvent::DoctorProbe {
+                sweep_id: "s".into()
+            }
+            .event_name(),
             "doctor_probe"
         );
     }

@@ -2169,7 +2169,13 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         }
                         // Capture webhook fields before r is moved into results.
                         #[cfg(feature = "webhook")]
-                        let (wh_instance_id, wh_resolved, wh_failure_category, wh_cost_usd, wh_duration_secs) = (
+                        let (
+                            wh_instance_id,
+                            wh_resolved,
+                            wh_failure_category,
+                            wh_cost_usd,
+                            wh_duration_secs,
+                        ) = (
                             r.result.instance_id.clone(),
                             r.result.outcome.as_deref() == Some(outcome::SUBMITTED),
                             r.result.failure_category.map(|c| format!("{c:?}")),
@@ -2194,8 +2200,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
                         #[cfg(feature = "webhook")]
                         if let (Some(sw), Some(limit_usd)) = (&sweep_webhook, limit) {
                             for (i, &share) in cost_threshold_shares.iter().enumerate() {
-                                if !cost_thresholds_fired[i]
-                                    && cumulative_cost >= limit_usd * share
+                                if !cost_thresholds_fired[i] && cumulative_cost >= limit_usd * share
                                 {
                                     cost_thresholds_fired[i] = true;
                                     sw.emit(
@@ -2704,9 +2709,9 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
         sweep.not_started = systemic_halt_not_started;
     }
 
-    // Emit sweep_completed with the final drop count.
+    // Emit sweep_completed with the final drop count, then flush the sink.
     #[cfg(feature = "webhook")]
-    if let Some(ref sw) = sweep_webhook {
+    if let Some(sw) = sweep_webhook {
         #[allow(clippy::cast_precision_loss)]
         let wallclock_secs = u64::try_from(
             std::time::SystemTime::now()
@@ -2737,6 +2742,7 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
             // and will not be dropped unless the buffer is pathologically small.
             webhook_events_dropped: dropped_so_far,
         });
+        sw.shutdown().await;
     }
 
     write_sweep_results_atomic(&summary_path, &sweep)?;
@@ -5417,8 +5423,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
 
         let results = tokio::time::timeout(Duration::from_secs(8), run(args))
@@ -6312,8 +6318,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6397,8 +6403,8 @@ mod tests {
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6493,8 +6499,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         let dummy_meta = crate::run::dataset::ResolvedDatasetMeta {
             path: PathBuf::from("dataset.jsonl"),
@@ -6629,8 +6635,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         {
             let mut hook = PANIC_AFTER_INITIAL_MANIFEST_WRITE
@@ -7314,8 +7320,8 @@ instance = "inst"
             sb_subset: None,
             sb_split: None,
             eval_timeout_secs: None,
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
+            notify_webhook_url: None,
+            notify_webhook_headers: vec![],
         };
         assert_eq!(args.max_rpm, Some(4000));
         assert_eq!(args.max_input_tpm, Some(400_000));
@@ -7978,8 +7984,7 @@ instance = "inst"
         // ─── mock HTTP server ──────────────────────────────────────────────
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let collected: Arc<Mutex<Vec<serde_json::Value>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let collected: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let collected_bg = collected.clone();
 
         tokio::spawn(async move {
@@ -8015,9 +8020,7 @@ instance = "inst"
                     }
                 }
                 let _ = socket
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
                 let req_str = String::from_utf8_lossy(&buf);
                 if let Some(body) = req_str.split_once("\r\n\r\n").map(|(_, b)| b) {
@@ -8093,13 +8096,10 @@ instance = "inst"
             notify_webhook_headers: vec![],
         };
 
-        let results = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            run(args),
-        )
-        .await
-        .expect("sweep timed out")
-        .expect("sweep failed");
+        let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
+            .await
+            .expect("sweep timed out")
+            .expect("sweep failed");
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 
@@ -8117,8 +8117,7 @@ instance = "inst"
         // Every payload must carry the schema-version envelope fields.
         for (i, p) in payloads.iter().enumerate() {
             assert_eq!(
-                p["schema_version"]["major"],
-                1,
+                p["schema_version"]["major"], 1,
                 "payload {i} missing schema_version.major=1"
             );
             assert!(p.get("sweep_id").is_some(), "payload {i} missing sweep_id");
@@ -8153,5 +8152,4 @@ instance = "inst"
             "last event must be sweep_completed; got: {event_types:?}"
         );
     }
-
 }
