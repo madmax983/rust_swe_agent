@@ -4,10 +4,11 @@
 //! 1. Patch selector must be unambiguous (exit 2 on ambiguity).
 //! 2. Target must be a git working tree (exit 2 before any mutation).
 //! 3. Working tree must be clean unless `--allow-dirty` (exit 30).
+//!    The selected patch file is excluded from the dirty check.
 //! 4. Patch must not contain `[REDACTED:…]` markers, and the source
 //!    trajectory (when available) must not record patch-submission
 //!    redaction, unless `--allow-redacted` (exit 29).
-//! 5. `git apply --check` must succeed (exit 28 on rejection).
+//! 5. `git apply --check [--3way]` must succeed (exit 28 on rejection).
 //! 6. On `--dry-run`, stop here and report what would change (exit 0).
 //! 7. Apply the patch; write `apply-report.json`.
 
@@ -30,8 +31,9 @@ pub enum PatchSelector {
     /// Path to a `.traj.json` file; the sibling `.patch` is derived by
     /// replacing the `.traj.json` extension with `.patch`.
     TrajectoryFile(PathBuf),
-    /// Sweep output directory + instance ID; patch is at
-    /// `<sweep>/<instance>.patch`.
+    /// Sweep output directory + instance ID. Tries the canonical nested
+    /// layout `<sweep>/<instance>/run-1.patch` first, then falls back to
+    /// the legacy flat path `<sweep>/<instance>.patch`.
     SweepInstance { sweep: PathBuf, instance: String },
 }
 
@@ -50,7 +52,7 @@ pub struct AgentApplyOpts {
     /// Delegate to `git apply --3way` for fuzzy application.
     pub three_way: bool,
     /// Where to write `apply-report.json`. When `None`, the report is
-    /// written next to the target directory as `apply-report.json`.
+    /// written next to (in the parent of) the target directory.
     pub report_path: Option<PathBuf>,
 }
 
@@ -131,26 +133,42 @@ impl From<std::io::Error> for ApplyError {
 /// empty-patch cases). On any gate failure the tree is left byte-for-byte
 /// unchanged.
 pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> {
-    // ── 1. Resolve patch path and optionally load the sibling trajectory ──────
+    // ── 1. Resolve patch path and optionally check trajectory redaction ────────
     let (patch_path, trajectory_redacted) = resolve_patch_and_redaction(&opts.selector);
+
+    // Canonicalize the patch path so that relative paths are anchored to the
+    // caller's CWD before any `current_dir()` changes in git subprocess calls.
+    let patch_path = std::fs::canonicalize(&patch_path).unwrap_or(patch_path);
 
     // ── 2. Verify target is a git working tree ────────────────────────────────
     if !is_git_tree(&opts.target) {
         return Err(ApplyError::NotGitTree(opts.target));
     }
 
-    // ── 3. Dirty-tree gate ────────────────────────────────────────────────────
+    // ── 3. Compute default report destination (next to, not inside, target) ───
+    // Placing the report in the parent of the target prevents it from
+    // colliding with any file the applied patch adds at the repo root.
+    let report_dest = opts.report_path.clone().unwrap_or_else(|| {
+        opts.target
+            .parent()
+            .unwrap_or(&opts.target)
+            .join("apply-report.json")
+    });
+
+    // ── 4. Dirty-tree gate ────────────────────────────────────────────────────
+    // Exclude the patch file itself so that an untracked (but non-gitignored)
+    // patch inside the target doesn't trip the gate for the normal workflow.
     if !opts.allow_dirty {
-        let dirty = dirty_paths(&opts.target)?;
+        let dirty = dirty_paths_excluding(&opts.target, &[&patch_path])?;
         if !dirty.is_empty() {
             return Err(ApplyError::DirtyTree(dirty));
         }
     }
 
-    // ── 4. Read patch content ─────────────────────────────────────────────────
+    // ── 5. Read patch content ─────────────────────────────────────────────────
     let patch_text = std::fs::read_to_string(&patch_path)?;
 
-    // ── 5. Redaction gate ─────────────────────────────────────────────────────
+    // ── 6. Redaction gate ─────────────────────────────────────────────────────
     if !opts.allow_redacted {
         let patch_has_markers = patch_text.contains(REDACTION_MARKER);
         if patch_has_markers || trajectory_redacted {
@@ -158,7 +176,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         }
     }
 
-    // ── 6. Empty-patch fast path ──────────────────────────────────────────────
+    // ── 7. Empty-patch fast path ──────────────────────────────────────────────
     if patch_text.trim().is_empty() {
         let target_sha = git_head_sha(&opts.target);
         let report = ApplyReport {
@@ -173,23 +191,22 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
             applied: false,
             dry_run: opts.dry_run,
         };
-        if let Some(rp) = &opts.report_path {
-            write_report(rp, &report)?;
-        }
+        write_report(&report_dest, &report)?;
         return Ok(report);
     }
 
-    // ── 7. git apply --check ──────────────────────────────────────────────────
-    let check_result = git_apply_check(&opts.target, &patch_path);
-    if let Err(msg) = check_result {
+    // ── 8. git apply --check [--3way] ─────────────────────────────────────────
+    // Pass --3way to the preflight check when requested so that patches that
+    // only succeed via three-way merge are not falsely rejected here.
+    if let Err(msg) = git_apply_check(&opts.target, &patch_path, opts.three_way) {
         return Err(ApplyError::CheckFailed(msg));
     }
 
-    // ── 8. Collect diff stats from patch text ─────────────────────────────────
+    // ── 9. Collect diff stats from patch text ─────────────────────────────────
     let (files_changed, lines_added, lines_removed) = parse_diff_stats(&patch_text);
     let target_sha = git_head_sha(&opts.target);
 
-    // ── 9. Dry-run: report without mutating ──────────────────────────────────
+    // ── 10. Dry-run: report without mutating ──────────────────────────────────
     if opts.dry_run {
         let report = ApplyReport {
             schema_version: ArtifactSchemaVersion::CURRENT,
@@ -203,18 +220,17 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
             applied: false,
             dry_run: true,
         };
-        if let Some(rp) = &opts.report_path {
-            write_report(rp, &report)?;
-        }
+        write_report(&report_dest, &report)?;
         return Ok(report);
     }
 
-    // ── 10. Apply the patch ───────────────────────────────────────────────────
+    // ── 11. Apply the patch ───────────────────────────────────────────────────
     let mut cmd = Command::new("git");
     cmd.arg("apply");
     if opts.three_way {
         cmd.arg("--3way");
     }
+    // patch_path is canonicalized (absolute), so current_dir does not affect it.
     cmd.arg(&patch_path).current_dir(&opts.target);
     let output = cmd.output()?;
     if !output.status.success() {
@@ -222,7 +238,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         return Err(ApplyError::CheckFailed(msg));
     }
 
-    // ── 11. Write report ──────────────────────────────────────────────────────
+    // ── 12. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
         schema_version: ArtifactSchemaVersion::CURRENT,
         artifact_kind: ArtifactKind::ApplyReport,
@@ -235,10 +251,6 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         applied: true,
         dry_run: false,
     };
-
-    let report_dest = opts
-        .report_path
-        .unwrap_or_else(|| opts.target.join("apply-report.json"));
     write_report(&report_dest, &report)?;
 
     Ok(report)
@@ -259,8 +271,19 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, bool) {
             (patch_path, redacted)
         }
         PatchSelector::SweepInstance { sweep, instance } => {
-            let patch_path = sweep.join(format!("{instance}.patch"));
-            let traj_path = sweep.join(format!("{instance}.traj.json"));
+            // Canonical nested layout: <sweep>/<instance>/run-1.patch
+            let nested_patch = sweep.join(instance).join("run-1.patch");
+            let nested_traj = sweep.join(instance).join("run-1.traj.json");
+            // Legacy flat layout: <sweep>/<instance>.patch
+            let legacy_patch = sweep.join(format!("{instance}.patch"));
+            let legacy_traj = sweep.join(format!("{instance}.traj.json"));
+
+            let (patch_path, traj_path) = if nested_patch.exists() || nested_traj.exists() {
+                (nested_patch, nested_traj)
+            } else {
+                (legacy_patch, legacy_traj)
+            };
+
             let redacted = trajectory_has_patch_submission_redaction(&traj_path);
             (patch_path, redacted)
         }
@@ -278,13 +301,11 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy())
         .unwrap_or_default();
 
-    // Strip known double-extension ".traj.json" first
     let base = if let Some(s) = stem.strip_suffix(".traj.json") {
         s.to_owned()
     } else if let Some(s) = stem.strip_suffix(".json") {
         s.to_owned()
     } else {
-        // No recognised extension; keep as-is
         stem.into_owned()
     };
 
@@ -303,7 +324,6 @@ fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return false;
     };
-    // Check info.redaction.counts[*].surface == "patch_submission"
     if let Some(counts) = value
         .pointer("/info/redaction/counts")
         .and_then(|v| v.as_array())
@@ -314,7 +334,7 @@ fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
             }
         }
     }
-    // Also catch the legacy secret_leak_detected marker in info.other
+    // Legacy secret_leak_detected marker
     if value
         .pointer("/info/secret_leak_detected/surface")
         .and_then(|s| s.as_str())
@@ -335,9 +355,22 @@ fn is_git_tree(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Return the list of paths that make the working tree "dirty":
-/// modified tracked files, staged changes, and untracked files.
-fn dirty_paths(dir: &Path) -> Result<Vec<String>, ApplyError> {
+/// Return dirty paths, excluding any paths that resolve to an entry in
+/// `exclude_abs`. The patch file itself is excluded so that an untracked
+/// patch inside the target does not trip the clean-tree gate.
+fn dirty_paths_excluding(dir: &Path, exclude_abs: &[&Path]) -> Result<Vec<String>, ApplyError> {
+    // Get the git root so we can compute absolute paths for comparison.
+    let git_root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or_else(
+            || dir.to_owned(),
+            |o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_owned()),
+        );
+
     let output = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(dir)
@@ -346,23 +379,33 @@ fn dirty_paths(dir: &Path) -> Result<Vec<String>, ApplyError> {
     let paths: Vec<String> = stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            // Porcelain format: "XY filename"
-            l.get(3..).unwrap_or(l).trim().to_owned()
+        .filter_map(|l| {
+            let rel = l.get(3..)?.trim();
+            let abs = git_root.join(rel);
+            // Canonicalize for comparison; fall back to raw path if it doesn't
+            // exist yet (e.g. untracked file whose parent isn't resolved).
+            let abs_canon = std::fs::canonicalize(&abs).unwrap_or(abs);
+            let excluded = exclude_abs.iter().any(|ex| {
+                let ex_canon = std::fs::canonicalize(ex).unwrap_or_else(|_| ex.to_path_buf());
+                abs_canon == ex_canon
+            });
+            if excluded { None } else { Some(rel.to_owned()) }
         })
         .collect();
     Ok(paths)
 }
 
-/// Run `git apply --check` and return `Ok(())` if the patch can be applied,
-/// or `Err(rejected_hunks_message)` if it cannot.
-fn git_apply_check(dir: &Path, patch_path: &Path) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["apply", "--check"])
-        .arg(patch_path)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| e.to_string())?;
+/// Run `git apply --check [--3way]` and return `Ok(())` on success.
+/// Passing `three_way` ensures patches that only apply via three-way merge
+/// are not falsely rejected during the preflight check.
+fn git_apply_check(dir: &Path, patch_path: &Path, three_way: bool) -> Result<(), String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["apply", "--check"]);
+    if three_way {
+        cmd.arg("--3way");
+    }
+    cmd.arg(patch_path).current_dir(dir);
+    let output = cmd.output().map_err(|e| e.to_string())?;
 
     if output.status.success() {
         Ok(())
@@ -400,11 +443,10 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     for line in patch_text.lines() {
         if line.starts_with("diff --git ") {
             in_hunk = false;
-            // Extract filename from "diff --git a/foo b/foo"
-            if let Some(b_part) = line.strip_prefix("diff --git ").and_then(|s| {
-                // Find " b/" to get the new filename
-                s.find(" b/").map(|i| &s[i + 3..])
-            }) {
+            if let Some(b_part) = line
+                .strip_prefix("diff --git ")
+                .and_then(|s| s.find(" b/").map(|i| &s[i + 3..]))
+            {
                 let name = b_part.trim().to_owned();
                 if !files.contains(&name) {
                     files.push(name);
@@ -436,13 +478,7 @@ fn write_report(path: &Path, report: &ApplyReport) -> Result<(), ApplyError> {
     Ok(())
 }
 
-// ── CLI message helpers (public so cli/mod.rs can use them) ───────────────────
-
-/// Human-readable one-liner for `run_agent_apply` errors, for printing to
-/// stderr from the CLI layer.
-pub fn error_message(e: &ApplyError) -> String {
-    e.to_string()
-}
+// ── CLI helpers (public for cli/mod.rs) ───────────────────────────────────────
 
 /// Short outcome label written to stderr on non-zero exits.
 pub fn error_outcome_class(e: &ApplyError) -> &'static str {

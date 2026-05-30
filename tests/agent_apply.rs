@@ -526,6 +526,38 @@ fn apply_selector_from_trajectory_resolves_sibling_patch() {
 }
 
 #[test]
+fn apply_selector_sweep_instance_nested_layout() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Canonical nested layout: <sweep>/<instance>/run-1.patch
+    let sweep_dir = work.path().join("sweep_run");
+    let instance_dir = sweep_dir.join("my-instance");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+    std::fs::write(instance_dir.join("run-1.patch"), &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::SweepInstance {
+            sweep: sweep_dir,
+            instance: "my-instance".into(),
+        },
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+}
+
+#[test]
 fn apply_selector_from_sweep_instance_resolves_patch() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
@@ -534,7 +566,7 @@ fn apply_selector_from_sweep_instance_resolves_patch() {
 
     let patch_content = make_valid_patch(&repo);
 
-    // Sweep directory structure: <sweep>/<instance>.patch
+    // Legacy flat layout: <sweep>/<instance>.patch (fallback when nested absent)
     let sweep_dir = work.path().join("sweep_run");
     std::fs::create_dir_all(&sweep_dir).unwrap();
     std::fs::write(sweep_dir.join("my-instance.patch"), &patch_content).unwrap();
@@ -552,6 +584,65 @@ fn apply_selector_from_sweep_instance_resolves_patch() {
         three_way: false,
         report_path: Some(report_path),
     };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+}
+
+#[test]
+fn apply_dry_run_without_report_flag_writes_default_report() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // No report_path supplied — the default should be written next to target
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: true,
+        three_way: false,
+        report_path: None,
+    };
+    run_agent_apply(opts).unwrap();
+
+    // Default report goes to target.parent() / apply-report.json
+    let default_report = repo.parent().unwrap().join("apply-report.json");
+    assert!(
+        default_report.exists(),
+        "default report must be written next to target"
+    );
+}
+
+#[test]
+fn apply_patch_inside_repo_not_gitignored_does_not_trip_dirty_gate() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Write the patch *inside* the repo (untracked, not gitignored)
+    let patch_path = repo.join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false, // <-- strict; patch inside repo should be excluded
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    // Should succeed: the patch file itself is excluded from the dirty check
     let report = run_agent_apply(opts).unwrap();
     assert!(report.applied);
 }
