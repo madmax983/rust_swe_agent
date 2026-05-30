@@ -154,6 +154,110 @@ valid JSON, but its string fields are capped the same way. Hooks that need
 lossless large output should read artifacts from the workspace rather than the
 environment.
 
+## Preflight: `bench scriptability-check`
+
+`bench scriptability-check` is a zero-cost command that validates the full
+scriptability configuration before any model call. It:
+
+1. **Spawns each MCP server** in `agent.mcp_servers`, performs the full
+   `initialize` → `notifications/initialized` → `tools/list` handshake, and
+   records per-server `{name, command, ok, negotiated_protocol_version,
+   tools: [{name, has_input_schema, schema_valid}], duration_ms, error?}`.
+
+2. **Dry-runs each hook** in `agent.hooks.pre_tool_use` and
+   `agent.hooks.post_tool_use`: renders the MiniJinja template against a
+   deterministic synthetic context (see below), then executes the rendered
+   command with the full `MAXWELL_*` / `RUST_SWE_AGENT_*` environment
+   contract. Per-hook result: `{name, phase, ok, exit_code, duration_ms,
+   template_render_ok, blocking (for pre_tool_use), stdout_bytes,
+   stderr_bytes, error?}`. Uses `agent.tool_hook_timeout_secs`.
+
+3. **Exits 0** when all servers and hooks pass; **exits 23**
+   (`scriptability_check_failure`) on any failure — distinct from
+   `preflight_failure` (3) so CI can route scriptability misconfig separately
+   from infrastructure failures.
+
+4. Makes **no model calls** and no network calls beyond what an MCP server
+   itself initiates. The JSON artifact (`scriptability_check.json`) intentionally
+   omits `total_cost_usd`.
+
+5. **Redacts secrets** from hook command output and MCP server error messages
+   using the existing redaction layer before writing to the artifact or stdout.
+
+### Synthetic Hook Context
+
+During preflight, hooks are executed with the following deterministic placeholder
+values:
+
+| Variable | Preflight value |
+|----------|-----------------|
+| `hook.phase` | `pre_tool_use` or `post_tool_use` |
+| `hook.name` | hook name from config |
+| `tool.name` | `bash` |
+| `task` | `scriptability-check-preflight` |
+| `model` | `preflight` |
+| `step` | `0` |
+| `command` | *(empty)* |
+| `tool_input` | *(empty)* |
+| `returncode` | `null` (pre) / `0` (post) |
+| `stdout`, `stderr`, `output` | *(empty)* |
+| `timed_out` | `false` |
+| `total_cost_usd` | `0.0` |
+
+### Usage
+
+```bash
+# Check the default scriptability config:
+max bench scriptability-check
+
+# Check a specific config file:
+max bench scriptability-check --config myconfig.toml
+
+# Write JSON artifact to a directory:
+max bench scriptability-check --config myconfig.toml --output runs/preflight/
+
+# CI: fail fast if any server or hook is misconfigured:
+max bench scriptability-check --config ci-config.toml || exit 1
+```
+
+### Artifact
+
+The `scriptability_check.json` artifact is schema-versioned and consistent with
+the artifact-versioning conventions used in this repo:
+
+```json
+{
+  "artifact_kind": "scriptability_check",
+  "schema_version": {"major": 1, "minor": 10},
+  "generated_at": "2026-01-01T00:00:00Z",
+  "config": "ci-config.toml",
+  "servers": [
+    {
+      "name": "mcp-0",
+      "command": "diagnostic-mcp",
+      "ok": true,
+      "negotiated_protocol_version": "2025-11-25",
+      "tools": [{"name": "diagnose", "has_input_schema": true, "schema_valid": true}],
+      "duration_ms": 42
+    }
+  ],
+  "hooks": [
+    {
+      "name": "guard",
+      "phase": "pre_tool_use",
+      "ok": true,
+      "exit_code": 0,
+      "duration_ms": 3,
+      "template_render_ok": true,
+      "blocking": false,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    }
+  ],
+  "all_ok": true
+}
+```
+
 ## Future Hooks
 
 Good next slices are pre-model context hooks, model-response hooks, and a

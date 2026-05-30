@@ -66,6 +66,7 @@ pub enum ArtifactKind {
     EvalFlakeReport,
     StagnationReport,
     SuiteResults,
+    ScriptabilityCheck,
 }
 
 impl ArtifactKind {
@@ -89,6 +90,7 @@ impl ArtifactKind {
             Self::EvalFlakeReport => "eval_flake_report",
             Self::StagnationReport => "stagnation_report",
             Self::SuiteResults => "suite_results",
+            Self::ScriptabilityCheck => "scriptability_check",
         }
     }
 }

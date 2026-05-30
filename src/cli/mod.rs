@@ -125,6 +125,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Import(i) => bench_import(i),
             args::BenchCmd::ExportCi(c) => bench_export_ci(c),
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
+            args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3461,6 +3462,40 @@ fn bench_contamination_check(c: args::ContaminationCheckCmd) -> Result<(), Error
                 ),
             );
         }
+    }
+
+    Ok(())
+}
+
+async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(), Error> {
+    use crate::run::scriptability_check::{ScriptabilityCheckArgs, render_text};
+
+    // value_parser = ["text", "json"] on the arg ensures only valid values reach here.
+    let is_json = cmd.format == "json";
+
+    let args = ScriptabilityCheckArgs {
+        config_path: cmd.config,
+        output: cmd.output,
+    };
+
+    let report = crate::run::scriptability_check::run(&args).await?;
+
+    if is_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", render_text(&report));
+    }
+
+    if !report.all_ok {
+        let failed_servers = report.servers.iter().filter(|s| !s.ok).count();
+        let failed_hooks = report.hooks.iter().filter(|h| !h.ok).count();
+        exit_with_outcome(
+            ExitCode::ScriptabilityCheckFailure,
+            &format!(
+                "scriptability check failed: {failed_servers} server(s) and \
+                 {failed_hooks} hook(s) had failures"
+            ),
+        );
     }
 
     Ok(())
