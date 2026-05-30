@@ -456,7 +456,9 @@ secret_literals = ["secretval"]
     let output = run_redact_check(&cfg, &opts).unwrap();
     let json_val = format_json(&output).unwrap();
     assert_eq!(json_val["artifact_kind"], "redact_check");
-    assert!(json_val["schema_version"].is_object() || json_val["schema_version"].is_string());
+    // redact-check uses its own schema version (1.0), not the repo-wide CURRENT.
+    assert_eq!(json_val["schema_version"]["major"], 1);
+    assert_eq!(json_val["schema_version"]["minor"], 0);
     assert!(json_val["matches"].is_array());
     let matches = json_val["matches"].as_array().unwrap();
     assert!(!matches.is_empty(), "expected at least one match in JSON");
@@ -777,5 +779,68 @@ secret_literals = ["", "dup", "dup", "stale-xyz"]
         !result.unmatched_literal_indices.contains(&2),
         "matched dup at position 2 should not be in unmatched; got: {:?}",
         result.unmatched_literal_indices
+    );
+}
+
+#[test]
+fn format_human_suppresses_redacted_body_when_stale_literal_present() {
+    // When there are unmatched (stale) literals, format_human must not print
+    // the redacted output body — the sample could contain unredacted bytes
+    // if a pattern/literal failed to match them.
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["matched-lit", "stale-lit"]
+"#,
+    )
+    .unwrap();
+    let opts = RedactCheckOpts {
+        source: RedactCheckSource::Text("value: matched-lit here".into()),
+        format: RedactCheckFormat::Human,
+        strict: false,
+    };
+    let output = run_redact_check(&cfg, &opts).unwrap();
+    let text = format_human(&output);
+    assert!(
+        text.contains("suppressed"),
+        "expected redacted output to be suppressed when stale literals present:\n{text}"
+    );
+    assert!(
+        !text.contains("matched-lit"),
+        "raw literal should not appear in output:\n{text}"
+    );
+}
+
+#[test]
+fn format_human_shows_redacted_body_when_no_failures() {
+    // When all configured literals match, the redacted body should be shown
+    // (with secrets replaced by markers).
+    let cfg = Config::from_toml_str(
+        r#"
+[redaction]
+enabled = true
+secret_literals = ["all-matched"]
+"#,
+    )
+    .unwrap();
+    let opts = RedactCheckOpts {
+        source: RedactCheckSource::Text("value: all-matched here".into()),
+        format: RedactCheckFormat::Human,
+        strict: false,
+    };
+    let output = run_redact_check(&cfg, &opts).unwrap();
+    let text = format_human(&output);
+    assert!(
+        !text.contains("suppressed"),
+        "redacted body should be shown when no failures:\n{text}"
+    );
+    assert!(
+        text.contains("redacted output"),
+        "expected 'redacted output' section:\n{text}"
+    );
+    assert!(
+        !text.contains("all-matched"),
+        "raw literal should be replaced by marker in output:\n{text}"
     );
 }

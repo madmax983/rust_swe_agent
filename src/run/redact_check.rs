@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::ArtifactSchemaVersion;
 use crate::config::Config;
+
+/// Schema version for the `redact-check` JSON artifact.
+///
+/// This is intentionally separate from `ArtifactSchemaVersion::CURRENT` so
+/// that unrelated trajectory-artifact version bumps do not silently change
+/// the redact-check contract.
+const REDACT_CHECK_SCHEMA_VERSION: ArtifactSchemaVersion = ArtifactSchemaVersion::new(1, 0);
 use crate::error::{ConfigError, Error};
 use crate::exit_code::ExitCode;
 use crate::redaction::{CheckMatch, CheckResult, Redactor};
@@ -147,11 +154,23 @@ pub fn format_human(output: &RedactCheckOutput) -> String {
             ));
         }
 
+        // Suppress redacted body when there are config failures: unmatched
+        // literals or (in strict mode) unmatched patterns.  If a rule has a
+        // typo or is stale, unredacted bytes from the sample may appear in
+        // check.redacted — printing them would violate the no-raw-secret
+        // contract.  Operators should fix the warnings first, then re-run.
+        let has_failures = !output.check.unmatched_literal_indices.is_empty()
+            || (output.strict && !output.check.unmatched_pattern_indices.is_empty());
+
         out.push('\n');
-        out.push_str("redacted output:\n");
-        out.push_str(&output.check.redacted);
-        if !output.check.redacted.ends_with('\n') {
-            out.push('\n');
+        if has_failures {
+            out.push_str("redacted output: (suppressed — resolve warnings below first)\n");
+        } else {
+            out.push_str("redacted output:\n");
+            out.push_str(&output.check.redacted);
+            if !output.check.redacted.ends_with('\n') {
+                out.push('\n');
+            }
         }
     }
 
@@ -221,7 +240,7 @@ pub struct JsonMatch {
 pub fn format_json(output: &RedactCheckOutput) -> Result<serde_json::Value, serde_json::Error> {
     let doc = RedactCheckJsonOutput {
         artifact_kind: "redact_check".to_owned(),
-        schema_version: ArtifactSchemaVersion::CURRENT,
+        schema_version: REDACT_CHECK_SCHEMA_VERSION,
         matches: output
             .check
             .matches
