@@ -28,6 +28,18 @@ pub enum CostSource {
 }
 
 impl CostSource {
+    /// Returns the string representation of this [`CostSource`] for telemetry.
+    ///
+    /// The string representation is used when exporting data to metrics or reporting systems.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::cost::CostSource;
+    ///
+    /// assert_eq!(CostSource::ProviderReported.label(), "provider_reported");
+    /// assert_eq!(CostSource::FreeTierInferred.label(), "free_tier_inferred");
+    /// ```
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -38,6 +50,24 @@ impl CostSource {
         }
     }
 
+    /// Merges two [`CostSource`] variants, favoring the broader or less reliable provenance.
+    ///
+    /// This is useful when aggregating cost across multiple inference calls. If any call's cost
+    /// provenance is `Unknown`, the aggregate is `Unknown`. If any is `RateCardEstimate` (and none `Unknown`),
+    /// the aggregate is `RateCardEstimate`. `ProviderReported` is only preserved if all calls were reported
+    /// or inferred as free tier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::cost::CostSource;
+    ///
+    /// let provider = CostSource::ProviderReported;
+    /// let estimated = CostSource::RateCardEstimate;
+    ///
+    /// assert_eq!(provider.combine(estimated), CostSource::RateCardEstimate);
+    /// assert_eq!(CostSource::Unknown.combine(estimated), CostSource::Unknown);
+    /// ```
     #[must_use]
     pub const fn combine(self, next: Self) -> Self {
         match (self, next) {
@@ -56,6 +86,21 @@ impl fmt::Display for CostSource {
     }
 }
 
+/// Calculates the estimated cost of an inference request in USD.
+///
+/// Converts token counts to their estimated dollar cost based on the standard `claude-3-5-sonnet`
+/// rate card or model-specific multipliers. This helps project the financial impact of prompts and caching
+/// even if the provider does not include billing data directly in the response.
+///
+/// # Examples
+///
+/// ```
+/// use maxwells_daemon::cost::estimate_cost_usd;
+///
+/// let cost = estimate_cost_usd(1_000_000, 0, 0, 1_000_000, "claude-3-5-sonnet-20241022");
+/// // 1M prompt tokens ($3.00) + 1M completion tokens ($15.00)
+/// assert!((cost - 18.0).abs() < 1e-6);
+/// ```
 #[must_use]
 pub fn estimate_cost_usd(
     prompt_tokens: u64,
@@ -88,6 +133,19 @@ pub fn estimate_cost_usd(
     input_cost + cache_read_cost + cache_creation_cost + completion_cost
 }
 
+/// Checks whether the model identifier string belongs to a free-tier API.
+///
+/// By identifying free-tier models (which typically end in `:free`), the system can prevent attributing
+/// artificial costs to experiments that did not actually spend budget.
+///
+/// # Examples
+///
+/// ```
+/// use maxwells_daemon::cost::is_free_tier_model;
+///
+/// assert!(is_free_tier_model("openrouter/deepseek/deepseek-chat-v3.1:free"));
+/// assert!(!is_free_tier_model("claude-3-5-sonnet"));
+/// ```
 #[must_use]
 pub fn is_free_tier_model(model: &str) -> bool {
     model
