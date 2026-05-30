@@ -17,9 +17,15 @@ pub mod deterministic;
 pub mod fallback;
 pub mod litellm;
 
+#[cfg(feature = "chaos")]
+pub mod chaos;
+
 pub use deterministic::DeterministicModel;
 pub use fallback::FallbackModel;
 pub use litellm::{AnthropicBackend, LitellmBackend};
+
+#[cfg(feature = "chaos")]
+pub use chaos::{ChaosModel, ModelErrorType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
