@@ -129,6 +129,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
             args::BenchCmd::NearMiss(n) => bench_near_miss(n),
+            args::BenchCmd::Assert(a) => bench_assert(a),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3666,6 +3667,36 @@ fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+fn bench_assert(a: args::AssertCmd) -> Result<(), Error> {
+    use crate::run::assert::{AssertArgs, run_assert};
+
+    let args = AssertArgs {
+        sweep: a.sweep,
+        rules_file: a.rules,
+        inline_rules: a.rule,
+        verbose: a.verbose,
+        allow_missing_artifacts: a.allow_missing_artifacts,
+    };
+
+    match run_assert(&args) {
+        Ok(report) => {
+            print!("{}", report.stdout);
+            if !report.all_passed {
+                exit_with_outcome(ExitCode::SloRuleFailure, "bench assert: at least one SLO rule failed");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Distinguish usage errors (bad metric, bad op, bad invocation) from internal errors.
+            let code = match &e {
+                Error::Config(_) => ExitCode::UsageError,
+                _ => ExitCode::InternalError,
+            };
+            exit_with_outcome(code, &format!("bench assert: {e}"));
+        }
+    }
 }
 
 fn bench_import(i: args::ImportCmd) -> Result<(), Error> {

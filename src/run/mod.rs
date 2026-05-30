@@ -2,6 +2,7 @@
 //! and writes trajectories to disk.
 
 pub mod annotate;
+pub mod assert;
 pub mod audit;
 pub mod behavior;
 pub mod bisect;

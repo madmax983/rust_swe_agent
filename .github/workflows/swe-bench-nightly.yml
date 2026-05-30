@@ -84,7 +84,7 @@ jobs:
             --max-retries 0 \
             --skip-preflight
 
-      - name: Gate on harness errors
+      - name: Gate on SLO rules
         id: gate
         run: |
           if [[ ! -f runs/results.json ]]; then
@@ -92,9 +92,12 @@ jobs:
             exit 1
           fi
           jq '{total, submitted, errored, skipped, failures_by_category}' runs/results.json
-          # Pass criterion: harness completed without errors. Unsolved tasks
-          # are expected on free-tier models.
-          jq -e '.errored == 0' runs/results.json > /dev/null
+          # Gate on operator-declared SLOs: errored_count==0 AND resolved_count>=1.
+          # Exit 27 means the sweep ran but did not meet the declared bar.
+          # Exit 2 means the rule file or invocation is broken (fix the workflow).
+          "${GITHUB_WORKSPACE}/target/release/max" bench assert \
+            --sweep "${GITHUB_WORKSPACE}/runs" \
+            --rules "${GITHUB_WORKSPACE}/ci/nightly-smoke.assert.toml"
 
       - name: Upload trajectories + inputs
         if: always()
@@ -123,12 +126,30 @@ jobs:
             digest_err=$(cat /tmp/failure-digest-err.txt 2>/dev/null || echo "unknown error")
             digest_md="> ⚠️ failure-digest unavailable: ${digest_err}"
           fi
-          # Export digest for the next step (unique delimiter avoids collision with digest content)
+          # Read failed SLO rules from assertions.json (populated by bench assert).
+          assert_rules_md=""
+          if [[ -f "${GITHUB_WORKSPACE}/runs/assertions.json" ]]; then
+            assert_rules_md=$(jq -r '
+              .rules
+              | map(select(.passed == false or .passed == null))
+              | if length == 0 then "_(no rule failures recorded)_"
+                else map("- **\(.name)**: `\(.metric)\(.op)\(.threshold)` — observed `\(.observed_value // "missing_artifact")` — \(.reason_if_failed_or_skipped // "")")
+                  | join("\n")
+                end
+            ' "${GITHUB_WORKSPACE}/runs/assertions.json" 2>/dev/null || echo "_(assertions.json parse failed)_")
+          fi
+          # Export both for the next step.
           delimiter="DIGEST_EOF_$(openssl rand -hex 8)"
           {
             echo "digest_md<<${delimiter}"
             echo "${digest_md}"
             echo "${delimiter}"
+          } >> "${GITHUB_OUTPUT}"
+          assert_delim="ASSERT_EOF_$(openssl rand -hex 8)"
+          {
+            echo "assert_rules_md<<${assert_delim}"
+            echo "${assert_rules_md}"
+            echo "${assert_delim}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Open issue on scheduled failure
@@ -139,6 +160,7 @@ jobs:
           REPO_SLUG: ${{ steps.fetch.outputs.repo }}
           BASE_COMMIT: ${{ steps.fetch.outputs.base_commit }}
           FAILURE_DIGEST: ${{ steps.digest.outputs.digest_md }}
+          ASSERT_RULES: ${{ steps.digest.outputs.assert_rules_md }}
         with:
           script: |
             const today = new Date().toISOString().slice(0, 10);
@@ -147,6 +169,7 @@ jobs:
             const repoSlug = process.env.REPO_SLUG || "(unknown)";
             const baseCommit = process.env.BASE_COMMIT || "(unknown)";
             const failureDigest = process.env.FAILURE_DIGEST || "";
+            const assertRules = process.env.ASSERT_RULES || "";
             const title = `Nightly SWE-bench smoke failed (${today})`;
             const metadataLines = [
               `The nightly OpenRouter free-tier SWE-bench smoke run failed.`,
@@ -161,10 +184,13 @@ jobs:
               ``,
               `_Auto-filed by .github/workflows/swe-bench-nightly.yml._`,
             ];
+            const assertSection = assertRules
+              ? [``, `## Failed SLO rules`, ``, assertRules]
+              : [];
             const digestSection = failureDigest
               ? [``, `## Failure digest`, ``, failureDigest]
               : [];
-            const body = [...metadataLines, ...digestSection].join("\n");
+            const body = [...metadataLines, ...assertSection, ...digestSection].join("\n");
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
