@@ -336,7 +336,10 @@ fn empty_corpus_with_expect_shows_failures_in_text() {
     // Mismatches are recorded even though the corpus is empty.
     assert_eq!(output.verdicts.len(), 0);
     assert_eq!(output.mismatches.len(), 1);
-    assert_eq!(output.mismatches[0].actual, None, "command not in corpus → None");
+    assert_eq!(
+        output.mismatches[0].actual, None,
+        "command not in corpus → None"
+    );
 
     // Text output must include the EXPECT FAILURES section.
     let text = format_text(&output);
@@ -344,5 +347,8 @@ fn empty_corpus_with_expect_shows_failures_in_text() {
         text.contains("EXPECT FAILURES"),
         "text output must include EXPECT FAILURES block when corpus is empty"
     );
-    assert!(text.contains("ls"), "EXPECT FAILURES must name the missing command");
+    assert!(
+        text.contains("ls"),
+        "EXPECT FAILURES must name the missing command"
+    );
 }
