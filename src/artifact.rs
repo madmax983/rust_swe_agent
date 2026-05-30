@@ -67,6 +67,7 @@ pub enum ArtifactKind {
     StagnationReport,
     SuiteResults,
     ScriptabilityCheck,
+    NearMissReport,
 }
 
 impl ArtifactKind {
@@ -91,6 +92,7 @@ impl ArtifactKind {
             Self::StagnationReport => "stagnation_report",
             Self::SuiteResults => "suite_results",
             Self::ScriptabilityCheck => "scriptability_check",
+            Self::NearMissReport => "near_miss_report",
         }
     }
 }

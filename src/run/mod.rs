@@ -34,6 +34,7 @@ pub mod instance_history;
 pub mod ladder;
 pub mod matrix;
 pub mod mini;
+pub mod near_miss;
 pub mod patch_stats;
 pub mod policy_impact;
 pub mod power;

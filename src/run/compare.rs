@@ -431,6 +431,11 @@ impl CompareReport {
         write_subset_warnings(&mut s, &subset_warnings);
         write_breakdown_delta_section(&mut s, &self.breakdown_delta);
         write_regressions(&mut s, &self.regressions);
+        let _ = writeln!(
+            s,
+            "Run 'bench near-miss --sweep {}' to rank failed instances by gold-patch proximity.",
+            self.candidate_dir.display()
+        );
         write_sampling_drift_section(&mut s, self.sampling_drift.as_ref());
         if self.flaky_instances_excluded > 0 {
             let n = self.flaky_instances_excluded;

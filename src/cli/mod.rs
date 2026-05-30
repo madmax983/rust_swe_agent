@@ -126,6 +126,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::ExportCi(c) => bench_export_ci(c),
             args::BenchCmd::ContaminationCheck(c) => bench_contamination_check(c),
             args::BenchCmd::ScriptabilityCheck(s) => Box::pin(bench_scriptability_check(s)).await,
+            args::BenchCmd::NearMiss(n) => bench_near_miss(n),
         },
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
@@ -3525,6 +3526,45 @@ async fn bench_scriptability_check(cmd: args::ScriptabilityCheckCmd) -> Result<(
                  {failed_hooks} hook(s) had failures"
             ),
         );
+    }
+
+    Ok(())
+}
+
+fn bench_near_miss(n: args::NearMissCmd) -> Result<(), Error> {
+    use crate::run::near_miss::{NearMissArgs, NearMissFormat, render_json, render_text, run};
+
+    let format: NearMissFormat = n.format.parse().map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "bench near-miss: {e}"
+        )))
+    })?;
+
+    let args = NearMissArgs {
+        sweep: n.sweep,
+        top: n.top,
+        format,
+    };
+
+    let report = run(&args).map_err(|e| {
+        // Trajectory error = missing evaluation.json → exit 2 (usage error).
+        match &e {
+            Error::Trajectory(_) => {
+                exit_with_outcome(
+                    ExitCode::UsageError,
+                    &format!("bench near-miss: {e}"),
+                );
+            }
+            _ => {}
+        }
+        e
+    })?;
+
+    match format {
+        NearMissFormat::Text => print!("{}", render_text(&report)),
+        NearMissFormat::Json => {
+            println!("{}", render_json(&report)?);
+        }
     }
 
     Ok(())
