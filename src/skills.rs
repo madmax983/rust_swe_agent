@@ -540,16 +540,27 @@ fn searchable_tokens(name: &str, description: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Normalizes search text by converting to lowercase, keeping specific punctuation,
+/// and collapsing all other characters into single spaces.
+///
+/// ⚡ Bolt: This avoids intermediate Vec and String allocations by properly
+/// spacing elements during the initial pass over `text.chars()`.
 fn normalize_search_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut in_whitespace = true;
+
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '$' || ch == '@' || ch == '/' {
+            if in_whitespace && !out.is_empty() {
+                out.push(' ');
+            }
             out.push(ch.to_ascii_lowercase());
+            in_whitespace = false;
         } else {
-            out.push(' ');
+            in_whitespace = true;
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    out
 }
 
 fn is_stopword(token: &str) -> bool {
