@@ -3254,7 +3254,10 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid" | "jinja") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "jinja"
+    ) {
         return bench_inspect_export(i);
     }
 
@@ -6245,5 +6248,754 @@ mod tests {
             }
             assert_eq!(path, PathBuf::from(expected));
         }
+    }
+}
+
+#[cfg(test)]
+mod inspect_export_jinja_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "jinja-export")]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja() {
+        use crate::cli::args::InspectCmd;
+
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                total_cost: None,
+                cost_baseline: None,
+                total_tokens: None,
+                api_calls: None,
+                fallback_summary: None,
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "Hello format").unwrap();
+
+        let out = super::inspect_export_jinja(&t, Some(file.path()));
+        assert_eq!(out.unwrap(), "Hello format");
+
+        let err = super::inspect_export_jinja(&t, None).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let err = super::inspect_export_jinja(
+            &t,
+            Some(std::path::Path::new("/non/existent/path/for/test")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read template file"));
+
+        let missing_template_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: None,
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_template_cmd).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let filter_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "markdown".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(filter_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--template is only supported with --format jinja")
+        );
+
+        let missing_sweep_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: None,
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_sweep_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--sweep is required for export formats")
+        );
+
+        let missing_instance_cmd = InspectCmd {
+            instance: None,
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_instance_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--instance is required for export formats")
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "jinja-export"))]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja_disabled() {
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                total_cost: None,
+                cost_baseline: None,
+                total_tokens: None,
+                api_calls: None,
+                fallback_summary: None,
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+        let err = super::inspect_export_jinja(&t, Some(std::path::Path::new("dummy"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the `jinja-export` Cargo feature")
+        );
+    }
+}
+
+#[cfg(test)]
+mod inspect_export_jinja_tests {
+    #[test]
+    #[cfg(feature = "jinja-export")]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja() {
+        use crate::cli::args::InspectCmd;
+
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: Default::default(),
+            messages: vec![],
+            fork_lineage: None,
+        };
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "Hello format").unwrap();
+
+        let out = super::inspect_export_jinja(&t, Some(file.path()));
+        assert_eq!(out.unwrap(), "Hello format");
+
+        let err = super::inspect_export_jinja(&t, None).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let err = super::inspect_export_jinja(
+            &t,
+            Some(std::path::Path::new("/non/existent/path/for/test")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read template file"));
+
+        let missing_template_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: None,
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_template_cmd).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let filter_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "markdown".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(filter_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--template is only supported with --format jinja")
+        );
+
+        let missing_sweep_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: None,
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_sweep_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--sweep is required for export formats")
+        );
+
+        let missing_instance_cmd = InspectCmd {
+            instance: None,
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_instance_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--instance is required for export formats")
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "jinja-export"))]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja_disabled() {
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: Default::default(),
+            messages: vec![],
+            fork_lineage: None,
+        };
+        let err = super::inspect_export_jinja(&t, Some(std::path::Path::new("dummy"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the `jinja-export` Cargo feature")
+        );
+    }
+}
+
+#[cfg(test)]
+mod inspect_export_jinja_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "jinja-export")]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja() {
+        use crate::cli::args::InspectCmd;
+
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: Default::default(),
+            messages: vec![],
+            fork_lineage: None,
+        };
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "Hello format").unwrap();
+
+        let out = super::inspect_export_jinja(&t, Some(file.path()));
+        assert_eq!(out.unwrap(), "Hello format");
+
+        let err = super::inspect_export_jinja(&t, None).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let err = super::inspect_export_jinja(
+            &t,
+            Some(std::path::Path::new("/non/existent/path/for/test")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read template file"));
+
+        let missing_template_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: None,
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_template_cmd).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let filter_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "markdown".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(filter_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--template is only supported with --format jinja")
+        );
+
+        let missing_sweep_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: None,
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_sweep_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--sweep is required for export formats")
+        );
+
+        let missing_instance_cmd = InspectCmd {
+            instance: None,
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_instance_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--instance is required for export formats")
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "jinja-export"))]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja_disabled() {
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: Default::default(),
+            messages: vec![],
+            fork_lineage: None,
+        };
+        let err = super::inspect_export_jinja(&t, Some(std::path::Path::new("dummy"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the `jinja-export` Cargo feature")
+        );
+    }
+}
+
+#[cfg(test)]
+mod inspect_export_jinja_tests {
+    #[test]
+    #[cfg(feature = "jinja-export")]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja() {
+        use crate::cli::args::InspectCmd;
+
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                total_cost_usd: None,
+                baseline_cost_usd: None,
+                total_tokens: None,
+                api_calls: None,
+                fallback_summary: None,
+                actual_cost_source: None,
+                actual_cost_usd: None,
+                baseline_cost_model: None,
+                model_cost_usd: None,
+                fallback_cost_usd: None,
+                cost_warnings: vec![],
+                total_cost: None,
+                actual_cost: None,
+                baseline_cost: None,
+                model_cost: None,
+                fallback_cost: None,
+                cost_summary: None,
+                duration_seconds: None,
+                started_at: None,
+                completed_at: None,
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "Hello format").unwrap();
+
+        let out = super::inspect_export_jinja(&t, Some(file.path()));
+        assert_eq!(out.unwrap(), "Hello format");
+
+        let err = super::inspect_export_jinja(&t, None).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let err = super::inspect_export_jinja(
+            &t,
+            Some(std::path::Path::new("/non/existent/path/for/test")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read template file"));
+
+        let missing_template_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: None,
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_template_cmd).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let filter_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "markdown".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(filter_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--template is only supported with --format jinja")
+        );
+
+        let missing_sweep_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: None,
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_sweep_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--sweep is required for export formats")
+        );
+
+        let missing_instance_cmd = InspectCmd {
+            instance: None,
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_instance_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--instance is required for export formats")
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "jinja-export"))]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja_disabled() {
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                total_cost_usd: None,
+                baseline_cost_usd: None,
+                total_tokens: None,
+                api_calls: None,
+                fallback_summary: None,
+                actual_cost_source: None,
+                actual_cost_usd: None,
+                baseline_cost_model: None,
+                model_cost_usd: None,
+                fallback_cost_usd: None,
+                cost_warnings: vec![],
+                total_cost: None,
+                actual_cost: None,
+                baseline_cost: None,
+                model_cost: None,
+                fallback_cost: None,
+                cost_summary: None,
+                duration_seconds: None,
+                started_at: None,
+                completed_at: None,
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+        let err = super::inspect_export_jinja(&t, Some(std::path::Path::new("dummy"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the `jinja-export` Cargo feature")
+        );
+    }
+}
+
+#[cfg(test)]
+mod inspect_export_jinja_tests {
+    #[test]
+    #[cfg(feature = "jinja-export")]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja() {
+        use crate::cli::args::InspectCmd;
+
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                actual_cost_source: None,
+                actual_cost_usd: None,
+                baseline_cost_model: None,
+                baseline_cost_usd: None,
+                fallback_summary: None,
+                total_cost_usd: None,
+                duration_secs: None,
+                started_at: None,
+                completed_at: None,
+                token_usage: None,
+                redaction: None,
+                steps: None,
+                test_invocations: None,
+                actual_cost_computed: None,
+                baseline_cost_computed: None,
+                model_cost_computed: None,
+                fallback_cost_computed: None,
+                cost_summary_computed: None,
+                cost_warnings_computed: vec![],
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "Hello format").unwrap();
+
+        let out = super::inspect_export_jinja(&t, Some(file.path()));
+        assert_eq!(out.unwrap(), "Hello format");
+
+        let err = super::inspect_export_jinja(&t, None).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let err = super::inspect_export_jinja(
+            &t,
+            Some(std::path::Path::new("/non/existent/path/for/test")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("failed to read template file"));
+
+        let missing_template_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: None,
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_template_cmd).unwrap_err();
+        assert!(err.to_string().contains("--template <PATH> is required"));
+
+        let filter_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "markdown".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(filter_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--template is only supported with --format jinja")
+        );
+
+        let missing_sweep_cmd = InspectCmd {
+            instance: Some("test_inst".to_string()),
+            sweep: None,
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_sweep_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--sweep is required for export formats")
+        );
+
+        let missing_instance_cmd = InspectCmd {
+            instance: None,
+            sweep: Some(std::path::PathBuf::from("test_sweep")),
+            format: "jinja".to_string(),
+            template: Some(std::path::PathBuf::from("fake_path")),
+            output: None,
+            filter: None,
+            diff: vec![],
+            show_noise: false,
+            full: false,
+            show_expected: false,
+            flake_report: None,
+        };
+        let err = super::bench_inspect_export(missing_instance_cmd).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--instance is required for export formats")
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "jinja-export"))]
+    #[allow(clippy::unwrap_used)]
+    fn test_inspect_export_jinja_disabled() {
+        let t = crate::trajectory::Trajectory {
+            trajectory_format: "test".to_string(),
+            info: crate::trajectory::TrajectoryInfo {
+                task: None,
+                model_name: None,
+                exit_reason: None,
+                failure_category: None,
+                outcome: None,
+                final_output: None,
+                actual_cost_source: None,
+                actual_cost_usd: None,
+                baseline_cost_model: None,
+                baseline_cost_usd: None,
+                fallback_summary: None,
+                total_cost_usd: None,
+                duration_secs: None,
+                started_at: None,
+                completed_at: None,
+                token_usage: None,
+                redaction: None,
+                steps: None,
+                test_invocations: None,
+                actual_cost_computed: None,
+                baseline_cost_computed: None,
+                model_cost_computed: None,
+                fallback_cost_computed: None,
+                cost_summary_computed: None,
+                cost_warnings_computed: vec![],
+            },
+            messages: vec![],
+            fork_lineage: None,
+        };
+        let err = super::inspect_export_jinja(&t, Some(std::path::Path::new("dummy"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires the `jinja-export` Cargo feature")
+        );
     }
 }
