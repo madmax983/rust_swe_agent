@@ -139,6 +139,7 @@ pub async fn run() -> Result<(), Error> {
             } => agent_env_preview_cmd(p),
             args::AgentCmd::Suite(s) => Box::pin(agent_suite_cmd(*s)).await,
             args::AgentCmd::PolicyCheck(p) => agent_policy_check_cmd(&p),
+            args::AgentCmd::Apply(a) => agent_apply_cmd(&a),
         },
         Command::Ui(u) => ui_cmd(u).await,
         #[cfg(feature = "docker")]
@@ -388,6 +389,94 @@ fn resolve_and_validate_workdir(
         Ok(Some(canonical))
     } else {
         Ok(None)
+    }
+}
+
+fn agent_apply_cmd(a: &args::AgentApplyCmd) -> Result<(), Error> {
+    use crate::run::apply::{AgentApplyOpts, PatchSelector, exit_code_for, run_agent_apply};
+
+    // Resolve selector
+    let selector = match (&a.patch, &a.trajectory, &a.sweep, &a.instance) {
+        (Some(p), None, None, None) => PatchSelector::PatchFile(p.clone()),
+        (None, Some(t), None, None) => PatchSelector::TrajectoryFile(t.clone()),
+        (None, None, Some(s), Some(inst)) => PatchSelector::SweepInstance {
+            sweep: s.clone(),
+            instance: inst.clone(),
+        },
+        (None, None, None, None) => {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "no patch selector; use --patch <PATH>, --trajectory <PATH>, \
+                 or --sweep <DIR> --instance <ID>"
+                    .to_owned(),
+            )));
+        }
+        _ => {
+            return Err(Error::Config(crate::error::ConfigError::Usage(
+                "supply exactly one of: --patch <PATH>, --trajectory <PATH>, \
+                 or --sweep <DIR> --instance <ID>"
+                    .to_owned(),
+            )));
+        }
+    };
+
+    let target = a.target.clone().unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let opts = AgentApplyOpts {
+        selector,
+        target,
+        allow_redacted: a.allow_redacted,
+        allow_dirty: a.allow_dirty,
+        dry_run: a.dry_run,
+        three_way: a.three_way,
+        report_path: a.report.clone(),
+    };
+
+    match run_agent_apply(opts) {
+        Ok(report) => {
+            if report.check_result == "empty" {
+                eprintln!("no changes to apply (empty patch)");
+            } else if report.dry_run {
+                eprintln!(
+                    "dry-run: {} file(s) would change (+{} -{} lines)",
+                    report.files_changed.len(),
+                    report.lines_added,
+                    report.lines_removed
+                );
+                for f in &report.files_changed {
+                    eprintln!("  {f}");
+                }
+            } else {
+                eprintln!(
+                    "applied: {} file(s) changed (+{} -{} lines)",
+                    report.files_changed.len(),
+                    report.lines_added,
+                    report.lines_removed
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let ec = exit_code_for(&e);
+            eprintln!("outcome_class: {}", ec.outcome_class());
+            eprintln!("error: {e}");
+            // Print rejected hunks on CheckFailed
+            if let crate::run::apply::ApplyError::CheckFailed(ref hunks) = e {
+                if !hunks.is_empty() {
+                    eprintln!("--- rejected hunks ---");
+                    eprintln!("{hunks}");
+                }
+            }
+            // Print dirty paths on DirtyTree
+            if let crate::run::apply::ApplyError::DirtyTree(ref paths) = e {
+                eprintln!("--- dirty paths ---");
+                for p in paths {
+                    eprintln!("  {p}");
+                }
+            }
+            std::process::exit(ec.as_i32());
+        }
     }
 }
 

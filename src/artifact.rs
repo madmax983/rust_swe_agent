@@ -68,6 +68,7 @@ pub enum ArtifactKind {
     SuiteResults,
     ScriptabilityCheck,
     NearMissReport,
+    ApplyReport,
 }
 
 impl ArtifactKind {
@@ -93,6 +94,7 @@ impl ArtifactKind {
             Self::SuiteResults => "suite_results",
             Self::ScriptabilityCheck => "scriptability_check",
             Self::NearMissReport => "near_miss_report",
+            Self::ApplyReport => "apply_report",
         }
     }
 }
