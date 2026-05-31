@@ -134,6 +134,7 @@ pub async fn run() -> Result<(), Error> {
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
             args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
+            args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -253,6 +254,53 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
         }
     }
 
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
+    use crate::run::redact_audit::{
+        AuditFormat, AuditOpts, format_human, format_json, parse_format, run_redact_audit,
+    };
+
+    let cfg = match &a.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+
+    let format = parse_format(a.json, a.format.as_str())?;
+
+    let opts = AuditOpts {
+        dir: a.dir.clone(),
+        detectors: a.detectors.clone(),
+        disable_entropy: a.disable_entropy,
+        baseline: a.baseline.clone(),
+    };
+
+    let report = run_redact_audit(&cfg, &opts)?;
+
+    // Always persist the deterministic JSON report. Default location is inside
+    // the scanned directory; `redact_audit.json` is never itself audited.
+    let out_path = a
+        .output
+        .clone()
+        .unwrap_or_else(|| a.dir.join("redact_audit.json"));
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let json = format_json(&report).map_err(Error::Json)?;
+    std::fs::write(&out_path, &json)?;
+
+    match format {
+        AuditFormat::Json => println!("{json}"),
+        AuditFormat::Human => print!("{}", format_human(&report)),
+    }
+
+    let exit_code = report.exit_code();
     if exit_code != ExitCode::Success {
         exit_with_outcome(exit_code, exit_code.outcome_class());
     }
