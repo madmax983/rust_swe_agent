@@ -492,23 +492,68 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     (files, added, removed)
 }
 
-/// Return the set of file paths that have index entries (staged or unmerged)
-/// among `files`, by parsing `git ls-files --stage -- <files>`.
-fn staged_files(git_root: &Path, files: &[String]) -> std::collections::HashSet<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["ls-files", "--stage", "--"]);
+/// Return a map of `path → (mode, sha1)` for files among `files` that have
+/// genuinely staged changes (index ≠ HEAD) before the apply runs.
+///
+/// Two-step:
+/// 1. `git diff --cached --name-only -- <files>` → only paths with real staged
+///    edits (unlike `git ls-files --stage` which returns every tracked file).
+/// 2. `git ls-files --stage -- <staged>` → capture mode + sha1 so they can
+///    be restored via `update-index --cacheinfo` if the apply fails.
+fn pre_staged_entries(
+    git_root: &Path,
+    files: &[String],
+) -> std::collections::HashMap<String, (String, String)> {
+    let mut result = std::collections::HashMap::new();
+
+    // Step 1: which of the affected files actually have staged edits?
+    let mut diff_cmd = Command::new("git");
+    diff_cmd.args(["diff", "--cached", "--name-only", "--"]);
     for f in files {
-        cmd.arg(f);
+        diff_cmd.arg(f);
     }
-    cmd.current_dir(git_root);
-    let Ok(output) = cmd.output() else {
-        return std::collections::HashSet::new();
+    diff_cmd.current_dir(git_root);
+    let Ok(diff_output) = diff_cmd.output() else {
+        return result;
     };
-    // Each line: "<mode> <sha1> <stage_num>\t<path>"
-    String::from_utf8_lossy(&output.stdout)
+    let diff_text = String::from_utf8_lossy(&diff_output.stdout);
+    let staged_names: Vec<String> = diff_text
         .lines()
-        .filter_map(|line| line.split('\t').nth(1).map(str::to_owned))
-        .collect()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_owned)
+        .collect();
+    if staged_names.is_empty() {
+        return result;
+    }
+
+    // Step 2: record mode + sha1 for each genuinely staged file.
+    let mut ls_cmd = Command::new("git");
+    ls_cmd.args(["ls-files", "--stage", "--"]);
+    for f in &staged_names {
+        ls_cmd.arg(f);
+    }
+    ls_cmd.current_dir(git_root);
+    let Ok(ls_output) = ls_cmd.output() else {
+        return result;
+    };
+    let ls_text = String::from_utf8_lossy(&ls_output.stdout);
+    for line in ls_text.lines() {
+        // Format: "<mode> <sha1> <stage>\t<path>"
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut meta_parts = meta.split(' ');
+        let (Some(mode), Some(sha), Some(stage)) =
+            (meta_parts.next(), meta_parts.next(), meta_parts.next())
+        else {
+            continue;
+        };
+        if stage != "0" {
+            continue; // skip unmerged entries (stages 1–3)
+        }
+        result.insert(path.to_owned(), (mode.to_owned(), sha.to_owned()));
+    }
+    result
 }
 
 /// Run `git apply [--3way]` from `git_root` and return `Ok(())` on success.
@@ -519,28 +564,29 @@ fn staged_files(git_root: &Path, files: &[String]) -> std::collections::HashSet<
 ///
 /// - **Failure restore**: `git apply --check --3way` can exit 0 when the real
 ///   merge has conflicts, leaving conflict markers and unmerged index entries.
-///   For each affected file that had no pre-apply index entry: clear unmerged
-///   stages with `git reset HEAD`, then restore the working tree with
-///   `git checkout --`. Files that already had a staged entry are left as-is
-///   so the caller's staged content is never silently discarded.
+///   For every affected file: clear unmerged stages with `git reset HEAD --`,
+///   then for files that had pre-existing staged edits restore their index
+///   entry via `git update-index --cacheinfo` and working tree via
+///   `git checkout-index --force`; for files that were not staged restore
+///   the working tree with `git checkout --`.
 ///
 /// - **Success unstage**: `git apply --3way` stages successful merges in the
 ///   index. For each affected file that had no pre-apply staged entry: reset
 ///   it to unstaged. This gives the same "modified working tree only"
-///   semantics as regular `git apply`, regardless of `--allow-dirty`, while
-///   still preserving any pre-existing staged edits in affected paths.
+///   semantics as regular `git apply`, while still preserving any pre-existing
+///   staged edits in affected paths.
 fn apply_patch(
     git_root: &Path,
     patch_path: &Path,
     three_way: bool,
     affected_files: &[String],
 ) -> Result<(), ApplyError> {
-    // Record which affected files are already in the index before we touch
-    // anything. This drives both the failure restore and the success unstage.
+    // Record which affected files have genuinely staged changes (index ≠ HEAD)
+    // before we touch anything, capturing their mode + sha1 for restoration.
     let pre_staged = if three_way && !affected_files.is_empty() {
-        staged_files(git_root, affected_files)
+        pre_staged_entries(git_root, affected_files)
     } else {
-        std::collections::HashSet::new()
+        std::collections::HashMap::new()
     };
 
     let mut cmd = Command::new("git");
@@ -554,21 +600,31 @@ fn apply_patch(
     if !output.status.success() {
         if three_way {
             for f in affected_files {
-                if pre_staged.contains(f) {
-                    // The file already had staged content before the apply;
-                    // do not wipe it by resetting or checking out.
-                    continue;
-                }
-                // Clear any unmerged index entries (git checkout -- is refused
-                // on paths with unmerged entries), then restore to HEAD.
+                // Clear any unmerged index entries for this path so that
+                // subsequent checkout commands are not refused.
                 let _ = Command::new("git")
                     .args(["reset", "HEAD", "--", f])
                     .current_dir(git_root)
                     .output();
-                let _ = Command::new("git")
-                    .args(["checkout", "--", f])
-                    .current_dir(git_root)
-                    .output();
+                if let Some((mode, sha)) = pre_staged.get(f) {
+                    // Restore the pre-apply staged state, then check out that
+                    // version into the working tree.
+                    let cacheinfo = format!("{mode},{sha},{f}");
+                    let _ = Command::new("git")
+                        .args(["update-index", "--cacheinfo", &cacheinfo])
+                        .current_dir(git_root)
+                        .output();
+                    let _ = Command::new("git")
+                        .args(["checkout-index", "--force", "--", f])
+                        .current_dir(git_root)
+                        .output();
+                } else {
+                    // No pre-existing staged edit: restore working tree from HEAD.
+                    let _ = Command::new("git")
+                        .args(["checkout", "--", f])
+                        .current_dir(git_root)
+                        .output();
+                }
             }
         }
         let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -579,7 +635,7 @@ fn apply_patch(
     // not staged before. Preserves pre-existing staged edits.
     if three_way {
         for f in affected_files {
-            if !pre_staged.contains(f) {
+            if !pre_staged.contains_key(f) {
                 let _ = Command::new("git")
                     .args(["reset", "HEAD", "--", f])
                     .current_dir(git_root)
