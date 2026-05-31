@@ -1407,12 +1407,6 @@ fn apply_report_overlap_fails_before_mutation() {
 
     // Build a patch that adds a new file "new.txt"
     std::fs::write(repo.join("new.txt"), "content\n").unwrap();
-    let out = Command::new("git")
-        .args(["diff", "--cached", "--"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    // Use git add + diff HEAD for new file
     Command::new("git")
         .args(["add", "new.txt"])
         .current_dir(&repo)
