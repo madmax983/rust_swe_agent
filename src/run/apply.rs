@@ -253,6 +253,11 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     }
 
     // ── 12. Apply the patch ───────────────────────────────────────────────────
+    // Preflight the report destination *before* mutating the tree so that a
+    // bad report path (unwritable directory, missing parent, etc.) fails
+    // cleanly instead of leaving a modified-but-unreported checkout.
+    preflight_report_path(&report_dest)?;
+
     // patch_path is canonicalized (absolute); git_root avoids silent skips
     // when --target is a repo subdirectory.
     apply_patch(&git_root, &patch_path, opts.three_way, &files_os)?;
@@ -337,10 +342,27 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
         stem.into_owned()
     };
 
-    traj_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("{base}.patch"))
+    let traj_dir = traj_path.parent().unwrap_or_else(|| Path::new("."));
+
+    // Primary: sibling .patch in the same directory (most common).
+    let sibling = traj_dir.join(format!("{base}.patch"));
+    if sibling.exists() {
+        return sibling;
+    }
+
+    // Bundle layout: trajectories/<id>.traj.json → ../patches/<id>.patch.
+    // `bench bundle` places trajectories and patches in separate sub-directories
+    // under the same bundle root, so the patch is one level up from the
+    // trajectory's directory and then under `patches/`.
+    if let Some(bundle_root) = traj_dir.parent() {
+        let bundle_patch = bundle_root.join("patches").join(format!("{base}.patch"));
+        if bundle_patch.exists() {
+            return bundle_patch;
+        }
+    }
+
+    // Fall back to the sibling path (may not exist; caller handles I/O error).
+    sibling
 }
 
 /// Return `true` if the trajectory file at `traj_path` records at least one
@@ -462,10 +484,12 @@ fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Resu
 
     if output.status.success() {
         // When --3way is active, git apply --check can exit 0 even though the
-        // real apply would produce conflict markers (it reports "Applied patch X
-        // with conflicts." on stdout/stderr). Treat this as a failure so that
-        // --dry-run correctly reports the patch as not cleanly applicable.
-        if three_way && (stdout.contains("with conflicts") || stderr.contains("with conflicts")) {
+        // real apply would produce conflict markers. git's conflict diagnostic
+        // is "Applied patch X with conflicts." — check for the specific
+        // " with conflicts." suffix (space + period) to avoid false-positives
+        // from filenames that literally contain the words "with conflicts".
+        if three_way && (stdout.contains(" with conflicts.") || stderr.contains(" with conflicts."))
+        {
             let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
             return Err(combined.trim().to_owned());
         }
@@ -543,7 +567,30 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
         } else if let Some(rest) = line.strip_prefix("+++ ") {
             // New-file header outside a hunk: end of the header pair.
             let b_name = diff_header_path(rest, "b/");
-            if !saw_git_header {
+            if saw_git_header {
+                // The +++ path is parsed unambiguously (just strip "b/") while
+                // the diff --git header's rfind(" b/") can split incorrectly
+                // when the filename contains the literal substring " b/". When
+                // the two disagree, replace the wrongly-split git-header entry
+                // in `files` with the correctly-parsed +++ path.
+                if let Some(ref b) = b_name {
+                    match &pending_b {
+                        Some(old) if old != b => {
+                            if let Some(pos) = files.iter().rposition(|f| f == old) {
+                                files[pos].clone_from(b);
+                            }
+                            pending_b.clone_from(&b_name);
+                        }
+                        None => {
+                            if !files.contains(b) {
+                                files.push(b.clone());
+                            }
+                            pending_b.clone_from(&b_name);
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
                 // Plain unified-diff fallback (no "diff --git" seen).
                 if let Some(ref name) = b_name {
                     if !files.contains(name) {
@@ -956,6 +1003,26 @@ fn apply_patch(
             }
         }
     }
+    Ok(())
+}
+
+/// Verify the report destination is writable *before* mutating the tree.
+///
+/// Creates parent directories and probes the file for write access so that a
+/// bad path fails before `apply_patch` runs, rather than after.
+fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    // Open (or create) the file without truncating so we don't corrupt a
+    // pre-existing report, but do verify the path is writable.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
     Ok(())
 }
 

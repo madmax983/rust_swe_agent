@@ -1101,3 +1101,86 @@ fn apply_plain_diff_new_file_with_timestamped_dev_null() {
         report.files_changed
     );
 }
+
+// ── Bundle layout: --trajectory resolves ../patches/<id>.patch ────────────────
+
+#[test]
+fn apply_trajectory_resolves_bundle_patches_layout() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Simulate bundle layout: trajectories/<id>.traj.json + patches/<id>.patch
+    let trajs_dir = work.path().join("trajectories");
+    let patches_dir = work.path().join("patches");
+    std::fs::create_dir_all(&trajs_dir).unwrap();
+    std::fs::create_dir_all(&patches_dir).unwrap();
+
+    let traj_path = trajs_dir.join("task-1.traj.json");
+    let patch_path = patches_dir.join("task-1.patch");
+    std::fs::write(
+        &traj_path,
+        r#"{"format":"mini-swe-agent-1.3","info":{},"messages":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::TrajectoryFile(traj_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    // Should resolve trajectories/task-1.traj.json → ../patches/task-1.patch
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+    assert_eq!(report.files_changed, vec!["hello.txt"]);
+}
+
+// ── Report path preflight before apply ────────────────────────────────────────
+
+#[test]
+fn apply_unwritable_report_path_fails_before_mutation() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Place a regular FILE where the report's parent directory should be so
+    // that create_dir_all fails before the apply runs.
+    let blocker = work.path().join("not-a-dir");
+    std::fs::write(&blocker, "blocker\n").unwrap();
+    let bad_report = blocker.join("apply-report.json");
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(bad_report),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error for bad report path, got {err:?}"
+    );
+    // Tree must be unchanged — preflight must have fired before apply.
+    let content = std::fs::read_to_string(repo.join("hello.txt")).unwrap();
+    assert_eq!(
+        content, "before\n",
+        "tree must not be mutated when report path is bad"
+    );
+}
