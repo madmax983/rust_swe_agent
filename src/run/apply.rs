@@ -485,11 +485,12 @@ fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Resu
     if output.status.success() {
         // When --3way is active, git apply --check can exit 0 even though the
         // real apply would produce conflict markers. git's conflict diagnostic
-        // is "Applied patch X with conflicts." — check for the specific
-        // " with conflicts." suffix (space + period) to avoid false-positives
-        // from filenames that literally contain the words "with conflicts".
-        if three_way && (stdout.contains(" with conflicts.") || stderr.contains(" with conflicts."))
-        {
+        // ends the line with " with conflicts." — check each line's suffix so
+        // a filename like "foo with conflicts." ("Applied patch ... cleanly.")
+        // doesn't trigger a false-positive.
+        let ends_with_conflicts =
+            |s: &str| s.lines().any(|l| l.ends_with(" with conflicts."));
+        if three_way && (ends_with_conflicts(&stdout) || ends_with_conflicts(&stderr)) {
             let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
             return Err(combined.trim().to_owned());
         }
@@ -1016,13 +1017,13 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    // Open (or create) the file without truncating so we don't corrupt a
-    // pre-existing report, but do verify the path is writable.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
+    // Probe writability with a temporary sibling rather than creating the
+    // final report file; creating the real path here would conflict with a
+    // patch that adds a file at that same location.
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let probe = parent_dir.join(format!(".apply-probe-{}.tmp", std::process::id()));
+    std::fs::write(&probe, b"")?;
+    let _ = std::fs::remove_file(&probe);
     Ok(())
 }
 
