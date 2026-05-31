@@ -578,7 +578,7 @@ fn is_git_tree(dir: &Path) -> bool {
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(dir)
         .output()
-        .is_ok_and(|o| o.status.success())
+        .is_ok_and(|o| o.status.success() && o.stdout.starts_with(b"true"))
 }
 
 /// Return the absolute path of the git worktree root containing `dir`.
@@ -610,6 +610,15 @@ fn dirty_paths_excluding(
         .args(["status", "--porcelain", "-z", "--untracked-files=all"])
         .current_dir(dir)
         .output()?;
+    // Fail closed: a non-zero exit (e.g. corrupt index) must not be treated as
+    // a clean tree, since git apply can still mutate the working files.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ApplyError::Io(std::io::Error::other(format!(
+            "git status failed: {}",
+            stderr.trim()
+        ))));
+    }
     // --porcelain -z: records are NUL-terminated, paths are never C-string-
     // quoted (unlike the default line-based format). Rename/copy entries emit
     // "XY new\0old\0"; the old-path field has no "XY " status prefix so we
@@ -710,6 +719,7 @@ fn git_head_sha(dir: &Path) -> Option<String> {
 /// survive the round-trip to git cleanup commands. For renames, both the old
 /// (`a/`) and new (`b/`) paths are included so that `--3way` cleanup can
 /// unstage both the deletion and the addition sides of the rename.
+#[allow(clippy::too_many_lines)]
 fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
     let mut files: Vec<OsString> = Vec::new();
     let mut added: i64 = 0;
@@ -816,13 +826,47 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
             saw_git_header = false;
             pending_a = None;
             pending_b = None;
-        } else if line.starts_with("copy from ") || line.starts_with("copy to ") {
+        } else if line.starts_with("copy from ") {
             is_copy = true;
+        } else if let Some(rest) = line.strip_prefix("copy to ") {
+            is_copy = true;
+            // Override pending_b from the diff --git header: rfind(" b/") can
+            // split incorrectly when the destination path itself contains " b/".
+            // The unambiguous "copy to" header has no such ambiguity.
+            if let Some(new_name) = diff_header_path(rest, "") {
+                if let Some(ref old_b) = pending_b {
+                    if old_b != &new_name {
+                        if let Some(pos) = files.iter().rposition(|f| f == old_b) {
+                            files[pos].clone_from(&new_name);
+                        }
+                    }
+                } else if !files.contains(&new_name) {
+                    files.push(new_name.clone());
+                }
+                pending_b = Some(new_name);
+            }
         } else if let Some(rest) = line.strip_prefix("rename from ") {
             // 100% similarity renames have no "---"/"+++" pair; capture the
             // old path here so the section-end flush above can record it.
             // The path may be C-quoted (e.g. `rename from "old\tname"`).
             pending_a = diff_header_path(rest, "");
+        } else if let Some(rest) = line.strip_prefix("rename to ") {
+            // Override pending_b from the diff --git header: rfind(" b/") can
+            // split incorrectly when the destination path contains " b/".
+            // Pure renames have no "+++ " to correct this, so use the
+            // unambiguous "rename to" header.
+            if let Some(new_name) = diff_header_path(rest, "") {
+                if let Some(ref old_b) = pending_b {
+                    if old_b != &new_name {
+                        if let Some(pos) = files.iter().rposition(|f| f == old_b) {
+                            files[pos].clone_from(&new_name);
+                        }
+                    }
+                } else if !files.contains(&new_name) {
+                    files.push(new_name.clone());
+                }
+                pending_b = Some(new_name);
+            }
         } else if let Some(rest) = line.strip_prefix("--- ") {
             // Old-file header outside a hunk: track for rename detection.
             pending_a = diff_header_path(rest, "a/");
