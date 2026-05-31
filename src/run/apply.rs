@@ -259,34 +259,38 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // cleanly instead of leaving a modified-but-unreported checkout.
     preflight_report_path(&report_dest)?;
 
-    // patch_path is canonicalized (absolute); git_root avoids silent skips
-    // when --target is a repo subdirectory.
-    apply_patch(&git_root, &patch_path, opts.three_way, &files_os)?;
-
-    // ── 13.5. Overlap check ───────────────────────────────────────────────────
-    // If report_dest coincides with a file the patch just added or modified,
-    // write_report would silently overwrite that content with JSON. Detect this
-    // by comparing canonical paths now that the patch has been applied and the
-    // files exist on disk.
-    if let Ok(report_canon) = report_dest
-        .parent()
-        .and_then(|p| std::fs::canonicalize(p).ok())
-        .map(|p| p.join(report_dest.file_name().unwrap_or_default()))
-        .ok_or(())
+    // ── 12.5. Pre-apply overlap check ────────────────────────────────────────
+    // Detect report/patch-output overlap BEFORE mutating the tree so a
+    // conflict leaves the tree unchanged. Canonicalize the report parent
+    // (exists after preflight) and compare against the patch's file list.
     {
-        for f in &files_os {
-            if std::fs::canonicalize(git_root.join(f)).is_ok_and(|c| c == report_canon) {
-                return Err(ApplyError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!(
-                        "report path '{}' overlaps a file modified by the patch; \
-                         use --report to choose a different destination",
-                        report_dest.display()
-                    ),
-                )));
+        let rp_parent = report_dest
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let report_abs = std::fs::canonicalize(rp_parent)
+            .or_else(|_| std::path::absolute(rp_parent))
+            .ok()
+            .map(|p| p.join(report_dest.file_name().unwrap_or_default()));
+        if let Some(ref report_abs) = report_abs {
+            for f in &files_os {
+                if &git_root.join(f) == report_abs {
+                    return Err(ApplyError::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            "report path '{}' overlaps a file in the patch; \
+                             use --report to choose a different destination",
+                            report_dest.display()
+                        ),
+                    )));
+                }
             }
         }
     }
+
+    // patch_path is canonicalized (absolute); git_root avoids silent skips
+    // when --target is a repo subdirectory.
+    apply_patch(&git_root, &patch_path, opts.three_way, &files_os)?;
 
     // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
@@ -423,8 +427,24 @@ fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
         .map(|n| n.to_string_lossy())
         .unwrap_or_default();
     let base = stem.strip_suffix(".patch").unwrap_or(&stem);
-    let traj = patch_path.with_file_name(format!("{base}.traj.json"));
-    if traj.exists() { Some(traj) } else { None }
+
+    // Primary: same-directory sibling (most common).
+    let sibling = patch_path.with_file_name(format!("{base}.traj.json"));
+    if sibling.exists() {
+        return Some(sibling);
+    }
+
+    // Bundle layout: patches/<id>.patch → ../trajectories/<id>.traj.json.
+    if let Some(bundle_root) = patch_path.parent().and_then(|p| p.parent()) {
+        let bundle_traj = bundle_root
+            .join("trajectories")
+            .join(format!("{base}.traj.json"));
+        if bundle_traj.exists() {
+            return Some(bundle_traj);
+        }
+    }
+
+    None
 }
 
 /// Return `true` if the trajectory file at `traj_path` records at least one
@@ -501,21 +521,24 @@ fn dirty_paths_excluding(
     // quoted (unlike the default line-based format). Rename/copy entries emit
     // "XY new\0old\0"; the old-path field has no "XY " status prefix so we
     // detect and skip it to avoid treating it as an additional dirty file.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let paths: Vec<String> = stdout
-        .split('\0')
-        .filter(|l| !l.trim().is_empty())
+    // Work at the byte level so non-UTF-8 filenames survive the comparison
+    // with exclude_abs without being corrupted by from_utf8_lossy.
+    let paths: Vec<String> = output
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|l| !l.trim_ascii().is_empty())
         .filter_map(|l| {
             // Skip old-name fields from rename/copy entries — they have no
             // "XY " status prefix (byte 2 is not a space).
-            if l.as_bytes().get(2) != Some(&b' ') {
+            if l.get(2) != Some(&b' ') {
                 return None;
             }
-            let rel = l.get(3..)?.trim();
-            if rel.is_empty() {
+            let rel_bytes = l.get(3..)?.trim_ascii();
+            if rel_bytes.is_empty() {
                 return None;
             }
-            let abs = git_root.join(rel);
+            let rel_os = bytes_to_os_string(rel_bytes.to_vec());
+            let abs = git_root.join(&rel_os);
             // Canonicalize for comparison; fall back to raw path if it doesn't
             // exist yet (e.g. untracked file whose parent isn't resolved).
             let abs_canon = std::fs::canonicalize(&abs).unwrap_or(abs);
@@ -523,7 +546,13 @@ fn dirty_paths_excluding(
                 let ex_canon = std::fs::canonicalize(ex).unwrap_or_else(|_| ex.to_path_buf());
                 abs_canon == ex_canon
             });
-            if excluded { None } else { Some(rel.to_owned()) }
+            if excluded {
+                None
+            } else {
+                // Lossy conversion is acceptable here: these strings are
+                // only used in the DirtyTree error message for display.
+                Some(rel_os.to_string_lossy().into_owned())
+            }
         })
         .collect();
     Ok(paths)
@@ -599,12 +628,16 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
     let mut pending_b: Option<OsString> = None;
     // a/ (old) name set by "--- "; compared with b/ to detect renames.
     let mut pending_a: Option<OsString> = None;
+    // True when the current section is a copy (not a rename). For copies the
+    // source file is untouched, so it must not be added to the affected list.
+    let mut is_copy = false;
 
     for line in patch_text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             // New file section; always terminates any active hunk.
             in_hunk = false;
             saw_git_header = true;
+            is_copy = false;
             pending_a = None;
             pending_b = git_diff_b_path(rest);
             if let Some(ref name) = pending_b {
@@ -663,15 +696,21 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
             }
             // Rename detection: if a/ ≠ b/, the old name is also affected
             // (git stages its deletion; cleanup must unstage that too).
+            // Skip this for copies: the source file is unchanged by the patch.
             let effective_b = pending_b.as_ref().or(b_name.as_ref());
-            if let (Some(a), Some(b)) = (&pending_a, effective_b) {
-                if a != b && !files.contains(a) {
-                    files.push(a.clone());
+            if !is_copy {
+                if let (Some(a), Some(b)) = (&pending_a, effective_b) {
+                    if a != b && !files.contains(a) {
+                        files.push(a.clone());
+                    }
                 }
             }
+            is_copy = false;
             saw_git_header = false;
             pending_a = None;
             pending_b = None;
+        } else if line.starts_with("copy from ") || line.starts_with("copy to ") {
+            is_copy = true;
         } else if let Some(rest) = line.strip_prefix("--- ") {
             // Old-file header outside a hunk: track for rename detection.
             pending_a = diff_header_path(rest, "a/");

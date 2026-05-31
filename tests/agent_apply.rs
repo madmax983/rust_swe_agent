@@ -1395,3 +1395,114 @@ fn apply_sweep_nested_legacy_trajectory_json_blocks_redacted_patch() {
         "expected RedactedRefused from trajectory.json redaction, got {err:?}"
     );
 }
+
+#[test]
+fn apply_report_overlap_fails_before_mutation() {
+    // When --report points at a file the patch adds, the command must fail
+    // BEFORE apply so the tree stays unchanged.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // Build a patch that adds a new file "new.txt"
+    std::fs::write(repo.join("new.txt"), "content\n").unwrap();
+    let out = Command::new("git")
+        .args(["diff", "--cached", "--"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    // Use git add + diff HEAD for new file
+    Command::new("git")
+        .args(["add", "new.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let out = Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let patch = String::from_utf8(out.stdout).unwrap();
+    Command::new("git")
+        .args(["reset", "HEAD", "new.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_file(repo.join("new.txt")).unwrap();
+
+    let patch_path = work.path().join("add.patch");
+    std::fs::write(&patch_path, &patch).unwrap();
+
+    // Point --report at the file the patch adds (inside the repo).
+    let report_path = repo.join("new.txt");
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error for report/patch overlap, got {err:?}"
+    );
+    // Tree must be unchanged — new.txt must not exist.
+    assert!(
+        !repo.join("new.txt").exists(),
+        "tree must not be mutated when report overlaps patch output"
+    );
+}
+
+#[test]
+fn apply_patch_bundle_layout_sibling_trajectory_refused() {
+    // When using --patch patches/inst.patch in a bundle layout, the sibling
+    // trajectory at ../trajectories/inst.traj.json must be detected and its
+    // redaction metadata respected.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let bundle = work.path().join("bundle");
+    std::fs::create_dir_all(bundle.join("patches")).unwrap();
+    std::fs::create_dir_all(bundle.join("trajectories")).unwrap();
+
+    let patch_path = bundle.join("patches").join("inst.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    let traj_json = r#"{
+        "format": "mini-swe-agent-1.3",
+        "info": {
+            "redaction": {
+                "enabled": true,
+                "redacted": true,
+                "counts": [
+                    {"surface": "patch_submission", "kind": "configured_literal", "count": 1}
+                ]
+            }
+        },
+        "messages": []
+    }"#;
+    std::fs::write(bundle.join("trajectories").join("inst.traj.json"), traj_json).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: None,
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::RedactedRefused),
+        "expected RedactedRefused from bundle trajectory, got {err:?}"
+    );
+}
