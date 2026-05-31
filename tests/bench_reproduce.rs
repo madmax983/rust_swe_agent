@@ -70,6 +70,7 @@ fn minimal_manifest(model_name: &str, git_sha: Option<&str>) -> ProvenanceManife
         cli: maxwells_daemon::run::swebench::CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,

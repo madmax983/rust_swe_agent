@@ -639,6 +639,14 @@ pub struct MiniCmd {
     /// trajectory-size cases where write overhead matters).
     #[arg(long, default_value_t = false)]
     pub no_step_persist: bool,
+
+    /// Deterministically inject a synthetic bash timeout on every Nth
+    /// environment invocation, for agent-resilience testing (issue #340).
+    /// `0` (the default) or omitting the flag preserves current behavior —
+    /// nothing is injected. The value is recorded in the run manifest so the
+    /// trajectory is reproducible.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub chaos_fail_every: u32,
 }
 
 #[derive(Debug, Args)]
@@ -2148,6 +2156,13 @@ pub struct SwebenchCmd {
 
     #[command(flatten)]
     pub github_pr: SwebenchGithubPrArgs,
+
+    /// Deterministically inject a synthetic bash timeout on every Nth
+    /// environment invocation per instance, for agent-resilience testing
+    /// (issue #340). `0` (the default) preserves current behavior. The value
+    /// is recorded in the sweep manifest and round-trips via `bench reproduce`.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub chaos_fail_every: u32,
 
     /// Render the initial prompt surface for the first selected instance and
     /// exit without launching any tasks. Requires a dataset source. Use

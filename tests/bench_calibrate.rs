@@ -985,6 +985,7 @@ fn manifest_for(case: ManifestCase, total: usize, wall_clock_secs: f64) -> Prove
         cli: CliManifest {
             argv: case.parallel_arg_style.argv(case.parallel),
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,

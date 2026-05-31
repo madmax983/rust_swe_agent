@@ -19,6 +19,13 @@ pub mod chaos;
 pub mod docker;
 pub mod local;
 
+/// Stderr sentinel written on a [`RunResult`] synthesized by
+/// `ChaosEnvironment`. Defined here (always compiled, independent of the
+/// `chaos` feature) so the agent loop and `bench inspect` can recognize a
+/// chaos-injected timeout and distinguish it from a real one without taking a
+/// dependency on the optional chaos module.
+pub const CHAOS_INJECTED_STDERR: &str = "simulated chaos failure: timed out";
+
 #[cfg(feature = "chaos")]
 pub use chaos::ChaosEnvironment;
 #[cfg(feature = "docker")]

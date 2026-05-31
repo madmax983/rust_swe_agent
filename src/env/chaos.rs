@@ -74,7 +74,7 @@ impl Environment for ChaosEnvironment {
             // Inject a simulated timeout failure
             return Ok(RunResult {
                 stdout: String::new(),
-                stderr: "simulated chaos failure: timed out".to_string(),
+                stderr: crate::env::CHAOS_INJECTED_STDERR.to_string(),
                 exit_code: -1,
                 timed_out: true,
             });

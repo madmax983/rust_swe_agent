@@ -263,6 +263,11 @@ const fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u32_manifest(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstanceResult {
@@ -605,6 +610,12 @@ pub struct ProvenanceManifest {
     pub model: ModelManifest,
     pub runtime: RuntimeManifest,
     pub cli: CliManifest,
+    /// Deterministic chaos fault-injection cadence (`--chaos-fail-every`)
+    /// applied to every instance in this sweep. `0` (the default) means no
+    /// injection. Recorded first-class so the sweep round-trips via
+    /// `bench reproduce` (issue #340).
+    #[serde(default, skip_serializing_if = "is_zero_u32_manifest")]
+    pub chaos_fail_every: u32,
     /// Systemic-failure circuit-breaker configuration used for this sweep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreakerManifest>,
@@ -3273,6 +3284,7 @@ fn build_manifest(
         cli: CliManifest {
             argv: redact_argv(std::env::args().collect(), &args.config.root.redaction),
         },
+        chaos_fail_every: args.config.root.environment.chaos_fail_every,
         circuit_breaker: Some(CircuitBreakerManifest {
             enabled: args.abort_on_systemic_failure,
             min_samples: args.systemic_failure_min_samples,

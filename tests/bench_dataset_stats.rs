@@ -358,6 +358,7 @@ fn test_historical_resolved_rates_legacy_and_hash_handling() {
             rust_version: None,
         },
         cli: CliManifest { argv: vec![] },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,

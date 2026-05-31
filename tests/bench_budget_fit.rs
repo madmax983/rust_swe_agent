@@ -187,6 +187,7 @@ fn make_manifest(step_limit: Option<u32>, task_timeout_secs: Option<u64>) -> Pro
             rust_version: Some("rustc 1.85.0".into()),
         },
         cli: CliManifest { argv },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -907,6 +908,7 @@ fn mixed_cost_caps_in_resolved_config_are_rejected() {
         cli: CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -995,6 +997,7 @@ fn per_task_budget_usd_read_from_resolved_config_toml() {
         cli: CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -1177,6 +1180,7 @@ fn step_limit_read_from_resolved_config_toml() {
             // No --step-limit in argv
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -1754,6 +1758,7 @@ fn cli_per_task_budget_with_config_cost_limit_is_rejected() {
                 "0.10".into(),
             ],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -2108,6 +2113,7 @@ fn config_sourced_per_task_budget_silent_reset_is_rejected() {
             // No --per-task-budget-usd in argv; cap comes from the config overlay.
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -2302,6 +2308,7 @@ fn original_config_overlay_with_retry_is_rejected() {
         cli: CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -2404,6 +2411,7 @@ fn original_docker_environment_with_retry_is_rejected() {
         cli: CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,
@@ -2709,6 +2717,7 @@ fn mixed_cost_caps_accepted_with_non_cost_axis() {
         cli: CliManifest {
             argv: vec!["max".into(), "bench".into(), "swebench".into()],
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,

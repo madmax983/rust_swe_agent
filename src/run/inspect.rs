@@ -89,6 +89,11 @@ pub struct InspectStep {
     /// trajectories written before schema 1.8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling: Option<crate::model::SamplingParams>,
+    /// True when this bash observation was a deterministically injected chaos
+    /// timeout rather than a real one (issue #340). Lets readers tell injected
+    /// failures apart from genuine sandbox flakes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chaos_injected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,6 +173,14 @@ pub struct InspectReport {
     pub expected_tests: Option<ExpectedTests>,
     #[serde(default)]
     pub steps: Vec<InspectStep>,
+    /// Number of bash steps that were deterministically chaos-injected
+    /// timeouts (issue #340). `0` for runs without `--chaos-fail-every`.
+    #[serde(default)]
+    pub chaos_injected_steps: usize,
+    /// Number of injected timeouts the agent recovered from: the next bash
+    /// step was non-injected and forward-progress-shaped (exit code 0).
+    #[serde(default)]
+    pub chaos_recoveries: usize,
     /// Whether this is a partial (mid-run checkpoint) trajectory.
     /// `true` means the instance was interrupted and the trajectory is incomplete.
     #[serde(default)]
@@ -222,6 +235,28 @@ pub struct SummaryRow {
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved: Option<bool>,
+    /// Chaos-injected bash steps for this instance (issue #340).
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub chaos_injected_steps: usize,
+    /// Agent recoveries from injected timeouts for this instance.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub chaos_recoveries: usize,
+}
+
+/// Sweep-wide chaos aggregates (issue #340).
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct ChaosSummary {
+    /// Configured `chaos_fail_every` cadence read from the sweep manifest.
+    pub fail_every: u32,
+    /// Total chaos-injected bash steps across all matched instances.
+    pub injected_steps: usize,
+    /// Total agent recoveries from injected timeouts across all instances.
+    pub recoveries: usize,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +269,9 @@ pub struct SummaryReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evaluator_provenance: Option<crate::run::evaluate::EvaluatorProvenance>,
     pub rows: Vec<SummaryRow>,
+    /// Sweep-wide chaos counters. Present always; zeros when chaos was off.
+    #[serde(default)]
+    pub chaos: ChaosSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,17 +350,29 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     let mut rows: Vec<SummaryRow> = Vec::new();
     let loaded = crate::run::compare::load_sweep(sweep)?;
     let resolved = load_evaluation_overrides(sweep)?.unwrap_or_default();
+    let mut chaos = ChaosSummary {
+        fail_every: loaded
+            .manifest
+            .as_ref()
+            .map_or(0, |m| m.chaos_fail_every),
+        ..ChaosSummary::default()
+    };
     for r in loaded.instances.values() {
         let res = resolved.get(&r.instance_id).map(|value| value.resolved);
         if !filter.matches(r, res) {
             continue;
         }
+        let (injected, recoveries) = chaos_counts_for_instance(sweep, &r.instance_id);
+        chaos.injected_steps += injected;
+        chaos.recoveries += recoveries;
         rows.push(SummaryRow {
             instance_id: r.instance_id.clone(),
             outcome: r.outcome.clone(),
             failure_category: r.failure_category,
             cost_usd: r.cost_usd,
             resolved: res,
+            chaos_injected_steps: injected,
+            chaos_recoveries: recoveries,
         });
     }
     rows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -334,7 +384,24 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
         manifest: loaded.manifest,
         evaluator_provenance,
         rows,
+        chaos,
     })
+}
+
+/// Load one instance's trajectory and return `(injected, recoveries)`.
+/// Missing or unparseable trajectories contribute `(0, 0)` so a partial sweep
+/// never aborts the summary.
+fn chaos_counts_for_instance(sweep: &Path, instance_id: &str) -> (usize, usize) {
+    let Some(path) = resolve_trajectory_path(sweep, instance_id) else {
+        return (0, 0);
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (0, 0);
+    };
+    let Ok(traj) = serde_json::from_str::<Trajectory>(&text) else {
+        return (0, 0);
+    };
+    chaos_counts(&build_inspect_steps(&traj, false))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -420,6 +487,8 @@ fn build_instance_report(
                 expected_tests: dataset_instance
                     .map(|inst| extract_expected_tests(inst, &minimal_redactor)),
                 steps: vec![],
+                chaos_injected_steps: 0,
+                chaos_recoveries: 0,
                 partial: false,
                 partial_reason: None,
                 trace_id: None,
@@ -445,6 +514,7 @@ fn build_instance_report(
     }
 
     let steps = build_inspect_steps(&traj, full);
+    let (chaos_injected_steps, chaos_recoveries) = chaos_counts(&steps);
     let (model_latency_ms_total, tool_latency_ms_total, harness_overhead_ms_total) =
         sum_stage_latencies(&traj);
     let latency_share_pct = compute_latency_share(
@@ -509,6 +579,8 @@ fn build_instance_report(
         patch_error_log,
         expected_tests,
         steps,
+        chaos_injected_steps,
+        chaos_recoveries,
         partial: traj.info.partial,
         partial_reason: traj.info.partial_reason,
         trace_id: traj.info.trace_id,
@@ -595,6 +667,7 @@ pub(crate) fn build_inspect_steps_with_max(
                 history_elided: false,
                 as_sent_marker: None,
                 sampling: msg.extra.sampling.clone(),
+                chaos_injected: false,
             });
             continue;
         }
@@ -602,14 +675,18 @@ pub(crate) fn build_inspect_steps_with_max(
         if role != "user" {
             continue;
         }
-        let Some(run_result) = msg
-            .extra
-            .other
-            .get("run_result")
-            .and_then(|v| serde_json::from_value::<RunResult>(v.clone()).ok())
-        else {
+        let Some(run_result_value) = msg.extra.other.get("run_result") else {
             continue;
         };
+        let Ok(run_result) = serde_json::from_value::<RunResult>(run_result_value.clone()) else {
+            continue;
+        };
+        // `chaos_injected` lives directly on the recorded env result; it is not
+        // part of the typed `RunResult`, so read it from the raw JSON value.
+        let chaos_injected = run_result_value
+            .get("chaos_injected")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let bash = infer_bash_from_previous_assistant(traj, msg_idx);
         let history_elided = msg
             .extra
@@ -650,9 +727,32 @@ pub(crate) fn build_inspect_steps_with_max(
             history_elided,
             as_sent_marker,
             sampling: None,
+            chaos_injected,
         });
     }
     steps
+}
+
+/// Count chaos-injected bash steps and agent recoveries from them.
+///
+/// A *recovery* is the case where the bash step immediately following an
+/// injected timeout was itself non-injected and forward-progress-shaped
+/// (exit code `0`) — i.e. the agent re-issued a command that succeeded rather
+/// than spiralling on the synthetic failure (issue #340).
+pub(crate) fn chaos_counts(steps: &[InspectStep]) -> (usize, usize) {
+    let bash: Vec<&InspectStep> = steps.iter().filter(|s| s.role == "bash").collect();
+    let injected = bash.iter().filter(|s| s.chaos_injected).count();
+    let mut recoveries = 0;
+    for (i, step) in bash.iter().enumerate() {
+        if step.chaos_injected {
+            if let Some(next) = bash.get(i + 1) {
+                if !next.chaos_injected && next.exit_code == Some(0) {
+                    recoveries += 1;
+                }
+            }
+        }
+    }
+    (injected, recoveries)
 }
 
 pub fn render_text(output: &InspectOutput) -> String {
@@ -703,6 +803,13 @@ fn render_summary_text(report: &SummaryReport) -> String {
         );
     } else {
         s.push_str("evaluator_provenance: unavailable\n");
+    }
+    if report.chaos.fail_every > 0 || report.chaos.injected_steps > 0 {
+        let _ = writeln!(
+            s,
+            "chaos: fail_every={} injected_steps={} recoveries={}",
+            report.chaos.fail_every, report.chaos.injected_steps, report.chaos.recoveries
+        );
     }
     s.push('\n');
 
@@ -771,6 +878,13 @@ fn render_instance_text(report: &InspectReport) -> String {
         "failure_category: {}",
         report.failure_category.map_or("none", failure_label)
     );
+    if report.chaos_injected_steps > 0 {
+        let _ = writeln!(
+            s,
+            "chaos:            injected_steps={} recoveries={}",
+            report.chaos_injected_steps, report.chaos_recoveries
+        );
+    }
     let _ = writeln!(
         s,
         "total_cost_usd:   {}",
@@ -1570,6 +1684,55 @@ mod tests {
         } else {
             panic!("expected Instance output");
         }
+    }
+
+    #[test]
+    fn chaos_counts_detects_injected_steps_and_recoveries() {
+        // bash steps: real(ok), injected(timeout), real(ok=recovery),
+        // injected(timeout), real(fail) → 2 injected, 1 recovery.
+        fn bash_obs(exit: i32, timed_out: bool, chaos: bool) -> serde_json::Value {
+            let mut rr = serde_json::json!({
+                "stdout": "",
+                "stderr": if chaos { crate::env::CHAOS_INJECTED_STDERR } else { "" },
+                "exit_code": exit,
+                "timed_out": timed_out,
+            });
+            if chaos {
+                rr["chaos_injected"] = serde_json::Value::Bool(true);
+            }
+            serde_json::json!({
+                "role": "user",
+                "content": "obs",
+                "extra": { "run_result": rr }
+            })
+        }
+        let assistant = serde_json::json!({"role": "assistant", "content": "```bash\necho x\n```"});
+        let traj_value = serde_json::json!({
+            "trajectory_format": "mini-swe-agent-1.1",
+            "artifact_kind": "trajectory",
+            "schema_version": {"major": 1, "minor": 1},
+            "info": {},
+            "messages": [
+                assistant.clone(), bash_obs(0, false, false),
+                assistant.clone(), bash_obs(-1, true, true),
+                assistant.clone(), bash_obs(0, false, false),
+                assistant.clone(), bash_obs(-1, true, true),
+                assistant, bash_obs(1, false, false),
+            ]
+        });
+        let traj: Trajectory = serde_json::from_value(traj_value).unwrap();
+        let steps = build_inspect_steps(&traj, false);
+        let injected_flags: Vec<bool> = steps
+            .iter()
+            .filter(|s| s.role == "bash")
+            .map(|s| s.chaos_injected)
+            .collect();
+        assert_eq!(injected_flags, vec![false, true, false, true, false]);
+        let (injected, recoveries) = chaos_counts(&steps);
+        assert_eq!(injected, 2, "two injected timeouts");
+        // The first injection is followed by an exit-0 step (recovery); the
+        // second is followed by an exit-1 step (no recovery).
+        assert_eq!(recoveries, 1, "exactly one forward-progress recovery");
     }
 
     #[test]

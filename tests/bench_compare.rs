@@ -220,6 +220,7 @@ fn write_results_with_filter_spec_and_model(
                 rust_version: None,
             },
             cli: maxwells_daemon::run::swebench::CliManifest { argv: Vec::new() },
+            chaos_fail_every: 0,
             circuit_breaker: None,
             source: None,
             import_predictions_path: None,
