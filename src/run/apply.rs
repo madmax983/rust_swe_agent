@@ -812,6 +812,17 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
         }
     }
 
+    // Flush the final section: a trailing 100% rename has no following
+    // "diff --git" to trigger the section-start flush.
+    if !is_copy {
+        let effective_b = pending_b.as_ref();
+        if let (Some(a), Some(b)) = (&pending_a, effective_b) {
+            if a != b && !files.contains(a) {
+                files.push(a.clone());
+            }
+        }
+    }
+
     (files, added, removed)
 }
 
