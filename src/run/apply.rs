@@ -8,10 +8,11 @@
 //! 4. Patch must not contain `[REDACTED:…]` markers, and the source
 //!    trajectory (when available) must not record patch-submission
 //!    redaction, unless `--allow-redacted` (exit 29).
-//! 5. `git apply --check [--3way]` must succeed (exit 28 on rejection).
+//! 5. `git apply --check [--3way]` must succeed (exit 29 on rejection).
 //! 6. On `--dry-run`, stop here and report what would change (exit 0).
 //! 7. Apply the patch; write `apply-report.json`.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -184,7 +185,10 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     }
 
     // ── 6. Read patch content ─────────────────────────────────────────────────
-    let patch_text = std::fs::read_to_string(&patch_path)?;
+    // Read as raw bytes so that patches touching files with non-UTF-8 content
+    // don't fail with InvalidData before the redaction or apply gates run.
+    let patch_bytes = std::fs::read(&patch_path)?;
+    let patch_text = String::from_utf8_lossy(&patch_bytes);
 
     // ── 7. Redaction gate ─────────────────────────────────────────────────────
     if !opts.allow_redacted {
@@ -221,7 +225,13 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     }
 
     // ── 10. Collect diff stats from patch text ────────────────────────────────
-    let (files_changed, lines_added, lines_removed) = parse_diff_stats(&patch_text);
+    // files_os: raw OsString paths used for git cleanup (preserves non-UTF-8).
+    // files_changed: lossy-string version written to the JSON report.
+    let (files_os, lines_added, lines_removed) = parse_diff_stats(&patch_text);
+    let files_changed: Vec<String> = files_os
+        .iter()
+        .map(|f| f.to_string_lossy().into_owned())
+        .collect();
     let target_sha = git_head_sha(&git_root);
 
     // ── 11. Dry-run: report without mutating ──────────────────────────────────
@@ -245,7 +255,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // ── 12. Apply the patch ───────────────────────────────────────────────────
     // patch_path is canonicalized (absolute); git_root avoids silent skips
     // when --target is a repo subdirectory.
-    apply_patch(&git_root, &patch_path, opts.three_way, &files_changed)?;
+    apply_patch(&git_root, &patch_path, opts.three_way, &files_os)?;
 
     // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
@@ -352,9 +362,17 @@ fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
             }
         }
     }
-    // Legacy secret_leak_detected marker
+    // Legacy secret_leak_detected marker (direct path).
     if value
         .pointer("/info/secret_leak_detected/surface")
+        .and_then(|s| s.as_str())
+        == Some("patch_submission")
+    {
+        return true;
+    }
+    // Legacy secret_leak_detected marker (stored under info/other by some mini versions).
+    if value
+        .pointer("/info/other/secret_leak_detected/surface")
         .and_then(|s| s.as_str())
         == Some("patch_submission")
     {
@@ -469,20 +487,21 @@ fn git_head_sha(dir: &Path) -> Option<String> {
 ///
 /// Handles both `diff --git` extended headers and plain `---`/`+++` headers
 /// (e.g. from `diff -u`). Quoted filenames (git C-string escaping) are
-/// unescaped. For renames, both the old (`a/`) and new (`b/`) paths are
-/// included in the returned file list so that `--3way` cleanup can unstage
-/// both the deletion and the addition sides of the rename.
-fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
-    let mut files: Vec<String> = Vec::new();
+/// unescaped to raw bytes (preserved as `OsString`) so that non-UTF-8 paths
+/// survive the round-trip to git cleanup commands. For renames, both the old
+/// (`a/`) and new (`b/`) paths are included so that `--3way` cleanup can
+/// unstage both the deletion and the addition sides of the rename.
+fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
+    let mut files: Vec<OsString> = Vec::new();
     let mut added: i64 = 0;
     let mut removed: i64 = 0;
     let mut in_hunk = false;
     // Whether the current file section opened with a "diff --git" header.
     let mut saw_git_header = false;
     // b/ (new) name set by "diff --git" or "+++ "; held for rename detection.
-    let mut pending_b: Option<String> = None;
+    let mut pending_b: Option<OsString> = None;
     // a/ (old) name set by "--- "; compared with b/ to detect renames.
-    let mut pending_a: Option<String> = None;
+    let mut pending_a: Option<OsString> = None;
 
     for line in patch_text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
@@ -549,20 +568,25 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
 /// Handles the unquoted format (`a/foo b/bar`) and git's C-string-quoted
 /// format (`"a/foo bar" "b/bar baz"`).  Uses `rfind` for the unquoted case so
 /// that an `a/` path containing the substring ` b/` is less likely to confuse
-/// the split point.
-fn git_diff_b_path(rest: &str) -> Option<String> {
+/// the split point.  Returns an `OsString` to preserve non-UTF-8 bytes that
+/// survive git's C-string octal-escape encoding.
+fn git_diff_b_path(rest: &str) -> Option<OsString> {
     if rest.starts_with('"') {
         // Quoted: '"a/…" "b/…"'
         let sep = rest.find(" \"b/")?;
         let b_start = sep + 4; // skip ' "b/'
         let b_end = find_unescaped_quote(&rest[b_start..]).map(|i| b_start + i)?;
-        let name = unescape_c_string(&rest[b_start..b_end]);
+        let name = unescape_c_string_os(&rest[b_start..b_end]);
         if name.is_empty() { None } else { Some(name) }
     } else {
         // Unquoted: rfind keeps the b/ path intact when a/ contains " b/".
         let pos = rest.rfind(" b/")?;
-        let name = rest[pos + 3..].trim().to_owned();
-        if name.is_empty() { None } else { Some(name) }
+        let name = rest[pos + 3..].trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(OsString::from(name))
+        }
     }
 }
 
@@ -570,18 +594,22 @@ fn git_diff_b_path(rest: &str) -> Option<String> {
 ///
 /// `prefix` is `"a/"` or `"b/"`.  Handles git's C-string-quoted format and
 /// strips trailing timestamps (plain-diff `\t<datetime>` suffix).  Returns
-/// `None` for `/dev/null` and empty paths.
-fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
+/// `None` for `/dev/null` and empty paths.  Returns an `OsString` to preserve
+/// non-UTF-8 bytes encoded via C-string octal escapes.
+fn diff_header_path(s: &str, prefix: &str) -> Option<OsString> {
+    // `/dev/null` is git's sentinel for new-file / deleted-file patches.
+    // It appears as a bare absolute path (without `a/` prefix), so check it
+    // before any prefix stripping to avoid returning `"dev/null"` after the
+    // leading-slash component strip applied to plain-diff paths.
+    if s == "/dev/null" {
+        return None;
+    }
     if let Some(without_open) = s.strip_prefix('"') {
         // Quoted: '"prefix/path"'
         let end = find_unescaped_quote(without_open)?;
         let inner = &without_open[..end];
-        let name = unescape_c_string(inner.strip_prefix(prefix).unwrap_or(inner));
-        if name.is_empty() || name == "/dev/null" {
-            None
-        } else {
-            Some(name)
-        }
+        let name = unescape_c_string_os(inner.strip_prefix(prefix).unwrap_or(inner));
+        if name.is_empty() { None } else { Some(name) }
     } else {
         let path = if let Some(stripped) = s.strip_prefix(prefix) {
             stripped
@@ -596,15 +624,32 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
         if path.is_empty() || path == "/dev/null" {
             None
         } else {
-            Some(path.to_owned())
+            Some(OsString::from(path))
         }
     }
 }
 
-/// Unescape a git C-string (the content between double-quotes, without them).
-fn unescape_c_string(s: &str) -> String {
+/// Unescape a git C-string and return the raw bytes as an `OsString`.
+///
+/// On Unix the byte sequence is preserved exactly; on other platforms the
+/// bytes are converted through `from_utf8_lossy` (non-UTF-8 paths are
+/// extremely rare outside Unix).
+fn unescape_c_string_os(s: &str) -> OsString {
     let bytes = unescape_c_string_bytes(s.as_bytes());
-    String::from_utf8_lossy(&bytes).into_owned()
+    bytes_to_os_string(bytes)
+}
+
+/// Build an `OsString` from a raw byte vec, preserving non-UTF-8 bytes on Unix.
+fn bytes_to_os_string(bytes: Vec<u8>) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        OsString::from(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 /// Find the index of the first unescaped `"` in `s`.
@@ -713,59 +758,74 @@ fn unescape_c_string_bytes(input: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Build a `:(literal)<path>` pathspec arg as an `OsString`.
+fn literal_pathspec(f: &OsString) -> OsString {
+    let mut arg = OsString::from(":(literal)");
+    arg.push(f.as_os_str());
+    arg
+}
+
 /// Return a map of `path → (mode, sha1)` for files among `files` that have
 /// genuinely staged changes (index ≠ HEAD) before the apply runs.
 ///
 /// Two-step:
-/// 1. `git diff --cached --name-only -- <files>` → only paths with real staged
-///    edits (unlike `git ls-files --stage` which returns every tracked file).
-/// 2. `git ls-files --stage -- <staged>` → capture mode + sha1 so they can
-///    be restored via `update-index --cacheinfo` if the apply fails.
+/// 1. `git diff --cached --name-only -z -- <files>` → only paths with real
+///    staged edits (unlike `git ls-files --stage` which returns every tracked
+///    file). `-z` output is NUL-terminated so paths with special bytes are
+///    never C-string-quoted, and we preserve them as raw `OsString` values.
+/// 2. `git ls-files --stage -z -- <staged>` → capture mode + sha1 so they
+///    can be restored via `update-index --cacheinfo` if the apply fails.
 fn pre_staged_entries(
     git_root: &Path,
-    files: &[String],
-) -> std::collections::HashMap<String, (String, String)> {
+    files: &[OsString],
+) -> std::collections::HashMap<OsString, (String, String)> {
     let mut result = std::collections::HashMap::new();
 
     // Step 1: which of the affected files actually have staged edits?
-    // Use -z so git never C-string-quotes paths (e.g. for files with
-    // newlines or non-ASCII bytes in their names).
+    // Use -z so git emits NUL-terminated raw paths — never C-string-quoted.
     let mut diff_cmd = Command::new("git");
     diff_cmd.args(["diff", "--cached", "--name-only", "-z", "--"]);
     for f in files {
-        diff_cmd.arg(format!(":(literal){f}"));
+        diff_cmd.arg(literal_pathspec(f));
     }
     diff_cmd.current_dir(git_root);
     let Ok(diff_output) = diff_cmd.output() else {
         return result;
     };
-    let diff_text = String::from_utf8_lossy(&diff_output.stdout);
-    let staged_names: Vec<String> = diff_text
-        .split('\0')
-        .filter(|l| !l.trim().is_empty())
-        .map(str::to_owned)
+    // Split on NUL; each segment is a raw path (preserved as OsString).
+    let staged_os: Vec<OsString> = diff_output
+        .stdout
+        .split(|&b| b == b'\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| bytes_to_os_string(s.to_vec()))
         .collect();
-    if staged_names.is_empty() {
+    if staged_os.is_empty() {
         return result;
     }
 
     // Step 2: record mode + sha1 for each genuinely staged file.
+    // Use -z so git emits NUL-terminated records; format per record:
+    // "<mode> <sha1> <stage>\t<path>\0"
     let mut ls_cmd = Command::new("git");
-    ls_cmd.args(["ls-files", "--stage", "--"]);
-    for f in &staged_names {
-        ls_cmd.arg(format!(":(literal){f}"));
+    ls_cmd.args(["ls-files", "--stage", "-z", "--"]);
+    for f in &staged_os {
+        ls_cmd.arg(literal_pathspec(f));
     }
     ls_cmd.current_dir(git_root);
     let Ok(ls_output) = ls_cmd.output() else {
         return result;
     };
-    let ls_text = String::from_utf8_lossy(&ls_output.stdout);
-    for line in ls_text.lines() {
-        // Format: "<mode> <sha1> <stage>\t<path>"
-        let Some((meta, path)) = line.split_once('\t') else {
+    for record in ls_output.stdout.split(|&b| b == b'\0') {
+        if record.is_empty() {
+            continue;
+        }
+        // Each record: "<mode> <sha1> <stage>\t<path>"
+        let Some(tab_pos) = record.iter().position(|&b| b == b'\t') else {
             continue;
         };
-        let mut meta_parts = meta.split(' ');
+        let meta_str = String::from_utf8_lossy(&record[..tab_pos]);
+        let path_os = bytes_to_os_string(record[tab_pos + 1..].to_vec());
+        let mut meta_parts = meta_str.split(' ');
         let (Some(mode), Some(sha), Some(stage)) =
             (meta_parts.next(), meta_parts.next(), meta_parts.next())
         else {
@@ -774,7 +834,7 @@ fn pre_staged_entries(
         if stage != "0" {
             continue; // skip unmerged entries (stages 1–3)
         }
-        result.insert(path.to_owned(), (mode.to_owned(), sha.to_owned()));
+        result.insert(path_os, (mode.to_owned(), sha.to_owned()));
     }
     result
 }
@@ -802,7 +862,7 @@ fn apply_patch(
     git_root: &Path,
     patch_path: &Path,
     three_way: bool,
-    affected_files: &[String],
+    affected_files: &[OsString],
 ) -> Result<(), ApplyError> {
     // Record which affected files have genuinely staged changes (index ≠ HEAD)
     // before we touch anything, capturing their mode + sha1 for restoration.
@@ -825,30 +885,34 @@ fn apply_patch(
             for f in affected_files {
                 // Use :(literal) to prevent git from treating file names that
                 // contain pathspec metacharacters (e.g. '*') as globs.
-                let lit = format!(":(literal){f}");
                 // Clear any unmerged index entries for this path so that
                 // subsequent checkout commands are not refused.
                 let _ = Command::new("git")
-                    .args(["reset", "HEAD", "--", &lit])
+                    .args(["reset", "HEAD", "--"])
+                    .arg(literal_pathspec(f))
                     .current_dir(git_root)
                     .output();
                 if let Some((mode, sha)) = pre_staged.get(f) {
                     // Restore the pre-apply staged state, then check out that
                     // version into the working tree.
-                    let cacheinfo = format!("{mode},{sha},{f}");
+                    // Use three-arg --cacheinfo form so the path is an OsStr
+                    // arg rather than embedded in a comma-delimited string.
                     let _ = Command::new("git")
-                        .args(["update-index", "--cacheinfo", &cacheinfo])
+                        .args(["update-index", "--cacheinfo", mode, sha])
+                        .arg(f)
                         .current_dir(git_root)
                         .output();
                     // checkout-index takes literal file names (not pathspecs).
                     let _ = Command::new("git")
-                        .args(["checkout-index", "--force", "--", f])
+                        .args(["checkout-index", "--force", "--"])
+                        .arg(f)
                         .current_dir(git_root)
                         .output();
                 } else {
                     // No pre-existing staged edit: restore working tree from HEAD.
                     let _ = Command::new("git")
-                        .args(["checkout", "--", &lit])
+                        .args(["checkout", "--"])
+                        .arg(literal_pathspec(f))
                         .current_dir(git_root)
                         .output();
                 }
@@ -866,13 +930,14 @@ fn apply_patch(
     if three_way {
         for f in affected_files {
             let _ = Command::new("git")
-                .args(["reset", "HEAD", "--", &format!(":(literal){f}")])
+                .args(["reset", "HEAD", "--"])
+                .arg(literal_pathspec(f))
                 .current_dir(git_root)
                 .output();
             if let Some((mode, sha)) = pre_staged.get(f) {
-                let cacheinfo = format!("{mode},{sha},{f}");
                 let _ = Command::new("git")
-                    .args(["update-index", "--cacheinfo", &cacheinfo])
+                    .args(["update-index", "--cacheinfo", mode, sha])
+                    .arg(f)
                     .current_dir(git_root)
                     .output();
             }
