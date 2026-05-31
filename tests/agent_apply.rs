@@ -1489,7 +1489,11 @@ fn apply_patch_bundle_layout_sibling_trajectory_refused() {
         },
         "messages": []
     }"#;
-    std::fs::write(bundle.join("trajectories").join("inst.traj.json"), traj_json).unwrap();
+    std::fs::write(
+        bundle.join("trajectories").join("inst.traj.json"),
+        traj_json,
+    )
+    .unwrap();
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
