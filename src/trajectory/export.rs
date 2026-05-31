@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "jinja-export")]
+pub struct JinjaExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -245,6 +248,34 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "jinja-export")]
+impl JinjaExporter {
+    pub fn export_with_template(
+        trajectory: &Trajectory,
+        template_source: &str,
+    ) -> Result<String, crate::error::Error> {
+        let mut env = minijinja::Environment::new();
+        env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+        env.add_template("export", template_source).map_err(|e| {
+            crate::error::Error::Config(crate::error::ConfigError::Invalid(format!("jinja: {e}")))
+        })?;
+
+        let tmpl = env.get_template("export").map_err(|e| {
+            crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+                "jinja get_template: {e}"
+            )))
+        })?;
+        let out = tmpl
+            .render(minijinja::context!(trajectory => trajectory))
+            .map_err(|e| {
+                crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+                    "jinja render: {e}"
+                )))
+            })?;
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +350,25 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "jinja-export")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn test_jinja_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some(outcome::SUBMITTED.to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+
+        let template = "Task: {{ trajectory.info.task }}\n{% for msg in trajectory.messages %}{{ msg.role }}: {{ msg.content }}\n{% endfor %}";
+        let rendered = JinjaExporter::export_with_template(&t, template).unwrap();
+
+        assert!(rendered.contains("Task: Add a feature"));
+        assert!(rendered.contains("system: System prompt"));
+        assert!(rendered.contains("user: Hello agent"));
     }
 
     #[cfg(feature = "html-export")]

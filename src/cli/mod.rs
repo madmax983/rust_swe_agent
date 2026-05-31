@@ -3239,7 +3239,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         }
         if i.output.is_some() {
             return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid)".into(),
+                "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/jinja)".into(),
             )));
         }
         let format = parse_trajectory_diff_format(&i.format)?;
@@ -3254,7 +3254,7 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid" | "jinja") {
         return bench_inspect_export(i);
     }
 
@@ -3305,6 +3305,12 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
             i.format
         ))));
     }
+
+    if i.format != "jinja" && i.template.is_some() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --template is only supported with --format jinja".into(),
+        )));
+    }
     let sweep = i.sweep.ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
             "inspect: --sweep is required for export formats".into(),
@@ -3312,7 +3318,8 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
     })?;
     let instance_id = i.instance.as_deref().ok_or_else(|| {
         Error::Config(crate::error::ConfigError::Invalid(
-            "inspect: --instance is required for export formats (markdown/html/csv/mermaid)".into(),
+            "inspect: --instance is required for export formats (markdown/html/csv/mermaid/jinja)"
+                .into(),
         ))
     })?;
     let traj_path =
@@ -3334,6 +3341,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "jinja" => inspect_export_jinja(&traj, i.template.as_deref())?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3419,6 +3427,38 @@ fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<Strin
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
          rebuild with `--features mermaid-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "jinja-export")]
+fn inspect_export_jinja(
+    traj: &crate::trajectory::Trajectory,
+    template_path: Option<&std::path::Path>,
+) -> Result<String, Error> {
+    use crate::trajectory::export::JinjaExporter;
+    let path = template_path.ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "inspect: --template <PATH> is required when using --format jinja".into(),
+        ))
+    })?;
+    let template_source = std::fs::read_to_string(path).map_err(|e| {
+        Error::Config(crate::error::ConfigError::Invalid(format!(
+            "inspect: failed to read template file {}: {e}",
+            path.display()
+        )))
+    })?;
+    JinjaExporter::export_with_template(traj, &template_source)
+}
+
+#[cfg(not(feature = "jinja-export"))]
+fn inspect_export_jinja(
+    _traj: &crate::trajectory::Trajectory,
+    _template_path: Option<&std::path::Path>,
+) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format jinja requires the `jinja-export` Cargo feature; \
+         rebuild with `--features jinja-export`"
             .into(),
     )))
 }
