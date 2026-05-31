@@ -878,7 +878,7 @@ fn apply_new_file_patch_dev_null_not_in_files_changed() {
     let report_path = work.path().join("apply-report.json");
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
