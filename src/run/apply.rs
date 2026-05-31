@@ -555,7 +555,7 @@ fn git_diff_b_path(rest: &str) -> Option<String> {
         // Quoted: '"a/…" "b/…"'
         let sep = rest.find(" \"b/")?;
         let b_start = sep + 4; // skip ' "b/'
-        let b_end = rest[b_start..].find('"').map(|i| b_start + i)?;
+        let b_end = find_unescaped_quote(&rest[b_start..]).map(|i| b_start + i)?;
         let name = unescape_c_string(&rest[b_start..b_end]);
         if name.is_empty() { None } else { Some(name) }
     } else {
@@ -574,7 +574,7 @@ fn git_diff_b_path(rest: &str) -> Option<String> {
 fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
     if let Some(without_open) = s.strip_prefix('"') {
         // Quoted: '"prefix/path"'
-        let end = without_open.find('"')?;
+        let end = find_unescaped_quote(without_open)?;
         let inner = &without_open[..end];
         let name = unescape_c_string(inner.strip_prefix(prefix).unwrap_or(inner));
         if name.is_empty() || name == "/dev/null" {
@@ -605,6 +605,39 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
 fn unescape_c_string(s: &str) -> String {
     let bytes = unescape_c_string_bytes(s.as_bytes());
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Find the index of the first unescaped `"` in `s`.
+///
+/// A `"` preceded by a backslash (itself part of a C-string escape sequence)
+/// is not a closing quote. Octal escapes (`\nnn`) are also stepped over so
+/// their digits are not mistaken for a quote.
+fn find_unescaped_quote(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => return Some(i),
+            b'\\' => {
+                i += 1;
+                if i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'7' {
+                    // Octal escape: skip up to 2 more octal digits.
+                    i += 1;
+                    for _ in 0..2 {
+                        if i < bytes.len() && bytes[i] >= b'0' && bytes[i] <= b'7' {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                } else if i < bytes.len() {
+                    i += 1; // single-char escape (e.g. \", \\, \t)
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Byte-level C-string unescape as used by git for quoting special filenames.
@@ -695,8 +728,10 @@ fn pre_staged_entries(
     let mut result = std::collections::HashMap::new();
 
     // Step 1: which of the affected files actually have staged edits?
+    // Use -z so git never C-string-quotes paths (e.g. for files with
+    // newlines or non-ASCII bytes in their names).
     let mut diff_cmd = Command::new("git");
-    diff_cmd.args(["diff", "--cached", "--name-only", "--"]);
+    diff_cmd.args(["diff", "--cached", "--name-only", "-z", "--"]);
     for f in files {
         diff_cmd.arg(format!(":(literal){f}"));
     }
@@ -706,7 +741,7 @@ fn pre_staged_entries(
     };
     let diff_text = String::from_utf8_lossy(&diff_output.stdout);
     let staged_names: Vec<String> = diff_text
-        .lines()
+        .split('\0')
         .filter(|l| !l.trim().is_empty())
         .map(str::to_owned)
         .collect();
