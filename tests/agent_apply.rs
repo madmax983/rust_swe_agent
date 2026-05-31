@@ -1340,7 +1340,7 @@ fn apply_sweep_nested_traj_only_uses_fallback_patch() {
         allow_dirty: false,
         dry_run: false,
         three_way: false,
-        report_path: Some(report_path.clone()),
+        report_path: Some(report_path),
     };
     let report = run_agent_apply(opts).unwrap();
     assert!(report.applied, "patch must be applied");
