@@ -1243,7 +1243,7 @@ fn apply_report_missing_parent_not_created_before_apply() {
 
     let opts = AgentApplyOpts {
         selector: PatchSelector::PatchFile(patch_path),
-        target: repo.clone(),
+        target: repo,
         allow_redacted: false,
         allow_dirty: false,
         dry_run: false,
@@ -1303,5 +1303,95 @@ fn apply_patch_with_sibling_trajectory_redaction_refused() {
     assert!(
         matches!(err, ApplyError::RedactedRefused),
         "expected RedactedRefused when sibling traj records patch_submission redaction, got {err:?}"
+    );
+}
+
+#[test]
+fn apply_sweep_nested_traj_only_uses_fallback_patch() {
+    // If only the trajectory is in the nested layout but the patch is in the
+    // legacy flat location, the selector must pick the existing patch rather
+    // than failing with a missing-patch I/O error.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let sweep_dir = work.path().join("sweep");
+    let instance_dir = sweep_dir.join("inst1");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    // Nested trajectory present, but patch is only in the legacy flat location.
+    std::fs::write(
+        instance_dir.join("run-1.traj.json"),
+        r#"{"format":"mini-swe-agent-1.3","info":{},"messages":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(sweep_dir.join("inst1.patch"), &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::SweepInstance {
+            sweep: sweep_dir,
+            instance: "inst1".into(),
+        },
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path.clone()),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied, "patch must be applied");
+}
+
+#[test]
+fn apply_sweep_nested_legacy_trajectory_json_blocks_redacted_patch() {
+    // The nested layout should also check "trajectory.json" (the legacy nested
+    // trajectory name) when deciding whether redaction was recorded.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let sweep_dir = work.path().join("sweep");
+    let instance_dir = sweep_dir.join("inst2");
+    std::fs::create_dir_all(&instance_dir).unwrap();
+
+    std::fs::write(instance_dir.join("run-1.patch"), &patch_content).unwrap();
+    // Use the legacy "trajectory.json" name (not "run-1.traj.json").
+    let traj_json = r#"{
+        "format": "mini-swe-agent-1.3",
+        "info": {
+            "redaction": {
+                "enabled": true,
+                "redacted": true,
+                "counts": [
+                    {"surface": "patch_submission", "kind": "configured_literal", "count": 1}
+                ]
+            }
+        },
+        "messages": []
+    }"#;
+    std::fs::write(instance_dir.join("trajectory.json"), traj_json).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::SweepInstance {
+            sweep: sweep_dir,
+            instance: "inst2".into(),
+        },
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: None,
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::RedactedRefused),
+        "expected RedactedRefused from trajectory.json redaction, got {err:?}"
     );
 }

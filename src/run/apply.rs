@@ -133,6 +133,7 @@ impl From<std::io::Error> for ApplyError {
 /// Returns the populated [`ApplyReport`] on success (including dry-run and
 /// empty-patch cases). On any gate failure the tree is left byte-for-byte
 /// unchanged.
+#[allow(clippy::too_many_lines)]
 pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> {
     // ── 1. Resolve patch path and optionally check trajectory redaction ────────
     let (patch_path, traj_path_opt, trajectory_redacted) =
@@ -262,6 +263,31 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // when --target is a repo subdirectory.
     apply_patch(&git_root, &patch_path, opts.three_way, &files_os)?;
 
+    // ── 13.5. Overlap check ───────────────────────────────────────────────────
+    // If report_dest coincides with a file the patch just added or modified,
+    // write_report would silently overwrite that content with JSON. Detect this
+    // by comparing canonical paths now that the patch has been applied and the
+    // files exist on disk.
+    if let Ok(report_canon) = report_dest
+        .parent()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p.join(report_dest.file_name().unwrap_or_default()))
+        .ok_or(())
+    {
+        for f in &files_os {
+            if std::fs::canonicalize(git_root.join(f)).is_ok_and(|c| c == report_canon) {
+                return Err(ApplyError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "report path '{}' overlaps a file modified by the patch; \
+                         use --report to choose a different destination",
+                        report_dest.display()
+                    ),
+                )));
+            }
+        }
+    }
+
     // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
         schema_version: ArtifactSchemaVersion::CURRENT,
@@ -296,7 +322,7 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<Pat
             let sibling_traj = sibling_trajectory_of_patch(p);
             let redacted = sibling_traj
                 .as_deref()
-                .map_or(false, trajectory_has_patch_submission_redaction);
+                .is_some_and(trajectory_has_patch_submission_redaction);
             (p.clone(), sibling_traj, redacted)
         }
         PatchSelector::TrajectoryFile(traj_path) => {
@@ -305,25 +331,38 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<Pat
             (patch_path, Some(traj_path.clone()), redacted)
         }
         PatchSelector::SweepInstance { sweep, instance } => {
-            // Try layouts in priority order matching bundle.rs find_patch_path_for_run:
-            // 1. Canonical nested: <sweep>/<instance>/run-1.{patch,traj.json}
+            // Select patch by existence to avoid choosing a nonexistent patch
+            // just because the trajectory for that layout is present.
             let nested_patch = sweep.join(instance).join("run-1.patch");
-            let nested_traj = sweep.join(instance).join("run-1.traj.json");
-            // 2. Bundle layout: <sweep>/patches/<instance>.patch + trajectories/<instance>.traj.json
             let bundle_patch = sweep.join("patches").join(format!("{instance}.patch"));
+            let legacy_patch = sweep.join(format!("{instance}.patch"));
+
+            let patch_path = if nested_patch.exists() {
+                nested_patch
+            } else if bundle_patch.exists() {
+                bundle_patch
+            } else {
+                legacy_patch
+            };
+
+            // Resolve trajectory independently; also check "trajectory.json"
+            // (the legacy nested name used by some sweep versions) before
+            // falling back to the bundle / flat layouts.
+            let nested_traj = sweep.join(instance).join("run-1.traj.json");
+            let nested_traj_legacy = sweep.join(instance).join("trajectory.json");
             let bundle_traj = sweep
                 .join("trajectories")
                 .join(format!("{instance}.traj.json"));
-            // 3. Legacy flat: <sweep>/<instance>.{patch,traj.json}
-            let legacy_patch = sweep.join(format!("{instance}.patch"));
             let legacy_traj = sweep.join(format!("{instance}.traj.json"));
 
-            let (patch_path, traj_path) = if nested_patch.exists() || nested_traj.exists() {
-                (nested_patch, nested_traj)
-            } else if bundle_patch.exists() || bundle_traj.exists() {
-                (bundle_patch, bundle_traj)
+            let traj_path = if nested_traj.exists() {
+                nested_traj
+            } else if nested_traj_legacy.exists() {
+                nested_traj_legacy
+            } else if bundle_traj.exists() {
+                bundle_traj
             } else {
-                (legacy_patch, legacy_traj)
+                legacy_traj
             };
 
             let redacted = trajectory_has_patch_submission_redaction(&traj_path);
@@ -1050,14 +1089,8 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
     // since missing intermediate directories have not been created yet.
     let parent = path
         .parent()
-        .map(|p| {
-            if p.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                p
-            }
-        })
-        .unwrap_or(Path::new("."));
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut probe_dir = parent;
     while !probe_dir.exists() {
         probe_dir = match probe_dir.parent() {
