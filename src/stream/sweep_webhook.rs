@@ -352,7 +352,7 @@ impl SweepWebhookSink {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::match_wild_err_arm)]
     use super::*;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -654,7 +654,7 @@ mod tests {
     }
 
     fn body_of(req: &str) -> &str {
-        req.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
+        req.split_once("\r\n\r\n").map_or("", |(_, b)| b)
     }
 
     fn is_complete_http(buf: &[u8]) -> bool {

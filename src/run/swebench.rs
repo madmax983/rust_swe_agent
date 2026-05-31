@@ -8000,6 +8000,7 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::unwrap_used, clippy::expect_used)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8018,11 +8019,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
