@@ -808,7 +808,97 @@ fn apply_3way_flag_is_accepted() {
     assert!(report.applied);
 }
 
-// ── Trajectory-based redaction detection ─────────────────────────────────────
+// ── Legacy redaction path (info/other/secret_leak_detected) ──────────────────
+
+#[test]
+fn apply_trajectory_with_legacy_other_redaction_refused() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Some older mini versions write the secret-leak marker under info/other
+    // rather than info/redaction/counts or info/secret_leak_detected.
+    let traj_json = r#"{
+        "format": "mini-swe-agent-1.3",
+        "info": {
+            "other": {
+                "secret_leak_detected": {
+                    "surface": "patch_submission"
+                }
+            }
+        },
+        "messages": []
+    }"#;
+    let traj_path = work.path().join("task.traj.json");
+    std::fs::write(&traj_path, traj_json).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::TrajectoryFile(traj_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: None,
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::RedactedRefused),
+        "expected RedactedRefused for info/other/secret_leak_detected, got {err:?}"
+    );
+}
+
+// ── /dev/null sentinel in new-file patches ────────────────────────────────────
+
+#[test]
+fn apply_new_file_patch_dev_null_not_in_files_changed() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // A git-format patch that adds a brand-new file: old side is /dev/null.
+    let patch = concat!(
+        "diff --git a/new_file.txt b/new_file.txt\n",
+        "new file mode 100644\n",
+        "index 0000000..3b18e51\n",
+        "--- /dev/null\n",
+        "+++ b/new_file.txt\n",
+        "@@ -0,0 +1 @@\n",
+        "+hello world\n",
+    );
+    let patch_path = work.path().join("add_file.patch");
+    std::fs::write(&patch_path, patch).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+    // Only the real new file should appear — not "dev/null".
+    assert!(
+        !report.files_changed.iter().any(|f| f.contains("dev/null")),
+        "dev/null must not appear in files_changed; got {:?}",
+        report.files_changed
+    );
+    assert!(
+        report.files_changed.contains(&"new_file.txt".to_owned()),
+        "new_file.txt must be in files_changed; got {:?}",
+        report.files_changed
+    );
+}
 
 #[test]
 fn apply_trajectory_with_patch_submission_redaction_refused() {
