@@ -52,6 +52,25 @@ The trajectory at `runs/quickstart/hello-world.traj.json` should parse as
 `mini-swe-agent-1.1`, have `outcome: "submitted"`, and record
 `total_cost_usd: 0.0`.
 
+#### Optional: stress-test resilience with deterministic chaos
+
+Still at $0 and with no network call, you can measure how the agent copes with
+a flaky sandbox by deterministically injecting a synthetic bash timeout on every
+Nth environment invocation:
+
+```bash
+cargo run --quiet -- --log error mini \
+  --task "list the files in this directory" \
+  --chaos-fail-every 3 \
+  --output runs/quickstart-chaos
+```
+
+The 3rd, 6th, 9th, … bash commands are replaced with a timeout. The run is
+fully reproducible — `chaos_fail_every` is recorded in the trajectory manifest,
+each injected step is tagged `chaos_injected: true` on its env result, and
+`bench inspect` reports the injected-step and recovery counts. See
+[`docs/spec-chaos.md`](docs/spec-chaos.md) for semantics and guarantees.
+
 ### 2. Preview Your Agent Environment (Zero Cost)
 
 Use `agent env preview` to inspect the runtime environment that would be used

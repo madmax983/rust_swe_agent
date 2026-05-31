@@ -13,13 +13,16 @@ use tokio::sync::watch;
 
 use crate::error::EnvError;
 
-#[cfg(feature = "chaos")]
 pub mod chaos;
 #[cfg(feature = "docker")]
 pub mod docker;
 pub mod local;
 
-#[cfg(feature = "chaos")]
+/// Stderr sentinel written on a [`RunResult`] synthesized by
+/// [`chaos::ChaosEnvironment`]. The agent loop and `bench inspect` use it to
+/// recognize a chaos-injected timeout and distinguish it from a real one.
+pub const CHAOS_INJECTED_STDERR: &str = "simulated chaos failure: timed out";
+
 pub use chaos::ChaosEnvironment;
 #[cfg(feature = "docker")]
 pub use docker::DockerEnvironment;

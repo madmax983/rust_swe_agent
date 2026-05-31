@@ -194,6 +194,13 @@ pub struct EnvCfg {
     pub docker_image: Option<String>,
     #[serde(default = "default_workdir")]
     pub workdir: String,
+    /// Deterministic chaos fault injection: when `> 0`, the environment is
+    /// wrapped in a decorator that replaces every Nth bash invocation with a
+    /// synthetic timeout (issue #340). `0` (the default) preserves normal
+    /// behavior — no failures are injected. Driven by the `--chaos-fail-every`
+    /// CLI flag; recorded in the run manifest for reproducibility.
+    #[serde(default)]
+    pub chaos_fail_every: u32,
 }
 
 fn default_timeout_secs() -> u64 {

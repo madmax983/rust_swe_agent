@@ -450,6 +450,7 @@ pub fn run(args: &ImportArgs) -> Result<ImportSummary, Error> {
         cli: CliManifest {
             argv: std::env::args().collect(),
         },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: Some("external_import".to_owned()),
         import_predictions_path: Some(predictions_path_str),

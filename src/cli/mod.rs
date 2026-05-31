@@ -656,6 +656,9 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     if let Some(img) = m.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if m.chaos_fail_every > 0 {
+        cfg.root.environment.chaos_fail_every = m.chaos_fail_every;
+    }
     apply_mcp_server_overrides(&mut cfg, &m.mcp_servers)?;
     apply_read_only_policy(&m, &cfg)?;
     let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
@@ -2024,6 +2027,9 @@ fn swebench_config_from_cmd(s: &args::SwebenchCmd) -> Result<Config, Error> {
     if let Some(img) = s.docker_image.clone() {
         cfg.root.environment.docker_image = Some(img);
     }
+    if s.chaos_fail_every > 0 {
+        cfg.root.environment.chaos_fail_every = s.chaos_fail_every;
+    }
     if let Some(v) = s.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(v);
     }
@@ -3125,6 +3131,9 @@ fn reproduce_swebench_args(
 
     let mut cfg = Config::defaults()?;
     cfg.root.model.name.clone_from(&manifest.model.name);
+    // Re-apply the source sweep's chaos cadence so a reproduction injects the
+    // same deterministic failures (issue #340).
+    cfg.root.environment.chaos_fail_every = manifest.chaos_fail_every;
 
     if let Some(budget) = r.per_task_budget_usd {
         cfg.root.agent.per_task_budget_usd = Some(budget);
@@ -6079,6 +6088,7 @@ mod tests {
             webhook_url: None,
             webhook_headers: vec![],
             no_step_persist: false,
+            chaos_fail_every: 0,
         }
     }
 

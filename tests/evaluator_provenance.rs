@@ -655,6 +655,7 @@ fn summary_report_has_evaluator_provenance_field() {
         manifest: None,
         evaluator_provenance: Some(prov),
         rows: vec![],
+        chaos: Default::default(),
     };
 
     let json = serde_json::to_string(&report).unwrap();
@@ -677,6 +678,7 @@ fn summary_report_without_provenance_omits_field() {
         manifest: None,
         evaluator_provenance: None,
         rows: vec![],
+        chaos: Default::default(),
     };
 
     let json = serde_json::to_string(&report).unwrap();
@@ -777,6 +779,7 @@ fn inspect_text_renders_provenance_summary() {
         manifest: None,
         evaluator_provenance: Some(prov),
         rows: vec![],
+        chaos: Default::default(),
     };
 
     let output = maxwells_daemon::run::inspect::InspectOutput::Summary(Box::new(report));

@@ -361,6 +361,7 @@ fn build_mini_manifest(
         fallback_models: args.config.root.model.fallback_models.clone(),
         redaction_policy_id: redaction_policy_id(&args.config.root.redaction),
         deterministic_mode: args.deterministic_responses.is_some(),
+        chaos_fail_every: args.config.root.environment.chaos_fail_every,
         parent_sweep_run_id: args.parent_sweep_run_id.clone(),
     }
 }
@@ -1414,12 +1415,28 @@ async fn build_env(
     cfg: &Config,
     local_workdir: Option<&PathBuf>,
 ) -> Result<Box<dyn Environment>, Error> {
-    match cfg.root.environment.kind {
-        EnvKind::Local => Ok(Box::new(
-            LocalEnvironment::new().with_workdir(local_workdir.cloned()),
-        )),
-        EnvKind::Docker => build_docker_env(cfg).await,
+    let inner: Box<dyn Environment> = match cfg.root.environment.kind {
+        EnvKind::Local => Box::new(LocalEnvironment::new().with_workdir(local_workdir.cloned())),
+        EnvKind::Docker => build_docker_env(cfg).await?,
+    };
+    Ok(maybe_wrap_chaos(
+        inner,
+        cfg.root.environment.chaos_fail_every,
+    ))
+}
+
+/// Wrap `inner` in `ChaosEnvironment` when `fail_every > 0` (issue #340).
+///
+/// When `fail_every == 0` the inner environment is returned unchanged, so a
+/// run without the knob behaves exactly as before.
+fn maybe_wrap_chaos(inner: Box<dyn Environment>, fail_every: u32) -> Box<dyn Environment> {
+    if fail_every == 0 {
+        return inner;
     }
+    Box::new(crate::env::ChaosEnvironment::new(
+        inner,
+        fail_every as usize,
+    ))
 }
 
 #[cfg(feature = "docker")]

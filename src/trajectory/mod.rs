@@ -475,6 +475,11 @@ const fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
 /// Per-trajectory provenance manifest for single-task `mini` runs.
 ///
 /// Embedded in [`TrajectoryInfo::manifest`] on every `mini` run (including
@@ -534,6 +539,12 @@ pub struct MiniProvenanceManifest {
     /// `true` when the run used the deterministic (scripted) model backend
     /// rather than a live provider.
     pub deterministic_mode: bool,
+    /// Deterministic chaos fault-injection cadence (`--chaos-fail-every`).
+    /// `0` (the default) means no injection. Recorded first-class so a
+    /// resilience experiment is reproducible from the manifest alone
+    /// (issue #340). Omitted from older trajectories, where it parses as `0`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub chaos_fail_every: u32,
     /// Run ID of the parent sweep when called via `bench swebench → mini`.
     /// `None` for standalone `bench mini` runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1307,6 +1318,7 @@ mod tests {
             fallback_models: vec![],
             redaction_policy_id: "sha256:abc123456789abcd".into(),
             deterministic_mode: false,
+            chaos_fail_every: 0,
             parent_sweep_run_id: None,
         };
         let json = serde_json::to_string_pretty(&m).unwrap();
@@ -1333,6 +1345,7 @@ mod tests {
             fallback_models: vec!["claude-haiku-4-5".into()],
             redaction_policy_id: "sha256:deadbeef01234567".into(),
             deterministic_mode: false,
+            chaos_fail_every: 0,
             parent_sweep_run_id: Some("abcdef0123456789".into()),
         };
         let json = serde_json::to_string_pretty(&m).unwrap();
@@ -1362,6 +1375,7 @@ mod tests {
             fallback_models: vec![],
             redaction_policy_id: "sha256:abc123".into(),
             deterministic_mode: true,
+            chaos_fail_every: 0,
             parent_sweep_run_id: None,
         });
         let json = t.to_json_pretty().unwrap();

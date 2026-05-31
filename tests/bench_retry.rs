@@ -741,6 +741,7 @@ fn make_manifest_with_sha(sha: &str) -> ProvenanceManifest {
             rust_version: None,
         },
         cli: CliManifest { argv: vec![] },
+        chaos_fail_every: 0,
         circuit_breaker: None,
         source: None,
         import_predictions_path: None,

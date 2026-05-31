@@ -71,6 +71,11 @@ pub struct RenderOnlyReport {
     pub upper_bound_cost: UpperBoundCost,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_workdir: Option<String>,
+    /// Effective deterministic chaos fault-injection cadence
+    /// (`--chaos-fail-every`). `0` means no injection. Surfaced here so a
+    /// misconfigured resilience experiment is visible at $0 (issue #340).
+    #[serde(default)]
+    pub chaos_fail_every: u32,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -215,6 +220,7 @@ pub fn render(args: RenderOnlyArgs) -> Result<RenderOnlyReport, Error> {
         context_window_pct,
         upper_bound_cost,
         local_workdir: local_workdir.map(|p| p.display().to_string()),
+        chaos_fail_every: config.root.environment.chaos_fail_every,
     })
 }
 
@@ -276,6 +282,16 @@ pub fn format_text(report: &RenderOnlyReport) -> String {
 
     if let Some(ref wd) = report.local_workdir {
         sections.push(format!("Local workdir: {wd}"));
+    }
+
+    if report.chaos_fail_every > 0 {
+        sections.push(format!(
+            "Chaos: inject a synthetic bash timeout every {} env invocation(s) \
+             (--chaos-fail-every)",
+            report.chaos_fail_every
+        ));
+    } else {
+        sections.push("Chaos: off (--chaos-fail-every 0)".to_owned());
     }
 
     sections.extend(vec![
@@ -540,6 +556,33 @@ mod tests {
             read_only: false,
         });
         assert!(result.is_err(), "broken template must return Err");
+    }
+
+    #[test]
+    fn render_surfaces_chaos_fail_every_from_config() {
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.environment.chaos_fail_every = 3;
+        let report = render(RenderOnlyArgs {
+            task: "t".into(),
+            extra_context: None,
+            config: cfg,
+            local_workdir: None,
+            read_only: false,
+        })
+        .unwrap();
+        assert_eq!(report.chaos_fail_every, 3);
+        let text = format_text(&report);
+        assert!(
+            text.contains("Chaos: inject a synthetic bash timeout every 3"),
+            "render-only text should surface the chaos cadence;\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_chaos_off_by_default() {
+        let report = render(default_args()).unwrap();
+        assert_eq!(report.chaos_fail_every, 0);
+        assert!(format_text(&report).contains("Chaos: off"));
     }
 
     #[test]

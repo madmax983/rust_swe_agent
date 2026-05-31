@@ -166,6 +166,7 @@ fn write_sweep(dir: &Path, instances: Vec<InstanceResult>, finished_at: &str) {
                 rust_version: None,
             },
             cli: CliManifest { argv: Vec::new() },
+            chaos_fail_every: 0,
             circuit_breaker: None,
             source: None,
             import_predictions_path: None,

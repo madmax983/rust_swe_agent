@@ -1432,10 +1432,21 @@ impl Agent for DefaultAgent {
         let obs_msg = Message::user(obs_text.clone());
         self.history.push(obs_msg.clone());
         let mut obs_extra = MessageExtra::default();
-        obs_extra.other.insert(
-            "run_result".into(),
-            serde_json::to_value(&result_for_trajectory).unwrap_or(serde_json::Value::Null),
-        );
+        // Mark chaos-injected results so `bench inspect` can distinguish a
+        // deterministically synthesized timeout from a real one. We detect by
+        // the decorator's stderr sentinel on a timed-out result; the flag is
+        // written directly onto the step's recorded env result (issue #340).
+        let chaos_injected = result.timed_out && result.stderr == crate::env::CHAOS_INJECTED_STDERR;
+        let mut run_result_value =
+            serde_json::to_value(&result_for_trajectory).unwrap_or(serde_json::Value::Null);
+        if chaos_injected {
+            if let Some(obj) = run_result_value.as_object_mut() {
+                obj.insert("chaos_injected".into(), serde_json::Value::Bool(true));
+            }
+        }
+        obs_extra
+            .other
+            .insert("run_result".into(), run_result_value);
         let mut pre_hook_value = serde_json::to_value(&pre_hook_results)?;
         self.redactor
             .redact_json_value(&mut pre_hook_value, surface::TRAJECTORY);
