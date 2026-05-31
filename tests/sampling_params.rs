@@ -16,7 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use maxwells_daemon::agent::default::DefaultAgentBuilder;
 use maxwells_daemon::env::RunRequest;
-use maxwells_daemon::error::{EnvError, ModelError};
+use maxwells_daemon::error::EnvError;
+use maxwells_daemon::model::ModelError;
 use maxwells_daemon::model::{
     Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, SamplingParams,
 };
@@ -314,7 +315,7 @@ impl Model for AlwaysFail {
         &self,
         _messages: &[Message],
         _opts: &QueryOpts,
-    ) -> Result<ModelResponse, maxwells_daemon::error::ModelError> {
+    ) -> Result<ModelResponse, maxwells_daemon::model::ModelError> {
         Err(ModelError::RateLimited(
             "scripted rate limit for test".into(),
         ))

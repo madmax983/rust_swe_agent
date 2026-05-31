@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 
 use super::{Message, Model, ModelResponse, ModelUsage, QueryOpts};
-use crate::error::ModelError;
+use crate::model::ModelError;
 
 pub struct DeterministicModel {
     name: String,

@@ -1179,7 +1179,7 @@ async fn run_agent_with_timeout(
 fn classify_error(err: &Error) -> FailureCategory {
     match err {
         Error::Env(_) => FailureCategory::EnvSetup,
-        Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        Error::Model(crate::model::ModelError::Malformed(_)) => FailureCategory::ModelParse,
         Error::Model(_) => FailureCategory::ModelApi,
         _ => FailureCategory::AgentInternal,
     }

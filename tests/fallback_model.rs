@@ -12,7 +12,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use maxwells_daemon::error::ModelError;
+use maxwells_daemon::model::ModelError;
 use maxwells_daemon::model::{
     FallbackAttemptRecord, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,
 };
@@ -227,7 +227,7 @@ async fn all_candidates_failed_returns_compound_error() {
         "both failed attempts should be preserved"
     );
     let _ = attempts[0].model.as_str(); // FailedAttempt::model
-    let _ = attempts[0].reason.as_str(); // FailedAttempt::reason
+    let _ = attempts[0].failure_reason.as_str(); // FailedAttempt::reason
 }
 
 // ── FallbackSummary: all_failed is not fabricated as primary ──────────────────

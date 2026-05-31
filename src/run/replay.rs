@@ -26,8 +26,9 @@ use crate::config::{Config, EnvKind};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment};
-use crate::error::{Error, ModelError};
+use crate::error::Error;
 use crate::fingerprint::{canonical_json, cap_canonical, compute_input_fingerprint};
+use crate::model::ModelError;
 use crate::model::{DeterministicModel, Message, Model, ModelResponse, QueryOpts};
 use crate::redaction::Redactor;
 use crate::trajectory::Trajectory;

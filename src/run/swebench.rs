@@ -4626,7 +4626,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         // so the global Retry-After floor is set for all workers.
         if let (
             Some(g),
-            Some(crate::error::Error::Model(crate::error::ModelError::RateLimited(msg))),
+            Some(crate::error::Error::Model(crate::model::ModelError::RateLimited(msg))),
         ) = (&governor, &run_err)
         {
             let retry_after =
@@ -4901,14 +4901,14 @@ fn classify_error(err: &Error) -> FailureCategory {
         // Docker build/start/exec or local command execution plumbing.
         Error::Env(_) => FailureCategory::EnvSetup,
         // Model transport/auth/rate-limit/5xx style failures.
-        Error::Model(crate::error::ModelError::Malformed(_)) => FailureCategory::ModelParse,
+        Error::Model(crate::model::ModelError::Malformed(_)) => FailureCategory::ModelParse,
         // When transient failures precede a terminal non-transient one, the error
         // is wrapped in AllCandidatesFailed to preserve attempt telemetry. Peek at
         // the last attempt's coarse reason so classification matches the terminal
         // error type rather than always falling through to ModelApi.
-        Error::Model(crate::error::ModelError::AllCandidatesFailed(_, attempts)) => {
+        Error::Model(crate::model::ModelError::AllCandidatesFailed(_, attempts)) => {
             // `coarse_reason(Malformed)` in fallback.rs returns "malformed_response".
-            if attempts.last().map(|a| a.reason.as_str()) == Some("malformed_response") {
+            if attempts.last().map(|a| a.failure_reason.as_str()) == Some("malformed_response") {
                 FailureCategory::ModelParse
             } else {
                 FailureCategory::ModelApi
@@ -7566,7 +7566,7 @@ instance = "inst"
         let model = DeterministicModel::new(vec!["__rate_limited__:2".to_owned()]);
         let result = model.query(&[], &QueryOpts::default()).await;
         match result {
-            Err(crate::error::ModelError::RateLimited(msg)) => {
+            Err(crate::model::ModelError::RateLimited(msg)) => {
                 assert!(
                     msg.contains("retry-after: 2"),
                     "error should include retry-after seconds, got: {msg}"
@@ -7846,18 +7846,19 @@ instance = "inst"
 
     #[test]
     fn classify_error_all_candidates_failed_malformed_terminal_is_model_parse() {
-        use crate::error::{FailedAttempt, ModelError};
+        use crate::model::FallbackAttemptRecord;
+        use crate::model::ModelError;
         // Transient attempt followed by a Malformed terminal: the terminal
         // coarse_reason is "malformed_response" → ModelParse.
         let attempts = vec![
-            FailedAttempt {
+            FallbackAttemptRecord {
                 model: "m1".into(),
-                reason: "rate_limited".into(),
+                failure_reason: "rate_limited".into(),
                 retry_after_secs: None,
             },
-            FailedAttempt {
+            FallbackAttemptRecord {
                 model: "m2".into(),
-                reason: "malformed_response".into(),
+                failure_reason: "malformed_response".into(),
                 retry_after_secs: None,
             },
         ];
@@ -7874,17 +7875,18 @@ instance = "inst"
 
     #[test]
     fn classify_error_all_candidates_failed_transient_terminal_is_model_api() {
-        use crate::error::{FailedAttempt, ModelError};
+        use crate::model::FallbackAttemptRecord;
+        use crate::model::ModelError;
         // All transient failures: terminal reason is "rate_limited" → ModelApi.
         let attempts = vec![
-            FailedAttempt {
+            FallbackAttemptRecord {
                 model: "m1".into(),
-                reason: "rate_limited".into(),
+                failure_reason: "rate_limited".into(),
                 retry_after_secs: None,
             },
-            FailedAttempt {
+            FallbackAttemptRecord {
                 model: "m2".into(),
-                reason: "rate_limited".into(),
+                failure_reason: "rate_limited".into(),
                 retry_after_secs: None,
             },
         ];
@@ -7901,7 +7903,7 @@ instance = "inst"
 
     #[test]
     fn classify_error_all_candidates_failed_empty_attempts_is_model_api() {
-        use crate::error::ModelError;
+        use crate::model::ModelError;
         // Edge case: no attempts recorded → fallback to ModelApi.
         let err = Error::Model(ModelError::AllCandidatesFailed("all failed".into(), vec![]));
         assert_eq!(classify_error(&err), FailureCategory::ModelApi);
@@ -7909,14 +7911,14 @@ instance = "inst"
 
     #[test]
     fn classify_error_plain_malformed_is_model_parse() {
-        use crate::error::ModelError;
+        use crate::model::ModelError;
         let err = Error::Model(ModelError::Malformed("bad json".into()));
         assert_eq!(classify_error(&err), FailureCategory::ModelParse);
     }
 
     #[test]
     fn classify_error_rate_limited_is_model_api() {
-        use crate::error::ModelError;
+        use crate::model::ModelError;
         let err = Error::Model(ModelError::RateLimited("429".into()));
         assert_eq!(classify_error(&err), FailureCategory::ModelApi);
     }
@@ -8000,6 +8002,7 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8018,11 +8021,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
@@ -8122,8 +8121,8 @@ instance = "inst"
 
         let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
             .await
-            .expect("sweep timed out")
-            .expect("sweep failed");
+            .unwrap_or_else(|_| panic!("sweep timed out"))
+            .unwrap_or_else(|_| panic!("sweep failed"));
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 

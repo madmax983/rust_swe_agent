@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 
 use super::{FallbackAttemptRecord, Message, Model, ModelResponse, QueryOpts};
-use crate::error::{FailedAttempt, ModelError};
+use crate::model::ModelError;
 
 pub struct FallbackModel {
     /// Ordered chain: index 0 is primary, the rest are fallback candidates.
@@ -100,14 +100,7 @@ impl Model for FallbackModel {
                         failure_reason: coarse_reason(&e),
                         retry_after_secs: e.retry_after_secs(),
                     });
-                    let error_attempts: Vec<FailedAttempt> = failed_attempts
-                        .iter()
-                        .map(|a| FailedAttempt {
-                            model: a.model.clone(),
-                            reason: a.failure_reason.clone(),
-                            retry_after_secs: a.retry_after_secs,
-                        })
-                        .collect();
+                    let error_attempts = failed_attempts.clone();
                     let summary = failed_attempts
                         .iter()
                         .map(|a| format!("{}: {}", a.model, a.failure_reason))
@@ -120,14 +113,7 @@ impl Model for FallbackModel {
 
         // Every candidate exhausted via transient failures. Preserve structured
         // attempt records so DefaultAgent can write telemetry even on all-fail.
-        let error_attempts: Vec<FailedAttempt> = failed_attempts
-            .iter()
-            .map(|a| FailedAttempt {
-                model: a.model.clone(),
-                reason: a.failure_reason.clone(),
-                retry_after_secs: a.retry_after_secs,
-            })
-            .collect();
+        let error_attempts = failed_attempts.clone();
         let summary = failed_attempts
             .iter()
             .map(|a| format!("{}: {}", a.model, a.failure_reason))
@@ -237,9 +223,9 @@ mod tests {
         assert!(msg.contains("m2"));
         assert_eq!(attempts.len(), 2);
         assert_eq!(attempts[0].model, "m1");
-        assert_eq!(attempts[0].reason, "rate_limited");
+        assert_eq!(attempts[0].failure_reason, "rate_limited");
         assert_eq!(attempts[1].model, "m2");
-        assert_eq!(attempts[1].reason, "rate_limited");
+        assert_eq!(attempts[1].failure_reason, "rate_limited");
     }
 
     #[tokio::test]
@@ -259,7 +245,7 @@ mod tests {
         assert!(msg.contains("m2"), "summary must mention secondary: {msg}");
         assert_eq!(attempts.len(), 2, "both attempts must be preserved");
         assert_eq!(attempts[0].model, "m1");
-        assert_eq!(attempts[0].reason, "rate_limited");
+        assert_eq!(attempts[0].failure_reason, "rate_limited");
         assert_eq!(attempts[1].model, "m2");
     }
 

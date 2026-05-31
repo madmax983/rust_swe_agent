@@ -41,8 +41,9 @@ pub use config::{
 #[cfg(feature = "docker")]
 pub use env::DockerEnvironment;
 pub use env::{Environment, LocalEnvironment, RunRequest, RunResult};
-pub use error::{ConfigError, EnvError, Error, ModelError};
+pub use error::{ConfigError, EnvError, Error};
 pub use exit_code::ExitCode;
+pub use model::ModelError;
 pub use model::{
     AnthropicBackend, CacheHint, DeterministicModel, FallbackAttemptRecord, FallbackModel,
     LitellmBackend, Message, MessageExtra, Model, ModelResponse, ModelUsage, QueryOpts, Role,

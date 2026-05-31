@@ -14,8 +14,9 @@ use crate::config::{Config, EnvKind, McpServerCfg};
 #[cfg(feature = "docker")]
 use crate::env::DockerEnvironment;
 use crate::env::{Environment, LocalEnvironment};
-use crate::error::{Error, ModelError};
+use crate::error::Error;
 use crate::fingerprint::{canonical_json, cap_canonical, compute_input_fingerprint};
+use crate::model::ModelError;
 use crate::model::litellm::LitellmBackend;
 use crate::model::{
     DeterministicModel, FallbackModel, Message, Model, ModelResponse, ModelUsage, QueryOpts,

@@ -30,7 +30,7 @@ use litellm_rs::{
 };
 
 use super::{Message, Model, ModelResponse, ModelUsage, QueryOpts, Role, cap_breakpoints};
-use crate::error::ModelError;
+use crate::model::ModelError;
 
 const BREAKPOINT_CAP: usize = 4;
 
@@ -455,13 +455,13 @@ mod tests {
             tpm_limit: None,
         });
         match e {
-            crate::error::ModelError::RateLimited(msg) => {
+            crate::model::ModelError::RateLimited(msg) => {
                 assert!(
                     msg.contains("retry-after: 45"),
                     "structured retry_after should be embedded in message: {msg}"
                 );
                 assert_eq!(
-                    crate::error::ModelError::RateLimited(msg).retry_after_secs(),
+                    crate::model::ModelError::RateLimited(msg).retry_after_secs(),
                     Some(45),
                     "retry_after_secs should parse back the embedded value"
                 );
@@ -479,7 +479,7 @@ mod tests {
             tpm_limit: None,
         });
         match e {
-            crate::error::ModelError::RateLimited(msg) => {
+            crate::model::ModelError::RateLimited(msg) => {
                 assert_eq!(msg, "quota exceeded");
             }
             other => panic!("expected RateLimited, got {other:?}"),

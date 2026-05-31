@@ -11,13 +11,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::error::ModelError;
-
 pub mod deterministic;
+pub mod error;
 pub mod fallback;
 pub mod litellm;
 
 pub use deterministic::DeterministicModel;
+pub use error::ModelError;
 pub use fallback::FallbackModel;
 pub use litellm::{AnthropicBackend, LitellmBackend};
 

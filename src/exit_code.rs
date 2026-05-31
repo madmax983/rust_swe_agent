@@ -203,11 +203,11 @@ impl ExitCode {
             Error::VerificationFailed(..) => Self::VerificationFailure,
             Error::Env(env_e) => Self::from_env_error(env_e),
             Error::Model(model_e) => match model_e {
-                crate::error::ModelError::ReplayDrift(_) => Self::ReplayPromptDrift,
-                crate::error::ModelError::ScriptedResponsesExhausted(_) => {
+                crate::model::ModelError::ReplayDrift(_) => Self::ReplayPromptDrift,
+                crate::model::ModelError::ScriptedResponsesExhausted(_) => {
                     Self::ReplayResponseExhausted
                 }
-                crate::error::ModelError::ReplayUnfingerprintedLegacy(_) => Self::UsageError,
+                crate::model::ModelError::ReplayUnfingerprintedLegacy(_) => Self::UsageError,
                 // ResponsesExhausted (generic DeterministicModel exhaustion used in
                 // non-replay contexts) and all other model errors → task unsuccessful.
                 // Replay translates ResponsesExhausted → ScriptedResponsesExhausted
@@ -242,7 +242,8 @@ impl ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{ConfigError, EnvError, ModelError};
+    use crate::error::{ConfigError, EnvError};
+    use crate::model::ModelError;
 
     #[test]
     fn from_error_config_is_usage_error() {

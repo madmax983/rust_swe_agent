@@ -22,7 +22,8 @@ use super::{
 use crate::config::{Config, ToolHookCfg};
 use crate::cost::{BASELINE_COST_MODEL, CostSource, estimate_cost_usd, is_free_tier_model};
 use crate::env::{CancellationToken, Environment, RunRequest, RunResult};
-use crate::error::{Error, ModelError};
+use crate::error::Error;
+use crate::model::ModelError;
 use crate::model::{
     CacheHint, FallbackAttemptRecord, Message, MessageExtra, Model, ModelResponse, QueryOpts, Role,
 };
@@ -678,7 +679,7 @@ async fn query_model_until_cancelled(
     history: &[Message],
     opts: &QueryOpts,
     cancellation: Option<CancellationToken>,
-) -> Result<Option<ModelResponse>, crate::error::ModelError> {
+) -> Result<Option<ModelResponse>, crate::model::ModelError> {
     let Some(mut cancellation) = cancellation else {
         return model.query(history, opts).await.map(Some);
     };
@@ -895,11 +896,7 @@ impl Agent for DefaultAgent {
         // propagating so finalize_run_metadata can still emit a summary.
         if let Err(ModelError::AllCandidatesFailed(_, ref attempts)) = query_result {
             self.fallback_failed_attempts
-                .extend(attempts.iter().map(|a| FallbackAttemptRecord {
-                    model: a.model.clone(),
-                    failure_reason: a.reason.clone(),
-                    retry_after_secs: a.retry_after_secs,
-                }));
+                .extend(attempts.iter().cloned());
         }
         let Some(resp) = query_result? else {
             self.finalize_cancelled();
@@ -2473,7 +2470,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _opts: &QueryOpts,
-        ) -> Result<ModelResponse, crate::error::ModelError> {
+        ) -> Result<ModelResponse, crate::model::ModelError> {
             let _ = self.cancel_tx.send(true);
             Ok(ModelResponse {
                 content: "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\nlate submit\n```".into(),
@@ -2506,7 +2503,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _opts: &QueryOpts,
-        ) -> Result<ModelResponse, crate::error::ModelError> {
+        ) -> Result<ModelResponse, crate::model::ModelError> {
             let _ = self.query_started_tx.send(true);
             tokio::time::sleep(Duration::from_secs(30)).await;
             self.query_returned.store(true, Ordering::SeqCst);
