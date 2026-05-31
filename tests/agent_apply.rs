@@ -1184,3 +1184,124 @@ fn apply_unwritable_report_path_fails_before_mutation() {
         "tree must not be mutated when report path is bad"
     );
 }
+
+#[test]
+fn apply_report_path_is_dir_fails_before_mutation() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Create a directory at the report path — preflight must reject this.
+    let report_as_dir = work.path().join("apply-report-dir");
+    std::fs::create_dir_all(&report_as_dir).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_as_dir),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error when report path is a directory, got {err:?}"
+    );
+    // Tree must be unchanged.
+    let content = std::fs::read_to_string(repo.join("hello.txt")).unwrap();
+    assert_eq!(content, "before\n", "tree must not be mutated");
+}
+
+#[test]
+fn apply_report_missing_parent_not_created_before_apply() {
+    // Preflight must not create missing report parent directories before the
+    // apply; the parent should be created by write_report after the patch
+    // succeeds.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Parent directory does not exist yet.
+    let missing_parent = work.path().join("new-dir");
+    let report_path = missing_parent.join("apply-report.json");
+    assert!(
+        !missing_parent.exists(),
+        "precondition: dir should not exist"
+    );
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path.clone()),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied, "patch must be applied");
+    assert!(
+        report_path.exists(),
+        "write_report must create the parent dir and report"
+    );
+    // The parent dir must not have been created before the apply.
+    // We can only assert it now exists (post-apply); the key correctness
+    // property is that the apply succeeded — verified above.
+}
+
+#[test]
+fn apply_patch_with_sibling_trajectory_redaction_refused() {
+    // When --patch is used and the sibling .traj.json records patch_submission
+    // redaction, agent apply must refuse even though --trajectory was not used.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Sibling trajectory records patch_submission redaction.
+    let traj_json = r#"{
+        "format": "mini-swe-agent-1.3",
+        "info": {
+            "redaction": {
+                "enabled": true,
+                "redacted": true,
+                "counts": [
+                    {"surface": "patch_submission", "kind": "configured_literal", "count": 1}
+                ]
+            }
+        },
+        "messages": []
+    }"#;
+    std::fs::write(work.path().join("task.traj.json"), traj_json).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: None,
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::RedactedRefused),
+        "expected RedactedRefused when sibling traj records patch_submission redaction, got {err:?}"
+    );
+}

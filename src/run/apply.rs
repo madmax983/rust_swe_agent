@@ -289,7 +289,16 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
 /// Returns `(patch_path, trajectory_path_opt, trajectory_recorded_redaction)`.
 fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<PathBuf>, bool) {
     match selector {
-        PatchSelector::PatchFile(p) => (p.clone(), None, false),
+        PatchSelector::PatchFile(p) => {
+            // For a direct --patch selector, also probe the sibling trajectory
+            // so that redaction recorded only in metadata cannot be bypassed by
+            // choosing --patch instead of --trajectory.
+            let sibling_traj = sibling_trajectory_of_patch(p);
+            let redacted = sibling_traj
+                .as_deref()
+                .map_or(false, trajectory_has_patch_submission_redaction);
+            (p.clone(), sibling_traj, redacted)
+        }
         PatchSelector::TrajectoryFile(traj_path) => {
             let patch_path = sibling_patch_of_trajectory(traj_path);
             let redacted = trajectory_has_patch_submission_redaction(traj_path);
@@ -363,6 +372,20 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
 
     // Fall back to the sibling path (may not exist; caller handles I/O error).
     sibling
+}
+
+/// Derive the `.traj.json` sibling of a `.patch` file, returning `Some` only
+/// if the trajectory file actually exists on disk.
+///
+/// `task.patch` → `task.traj.json`
+fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
+    let stem = patch_path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let base = stem.strip_suffix(".patch").unwrap_or(&stem);
+    let traj = patch_path.with_file_name(format!("{base}.traj.json"));
+    if traj.exists() { Some(traj) } else { None }
 }
 
 /// Return `true` if the trajectory file at `traj_path` records at least one
@@ -1008,19 +1031,41 @@ fn apply_patch(
 
 /// Verify the report destination is writable *before* mutating the tree.
 ///
-/// Creates parent directories and probes the file for write access so that a
-/// bad path fails before `apply_patch` runs, rather than after.
+/// Probes the report path for write access before `apply_patch` runs.
+///
+/// Does NOT create missing parent directories — that is deferred to
+/// `write_report` after the patch succeeds, so a missing parent can never
+/// conflict with a path the patch adds. Parent creation here would leave
+/// behind untracked directories if the apply subsequently fails.
 fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    // Reject immediately if the report path itself is already a directory;
+    // write_report would fail with IsADirectory after mutating the tree.
+    if path.is_dir() {
+        return Err(ApplyError::Io(std::io::Error::new(
+            std::io::ErrorKind::IsADirectory,
+            format!("report path is a directory: {}", path.display()),
+        )));
     }
-    // Probe writability with a temporary sibling rather than creating the
-    // final report file; creating the real path here would conflict with a
-    // patch that adds a file at that same location.
-    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let probe = parent_dir.join(format!(".apply-probe-{}.tmp", std::process::id()));
+    // Walk up to the nearest existing ancestor to place the probe file,
+    // since missing intermediate directories have not been created yet.
+    let parent = path
+        .parent()
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                p
+            }
+        })
+        .unwrap_or(Path::new("."));
+    let mut probe_dir = parent;
+    while !probe_dir.exists() {
+        probe_dir = match probe_dir.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => break,
+        };
+    }
+    let probe = probe_dir.join(format!(".apply-probe-{}.tmp", std::process::id()));
     std::fs::write(&probe, b"")?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
