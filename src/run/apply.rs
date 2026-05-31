@@ -247,13 +247,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // ── 12. Apply the patch ───────────────────────────────────────────────────
     // patch_path is canonicalized (absolute); git_root avoids silent skips
     // when --target is a repo subdirectory.
-    apply_patch(
-        &git_root,
-        &patch_path,
-        opts.three_way,
-        opts.allow_dirty,
-        &files_changed,
-    )?;
+    apply_patch(&git_root, &patch_path, opts.three_way, &files_changed)?;
 
     // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
@@ -498,32 +492,57 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     (files, added, removed)
 }
 
+/// Return the set of file paths that have index entries (staged or unmerged)
+/// among `files`, by parsing `git ls-files --stage -- <files>`.
+fn staged_files(git_root: &Path, files: &[String]) -> std::collections::HashSet<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-files", "--stage", "--"]);
+    for f in files {
+        cmd.arg(f);
+    }
+    cmd.current_dir(git_root);
+    let Ok(output) = cmd.output() else {
+        return std::collections::HashSet::new();
+    };
+    // Each line: "<mode> <sha1> <stage_num>\t<path>"
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1).map(str::to_owned))
+        .collect()
+}
+
 /// Run `git apply [--3way]` from `git_root` and return `Ok(())` on success.
 ///
 /// `affected_files` is the list of paths the patch touches (from
-/// `parse_diff_stats`). It is used for two `--3way`-specific corrections:
+/// `parse_diff_stats`). It drives two `--3way`-specific corrections that both
+/// use the pre-apply index state to avoid clobbering pre-existing staged edits:
 ///
-/// - **Failure**: `git apply --check --3way` can exit 0 even when the real
-///   merge has conflicts, so the apply may write conflict markers and leave
-///   unmerged index entries before exiting non-zero. We restore only the
-///   patch-affected files (not `.`) to preserve unrelated tracked edits.
-///   `git checkout -- <path>` is refused on unmerged paths, so we first
-///   run `git reset HEAD -- <files>` to clear the merge stages, then
-///   `git checkout -- <files>` to restore the working tree.
+/// - **Failure restore**: `git apply --check --3way` can exit 0 when the real
+///   merge has conflicts, leaving conflict markers and unmerged index entries.
+///   For each affected file that had no pre-apply index entry: clear unmerged
+///   stages with `git reset HEAD`, then restore the working tree with
+///   `git checkout --`. Files that already had a staged entry are left as-is
+///   so the caller's staged content is never silently discarded.
 ///
-/// - **Success**: `git apply --3way` stages successful merges in the index
-///   when it uses the 3-way path. We unstage the affected files afterward
-///   so both modes produce the same "modified working tree" semantics.
-///   The unstage is skipped when `allow_dirty` is set: the user may have
-///   pre-existing staged edits in those files; resetting them would
-///   silently discard those changes.
+/// - **Success unstage**: `git apply --3way` stages successful merges in the
+///   index. For each affected file that had no pre-apply staged entry: reset
+///   it to unstaged. This gives the same "modified working tree only"
+///   semantics as regular `git apply`, regardless of `--allow-dirty`, while
+///   still preserving any pre-existing staged edits in affected paths.
 fn apply_patch(
     git_root: &Path,
     patch_path: &Path,
     three_way: bool,
-    allow_dirty: bool,
     affected_files: &[String],
 ) -> Result<(), ApplyError> {
+    // Record which affected files are already in the index before we touch
+    // anything. This drives both the failure restore and the success unstage.
+    let pre_staged = if three_way && !affected_files.is_empty() {
+        staged_files(git_root, affected_files)
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let mut cmd = Command::new("git");
     cmd.arg("apply");
     if three_way {
@@ -531,39 +550,42 @@ fn apply_patch(
     }
     cmd.arg(patch_path).current_dir(git_root);
     let output = cmd.output()?;
+
     if !output.status.success() {
-        if three_way && !affected_files.is_empty() {
-            // Clear unmerged index entries first; git checkout -- is refused
-            // on paths with unmerged entries.
-            let mut reset_cmd = Command::new("git");
-            reset_cmd.args(["reset", "HEAD", "--"]);
+        if three_way {
             for f in affected_files {
-                reset_cmd.arg(f);
+                if pre_staged.contains(f) {
+                    // The file already had staged content before the apply;
+                    // do not wipe it by resetting or checking out.
+                    continue;
+                }
+                // Clear any unmerged index entries (git checkout -- is refused
+                // on paths with unmerged entries), then restore to HEAD.
+                let _ = Command::new("git")
+                    .args(["reset", "HEAD", "--", f])
+                    .current_dir(git_root)
+                    .output();
+                let _ = Command::new("git")
+                    .args(["checkout", "--", f])
+                    .current_dir(git_root)
+                    .output();
             }
-            reset_cmd.current_dir(git_root);
-            let _ = reset_cmd.output();
-            // Restore working-tree content to HEAD.
-            let mut restore = Command::new("git");
-            restore.args(["checkout", "--"]);
-            for f in affected_files {
-                restore.arg(f);
-            }
-            restore.current_dir(git_root);
-            let _ = restore.output();
         }
         let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(ApplyError::CheckFailed(msg));
     }
-    // When --allow-dirty is set, the user may have pre-existing staged edits
-    // in patch-affected files; skipping the reset preserves those.
-    if three_way && !allow_dirty && !affected_files.is_empty() {
-        let mut unstage = Command::new("git");
-        unstage.args(["reset", "HEAD", "--"]);
+
+    // Unstage any index entries written by the 3-way path for files that were
+    // not staged before. Preserves pre-existing staged edits.
+    if three_way {
         for f in affected_files {
-            unstage.arg(f);
+            if !pre_staged.contains(f) {
+                let _ = Command::new("git")
+                    .args(["reset", "HEAD", "--", f])
+                    .current_dir(git_root)
+                    .output();
+            }
         }
-        unstage.current_dir(git_root);
-        let _ = unstage.output();
     }
     Ok(())
 }
