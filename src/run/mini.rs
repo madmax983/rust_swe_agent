@@ -2993,14 +2993,13 @@ index 8a1218a..24c5735 100644\n\
         // Inject a fake secret as an environment variable that the redactor picks up.
         // We use a value that looks like a real API key pattern so the redactor fires.
         let fake_secret = "sk-ant-fake-secret-value-for-test-0123456789abcdef";
-        // SAFETY: test-only; single-threaded context for secret injection.
-        unsafe { std::env::set_var("TEST_MANIFEST_API_KEY", fake_secret) };
-
-        let args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
+        let mut args = make_mini_args_for_manifest_test(tmp.path().to_path_buf(), "secret-test");
+        args.config
+            .root
+            .redaction
+            .secret_literals
+            .push(fake_secret.to_string());
         run(args).await.unwrap();
-
-        // Clean up env var
-        unsafe { std::env::remove_var("TEST_MANIFEST_API_KEY") };
 
         let traj_path = tmp.path().join("secret-test.traj.json");
         let content = std::fs::read_to_string(&traj_path).unwrap();

@@ -1782,7 +1782,11 @@ pub async fn run(mut args: SwebenchArgs) -> Result<SweepResults, Error> {
     // OTLP telemetry setup. The drop counter is shared between the tracer
     // and the final SweepResults so export failures are visible post-hoc.
     let span_export_dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let otlp_endpoint = crate::telemetry::resolve_endpoint(args.otlp_endpoint.as_deref());
+    let otlp_endpoint = crate::telemetry::resolve_endpoint(
+        args.otlp_endpoint.as_deref(),
+        std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").ok(),
+        std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
+    );
     let tracer_arc: Option<std::sync::Arc<crate::telemetry::Tracer>> =
         otlp_endpoint.as_deref().map(|ep| {
             std::sync::Arc::new(crate::telemetry::Tracer::new(
@@ -7987,6 +7991,7 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8005,11 +8010,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
