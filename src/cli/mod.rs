@@ -1145,6 +1145,18 @@ async fn mini_continue_cmd(
         );
     }
 
+    // Reject --format — it requires --render-only, which is already mutually
+    // exclusive with --continue; allowing it would silently ignore the format
+    // setting after making a paid model call.
+    if m.format != "text" {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "--continue: --format requires --render-only, which cannot be combined with \
+             --continue; run without --format or re-render the finished trajectory with \
+             --render-only",
+        );
+    }
+
     // Reject MCP server overrides — same rationale as --resume.
     if !m.mcp_servers.is_empty() {
         exit_with_outcome(
@@ -1228,8 +1240,25 @@ async fn mini_continue_cmd(
     );
 
     // Build a unique child trajectory name: {parent_stem}-continue-{task_slug}.
+    // If the target already exists (same follow-up run more than once), append a
+    // numeric suffix (-2, -3, …) so retries never silently overwrite earlier runs.
     let follow_up_slug = crate::run::mini::slugify(&follow_up_task);
-    let child_traj_name = format!("{traj_stem}-continue-{follow_up_slug}");
+    let base_name = format!("{traj_stem}-continue-{follow_up_slug}");
+    let child_traj_name = {
+        let candidate = output_dir.join(format!("{base_name}.traj.json"));
+        if candidate.exists() {
+            let mut n = 2u32;
+            loop {
+                let suffixed = format!("{base_name}-{n}");
+                if !output_dir.join(format!("{suffixed}.traj.json")).exists() {
+                    break suffixed;
+                }
+                n += 1;
+            }
+        } else {
+            base_name
+        }
+    };
 
     // Record the parent path as a stable, canonicalized string.
     let parent_path_str = continue_path
