@@ -359,7 +359,14 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
         if !filter.matches(r, res) {
             continue;
         }
-        let (injected, recoveries) = chaos_counts_for_instance(sweep, &r.instance_id);
+        // Only read per-instance trajectories when chaos was actually enabled
+        // for this sweep. For the default (chaos off) path this avoids reading
+        // and parsing every trajectory file just to count zeros.
+        let (injected, recoveries) = if chaos.fail_every > 0 {
+            chaos_counts_for_instance(sweep, &r.instance_id)
+        } else {
+            (0, 0)
+        };
         chaos.injected_steps += injected;
         chaos.recoveries += recoveries;
         rows.push(SummaryRow {
