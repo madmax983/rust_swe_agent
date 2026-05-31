@@ -4606,6 +4606,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             rehearsal_gold_patch,
             no_step_persist: false,
             parent_sweep_run_id: Some(parent_sweep_run_id.clone()),
+            continue_from: None,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

@@ -577,6 +577,7 @@ async fn mini_run_writes_partial_checkpoint_after_each_step() {
         rehearsal_gold_patch: None,
         no_step_persist: false,
         parent_sweep_run_id: None,
+        continue_from: None,
     };
 
     mini_run(args).await.unwrap();

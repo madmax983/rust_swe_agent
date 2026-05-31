@@ -536,6 +536,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            continue_from: None,
         };
 
         let run_outcome = crate::run::mini::run(mini_args).await;
