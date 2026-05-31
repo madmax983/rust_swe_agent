@@ -454,61 +454,205 @@ fn git_head_sha(dir: &Path) -> Option<String> {
 }
 
 /// Parse a unified diff to extract `(files_changed, lines_added, lines_removed)`.
+///
+/// Handles both `diff --git` extended headers and plain `---`/`+++` headers
+/// (e.g. from `diff -u`). Quoted filenames (git C-string escaping) are
+/// unescaped. For renames, both the old (`a/`) and new (`b/`) paths are
+/// included in the returned file list so that `--3way` cleanup can unstage
+/// both the deletion and the addition sides of the rename.
 fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     let mut files: Vec<String> = Vec::new();
     let mut added: i64 = 0;
     let mut removed: i64 = 0;
     let mut in_hunk = false;
-    // Track whether the current file section opened with a "diff --git" header.
-    // When false and we hit "+++", fall back to extracting the name from there
-    // (handles plain unified diffs produced by `diff -u` or `git diff --no-index`
-    // without the git-specific extended header).
+    // Whether the current file section opened with a "diff --git" header.
     let mut saw_git_header = false;
+    // b/ (new) name set by "diff --git" or "+++ "; held for rename detection.
+    let mut pending_b: Option<String> = None;
+    // a/ (old) name set by "--- "; compared with b/ to detect renames.
+    let mut pending_a: Option<String> = None;
 
     for line in patch_text.lines() {
-        if line.starts_with("diff --git ") {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            // New file section; always terminates any active hunk.
             in_hunk = false;
             saw_git_header = true;
-            if let Some(b_part) = line
-                .strip_prefix("diff --git ")
-                .and_then(|s| s.find(" b/").map(|i| &s[i + 3..]))
-            {
-                let name = b_part.trim().to_owned();
-                if !files.contains(&name) {
-                    files.push(name);
+            pending_a = None;
+            pending_b = git_diff_b_path(rest);
+            if let Some(ref name) = pending_b {
+                if !files.contains(name) {
+                    files.push(name.clone());
                 }
             }
-        } else if let Some(rest) = line.strip_prefix("+++ ") {
-            in_hunk = false;
-            if !saw_git_header {
-                // Fallback: extract the file name from the "+++ " header.
-                // Strip optional "b/" prefix (git-format without diff --git),
-                // then any trailing tab + timestamp (plain-diff format).
-                let path = rest.strip_prefix("b/").unwrap_or(rest);
-                let path = path.split('\t').next().unwrap_or(path).trim();
-                if !path.is_empty() && path != "/dev/null" {
-                    let name = path.to_owned();
-                    if !files.contains(&name) {
-                        files.push(name);
-                    }
-                }
-            }
-            // Reset for the next file section.
-            saw_git_header = false;
-        } else if line.starts_with("--- ") {
-            in_hunk = false;
-        } else if line.starts_with("@@ ") {
-            in_hunk = true;
         } else if in_hunk {
+            // Inside a hunk: count added/removed lines only.
+            // "+++ " and "--- " are NOT file headers here — they are content
+            // lines whose original text started with "++" or "--".
             if line.starts_with('+') && !line.starts_with("+++") {
                 added += 1;
             } else if line.starts_with('-') && !line.starts_with("---") {
                 removed += 1;
             }
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            // New-file header outside a hunk: end of the header pair.
+            let b_name = diff_header_path(rest, "b/");
+            if !saw_git_header {
+                // Plain unified-diff fallback (no "diff --git" seen).
+                if let Some(ref name) = b_name {
+                    if !files.contains(name) {
+                        files.push(name.clone());
+                    }
+                }
+                pending_b.clone_from(&b_name);
+            }
+            // Rename detection: if a/ ≠ b/, the old name is also affected
+            // (git stages its deletion; cleanup must unstage that too).
+            let effective_b = pending_b.as_ref().or(b_name.as_ref());
+            if let (Some(a), Some(b)) = (&pending_a, effective_b) {
+                if a != b && !files.contains(a) {
+                    files.push(a.clone());
+                }
+            }
+            saw_git_header = false;
+            pending_a = None;
+            pending_b = None;
+        } else if let Some(rest) = line.strip_prefix("--- ") {
+            // Old-file header outside a hunk: track for rename detection.
+            pending_a = diff_header_path(rest, "a/");
+        } else if line.starts_with("@@ ") {
+            in_hunk = true;
         }
     }
 
     (files, added, removed)
+}
+
+/// Extract the `b/` path from the tail of a `diff --git a/… b/…` line.
+///
+/// Handles the unquoted format (`a/foo b/bar`) and git's C-string-quoted
+/// format (`"a/foo bar" "b/bar baz"`).  Uses `rfind` for the unquoted case so
+/// that an `a/` path containing the substring ` b/` is less likely to confuse
+/// the split point.
+fn git_diff_b_path(rest: &str) -> Option<String> {
+    if rest.starts_with('"') {
+        // Quoted: '"a/…" "b/…"'
+        let sep = rest.find(" \"b/")?;
+        let b_start = sep + 4; // skip ' "b/'
+        let b_end = rest[b_start..].find('"').map(|i| b_start + i)?;
+        let name = unescape_c_string(&rest[b_start..b_end]);
+        if name.is_empty() { None } else { Some(name) }
+    } else {
+        // Unquoted: rfind keeps the b/ path intact when a/ contains " b/".
+        let pos = rest.rfind(" b/")?;
+        let name = rest[pos + 3..].trim().to_owned();
+        if name.is_empty() { None } else { Some(name) }
+    }
+}
+
+/// Extract a file path from a `---` or `+++` diff header line.
+///
+/// `prefix` is `"a/"` or `"b/"`.  Handles git's C-string-quoted format and
+/// strips trailing timestamps (plain-diff `\t<datetime>` suffix).  Returns
+/// `None` for `/dev/null` and empty paths.
+fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
+    if let Some(without_open) = s.strip_prefix('"') {
+        // Quoted: '"prefix/path"'
+        let end = without_open.find('"')?;
+        let inner = &without_open[..end];
+        let name = unescape_c_string(inner.strip_prefix(prefix).unwrap_or(inner));
+        if name.is_empty() || name == "/dev/null" {
+            None
+        } else {
+            Some(name)
+        }
+    } else {
+        let path = s.strip_prefix(prefix).unwrap_or(s);
+        let path = path.split('\t').next().unwrap_or(path).trim();
+        if path.is_empty() || path == "/dev/null" {
+            None
+        } else {
+            Some(path.to_owned())
+        }
+    }
+}
+
+/// Unescape a git C-string (the content between double-quotes, without them).
+fn unescape_c_string(s: &str) -> String {
+    let bytes = unescape_c_string_bytes(s.as_bytes());
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Byte-level C-string unescape as used by git for quoting special filenames.
+fn unescape_c_string_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] != b'\\' || i + 1 >= input.len() {
+            out.push(input[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match input[i] {
+            b't' => {
+                out.push(b'\t');
+                i += 1;
+            }
+            b'n' => {
+                out.push(b'\n');
+                i += 1;
+            }
+            b'r' => {
+                out.push(b'\r');
+                i += 1;
+            }
+            b'"' => {
+                out.push(b'"');
+                i += 1;
+            }
+            b'\\' => {
+                out.push(b'\\');
+                i += 1;
+            }
+            b'a' => {
+                out.push(b'\x07');
+                i += 1;
+            }
+            b'b' => {
+                out.push(b'\x08');
+                i += 1;
+            }
+            b'f' => {
+                out.push(b'\x0C');
+                i += 1;
+            }
+            b'v' => {
+                out.push(b'\x0B');
+                i += 1;
+            }
+            d @ b'0'..=b'7' => {
+                // Octal escape: git uses \nnn for non-ASCII bytes in path names.
+                let mut val = u32::from(d - b'0');
+                i += 1;
+                for _ in 0..2 {
+                    if i < input.len() && input[i] >= b'0' && input[i] <= b'7' {
+                        val = val * 8 + u32::from(input[i] - b'0');
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                out.push(val as u8); // max octal git produces is \377 = 255
+            }
+            _ => {
+                out.push(b'\\');
+                out.push(input[i]);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Return a map of `path → (mode, sha1)` for files among `files` that have
