@@ -152,16 +152,14 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // that subdirectory (it prints "Skipped patch" and exits 0).
     let git_root = git_toplevel(&opts.target).unwrap_or_else(|| opts.target.clone());
 
-    // ── 4. Compute default report destination (next to, not inside, target) ───
-    // Canonicalize first: `--target .` gives Path::new(".")  whose parent() is
-    // None, which would put the report inside the repo. After canonicalization
-    // the parent is always the directory that contains the target.
-    let canonical_target =
-        std::fs::canonicalize(&opts.target).unwrap_or_else(|_| opts.target.clone());
+    // ── 4. Compute default report destination ────────────────────────────────
+    // Anchor on the worktree root, not the target directory: if --target is a
+    // subdirectory the target's parent() is inside the repo, which would write
+    // the report (and create a directory) inside the checkout on dry-run.
     let report_dest = opts.report_path.clone().unwrap_or_else(|| {
-        canonical_target
+        git_root
             .parent()
-            .unwrap_or(&canonical_target)
+            .unwrap_or(&git_root)
             .join("apply-report.json")
     });
 
@@ -461,10 +459,16 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
     let mut added: i64 = 0;
     let mut removed: i64 = 0;
     let mut in_hunk = false;
+    // Track whether the current file section opened with a "diff --git" header.
+    // When false and we hit "+++", fall back to extracting the name from there
+    // (handles plain unified diffs produced by `diff -u` or `git diff --no-index`
+    // without the git-specific extended header).
+    let mut saw_git_header = false;
 
     for line in patch_text.lines() {
         if line.starts_with("diff --git ") {
             in_hunk = false;
+            saw_git_header = true;
             if let Some(b_part) = line
                 .strip_prefix("diff --git ")
                 .and_then(|s| s.find(" b/").map(|i| &s[i + 3..]))
@@ -474,10 +478,25 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
                     files.push(name);
                 }
             }
-        } else if line.starts_with("+++ ") {
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
             in_hunk = false;
+            if !saw_git_header {
+                // Fallback: extract the file name from the "+++ " header.
+                // Strip optional "b/" prefix (git-format without diff --git),
+                // then any trailing tab + timestamp (plain-diff format).
+                let path = rest.strip_prefix("b/").unwrap_or(rest);
+                let path = path.split('\t').next().unwrap_or(path).trim();
+                if !path.is_empty() && path != "/dev/null" {
+                    let name = path.to_owned();
+                    if !files.contains(&name) {
+                        files.push(name);
+                    }
+                }
+            }
+            // Reset for the next file section.
+            saw_git_header = false;
         } else if line.starts_with("--- ") {
-            // nothing
+            in_hunk = false;
         } else if line.starts_with("@@ ") {
             in_hunk = true;
         } else if in_hunk {
@@ -510,7 +529,7 @@ fn pre_staged_entries(
     let mut diff_cmd = Command::new("git");
     diff_cmd.args(["diff", "--cached", "--name-only", "--"]);
     for f in files {
-        diff_cmd.arg(f);
+        diff_cmd.arg(format!(":(literal){f}"));
     }
     diff_cmd.current_dir(git_root);
     let Ok(diff_output) = diff_cmd.output() else {
@@ -530,7 +549,7 @@ fn pre_staged_entries(
     let mut ls_cmd = Command::new("git");
     ls_cmd.args(["ls-files", "--stage", "--"]);
     for f in &staged_names {
-        ls_cmd.arg(f);
+        ls_cmd.arg(format!(":(literal){f}"));
     }
     ls_cmd.current_dir(git_root);
     let Ok(ls_output) = ls_cmd.output() else {
@@ -600,10 +619,13 @@ fn apply_patch(
     if !output.status.success() {
         if three_way {
             for f in affected_files {
+                // Use :(literal) to prevent git from treating file names that
+                // contain pathspec metacharacters (e.g. '*') as globs.
+                let lit = format!(":(literal){f}");
                 // Clear any unmerged index entries for this path so that
                 // subsequent checkout commands are not refused.
                 let _ = Command::new("git")
-                    .args(["reset", "HEAD", "--", f])
+                    .args(["reset", "HEAD", "--", &lit])
                     .current_dir(git_root)
                     .output();
                 if let Some((mode, sha)) = pre_staged.get(f) {
@@ -614,6 +636,7 @@ fn apply_patch(
                         .args(["update-index", "--cacheinfo", &cacheinfo])
                         .current_dir(git_root)
                         .output();
+                    // checkout-index takes literal file names (not pathspecs).
                     let _ = Command::new("git")
                         .args(["checkout-index", "--force", "--", f])
                         .current_dir(git_root)
@@ -621,7 +644,7 @@ fn apply_patch(
                 } else {
                     // No pre-existing staged edit: restore working tree from HEAD.
                     let _ = Command::new("git")
-                        .args(["checkout", "--", f])
+                        .args(["checkout", "--", &lit])
                         .current_dir(git_root)
                         .output();
                 }
@@ -637,7 +660,7 @@ fn apply_patch(
         for f in affected_files {
             if !pre_staged.contains_key(f) {
                 let _ = Command::new("git")
-                    .args(["reset", "HEAD", "--", f])
+                    .args(["reset", "HEAD", "--", &format!(":(literal){f}")])
                     .current_dir(git_root)
                     .output();
             }
