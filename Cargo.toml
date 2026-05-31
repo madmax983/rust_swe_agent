@@ -78,11 +78,10 @@ pretty_assertions = "1"
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [features]
-default = ["webhook", "chaos"]
+default = ["webhook"]
 docker = []
-# Deterministic environment fault injection for agent-resilience testing
-# (`--chaos-fail-every`). Default-on so the operator knob works out of the box;
-# building with `--no-default-features` compiles it out and rejects the flag.
+# Deprecated no-op: `ChaosEnvironment` and `--chaos-fail-every` are always
+# compiled in (issue #340). Retained so `--features chaos` keeps working.
 chaos = []
 live-anthropic = []
 markdown-export = []

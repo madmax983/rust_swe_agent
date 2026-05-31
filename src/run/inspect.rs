@@ -351,10 +351,7 @@ fn build_summary(sweep: &Path, filter: &str) -> Result<SummaryReport, Error> {
     let loaded = crate::run::compare::load_sweep(sweep)?;
     let resolved = load_evaluation_overrides(sweep)?.unwrap_or_default();
     let mut chaos = ChaosSummary {
-        fail_every: loaded
-            .manifest
-            .as_ref()
-            .map_or(0, |m| m.chaos_fail_every),
+        fail_every: loaded.manifest.as_ref().map_or(0, |m| m.chaos_fail_every),
         ..ChaosSummary::default()
     };
     for r in loaded.instances.values() {

@@ -1419,43 +1419,24 @@ async fn build_env(
         EnvKind::Local => Box::new(LocalEnvironment::new().with_workdir(local_workdir.cloned())),
         EnvKind::Docker => build_docker_env(cfg).await?,
     };
-    maybe_wrap_chaos(inner, cfg.root.environment.chaos_fail_every)
+    Ok(maybe_wrap_chaos(
+        inner,
+        cfg.root.environment.chaos_fail_every,
+    ))
 }
 
 /// Wrap `inner` in `ChaosEnvironment` when `fail_every > 0` (issue #340).
 ///
 /// When `fail_every == 0` the inner environment is returned unchanged, so a
-/// run without the knob behaves exactly as before. When the `chaos` feature is
-/// not compiled in but the knob is set, this is a configuration error rather
-/// than a silent no-op.
-#[cfg(feature = "chaos")]
-#[allow(clippy::unnecessary_wraps)] // Result mirrors the not(chaos) signature.
-fn maybe_wrap_chaos(
-    inner: Box<dyn Environment>,
-    fail_every: u32,
-) -> Result<Box<dyn Environment>, Error> {
+/// run without the knob behaves exactly as before.
+fn maybe_wrap_chaos(inner: Box<dyn Environment>, fail_every: u32) -> Box<dyn Environment> {
     if fail_every == 0 {
-        return Ok(inner);
+        return inner;
     }
-    Ok(Box::new(crate::env::ChaosEnvironment::new(
+    Box::new(crate::env::ChaosEnvironment::new(
         inner,
         fail_every as usize,
-    )))
-}
-
-#[cfg(not(feature = "chaos"))]
-fn maybe_wrap_chaos(
-    inner: Box<dyn Environment>,
-    fail_every: u32,
-) -> Result<Box<dyn Environment>, Error> {
-    if fail_every == 0 {
-        return Ok(inner);
-    }
-    Err(Error::Config(crate::error::ConfigError::Invalid(
-        "--chaos-fail-every requires the `chaos` feature — rebuild without \
-         --no-default-features, or with --features chaos"
-            .into(),
-    )))
+    ))
 }
 
 #[cfg(feature = "docker")]

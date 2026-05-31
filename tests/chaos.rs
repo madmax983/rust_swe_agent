@@ -146,7 +146,10 @@ async fn chaos_fail_every_two_injects_at_expected_indices_and_terminates_cleanly
     assert!(!traj["info"]["partial"].as_bool().unwrap_or(false));
 
     // The manifest records chaos_fail_every as a first-class field.
-    assert_eq!(traj["info"]["manifest"]["chaos_fail_every"].as_u64(), Some(2));
+    assert_eq!(
+        traj["info"]["manifest"]["chaos_fail_every"].as_u64(),
+        Some(2)
+    );
 }
 
 #[tokio::test]
