@@ -1540,6 +1540,116 @@ fn apply_plain_deletion_patch_records_deleted_file() {
 }
 
 #[test]
+fn apply_dirty_path_with_whitespace_not_excluded() {
+    // A patch artifact whose filename contains leading/trailing whitespace must
+    // be correctly excluded from the dirty-tree check (fix: no trim_ascii on
+    // the path bytes after stripping the "XY " status prefix).
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // Create a patch file whose name has a trailing space.
+    let patch_content = make_valid_patch(&repo);
+    let patch_name = "task .patch"; // trailing space in name
+    let patch_path = repo.join(patch_name);
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // The repo is "dirty" only because of the untracked patch file.
+    // With --patch pointing at that same file it must be excluded and apply.
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: None,
+    };
+    // Should succeed: the only dirty entry is the patch file itself.
+    run_agent_apply(opts).unwrap();
+}
+
+#[test]
+fn apply_report_symlink_to_patched_file_is_overlap() {
+    // When --report is a symlink pointing at a file the patch modifies, the
+    // overlap check must detect the conflict (fix: canonicalize report_dest
+    // when it already exists before comparing to patch file paths).
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("mod.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Create a symlink: work/report_link.json → repo/hello.txt (patched file)
+    let link = work.path().join("report_link.json");
+    std::os::unix::fs::symlink(repo.join("hello.txt"), &link).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(link),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error when report symlink points at a patched file, got {err:?}"
+    );
+    // hello.txt must not have been modified.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("hello.txt")).unwrap(),
+        "before\n",
+        "working tree must not be mutated when symlinked report overlaps patch"
+    );
+}
+
+#[test]
+fn apply_broken_report_symlink_rejected_before_apply() {
+    // When --report names a broken symlink, preflight must reject it before
+    // apply_patch runs (fix: detect symlink_metadata().is_ok() && !exists()).
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+    let patch_path = work.path().join("mod.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    // Create a broken symlink: target does not exist.
+    let link = work.path().join("broken_link.json");
+    std::os::unix::fs::symlink(work.path().join("nonexistent.json"), &link).unwrap();
+
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(link),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error for broken report symlink, got {err:?}"
+    );
+    // hello.txt must not have been modified.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("hello.txt")).unwrap(),
+        "before\n",
+        "working tree must not be mutated when report path is a broken symlink"
+    );
+}
+
+#[test]
 fn apply_patch_bundle_layout_sibling_trajectory_refused() {
     // When using --patch patches/inst.patch in a bundle layout, the sibling
     // trajectory at ../trajectories/inst.traj.json must be detected and its

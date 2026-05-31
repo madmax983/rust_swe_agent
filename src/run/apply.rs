@@ -240,17 +240,25 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     // the patch output is caught before any write (including the dry-run
     // report) leaves the tree in an unexpected state.
     {
-        let rp_parent = report_dest
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let report_abs = std::fs::canonicalize(rp_parent)
-            .or_else(|_| std::path::absolute(rp_parent))
-            .ok()
-            .map(|p| p.join(report_dest.file_name().unwrap_or_default()));
+        // When report_dest already exists (including as a symlink), canonicalize
+        // it fully so that a symlink pointing at a patched file is detected.
+        // When it doesn't exist yet, canonicalize the parent and append the name.
+        let report_abs = std::fs::canonicalize(&report_dest).ok().or_else(|| {
+            let rp_parent = report_dest
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            std::fs::canonicalize(rp_parent)
+                .or_else(|_| std::path::absolute(rp_parent))
+                .ok()
+                .map(|p| p.join(report_dest.file_name().unwrap_or_default()))
+        });
         if let Some(ref report_abs) = report_abs {
             for f in &files_os {
                 let file_abs = git_root.join(f);
+                // Canonicalize the patch file path too so that symlinks in the
+                // working tree are followed before the comparison.
+                let file_abs = std::fs::canonicalize(&file_abs).unwrap_or(file_abs);
                 // Direct conflict: the patch touches exactly the report file.
                 if file_abs == *report_abs {
                     return Err(ApplyError::Io(std::io::Error::new(
@@ -618,7 +626,7 @@ fn dirty_paths_excluding(
             if l.get(2) != Some(&b' ') {
                 return None;
             }
-            let rel_bytes = l.get(3..)?.trim_ascii();
+            let rel_bytes = l.get(3..)?;
             if rel_bytes.is_empty() {
                 return None;
             }
@@ -813,7 +821,8 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
         } else if let Some(rest) = line.strip_prefix("rename from ") {
             // 100% similarity renames have no "---"/"+++" pair; capture the
             // old path here so the section-end flush above can record it.
-            pending_a = Some(OsString::from(rest));
+            // The path may be C-quoted (e.g. `rename from "old\tname"`).
+            pending_a = diff_header_path(rest, "");
         } else if let Some(rest) = line.strip_prefix("--- ") {
             // Old-file header outside a hunk: track for rename detection.
             pending_a = diff_header_path(rest, "a/");
@@ -1237,6 +1246,14 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
             format!("report path is a directory: {}", path.display()),
         )));
     }
+    // Reject broken symlinks: symlink_metadata() succeeds but exists() is false.
+    // write_report would follow the link and fail with NotFound after apply.
+    if path.symlink_metadata().is_ok() && !path.exists() {
+        return Err(ApplyError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("report path is a broken symlink: {}", path.display()),
+        )));
+    }
     // Walk up to the nearest existing ancestor to place the probe file,
     // since missing intermediate directories have not been created yet.
     // Treat an empty parent (relative path with no directory component) as
@@ -1260,8 +1277,17 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
     if path.is_file() {
         std::fs::OpenOptions::new().write(true).open(path)?;
     }
-    let probe = probe_dir.join(format!(".apply-probe-{}.tmp", std::process::id()));
-    std::fs::write(&probe, b"")?;
+    // Use exclusive creation (O_CREAT|O_EXCL) with a name that combines PID
+    // and nanosecond time so that the probe never overwrites an existing file.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let probe = probe_dir.join(format!(".apply-probe-{}-{}.tmp", std::process::id(), nanos));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(ApplyError::Io)?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
 }
