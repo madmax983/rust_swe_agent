@@ -1191,6 +1191,12 @@ async fn mini_continue_cmd(
     if let Some(manifest) = &traj.info.manifest {
         cfg.root.agent.step_limit = manifest.step_limit;
         cfg.root.model.fallback_models = manifest.fallback_models.clone();
+        // Restore the parent's environment kind unless the operator explicitly
+        // overrode it with --env. Prevents a Docker-parent from being silently
+        // continued as a local run (or vice-versa) when the operator omits the flag.
+        if m.env.is_none() {
+            cfg.root.environment.kind = parse_env_kind(&manifest.env_kind)?;
+        }
     }
     // task_timeout_secs lives on MiniArgs, not cfg; compute effective value here.
     let effective_task_timeout = m.task_timeout_secs.or_else(|| {
@@ -1225,12 +1231,20 @@ async fn mini_continue_cmd(
         None => None,
     };
 
-    let resolved_workdir = match m.workdir.as_ref() {
-        Some(w) => resolve_and_validate_workdir(Some(w), &cfg)?,
-        None => match &traj.info.local_workdir {
-            Some(w) => resolve_and_validate_workdir(Some(&std::path::PathBuf::from(w)), &cfg)?,
-            None => None,
-        },
+    let resolved_workdir = if let Some(w) = m.workdir.as_ref() {
+        resolve_and_validate_workdir(Some(w), &cfg)?
+    } else if let Some(w) = &traj.info.local_workdir {
+        resolve_and_validate_workdir(Some(&std::path::PathBuf::from(w)), &cfg)?
+    } else {
+        // Neither --workdir nor a recorded workdir in the parent trajectory;
+        // the continuation will use the current process directory. Warn so
+        // operators know to run from the original checkout.
+        tracing::warn!(
+            "--continue: parent trajectory has no recorded working directory; \
+             the continuation will run in the current process directory. \
+             Pass --workdir or run from the original working directory."
+        );
+        None
     };
 
     // The child trajectory goes into the same directory as the parent.
