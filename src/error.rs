@@ -189,6 +189,30 @@ mod tests {
         let e = ModelError::RateLimited("retry after: 90".into());
         assert_eq!(e.retry_after_secs(), Some(90));
     }
+
+    #[test]
+    fn is_transient_returns_true_for_rate_limited() {
+        let e = ModelError::RateLimited("rate limited".into());
+        assert!(e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_true_for_request() {
+        let e = ModelError::Request("timeout".into());
+        assert!(e.is_transient());
+    }
+
+    #[test]
+    fn is_transient_returns_false_for_other_variants() {
+        assert!(!ModelError::Malformed("bad".into()).is_transient());
+        assert!(!ModelError::Refused("refused".into()).is_transient());
+        assert!(!ModelError::MissingCredentials("missing".into()).is_transient());
+        assert!(!ModelError::AllCandidatesFailed("failed".into(), vec![]).is_transient());
+        assert!(!ModelError::ReplayDrift(0).is_transient());
+        assert!(!ModelError::ResponsesExhausted(0).is_transient());
+        assert!(!ModelError::ScriptedResponsesExhausted(0).is_transient());
+        assert!(!ModelError::ReplayUnfingerprintedLegacy(0).is_transient());
+    }
 }
 
 #[derive(Debug, Error)]

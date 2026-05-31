@@ -245,4 +245,26 @@ mod tests {
         let s = "no secrets here";
         assert_eq!(normalize_redaction_markers(s), s);
     }
+
+    #[test]
+    fn test_cap_canonical_truncates_at_cap() {
+        let (capped, truncated) = cap_canonical("12345", 3);
+        assert_eq!(capped, "123[truncated]");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_cap_canonical_does_not_truncate_if_under_cap() {
+        let (capped, truncated) = cap_canonical("123", 5);
+        assert_eq!(capped, "123");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_cap_canonical_handles_multibyte_characters() {
+        let s = "🦀🦀";
+        let (capped, truncated) = cap_canonical(s, 5);
+        assert_eq!(capped, "🦀[truncated]");
+        assert!(truncated);
+    }
 }
