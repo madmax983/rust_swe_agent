@@ -1096,9 +1096,7 @@ fn apply_plain_diff_new_file_with_timestamped_dev_null() {
         report.files_changed
     );
     assert!(
-        report
-            .files_changed
-            .contains(&"new_plain.txt".to_owned()),
+        report.files_changed.contains(&"new_plain.txt".to_owned()),
         "new_plain.txt must be in files_changed; got {:?}",
         report.files_changed
     );

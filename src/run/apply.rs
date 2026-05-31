@@ -465,9 +465,7 @@ fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Resu
         // real apply would produce conflict markers (it reports "Applied patch X
         // with conflicts." on stdout/stderr). Treat this as a failure so that
         // --dry-run correctly reports the patch as not cleanly applicable.
-        if three_way
-            && (stdout.contains("with conflicts") || stderr.contains("with conflicts"))
-        {
+        if three_way && (stdout.contains("with conflicts") || stderr.contains("with conflicts")) {
             let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
             return Err(combined.trim().to_owned());
         }
