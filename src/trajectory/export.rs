@@ -53,6 +53,9 @@ pub struct MermaidExporter;
 #[cfg(feature = "html-export")]
 pub struct HtmlExporter;
 
+#[cfg(feature = "bash-export")]
+pub struct BashScriptExporter;
+
 use std::fmt::Write;
 
 #[cfg(feature = "csv-export")]
@@ -245,6 +248,76 @@ impl TrajectoryExporter for MermaidExporter {
     }
 }
 
+#[cfg(feature = "bash-export")]
+impl TrajectoryExporter for BashScriptExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let mut script = String::new();
+        script.push_str(
+            "#!/usr/bin/env bash
+",
+        );
+        script.push_str(
+            "set -euo pipefail
+
+",
+        );
+
+        if let Some(task) = &trajectory.info.task {
+            // We do not redact the task for the bash script as it is just a comment,
+            // but we can still use the redactor for consistency.
+            let redactor = Redactor::default_enabled();
+            let task = redactor.redact_text(task, surface::EXPORT).text;
+            let _ = writeln!(script, "# Task: {}", task.replace('\n', " "));
+        }
+        script.push('\n');
+
+        // Note: tool calls are stored in the assistant's `actions` extra metadata,
+        // OR as tool messages. We need to extract the bash tool calls.
+        // Wait, looking at `MessageRecord`, if the role is "assistant", `extra.actions` contains
+        // tool calls. Wait, `actions` might be JSON encoded. Wait, `ToolCall::bash` input is the script.
+        // Actually, if we look at `ToolCall::action_label`, it just returns `input`.
+        // Let's see how actions are recorded. In `MessageExtra`, `actions` is `Option<Vec<String>>`.
+        // If it's a tool call, `actions` has `ToolCall` representations.
+
+        // Let's write a simple implementation that extracts bash blocks from assistant's `content` or `actions`.
+        // Or better yet, we can look for `actions` that contain bash scripts or just look at `role == "assistant"`
+        // and parse for `ToolCall` or `bash`.
+        // A safer way: tool executions are recorded in `role == "tool"`. But `MessageRecord` doesn't have the `name` of the tool.
+        // Wait, if we use regex or simply extract anything within ```bash ... ``` in assistant messages.
+        // Yes, the agent generates bash inside ```bash ... ```. This is the simplest and most robust way.
+        let mut step_count = 1;
+        for msg in &trajectory.messages {
+            if msg.role == "assistant" {
+                let content = &msg.content;
+                let mut in_bash_block = false;
+                let mut current_block = String::new();
+
+                for line in content.lines() {
+                    if line.trim().starts_with("```bash") {
+                        in_bash_block = true;
+                        continue;
+                    }
+                    if line.trim() == "```" && in_bash_block {
+                        in_bash_block = false;
+                        let _ = writeln!(script, "# Step {step_count}");
+                        script.push_str(&current_block);
+                        script.push('\n');
+                        current_block.clear();
+                        step_count += 1;
+                        continue;
+                    }
+                    if in_bash_block {
+                        current_block.push_str(line);
+                        current_block.push('\n');
+                    }
+                }
+            }
+        }
+
+        script
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +412,29 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+    }
+
+    #[cfg(feature = "bash-export")]
+    #[test]
+    fn test_bash_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Debug script".to_string());
+
+        t.record_message(&Message::assistant(
+            "I will run this:
+```bash
+echo 'hello'
+ls -la
+```",
+        ));
+
+        let bash = BashScriptExporter::export(&t);
+
+        assert!(bash.starts_with("#!/usr/bin/env bash"));
+        assert!(bash.contains("set -euo pipefail"));
+        assert!(bash.contains("# Task: Debug script"));
+        assert!(bash.contains("# Step 1"));
+        assert!(bash.contains("echo 'hello'"));
+        assert!(bash.contains("ls -la"));
     }
 }
