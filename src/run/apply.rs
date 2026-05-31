@@ -488,8 +488,7 @@ fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Resu
         // ends the line with " with conflicts." — check each line's suffix so
         // a filename like "foo with conflicts." ("Applied patch ... cleanly.")
         // doesn't trigger a false-positive.
-        let ends_with_conflicts =
-            |s: &str| s.lines().any(|l| l.ends_with(" with conflicts."));
+        let ends_with_conflicts = |s: &str| s.lines().any(|l| l.ends_with(" with conflicts."));
         if three_way && (ends_with_conflicts(&stdout) || ends_with_conflicts(&stderr)) {
             let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
             return Err(combined.trim().to_owned());
