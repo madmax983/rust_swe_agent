@@ -244,19 +244,16 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         return Ok(report);
     }
 
-    // ── 12. Ensure report parent directory exists before mutating the tree ────
-    // Detecting a missing directory now prevents an I/O error from leaving
-    // the tree mutated with no report written.
-    if let Some(parent) = report_dest.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    // ── 13. Apply the patch ───────────────────────────────────────────────────
+    // ── 12. Apply the patch ───────────────────────────────────────────────────
     // patch_path is canonicalized (absolute); git_root avoids silent skips
     // when --target is a repo subdirectory.
-    apply_patch(&git_root, &patch_path, opts.three_way, &files_changed)?;
+    apply_patch(
+        &git_root,
+        &patch_path,
+        opts.three_way,
+        opts.allow_dirty,
+        &files_changed,
+    )?;
 
     // ── 14. Write report ──────────────────────────────────────────────────────
     let report = ApplyReport {
@@ -403,7 +400,7 @@ fn dirty_paths_excluding(
     exclude_abs: &[&Path],
 ) -> Result<Vec<String>, ApplyError> {
     let output = Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=all"])
         .current_dir(dir)
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -507,18 +504,24 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
 /// `parse_diff_stats`). It is used for two `--3way`-specific corrections:
 ///
 /// - **Failure**: `git apply --check --3way` can exit 0 even when the real
-///   merge has conflicts, so the apply may write conflict markers before
-///   exiting non-zero. We restore only the patch-affected files (not `.`)
-///   so that any pre-existing unrelated tracked edits are left intact.
+///   merge has conflicts, so the apply may write conflict markers and leave
+///   unmerged index entries before exiting non-zero. We restore only the
+///   patch-affected files (not `.`) to preserve unrelated tracked edits.
+///   `git checkout -- <path>` is refused on unmerged paths, so we first
+///   run `git reset HEAD -- <files>` to clear the merge stages, then
+///   `git checkout -- <files>` to restore the working tree.
 ///
 /// - **Success**: `git apply --3way` stages successful merges in the index
-///   (reports `M  file` in `git status --porcelain`), while the non-3way
-///   path leaves changes unstaged. We unstage the affected files afterward
+///   when it uses the 3-way path. We unstage the affected files afterward
 ///   so both modes produce the same "modified working tree" semantics.
+///   The unstage is skipped when `allow_dirty` is set: the user may have
+///   pre-existing staged edits in those files; resetting them would
+///   silently discard those changes.
 fn apply_patch(
     git_root: &Path,
     patch_path: &Path,
     three_way: bool,
+    allow_dirty: bool,
     affected_files: &[String],
 ) -> Result<(), ApplyError> {
     let mut cmd = Command::new("git");
@@ -530,8 +533,16 @@ fn apply_patch(
     let output = cmd.output()?;
     if !output.status.success() {
         if three_way && !affected_files.is_empty() {
-            // Restore only patch-affected files, not the entire worktree, so
-            // pre-existing unrelated tracked edits are not discarded.
+            // Clear unmerged index entries first; git checkout -- is refused
+            // on paths with unmerged entries.
+            let mut reset_cmd = Command::new("git");
+            reset_cmd.args(["reset", "HEAD", "--"]);
+            for f in affected_files {
+                reset_cmd.arg(f);
+            }
+            reset_cmd.current_dir(git_root);
+            let _ = reset_cmd.output();
+            // Restore working-tree content to HEAD.
             let mut restore = Command::new("git");
             restore.args(["checkout", "--"]);
             for f in affected_files {
@@ -543,10 +554,9 @@ fn apply_patch(
         let msg = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(ApplyError::CheckFailed(msg));
     }
-    if three_way && !affected_files.is_empty() {
-        // Unstage any changes written to the index by the 3way path so the
-        // caller sees the same "modified working tree only" semantics as a
-        // regular git apply.
+    // When --allow-dirty is set, the user may have pre-existing staged edits
+    // in patch-affected files; skipping the reset preserves those.
+    if three_way && !allow_dirty && !affected_files.is_empty() {
         let mut unstage = Command::new("git");
         unstage.args(["reset", "HEAD", "--"]);
         for f in affected_files {
@@ -558,8 +568,15 @@ fn apply_patch(
     Ok(())
 }
 
-/// Serialize and write the report JSON to `path`.
+/// Serialize and write the report JSON to `path`, creating parent directories
+/// as needed. Creating directories here (after a successful apply) avoids
+/// materializing directories that could conflict with paths the patch adds.
 fn write_report(path: &Path, report: &ApplyReport) -> Result<(), ApplyError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     let json = serde_json::to_string_pretty(report)
         .map_err(|e| ApplyError::Io(std::io::Error::other(e.to_string())))?;
     std::fs::write(path, json)?;

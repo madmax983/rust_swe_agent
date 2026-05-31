@@ -680,6 +680,40 @@ fn apply_patch_inside_repo_not_gitignored_does_not_trip_dirty_gate() {
 }
 
 #[test]
+fn apply_patch_inside_untracked_subdir_does_not_trip_dirty_gate() {
+    // git status --porcelain (without --untracked-files=all) reports an
+    // untracked directory as "?? runs/" rather than "?? runs/task.patch".
+    // The dirty-gate exclusion must expand such entries.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let patch_content = make_valid_patch(&repo);
+
+    // Place the patch inside an untracked subdirectory inside the repo.
+    let runs_dir = repo.join("runs");
+    std::fs::create_dir_all(&runs_dir).unwrap();
+    let patch_path = runs_dir.join("task.patch");
+    std::fs::write(&patch_path, &patch_content).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false, // strict — the whole runs/ dir must be excluded
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    // Should succeed: git status --porcelain --untracked-files=all expands
+    // "?? runs/" to "?? runs/task.patch", which is then excluded.
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+}
+
+#[test]
 fn apply_redacted_patch_content_refused_by_default() {
     let work = tempfile::tempdir().unwrap();
     let repo = work.path().join("repo");
