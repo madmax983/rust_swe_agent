@@ -422,23 +422,39 @@ fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
 ///
 /// `task.patch` → `task.traj.json`
 fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
-    let stem = patch_path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
-    let base = stem.strip_suffix(".patch").unwrap_or(&stem);
+    let file_name = patch_path.file_name()?;
+
+    // Strip the ".patch" suffix using raw bytes so non-UTF-8 filenames are
+    // preserved and the resulting sibling path is correct on Unix.
+    #[cfg(unix)]
+    let traj_name: OsString = {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = file_name.as_bytes();
+        let base = if bytes.ends_with(b".patch") {
+            &bytes[..bytes.len() - 6]
+        } else {
+            bytes
+        };
+        let mut name = OsString::from_vec(base.to_vec());
+        name.push(".traj.json");
+        name
+    };
+    #[cfg(not(unix))]
+    let traj_name: OsString = {
+        let s = file_name.to_string_lossy();
+        let base = s.strip_suffix(".patch").unwrap_or(&s);
+        OsString::from(format!("{base}.traj.json"))
+    };
 
     // Primary: same-directory sibling (most common).
-    let sibling = patch_path.with_file_name(format!("{base}.traj.json"));
+    let sibling = patch_path.with_file_name(&traj_name);
     if sibling.exists() {
         return Some(sibling);
     }
 
     // Bundle layout: patches/<id>.patch → ../trajectories/<id>.traj.json.
     if let Some(bundle_root) = patch_path.parent().and_then(|p| p.parent()) {
-        let bundle_traj = bundle_root
-            .join("trajectories")
-            .join(format!("{base}.traj.json"));
+        let bundle_traj = bundle_root.join("trajectories").join(&traj_name);
         if bundle_traj.exists() {
             return Some(bundle_traj);
         }
@@ -496,13 +512,19 @@ fn is_git_tree(dir: &Path) -> bool {
 
 /// Return the absolute path of the git worktree root containing `dir`.
 fn git_toplevel(dir: &Path) -> Option<PathBuf> {
-    Command::new("git")
+    let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_owned()))
+        .filter(|o| o.status.success())?;
+    // Trim trailing newline from raw bytes before converting so that
+    // non-UTF-8 directory names in the path are not corrupted.
+    let mut bytes = output.stdout;
+    while bytes.last().copied() == Some(b'\n') || bytes.last().copied() == Some(b'\r') {
+        bytes.pop();
+    }
+    Some(PathBuf::from(bytes_to_os_string(bytes)))
 }
 
 /// Return dirty paths, excluding any paths that resolve to an entry in
@@ -1126,6 +1148,9 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
     }
     // Walk up to the nearest existing ancestor to place the probe file,
     // since missing intermediate directories have not been created yet.
+    // Treat an empty parent (relative path with no directory component) as
+    // "." so that e.g. `--report out/report.json` (where `out` is missing)
+    // continues walking rather than breaking out of the loop early.
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -1134,8 +1159,15 @@ fn preflight_report_path(path: &Path) -> Result<(), ApplyError> {
     while !probe_dir.exists() {
         probe_dir = match probe_dir.parent() {
             Some(p) if !p.as_os_str().is_empty() => p,
-            _ => break,
+            Some(_) => Path::new("."), // empty parent → fall back to cwd
+            None => break,
         };
+    }
+    // If the report file already exists, verify it is writable directly
+    // rather than relying on a sibling probe. A read-only existing report
+    // would pass the sibling probe but fail in write_report after apply.
+    if path.is_file() {
+        std::fs::OpenOptions::new().write(true).open(path)?;
     }
     let probe = probe_dir.join(format!(".apply-probe-{}.tmp", std::process::id()));
     std::fs::write(&probe, b"")?;
