@@ -235,34 +235,10 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         .collect();
     let target_sha = git_head_sha(&git_root);
 
-    // ── 11. Dry-run: report without mutating ──────────────────────────────────
-    if opts.dry_run {
-        let report = ApplyReport {
-            schema_version: ArtifactSchemaVersion::CURRENT,
-            artifact_kind: ArtifactKind::ApplyReport,
-            source_patch_path: patch_path.to_string_lossy().into_owned(),
-            target_git_sha: target_sha,
-            files_changed,
-            lines_added,
-            lines_removed,
-            check_result: "passed".into(),
-            applied: false,
-            dry_run: true,
-        };
-        write_report(&report_dest, &report)?;
-        return Ok(report);
-    }
-
-    // ── 12. Apply the patch ───────────────────────────────────────────────────
-    // Preflight the report destination *before* mutating the tree so that a
-    // bad report path (unwritable directory, missing parent, etc.) fails
-    // cleanly instead of leaving a modified-but-unreported checkout.
-    preflight_report_path(&report_dest)?;
-
-    // ── 12.5. Pre-apply overlap check ────────────────────────────────────────
-    // Detect report/patch-output overlap BEFORE mutating the tree so a
-    // conflict leaves the tree unchanged. Canonicalize the report parent
-    // (exists after preflight) and compare against the patch's file list.
+    // ── 10.5. Pre-apply overlap check ───────────────────────────────────────
+    // Run for both dry-run and wet-run so that a report path that overlaps
+    // the patch output is caught before any write (including the dry-run
+    // report) leaves the tree in an unexpected state.
     {
         let rp_parent = report_dest
             .parent()
@@ -303,6 +279,30 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
             }
         }
     }
+
+    // ── 11. Dry-run: report without mutating ──────────────────────────────────
+    if opts.dry_run {
+        let report = ApplyReport {
+            schema_version: ArtifactSchemaVersion::CURRENT,
+            artifact_kind: ArtifactKind::ApplyReport,
+            source_patch_path: patch_path.to_string_lossy().into_owned(),
+            target_git_sha: target_sha,
+            files_changed,
+            lines_added,
+            lines_removed,
+            check_result: "passed".into(),
+            applied: false,
+            dry_run: true,
+        };
+        write_report(&report_dest, &report)?;
+        return Ok(report);
+    }
+
+    // ── 12. Apply the patch ───────────────────────────────────────────────────
+    // Preflight the report destination *before* mutating the tree so that a
+    // bad report path (unwritable directory, missing parent, etc.) fails
+    // cleanly instead of leaving a modified-but-unreported checkout.
+    preflight_report_path(&report_dest)?;
 
     // patch_path is canonicalized (absolute); git_root avoids silent skips
     // when --target is a repo subdirectory.
@@ -506,10 +506,15 @@ fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
     }
 
     // Bundle layout: patches/<id>.patch → ../trajectories/<id>.traj.json.
-    if let Some(bundle_root) = patch_path.parent().and_then(|p| p.parent()) {
-        let bundle_traj = bundle_root.join("trajectories").join(&traj_name);
-        if bundle_traj.exists() {
-            return Some(bundle_traj);
+    // Only apply this fallback when the patch actually lives in a directory
+    // named "patches" to avoid matching an unrelated trajectories/ subtree
+    // in non-bundle workspaces.
+    if patch_path.parent().and_then(|p| p.file_name()) == Some(std::ffi::OsStr::new("patches")) {
+        if let Some(bundle_root) = patch_path.parent().and_then(|p| p.parent()) {
+            let bundle_traj = bundle_root.join("trajectories").join(&traj_name);
+            if bundle_traj.exists() {
+                return Some(bundle_traj);
+            }
         }
     }
 
@@ -779,6 +784,11 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
                 if let Some(ref name) = b_name {
                     if !files.contains(name) {
                         files.push(name.clone());
+                    }
+                } else if let Some(ref a) = pending_a {
+                    // +++ /dev/null: plain deletion; record the old path.
+                    if !files.contains(a) {
+                        files.push(a.clone());
                     }
                 }
                 pending_b.clone_from(&b_name);

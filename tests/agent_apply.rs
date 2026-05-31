@@ -1453,6 +1453,93 @@ fn apply_report_overlap_fails_before_mutation() {
 }
 
 #[test]
+fn apply_dry_run_report_overlap_fails_before_write() {
+    // In dry-run mode, if --report points at a file the patch touches, the
+    // overlap check must fire BEFORE write_report writes anything to disk.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // Build a patch that adds new.txt (same as apply_report_overlap test).
+    std::fs::write(repo.join("new.txt"), "content\n").unwrap();
+    Command::new("git")
+        .args(["add", "new.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let out = Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let patch = String::from_utf8(out.stdout).unwrap();
+    Command::new("git")
+        .args(["reset", "HEAD", "new.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::fs::remove_file(repo.join("new.txt")).unwrap();
+
+    let patch_path = work.path().join("add.patch");
+    std::fs::write(&patch_path, &patch).unwrap();
+
+    // dry_run: true — overlap check must still reject before writing report.
+    let report_path = repo.join("new.txt");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo.clone(),
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: true,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let err = run_agent_apply(opts).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::Io(_)),
+        "expected Io error for dry-run report/patch overlap, got {err:?}"
+    );
+    // new.txt must not have been created (neither the patch nor the report).
+    assert!(
+        !repo.join("new.txt").exists(),
+        "new.txt must not exist after a rejected dry-run overlap"
+    );
+}
+
+#[test]
+fn apply_plain_deletion_patch_records_deleted_file() {
+    // A plain unified-diff deletion (no `diff --git` header, +++ /dev/null)
+    // must record the deleted file in files_changed.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // Plain unified-diff deletion patch (no diff --git header).
+    let patch = "--- a/hello.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-before\n";
+    let patch_path = work.path().join("del.patch");
+    std::fs::write(&patch_path, patch).unwrap();
+
+    let report_path = work.path().join("report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(
+        report.files_changed.iter().any(|f| f == "hello.txt"),
+        "hello.txt must appear in files_changed for a plain-diff deletion; got {:?}",
+        report.files_changed
+    );
+}
+
+#[test]
 fn apply_patch_bundle_layout_sibling_trajectory_refused() {
     // When using --patch patches/inst.patch in a bundle layout, the sibling
     // trajectory at ../trajectories/inst.traj.json must be detected and its
