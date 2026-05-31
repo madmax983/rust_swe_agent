@@ -1056,3 +1056,50 @@ fn apply_trajectory_file_inside_repo_not_dirty() {
     let report = run_agent_apply(opts).unwrap();
     assert!(report.applied);
 }
+
+// ── Plain-diff timestamped /dev/null sentinel ─────────────────────────────────
+
+#[test]
+fn apply_plain_diff_new_file_with_timestamped_dev_null() {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // A plain unified-diff (`diff -u`) new-file patch. The old header is
+    // "/dev/null\t<timestamp>" — the tab+timestamp is the form plain `diff`
+    // produces, and must not appear in files_changed as "dev/null".
+    let patch = concat!(
+        "--- /dev/null\t2024-01-01 00:00:00.000000000 +0000\n",
+        "+++ new_plain.txt\t2024-01-01 00:00:01.000000000 +0000\n",
+        "@@ -0,0 +1 @@\n",
+        "+hello from plain diff\n",
+    );
+    let patch_path = work.path().join("plain_add.patch");
+    std::fs::write(&patch_path, patch).unwrap();
+
+    let report_path = work.path().join("apply-report.json");
+    let opts = AgentApplyOpts {
+        selector: PatchSelector::PatchFile(patch_path),
+        target: repo,
+        allow_redacted: false,
+        allow_dirty: false,
+        dry_run: false,
+        three_way: false,
+        report_path: Some(report_path),
+    };
+    let report = run_agent_apply(opts).unwrap();
+    assert!(report.applied);
+    assert!(
+        !report.files_changed.iter().any(|f| f.contains("dev/null")),
+        "dev/null must not appear in files_changed; got {:?}",
+        report.files_changed
+    );
+    assert!(
+        report
+            .files_changed
+            .contains(&"new_plain.txt".to_owned()),
+        "new_plain.txt must be in files_changed; got {:?}",
+        report.files_changed
+    );
+}

@@ -457,15 +457,28 @@ fn git_apply_check(apply_dir: &Path, patch_path: &Path, three_way: bool) -> Resu
     cmd.arg(patch_path).current_dir(apply_dir);
     let output = cmd.output().map_err(|e| e.to_string())?;
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
     if output.status.success() {
+        // When --3way is active, git apply --check can exit 0 even though the
+        // real apply would produce conflict markers (it reports "Applied patch X
+        // with conflicts." on stdout/stderr). Treat this as a failure so that
+        // --dry-run correctly reports the patch as not cleanly applicable.
+        if three_way
+            && (stdout.contains("with conflicts") || stderr.contains("with conflicts"))
+        {
+            let combined = format!("{}\n{}", stderr.trim(), stdout.trim());
+            return Err(combined.trim().to_owned());
+        }
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let msg = if stdout.is_empty() {
-            stderr
+        let stderr_s = stderr.trim().to_owned();
+        let stdout_s = stdout.trim().to_owned();
+        let msg = if stdout_s.is_empty() {
+            stderr_s
         } else {
-            format!("{stderr}\n{stdout}")
+            format!("{stderr_s}\n{stdout_s}")
         };
         Err(msg)
     }
@@ -597,13 +610,6 @@ fn git_diff_b_path(rest: &str) -> Option<OsString> {
 /// `None` for `/dev/null` and empty paths.  Returns an `OsString` to preserve
 /// non-UTF-8 bytes encoded via C-string octal escapes.
 fn diff_header_path(s: &str, prefix: &str) -> Option<OsString> {
-    // `/dev/null` is git's sentinel for new-file / deleted-file patches.
-    // It appears as a bare absolute path (without `a/` prefix), so check it
-    // before any prefix stripping to avoid returning `"dev/null"` after the
-    // leading-slash component strip applied to plain-diff paths.
-    if s == "/dev/null" {
-        return None;
-    }
     if let Some(without_open) = s.strip_prefix('"') {
         // Quoted: '"prefix/path"'
         let end = find_unescaped_quote(without_open)?;
@@ -611,6 +617,16 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<OsString> {
         let name = unescape_c_string_os(inner.strip_prefix(prefix).unwrap_or(inner));
         if name.is_empty() { None } else { Some(name) }
     } else {
+        // Strip trailing tab+timestamp before any other checks. Plain unified
+        // diffs include a TAB+datetime after the path (e.g. "--- /dev/null\t
+        // 2024-01-01 00:00:00 +0000"). Stripping it here ensures the sentinel
+        // check and component strip operate on the bare path in both the
+        // bare-sentinel ("--- /dev/null") and timestamped forms.
+        let s = s.split('\t').next().unwrap_or(s).trim();
+        // `/dev/null` is git's sentinel for new-file / deleted-file patches.
+        if s == "/dev/null" {
+            return None;
+        }
         let path = if let Some(stripped) = s.strip_prefix(prefix) {
             stripped
         } else {
@@ -620,7 +636,6 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<OsString> {
             // what git actually applied.
             s.find('/').map_or(s, |i| &s[i + 1..])
         };
-        let path = path.split('\t').next().unwrap_or(path).trim();
         if path.is_empty() || path == "/dev/null" {
             None
         } else {
