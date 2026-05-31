@@ -18,8 +18,8 @@ use maxwells_daemon::run::apply::{
 // ── Exit code unit tests ──────────────────────────────────────────────────────
 
 #[test]
-fn apply_check_failed_exit_code_is_28() {
-    assert_eq!(ExitCode::ApplyCheckFailed.as_i32(), 28);
+fn apply_check_failed_exit_code_is_29() {
+    assert_eq!(ExitCode::ApplyCheckFailed.as_i32(), 29);
     assert_eq!(
         ExitCode::ApplyCheckFailed.outcome_class(),
         "apply_check_failed"
@@ -27,8 +27,8 @@ fn apply_check_failed_exit_code_is_28() {
 }
 
 #[test]
-fn apply_redacted_refused_exit_code_is_29() {
-    assert_eq!(ExitCode::ApplyRedactedRefused.as_i32(), 29);
+fn apply_redacted_refused_exit_code_is_30() {
+    assert_eq!(ExitCode::ApplyRedactedRefused.as_i32(), 30);
     assert_eq!(
         ExitCode::ApplyRedactedRefused.outcome_class(),
         "apply_redacted_refused"
@@ -36,8 +36,8 @@ fn apply_redacted_refused_exit_code_is_29() {
 }
 
 #[test]
-fn apply_dirty_tree_refused_exit_code_is_30() {
-    assert_eq!(ExitCode::ApplyDirtyTreeRefused.as_i32(), 30);
+fn apply_dirty_tree_refused_exit_code_is_31() {
+    assert_eq!(ExitCode::ApplyDirtyTreeRefused.as_i32(), 31);
     assert_eq!(
         ExitCode::ApplyDirtyTreeRefused.outcome_class(),
         "apply_dirty_tree_refused"

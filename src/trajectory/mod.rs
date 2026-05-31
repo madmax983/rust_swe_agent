@@ -646,6 +646,10 @@ pub struct TrajectoryInfo {
     /// Absent on legacy 1.2 trajectories and sweep-level `results.json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<MiniProvenanceManifest>,
+    /// Lineage link back to the terminal parent trajectory when this run was
+    /// started with `mini --continue`. Absent on non-continuation trajectories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_trajectory: Option<ParentTrajectoryLink>,
     #[serde(flatten, default)]
     /// Any other arbitrary metadata associated with the run.
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -673,6 +677,23 @@ fn extra_is_empty(e: &MessageExtra) -> bool {
         && e.harness_overhead_ms.is_none()
         && e.sampling.is_none()
         && e.other.is_empty()
+}
+
+/// Lineage link recorded in a `mini --continue` child trajectory that points
+/// back to the terminal parent run. Allows the full continuation chain to be
+/// reconstructed from any child trajectory file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParentTrajectoryLink {
+    /// Absolute (or operator-relative) path of the parent trajectory file.
+    pub parent_path: String,
+    /// Trajectory ID (file stem without `.traj.json`) of the parent run.
+    pub parent_trajectory_id: String,
+    /// Terminal outcome of the parent (e.g. `"submitted"`, `"error"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_outcome: Option<String>,
+    /// Number of agent steps completed in the parent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_steps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

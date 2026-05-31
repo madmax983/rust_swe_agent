@@ -58,7 +58,7 @@ filesystem mutation.
    exits 2 before any mutation.
 
 3. **Dirty-tree check** — The working tree must have no uncommitted changes
-   (`git status --porcelain`). A dirty tree exits **30**
+   (`git status --porcelain`). A dirty tree exits **31**
    (`apply_dirty_tree_refused`). Override: `--allow-dirty`.
 
 4. **Redaction-corruption check** — Applied when `--patch` is used directly
@@ -66,12 +66,12 @@ filesystem mutation.
    - The patch content is scanned for `[REDACTED:…]` markers.
    - When a sibling trajectory is available, its `info.redaction.counts`
      is checked for any entry with `surface == "patch_submission"`.
-   Either condition exits **29** (`apply_redacted_refused`). Override:
+   Either condition exits **30** (`apply_redacted_refused`). Override:
    `--allow-redacted`.
 
 5. **`git apply --check`** — A dry-run application is attempted before
    mutating the tree. On failure the rejected hunks are printed and the
-   command exits **28** (`apply_check_failed`). The tree is left unchanged.
+   command exits **29** (`apply_check_failed`). The tree is left unchanged.
 
 6. **`--dry-run` short-circuit** — If `--dry-run`, stop here: print the
    files and hunk counts that would change and exit **0**.
@@ -107,9 +107,9 @@ Written on every non-error outcome (including empty-patch and dry-run).
 | 0 | `success` | Patch applied (or dry-run / empty patch). |
 | 1 | `internal_error` | I/O failure or unexpected subprocess error. |
 | 2 | `usage_error` | Missing/ambiguous selector, or non-git target. |
-| 28 | `apply_check_failed` | `git apply --check` rejected the patch. Tree unchanged. |
-| 29 | `apply_redacted_refused` | Patch has `[REDACTED:…]` markers or trajectory records patch-submission redaction. |
-| 30 | `apply_dirty_tree_refused` | Working tree has uncommitted changes. |
+| 29 | `apply_check_failed` | `git apply --check` rejected the patch. Tree unchanged. |
+| 30 | `apply_redacted_refused` | Patch has `[REDACTED:…]` markers or trajectory records patch-submission redaction. |
+| 31 | `apply_dirty_tree_refused` | Working tree has uncommitted changes. |
 
 ## Out of Scope
 

@@ -33,9 +33,10 @@ parsing human-oriented output.
 | 25   | `redact_check_stale_literals` | `agent redact-check` found that at least one configured `secret_literals` entry produced zero matches against the sample input. The literal is likely stale and may not be protecting anything. |
 | 26   | `redact_check_strict_fail` | `agent redact-check --strict` found that at least one `custom_patterns` entry compiled successfully but produced zero matches. Use to catch regex typos or renamed token formats in CI. Exit 26 takes priority over exit 25 when both conditions hold. |
 | 27   | `slo_rule_failure`       | `bench assert` evaluated all rules and at least one rule (or missing-artifact in fail-closed mode) did not pass. The command ran correctly and wrote `assertions.json`; the non-zero exit means the sweep did not meet the declared SLO. Distinct from `usage_error` (2) so CI can distinguish "your gate failed" from "your invocation is broken". |
-| 28   | `apply_check_failed`     | `agent apply` ran `git apply --check` and the patch cannot be applied cleanly to the current tree. The working tree is left unchanged. |
-| 29   | `apply_redacted_refused` | `agent apply` detected `[REDACTED:…]` markers in the patch content or the source trajectory recorded patch-submission redaction. Pass `--allow-redacted` to override. |
-| 30   | `apply_dirty_tree_refused` | `agent apply` found uncommitted changes in the target working tree. Pass `--allow-dirty` to override. |
+| 28   | `continue_non_terminal` | `mini --continue` target trajectory is non-terminal (still partial/in-progress). Use `--resume` to continue an in-progress run; `--continue` only accepts terminal trajectories (`submitted`, `error`, `step_limit_reached`, `budget_exhausted`, `cancelled`, `wallclock_timeout`). |
+| 29   | `apply_check_failed`     | `agent apply` ran `git apply --check` and the patch cannot be applied cleanly to the current tree. The working tree is left unchanged. |
+| 30   | `apply_redacted_refused` | `agent apply` detected `[REDACTED:…]` markers in the patch content or the source trajectory recorded patch-submission redaction. Pass `--allow-redacted` to override. |
+| 31   | `apply_dirty_tree_refused` | `agent apply` found uncommitted changes in the target working tree. Pass `--allow-dirty` to override. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
@@ -70,7 +71,7 @@ coarse sweep-level result.
 
 | Command                         | Possible outcome classes |
 |---------------------------------|--------------------------|
-| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `resume_already_terminal`, `resume_manifest_missing`, `resume_invalid_prefix`, `internal_error` |
+| `mini`                          | `success`, `usage_error`, `preflight_failure`, `task_unsuccessful`, `verification_failure`, `resume_already_terminal`, `resume_manifest_missing`, `resume_invalid_prefix`, `continue_non_terminal`, `internal_error` |
 | `replay`                        | `success`, `usage_error`, `replay_prompt_drift`, `replay_response_exhausted`, `task_unsuccessful`, `internal_error` |
 | `bench swebench`                | `success`, `usage_error`, `preflight_failure`, `budget_halt`, `internal_error`, `interrupted`, `killed` |
 | `bench forecast`                | `success`, `usage_error`, `budget_halt`, `internal_error`, `interrupted` |

@@ -374,6 +374,11 @@ pub struct ResumeState {
     pub resumed_at: String,
     /// Git SHA of the harness at resume time, for the `ResumeRecord` audit entry.
     pub harness_git_sha: Option<String>,
+    /// When `true` this state was produced by `mini --continue` (terminal parent)
+    /// rather than `mini --resume` (partial parent). Suppresses the
+    /// `resume_history` audit entry since the parent trajectory is already
+    /// recorded via `info.parent_trajectory`.
+    pub is_continue: bool,
 }
 
 pub struct DefaultAgent {
@@ -572,17 +577,30 @@ impl DefaultAgentBuilder {
             init_completion,
         ) = if let Some(resume) = self.resume_from {
             let mut traj = resume.trajectory;
-            traj.info
-                .resume_history
-                .push(crate::trajectory::ResumeRecord {
-                    original_started_at: traj.info.started_at.clone(),
-                    resumed_at: resume.resumed_at.clone(),
-                    prior_steps: resume.steps,
-                    prior_cost_usd: resume.total_cost_usd,
-                    harness_git_sha_at_resume: resume.harness_git_sha.clone(),
-                });
+            // `--resume` (partial trajectory): record audit entry.
+            // `--continue` (terminal trajectory): skip audit entry — lineage is
+            // already captured in `info.parent_trajectory`.
+            if !resume.is_continue {
+                traj.info
+                    .resume_history
+                    .push(crate::trajectory::ResumeRecord {
+                        original_started_at: traj.info.started_at.clone(),
+                        resumed_at: resume.resumed_at.clone(),
+                        prior_steps: resume.steps,
+                        prior_cost_usd: resume.total_cost_usd,
+                        harness_git_sha_at_resume: resume.harness_git_sha.clone(),
+                    });
+            }
             traj.info.partial = false;
             traj.info.partial_reason = None;
+            // For `--continue`, info.other was cleared so the parent's toolset
+            // was wiped. Stamp the child run's actual toolset from the freshly
+            // built trajectory so bench tool-coverage sees the correct registry.
+            if resume.is_continue {
+                if let Some(toolset) = trajectory.info.other.get("toolset").cloned() {
+                    traj.info.other.insert("toolset".into(), toolset);
+                }
+            }
             (
                 resume.history,
                 traj,

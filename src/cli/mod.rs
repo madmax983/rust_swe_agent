@@ -494,6 +494,63 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
             )));
         }
         String::new()
+    } else if m.continue_from.is_some() {
+        // --continue REQUIRES --task (or --task-file) — the follow-up instruction.
+        // Clap enforces that --task is present when --continue is set; if the task is
+        // empty we catch it here the same way the normal path does below.
+        match (&m.task, &m.task_file) {
+            (Some(_), Some(_)) => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "both --task and --task-file were provided".into(),
+                )));
+            }
+            (None, None) => {
+                return Err(Error::Config(crate::error::ConfigError::Invalid(
+                    "--continue requires --task (or --task-file) to supply the follow-up instruction"
+                        .into(),
+                )));
+            }
+            (Some(t), None) => {
+                if t.trim().is_empty() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(
+                        "empty --task source".into(),
+                    )));
+                }
+                t.clone()
+            }
+            (None, Some(tf)) => {
+                let mut raw_content = if tf == "-" {
+                    let mut buffer = String::new();
+                    std::io::stdin().read_to_string(&mut buffer).map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "failed to read task from stdin: {e}"
+                        )))
+                    })?;
+                    buffer
+                } else {
+                    let path = std::path::Path::new(tf);
+                    if !path.exists() {
+                        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "--task-file does not exist: {tf}"
+                        ))));
+                    }
+                    std::fs::read_to_string(path).map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "failed to read --task-file `{tf}`: {e}"
+                        )))
+                    })?
+                };
+                if raw_content.starts_with('\u{FEFF}') {
+                    raw_content.remove(0);
+                }
+                if raw_content.trim().is_empty() {
+                    return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+                        "empty task source from `{tf}`"
+                    ))));
+                }
+                raw_content
+            }
+        }
     } else {
         match (&m.task, &m.task_file) {
             (Some(_), Some(_)) => {
@@ -603,6 +660,11 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     apply_read_only_policy(&m, &cfg)?;
     let resolved_workdir = resolve_and_validate_workdir(m.workdir.as_ref(), &cfg)?;
 
+    // ── Continue path ─────────────────────────────────────────────────────────
+    if let Some(continue_path) = m.continue_from.clone() {
+        return mini_continue_cmd(m, cfg, continue_path, task).await;
+    }
+
     // ── Resume path ──────────────────────────────────────────────────────────
     if let Some(resume_path) = m.resume_from.clone() {
         return mini_resume_cmd(m, cfg, resume_path).await;
@@ -677,6 +739,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         rehearsal_gold_patch: None,
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
+        continue_from: None,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -1067,6 +1130,272 @@ async fn mini_resume_cmd(
         verification_checks,
         verification_timeout_secs: m.verify_timeout_secs,
         resume_from: Some(traj),
+        interactive_mode,
+        trace_id: None,
+        webhook_url: m.webhook_url,
+        webhook_headers: m.webhook_headers,
+        event_log: m.event_log,
+        event_log_instance_id: None,
+        local_workdir: resolved_workdir,
+        read_only: m.read_only,
+        allow_mcp_in_read_only: m.allow_mcp_in_read_only,
+        rehearsal_gold_patch: None,
+        no_step_persist: m.no_step_persist,
+        parent_sweep_run_id: None,
+        continue_from: None,
+    };
+    crate::run::mini::run(args).await
+}
+
+/// Validate `traj` for `--continue` and exit the process on the first violation.
+fn validate_continue_or_exit(traj: &crate::trajectory::Trajectory, path: &std::path::Path) {
+    use crate::run::mini::ContinueValidationError;
+    match crate::run::mini::validate_continue_trajectory(traj) {
+        Ok(()) => {}
+        Err(ContinueValidationError::NonTerminal) => exit_with_outcome(
+            ExitCode::ContinueNonTerminal,
+            &format!(
+                "--continue: `{}` is non-terminal (partial=true with no outcome or exit_reason); \
+                 use `--resume` to continue an in-progress run instead",
+                path.display()
+            ),
+        ),
+        Err(ContinueValidationError::ManifestMissing) => exit_with_outcome(
+            ExitCode::ResumeManifestMissing,
+            &format!(
+                "--continue: `{}` is missing required fields (task and/or model_name); \
+                 the file may pre-date the manifest schema",
+                path.display()
+            ),
+        ),
+        Err(ContinueValidationError::InvalidPrefix(reason)) => exit_with_outcome(
+            ExitCode::ResumeInvalidPrefix,
+            &format!(
+                "--continue: `{}` has an invalid message prefix: {}",
+                path.display(),
+                reason
+            ),
+        ),
+    }
+}
+
+/// Enforce that no cap flags were raised without `--continue-allow-step-bump`.
+fn reject_cap_bump_without_flag_continue(m: &args::MiniCmd) {
+    let bumped: Vec<&str> = [
+        (m.step_limit.is_some(), "--step-limit"),
+        (m.task_timeout_secs.is_some(), "--task-timeout-secs"),
+        (m.per_task_budget_usd.is_some(), "--per-task-budget-usd"),
+    ]
+    .into_iter()
+    .filter_map(|(set, name)| set.then_some(name))
+    .collect();
+    if !bumped.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--continue: {} cannot be changed on a continuation without \
+                 --continue-allow-step-bump",
+                bumped.join(", ")
+            ),
+        );
+    }
+}
+
+/// Handle `mini --continue <path> --task "<follow-up>"`.
+///
+/// Loads the terminal parent trajectory, appends the follow-up instruction as
+/// a new user turn, and runs the agent starting from that point. The result is
+/// written to a new trajectory file that records the parent lineage.
+#[allow(clippy::too_many_lines)]
+async fn mini_continue_cmd(
+    m: args::MiniCmd,
+    mut cfg: Config,
+    continue_path: std::path::PathBuf,
+    follow_up_task: String,
+) -> Result<(), Error> {
+    // Reject GitHub PR flags — same rationale as --resume.
+    let pr_flags: &[(&str, bool)] = &[
+        ("--open-pr", m.github_pr.open_pr),
+        ("--github-pr-dry-run", m.github_pr.github_pr_dry_run),
+        ("--target-repo", m.github_pr.target_repo.is_some()),
+        ("--target-branch", m.github_pr.target_branch.is_some()),
+    ];
+    let set_pr_flags: Vec<&str> = pr_flags
+        .iter()
+        .filter_map(|&(name, set)| set.then_some(name))
+        .collect();
+    if !set_pr_flags.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            &format!(
+                "--continue: GitHub PR flags are not supported on continue invocations: {}",
+                set_pr_flags.join(", ")
+            ),
+        );
+    }
+
+    // Reject --format — it requires --render-only, which is already mutually
+    // exclusive with --continue; allowing it would silently ignore the format
+    // setting after making a paid model call.
+    if m.format != "text" {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "--continue: --format requires --render-only, which cannot be combined with \
+             --continue; run without --format or re-render the finished trajectory with \
+             --render-only",
+        );
+    }
+
+    // Reject MCP server overrides — same rationale as --resume.
+    if !m.mcp_servers.is_empty() {
+        exit_with_outcome(
+            ExitCode::UsageError,
+            "--continue: --mcp-server overrides are not supported on continue invocations; \
+             the original tool registry cannot be restored from the trajectory",
+        );
+    }
+
+    // Validate extension so read and write targets agree.
+    let traj_stem = continue_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".traj.json"))
+        .unwrap_or_else(|| {
+            exit_with_outcome(
+                ExitCode::UsageError,
+                &format!(
+                    "--continue: `{}` must end with `.traj.json`; \
+                     only trajectory files written by this harness are supported",
+                    continue_path.display()
+                ),
+            )
+        })
+        .to_owned();
+
+    let traj = load_resume_traj(&continue_path)?;
+    validate_continue_or_exit(&traj, &continue_path);
+
+    // Inherit model name, fallback list, step limit, and timeout from parent.
+    cfg.root.model.name = traj.info.model_name.clone().unwrap_or_default();
+    if let Some(manifest) = &traj.info.manifest {
+        cfg.root.agent.step_limit = manifest.step_limit;
+        cfg.root.model.fallback_models = manifest.fallback_models.clone();
+        // Restore the parent's environment kind unless the operator explicitly
+        // overrode it with --env. Prevents a Docker-parent from being silently
+        // continued as a local run (or vice-versa) when the operator omits the flag.
+        if m.env.is_none() {
+            cfg.root.environment.kind = parse_env_kind(&manifest.env_kind)?;
+        }
+    }
+    // task_timeout_secs lives on MiniArgs, not cfg; compute effective value here.
+    let effective_task_timeout = m.task_timeout_secs.or_else(|| {
+        traj.info
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.task_timeout_secs)
+    });
+    apply_read_only_policy(&m, &cfg)?;
+
+    if m.hide_budget_from_agent {
+        cfg.root.agent.hide_budget_from_agent = true;
+    }
+
+    if m.continue_allow_step_bump {
+        if let Some(v) = m.step_limit {
+            cfg.root.agent.step_limit = v;
+        }
+        if let Some(v) = m.per_task_budget_usd {
+            cfg.root.agent.per_task_budget_usd = Some(v);
+        }
+    } else {
+        reject_cap_bump_without_flag_continue(&m);
+    }
+
+    let stream_addr = match &m.stream {
+        Some(s) => Some(s.parse().map_err(|e: std::net::AddrParseError| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "invalid --stream address `{s}`: {e}"
+            )))
+        })?),
+        None => None,
+    };
+
+    let resolved_workdir = if let Some(w) = m.workdir.as_ref() {
+        resolve_and_validate_workdir(Some(w), &cfg)?
+    } else if let Some(w) = &traj.info.local_workdir {
+        resolve_and_validate_workdir(Some(&std::path::PathBuf::from(w)), &cfg)?
+    } else {
+        // Neither --workdir nor a recorded workdir in the parent trajectory;
+        // the continuation will use the current process directory. Warn so
+        // operators know to run from the original checkout.
+        tracing::warn!(
+            "--continue: parent trajectory has no recorded working directory; \
+             the continuation will run in the current process directory. \
+             Pass --workdir or run from the original working directory."
+        );
+        None
+    };
+
+    // The child trajectory goes into the same directory as the parent.
+    let output_dir = continue_path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
+
+    // Build a unique child trajectory name: {parent_stem}-continue-{task_slug}.
+    // If the target already exists (same follow-up run more than once), append a
+    // numeric suffix (-2, -3, …) so retries never silently overwrite earlier runs.
+    let follow_up_slug = crate::run::mini::slugify(&follow_up_task);
+    let base_name = format!("{traj_stem}-continue-{follow_up_slug}");
+    let child_traj_name = {
+        let candidate = output_dir.join(format!("{base_name}.traj.json"));
+        if candidate.exists() {
+            let mut n = 2u32;
+            loop {
+                let suffixed = format!("{base_name}-{n}");
+                if !output_dir.join(format!("{suffixed}.traj.json")).exists() {
+                    break suffixed;
+                }
+                n += 1;
+            }
+        } else {
+            base_name
+        }
+    };
+
+    // Record the parent path as a stable, canonicalized string.
+    let parent_path_str = continue_path
+        .canonicalize()
+        .unwrap_or_else(|_| continue_path.clone())
+        .to_string_lossy()
+        .to_string();
+
+    let continue_state = crate::run::mini::ContinueState {
+        parent_trajectory: traj,
+        parent_path: parent_path_str,
+        parent_trajectory_id: traj_stem,
+        follow_up_task: follow_up_task.clone(),
+    };
+
+    let verification_checks = parse_verify_checks(&m.verify)?;
+    let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
+
+    let args = crate::run::mini::MiniArgs {
+        task: follow_up_task,
+        extra_context: m.extra_context,
+        config: cfg,
+        output_dir,
+        trajectory_name: child_traj_name,
+        deterministic_responses: None,
+        deterministic_usage_per_call: None,
+        task_timeout_secs: effective_task_timeout,
+        cancellation: None,
+        stream_addr,
+        patch_capture: None,
+        verification_checks,
+        verification_timeout_secs: m.verify_timeout_secs,
+        resume_from: None,
+        continue_from: Some(continue_state),
         interactive_mode,
         trace_id: None,
         webhook_url: m.webhook_url,
@@ -5702,6 +6031,8 @@ mod tests {
             task_file: None,
             resume_from: None,
             resume_allow_step_bump: false,
+            continue_from: None,
+            continue_allow_step_bump: false,
             extra_context: None,
             model: "deterministic".into(),
             step_limit: Some(1),

@@ -116,19 +116,23 @@ pub enum ExitCode {
     /// from "your invocation is broken". All rules were evaluated; the gate is wired
     /// correctly but the sweep did not meet the declared SLO.
     SloRuleFailure = 27,
-    /// 28 — `agent apply` ran `git apply --check` and the patch was rejected.
+    /// 28 — `mini --continue` target trajectory is non-terminal (still
+    /// partial/in-progress); cannot issue a follow-up instruction to an
+    /// unfinished run. Use `--resume` to recover a partial run instead.
+    ContinueNonTerminal = 28,
+    /// 29 — `agent apply` ran `git apply --check` and the patch was rejected.
     /// The tree is byte-for-byte unchanged; the rejected hunks were printed to
     /// stderr. Distinct from `internal_error` (1) so automation can distinguish
     /// "the patch is inapplicable" from "something else went wrong".
-    ApplyCheckFailed = 28,
-    /// 29 — `agent apply` refused because the source trajectory recorded
+    ApplyCheckFailed = 29,
+    /// 30 — `agent apply` refused because the source trajectory recorded
     /// redaction on the `patch_submission` surface, meaning the patch file
     /// contains `[REDACTED:…]` markers that would corrupt the working tree.
     /// Pass `--allow-redacted` to override.
-    ApplyRedactedRefused = 29,
-    /// 30 — `agent apply` refused because the target working tree has
+    ApplyRedactedRefused = 30,
+    /// 31 — `agent apply` refused because the target working tree has
     /// uncommitted changes. Pass `--allow-dirty` to override.
-    ApplyDirtyTreeRefused = 30,
+    ApplyDirtyTreeRefused = 31,
     /// 130 — user interruption (graceful SIGINT / Ctrl-C; 128 + SIGINT(2)).
     Interrupted = 130,
     /// 137 — forced kill (SIGKILL escalation after graceful-cancel deadline; 128 + SIGKILL(9)).
@@ -177,6 +181,7 @@ impl ExitCode {
             Self::RedactCheckStaleLiterals => "redact_check_stale_literals",
             Self::RedactCheckStrictFail => "redact_check_strict_fail",
             Self::SloRuleFailure => "slo_rule_failure",
+            Self::ContinueNonTerminal => "continue_non_terminal",
             Self::ApplyCheckFailed => "apply_check_failed",
             Self::ApplyRedactedRefused => "apply_redacted_refused",
             Self::ApplyDirtyTreeRefused => "apply_dirty_tree_refused",
@@ -428,5 +433,16 @@ mod tests {
     fn audit_failure_exit_code_is_20() {
         assert_eq!(ExitCode::AuditFailure.as_i32(), 20);
         assert_eq!(ExitCode::AuditFailure.outcome_class(), "audit_failure");
+    }
+
+    // ── RED-phase: continue exit codes ───────────────────────────────────
+
+    #[test]
+    fn continue_non_terminal_exit_code_is_28() {
+        assert_eq!(ExitCode::ContinueNonTerminal.as_i32(), 28);
+        assert_eq!(
+            ExitCode::ContinueNonTerminal.outcome_class(),
+            "continue_non_terminal"
+        );
     }
 }
