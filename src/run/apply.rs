@@ -274,13 +274,29 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
             .map(|p| p.join(report_dest.file_name().unwrap_or_default()));
         if let Some(ref report_abs) = report_abs {
             for f in &files_os {
-                if &git_root.join(f) == report_abs {
+                let file_abs = git_root.join(f);
+                // Direct conflict: the patch touches exactly the report file.
+                if file_abs == *report_abs {
                     return Err(ApplyError::Io(std::io::Error::new(
                         std::io::ErrorKind::AlreadyExists,
                         format!(
                             "report path '{}' overlaps a file in the patch; \
                              use --report to choose a different destination",
                             report_dest.display()
+                        ),
+                    )));
+                }
+                // Ancestor conflict: the patch creates a regular file at a path
+                // that is a parent directory of report_dest. write_report would
+                // then fail with NotADirectory after the patch has been applied.
+                if report_abs.starts_with(&file_abs) {
+                    return Err(ApplyError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotADirectory,
+                        format!(
+                            "report path '{}' is under '{}' which the patch adds as a file; \
+                             use --report to choose a different destination",
+                            report_dest.display(),
+                            file_abs.display()
                         ),
                     )));
                 }
@@ -359,6 +375,21 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<Pat
                 .join(format!("{instance}.traj.json"));
             let legacy_traj = sweep.join(format!("{instance}.traj.json"));
 
+            // Check ALL candidate trajectories: if any records patch_submission
+            // redaction the patch is refused. A stale clean nested trajectory
+            // must not shadow redaction in the bundle trajectory that actually
+            // corresponds to the selected patch.
+            let redacted = [
+                &nested_traj,
+                &nested_traj_legacy,
+                &bundle_traj,
+                &legacy_traj,
+            ]
+            .iter()
+            .filter(|p| p.exists())
+            .any(|p| trajectory_has_patch_submission_redaction(p));
+
+            // For reporting purposes, pick the first existing trajectory.
             let traj_path = if nested_traj.exists() {
                 nested_traj
             } else if nested_traj_legacy.exists() {
@@ -369,7 +400,6 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<Pat
                 legacy_traj
             };
 
-            let redacted = trajectory_has_patch_submission_redaction(&traj_path);
             (patch_path, Some(traj_path), redacted)
         }
     }
@@ -381,35 +411,58 @@ fn resolve_patch_and_redaction(selector: &PatchSelector) -> (PathBuf, Option<Pat
 /// `task.json`      → `task.patch`
 /// `task`           → `task.patch`
 fn sibling_patch_of_trajectory(traj_path: &Path) -> PathBuf {
-    let stem = traj_path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
+    let file_name = traj_path.file_name().unwrap_or_default();
 
-    let base = if let Some(s) = stem.strip_suffix(".traj.json") {
-        s.to_owned()
-    } else if let Some(s) = stem.strip_suffix(".json") {
-        s.to_owned()
-    } else {
-        stem.into_owned()
+    // Strip the ".traj.json" / ".json" suffix using raw bytes so non-UTF-8
+    // filenames are not corrupted before the sibling patch path is built.
+    #[cfg(unix)]
+    let (base, patch_name): (OsString, OsString) = {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = file_name.as_bytes();
+        let base_bytes = if bytes.ends_with(b".traj.json") {
+            &bytes[..bytes.len() - 10]
+        } else if bytes.ends_with(b".json") {
+            &bytes[..bytes.len() - 5]
+        } else {
+            bytes
+        };
+        let mut pname = OsString::from_vec(base_bytes.to_vec());
+        pname.push(".patch");
+        (OsString::from_vec(base_bytes.to_vec()), pname)
     };
+    #[cfg(not(unix))]
+    let (base, patch_name): (OsString, OsString) = {
+        let stem = file_name.to_string_lossy();
+        let base_str = if let Some(s) = stem.strip_suffix(".traj.json") {
+            s.to_owned()
+        } else if let Some(s) = stem.strip_suffix(".json") {
+            s.to_owned()
+        } else {
+            stem.into_owned()
+        };
+        let pname = OsString::from(format!("{base_str}.patch"));
+        (OsString::from(base_str), pname)
+    };
+    let _ = base; // used only in some cfg branches
 
     let traj_dir = traj_path.parent().unwrap_or_else(|| Path::new("."));
 
     // Primary: sibling .patch in the same directory (most common).
-    let sibling = traj_dir.join(format!("{base}.patch"));
+    let sibling = traj_dir.join(&patch_name);
     if sibling.exists() {
         return sibling;
     }
 
     // Bundle layout: trajectories/<id>.traj.json → ../patches/<id>.patch.
-    // `bench bundle` places trajectories and patches in separate sub-directories
-    // under the same bundle root, so the patch is one level up from the
-    // trajectory's directory and then under `patches/`.
-    if let Some(bundle_root) = traj_dir.parent() {
-        let bundle_patch = bundle_root.join("patches").join(format!("{base}.patch"));
-        if bundle_patch.exists() {
-            return bundle_patch;
+    // Only apply this fallback when the trajectory lives inside a directory
+    // named "trajectories" so we don't accidentally pick up an unrelated
+    // patches/<base>.patch in non-bundle layouts.
+    if traj_dir.file_name() == Some(std::ffi::OsStr::new("trajectories")) {
+        if let Some(bundle_root) = traj_dir.parent() {
+            let bundle_patch = bundle_root.join("patches").join(&patch_name);
+            if bundle_patch.exists() {
+                return bundle_patch;
+            }
         }
     }
 
@@ -466,11 +519,16 @@ fn sibling_trajectory_of_patch(patch_path: &Path) -> Option<PathBuf> {
 /// Return `true` if the trajectory file at `traj_path` records at least one
 /// redaction event on the `patch_submission` surface.
 fn trajectory_has_patch_submission_redaction(traj_path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(traj_path) else {
-        return false;
+    let text = match std::fs::read_to_string(traj_path) {
+        Ok(t) => t,
+        // Missing trajectory → no redaction metadata recorded.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        // Unreadable trajectory → fail closed (treat as redacted).
+        Err(_) => return true,
     };
+    // Malformed trajectory → fail closed.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
+        return true;
     };
     if let Some(counts) = value
         .pointer("/info/redaction/counts")
@@ -656,7 +714,16 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
 
     for line in patch_text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            // New file section; always terminates any active hunk.
+            // New file section; flush any rename that had no "+++" pair
+            // (e.g. 100% similarity renames produce no hunk lines).
+            if !is_copy {
+                let effective_b = pending_b.as_ref();
+                if let (Some(a), Some(b)) = (&pending_a, effective_b) {
+                    if a != b && !files.contains(a) {
+                        files.push(a.clone());
+                    }
+                }
+            }
             in_hunk = false;
             saw_git_header = true;
             is_copy = false;
@@ -733,6 +800,10 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<OsString>, i64, i64) {
             pending_b = None;
         } else if line.starts_with("copy from ") || line.starts_with("copy to ") {
             is_copy = true;
+        } else if let Some(rest) = line.strip_prefix("rename from ") {
+            // 100% similarity renames have no "---"/"+++" pair; capture the
+            // old path here so the section-end flush above can record it.
+            pending_a = Some(OsString::from(rest));
         } else if let Some(rest) = line.strip_prefix("--- ") {
             // Old-file header outside a hunk: track for rename detection.
             pending_a = diff_header_path(rest, "a/");
@@ -787,10 +858,9 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<OsString> {
     } else {
         // Strip trailing tab+timestamp before any other checks. Plain unified
         // diffs include a TAB+datetime after the path (e.g. "--- /dev/null\t
-        // 2024-01-01 00:00:00 +0000"). Stripping it here ensures the sentinel
-        // check and component strip operate on the bare path in both the
-        // bare-sentinel ("--- /dev/null") and timestamped forms.
-        let s = s.split('\t').next().unwrap_or(s).trim();
+        // 2024-01-01 00:00:00 +0000"). Use only the tab split — do not trim()
+        // the result since filenames may legitimately end with a space.
+        let s = s.split('\t').next().unwrap_or(s);
         // `/dev/null` is git's sentinel for new-file / deleted-file patches.
         if s == "/dev/null" {
             return None;
