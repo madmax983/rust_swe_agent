@@ -392,15 +392,27 @@ fn dirty_paths_excluding(
     exclude_abs: &[&Path],
 ) -> Result<Vec<String>, ApplyError> {
     let output = Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=all"])
+        .args(["status", "--porcelain", "-z", "--untracked-files=all"])
         .current_dir(dir)
         .output()?;
+    // --porcelain -z: records are NUL-terminated, paths are never C-string-
+    // quoted (unlike the default line-based format). Rename/copy entries emit
+    // "XY new\0old\0"; the old-path field has no "XY " status prefix so we
+    // detect and skip it to avoid treating it as an additional dirty file.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let paths: Vec<String> = stdout
-        .lines()
+        .split('\0')
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
+            // Skip old-name fields from rename/copy entries — they have no
+            // "XY " status prefix (byte 2 is not a space).
+            if l.as_bytes().get(2) != Some(&b' ') {
+                return None;
+            }
             let rel = l.get(3..)?.trim();
+            if rel.is_empty() {
+                return None;
+            }
             let abs = git_root.join(rel);
             // Canonicalize for comparison; fall back to raw path if it doesn't
             // exist yet (e.g. untracked file whose parent isn't resolved).
@@ -485,10 +497,15 @@ fn parse_diff_stats(patch_text: &str) -> (Vec<String>, i64, i64) {
                 }
             }
         } else if in_hunk {
-            // Inside a hunk: count added/removed lines only.
-            // "+++ " and "--- " are NOT file headers here — they are content
-            // lines whose original text started with "++" or "--".
-            if line.starts_with('+') && !line.starts_with("+++") {
+            // Count added/removed hunk lines. Also detect "--- " as the start
+            // of a new file section in multi-file plain unified diffs: without
+            // a "diff --git" header, "--- " reliably signals the next file.
+            // (Edge case: a removed content line whose original starts with
+            // "-- " is indistinguishable; it is accepted as a known trade-off.)
+            if let Some(rest) = line.strip_prefix("--- ") {
+                in_hunk = false;
+                pending_a = diff_header_path(rest, "a/");
+            } else if line.starts_with('+') && !line.starts_with("+++") {
                 added += 1;
             } else if line.starts_with('-') && !line.starts_with("---") {
                 removed += 1;
@@ -566,7 +583,15 @@ fn diff_header_path(s: &str, prefix: &str) -> Option<String> {
             Some(name)
         }
     } else {
-        let path = s.strip_prefix(prefix).unwrap_or(s);
+        let path = if let Some(stripped) = s.strip_prefix(prefix) {
+            stripped
+        } else {
+            // Plain-diff path without git's a/b convention (e.g. "diff -ru old
+            // new" produces "+++ new/f1"). Strip one leading component to match
+            // git apply's default -p1 strip level so the reported path matches
+            // what git actually applied.
+            s.find('/').map_or(s, |i| &s[i + 1..])
+        };
         let path = path.split('\t').next().unwrap_or(path).trim();
         if path.is_empty() || path == "/dev/null" {
             None
@@ -798,13 +823,21 @@ fn apply_patch(
         return Err(ApplyError::CheckFailed(msg));
     }
 
-    // Unstage any index entries written by the 3-way path for files that were
-    // not staged before. Preserves pre-existing staged edits.
+    // Restore the pre-apply index state for every affected file.
+    // git apply --3way stages the merged result; we always clear that so the
+    // apply behaves like regular git apply (working-tree only). Then for files
+    // that had pre-existing staged edits, re-apply the original cached entry
+    // so the caller's staged work is exactly preserved.
     if three_way {
         for f in affected_files {
-            if !pre_staged.contains_key(f) {
+            let _ = Command::new("git")
+                .args(["reset", "HEAD", "--", &format!(":(literal){f}")])
+                .current_dir(git_root)
+                .output();
+            if let Some((mode, sha)) = pre_staged.get(f) {
+                let cacheinfo = format!("{mode},{sha},{f}");
                 let _ = Command::new("git")
-                    .args(["reset", "HEAD", "--", &format!(":(literal){f}")])
+                    .args(["update-index", "--cacheinfo", &cacheinfo])
                     .current_dir(git_root)
                     .output();
             }
