@@ -510,6 +510,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
 
         let trajectory_name = task.id.clone();
         let mini_args = crate::run::mini::MiniArgs {
+            test_env: None,
             task: task.task.clone(),
             extra_context: task.extra_context.clone(),
             config: task_cfg,

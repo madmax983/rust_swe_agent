@@ -4587,6 +4587,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
         };
 
         let args = crate::run::mini::MiniArgs {
+            test_env: None,
             task: task.clone(),
             extra_context: None,
             config: cfg.clone(),
@@ -7999,6 +8000,7 @@ instance = "inst"
     /// (sweep_started → 2 × instance_completed → sweep_completed) and that
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
@@ -8018,11 +8020,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
@@ -8122,8 +8120,8 @@ instance = "inst"
 
         let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
             .await
-            .expect("sweep timed out")
-            .expect("sweep failed");
+            .unwrap_or_else(|e| panic!("sweep timed out: {e}"))
+            .unwrap_or_else(|e| panic!("sweep failed: {e}"));
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 

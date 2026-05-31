@@ -146,6 +146,13 @@ struct RedactionMatch {
 
 impl Redactor {
     pub fn from_config(cfg: &RedactionCfg) -> Result<Self, regex::Error> {
+        Self::from_config_with_env(cfg, std::env::vars_os())
+    }
+
+    pub fn from_config_with_env(
+        cfg: &RedactionCfg,
+        env_vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Result<Self, regex::Error> {
         let mut rules = Vec::new();
         let mut blocking_literals = Vec::new();
         let mut seen_literals = BTreeSet::new();
@@ -193,7 +200,7 @@ impl Redactor {
                 blocking_literals.push(literal);
             }
 
-            for (name_os, value_os) in std::env::vars_os() {
+            for (name_os, value_os) in env_vars {
                 let name = name_os.to_string_lossy();
                 let value = value_os.to_string_lossy().into_owned();
                 if let Some(kind) = env_literal_kind(&name, &value) {
@@ -241,6 +248,13 @@ impl Redactor {
 
     pub fn from_config_lossy(cfg: &RedactionCfg) -> Self {
         Self::from_config(cfg).unwrap_or_else(|_| Self::disabled())
+    }
+
+    pub fn from_config_lossy_with_env(
+        cfg: &RedactionCfg,
+        env_vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Self {
+        Self::from_config_with_env(cfg, env_vars).unwrap_or_else(|_| Self::disabled())
     }
 
     pub fn default_enabled() -> Self {

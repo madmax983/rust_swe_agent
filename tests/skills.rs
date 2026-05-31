@@ -464,6 +464,7 @@ paths = ["{skill_path}"]
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        test_env: None,
     })
     .await
     .unwrap();
@@ -546,6 +547,7 @@ secret_literals = ["TOP_SECRET_VALUE", "TOP_SECRET_ROOT"]
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        test_env: None,
     })
     .await
     .unwrap();

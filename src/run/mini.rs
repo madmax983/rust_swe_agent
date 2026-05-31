@@ -109,6 +109,7 @@ pub struct MiniArgs {
     pub config: Config,
     pub output_dir: PathBuf,
     pub trajectory_name: String,
+    pub test_env: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>>,
     pub deterministic_responses: Option<Vec<String>>,
     /// Optional fixed `ModelUsage` reported by the deterministic backend
     /// on every call. Only meaningful when `deterministic_responses` is
@@ -2478,6 +2479,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
 
         run(args).await.unwrap();
@@ -2635,6 +2637,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             continue_from: None,
+            test_env: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
             webhook_url: None,
@@ -2692,6 +2695,7 @@ index 8a1218a..24c5735 100644\n\
             verification_timeout_secs: 60,
             resume_from: None,
             continue_from: Some(continue_state),
+            test_env: None,
             interactive_mode: InteractiveMode::Off,
             trace_id: None,
             webhook_url: None,
@@ -2821,6 +2825,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
 
         run(args).await.unwrap();
@@ -2919,6 +2924,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
 
         run(args).await.unwrap();
@@ -3008,6 +3014,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: true,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
         run(args).await.unwrap();
 
@@ -3076,6 +3083,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
         run(args).await.unwrap();
 
@@ -3146,6 +3154,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         };
 
         run(args).await.unwrap();
@@ -3262,6 +3271,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            test_env: None,
         }
     }
 

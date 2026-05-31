@@ -77,6 +77,7 @@ async fn read_only_blocks_bash_and_preserves_git_status() {
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        test_env: None,
     })
     .await;
     assert!(

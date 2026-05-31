@@ -716,6 +716,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     let verification_checks = parse_verify_checks(&m.verify)?;
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
     let args = crate::run::mini::MiniArgs {
+        test_env: None,
         task,
         extra_context: m.extra_context,
         config: cfg,
@@ -1119,6 +1120,7 @@ async fn mini_resume_cmd(
     );
 
     let args = crate::run::mini::MiniArgs {
+        test_env: None,
         task,
         extra_context: m.extra_context,
         config: cfg,
@@ -1384,6 +1386,7 @@ async fn mini_continue_cmd(
     let interactive_mode = resolve_interactive_mode(m.interactive, m.yolo, m.ui);
 
     let args = crate::run::mini::MiniArgs {
+        test_env: None,
         task: follow_up_task,
         extra_context: m.extra_context,
         config: cfg,

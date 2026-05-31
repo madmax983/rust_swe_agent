@@ -15,6 +15,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
     let traj_path = output_dir.join("hello-world.traj.json");
     let out_path = output_dir.join("hello-world.output.txt");
     let args = MiniArgs {
+        test_env: None,
         task: "Say hello".to_owned(),
         extra_context: None,
         config: cfg,
