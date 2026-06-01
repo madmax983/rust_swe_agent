@@ -1481,3 +1481,50 @@ fn compare_json_contains_comparability_block() {
     );
     assert!(!comp["dataset_content_matches"].as_bool().unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// 30. evaluate with custom dataset_path override stamps its hash and instance count in provenance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn evaluate_custom_dataset_override_stamps_its_hash_and_count() {
+    let dir = tempfile::tempdir().unwrap();
+    write_results(dir.path(), vec![minimal_instance_result("task-a")]);
+
+    // Create a custom dataset jsonl file with 3 rows
+    let dataset_path = dir.path().join("custom_dataset.jsonl");
+    let dataset_content = "{\"instance_id\":\"task-a\",\"problem_statement\":\"foo\"}\n\
+                           {\"instance_id\":\"task-b\",\"problem_statement\":\"bar\"}\n\
+                           {\"instance_id\":\"task-c\",\"problem_statement\":\"baz\"}\n";
+    std::fs::write(&dataset_path, dataset_content).unwrap();
+
+    // Call evaluate::run with the dataset_path override
+    let eval = maxwells_daemon::run::evaluate::run(&maxwells_daemon::run::evaluate::EvaluateArgs {
+        sweep_dir: dir.path().to_path_buf(),
+        dataset_path: Some(dataset_path),
+        backend: maxwells_daemon::run::evaluate::EvaluateBackend::None,
+        timeout_per_instance_secs: 1,
+        parallel: 1,
+        sb_subset: "verified".into(),
+        sb_split: "test".into(),
+        run_id: None,
+        breakdown: maxwells_daemon::run::evaluate::BreakdownSelection::none(),
+        cost_attribution: false,
+    })
+    .unwrap();
+
+    assert!(eval.provenance.is_some());
+    let prov = eval.provenance.unwrap();
+
+    // Hash should match custom dataset file hash
+    let expected_sha = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(dataset_content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+    assert_eq!(prov.dataset_sha256.as_deref(), Some(expected_sha.as_str()));
+
+    // Instance count should be Some(3)
+    assert_eq!(prov.dataset_instance_count, Some(3));
+}

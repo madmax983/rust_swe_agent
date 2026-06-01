@@ -421,7 +421,12 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         resolved_by_run,
         effective_run_id,
     } = run_output;
-    let (dataset_sha256, dataset_instance_count) = if let Some(ref manifest) = loaded.manifest {
+    let (dataset_sha256, dataset_instance_count) = if let Some(ref dataset_path) = args.dataset_path
+    {
+        let sha = sha256_file(dataset_path).ok();
+        let count = swebench::load_dataset(dataset_path).ok().map(|v| v.len());
+        (sha, count)
+    } else if let Some(ref manifest) = loaded.manifest {
         (
             Some(manifest.dataset.sha256.clone()),
             Some(manifest.dataset.instance_count),
