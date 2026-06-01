@@ -473,6 +473,12 @@ fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
             let Some(recorded) = parsed.redaction else {
                 continue;
             };
+            // If the sweep recorded redaction as active, run the oracle even when
+            // the CLI invocation defaulted `enabled` off and the manifest carries
+            // no recoverable literals/patterns (they are stored already-redacted).
+            if recorded.enabled {
+                cfg.enabled = true;
+            }
             for lit in recorded.secret_literals {
                 if !lit.is_empty()
                     && !lit.starts_with("[REDACTED:")
@@ -927,6 +933,13 @@ fn collect_redactor_oracle_matches(
         if m.start >= m.end {
             continue;
         }
+        // An artifact that was already redacted at write time contains
+        // `[REDACTED:…]` markers; the redactor re-matches the marker text (e.g.
+        // a `DATABASE_PASSWORD=[REDACTED:…]` assignment). Reporting it would fail
+        // the publish gate on a correctly-redacted artifact, so skip markers.
+        if is_redaction_marker(&text[m.start..m.end]) {
+            continue;
+        }
         if let Some((detector_id, match_class, severity)) = oracle_source_kind(&m.source) {
             candidates.push(RawMatch {
                 start: m.start,
@@ -937,6 +950,14 @@ fn collect_redactor_oracle_matches(
             });
         }
     }
+}
+
+/// `true` when `value` is (or contains) an existing runtime redaction marker.
+///
+/// Already-redacted artifacts carry `[REDACTED:KIND:SIZE:HASH]` markers; treating
+/// them as fresh leaks would fail the publish gate on correctly-redacted output.
+fn is_redaction_marker(value: &str) -> bool {
+    value.contains("[REDACTED:")
 }
 
 /// Gather sensitive string values from `text`, treating it as whole-file JSON
@@ -965,7 +986,9 @@ fn gather_json_hints(text: &str) -> Vec<String> {
 /// Handles both whole-file JSON and JSONL; silent on non-JSON text.
 fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
     for raw in gather_json_hints(text) {
-        if raw.is_empty() {
+        if raw.is_empty() || is_redaction_marker(&raw) {
+            // Empty, or an already-redacted value under a sensitive key — not a
+            // fresh leak, so it must not fail the publish gate.
             continue;
         }
         // Re-locate the value by its *JSON-escaped, quoted* form so the search
@@ -2272,5 +2295,107 @@ mod tests {
                 report.files_scanned
             );
         }
+    }
+
+    // ── PR #557 sixth-round review ────────────────────────────────────────
+
+    #[test]
+    fn already_redacted_env_assignment_is_not_a_finding() {
+        // A correctly-redacted artifact carries a marker as the assignment value;
+        // it must not fail the publish gate.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "DATABASE_PASSWORD=[REDACTED:env_assignment:short:abc123def456]\n",
+        );
+        let report = audit(dir.path());
+        assert_eq!(report.summary.high, 0, "{:?}", report.findings);
+        assert_eq!(report.summary.medium, 0, "{:?}", report.findings);
+        assert_eq!(report.exit_code(), ExitCode::Success);
+    }
+
+    #[test]
+    fn already_redacted_json_value_is_not_a_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.traj.json",
+            r#"{"api_key":"[REDACTED:env_key:medium:deadbeef0000]"}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.match_class != "sensitive_json_value"),
+            "marker flagged as sensitive value: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::Success);
+    }
+
+    #[test]
+    fn real_secret_under_sensitive_json_key_still_flagged() {
+        // Guard against the marker filter being over-broad.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.traj.json",
+            r#"{"api_key":"realhunter2value"}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "real json secret missed: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn recorded_enabled_turns_on_oracle_even_without_literals() {
+        // Sweep recorded `redaction.enabled = true` but no recoverable literals
+        // (they are stored already-redacted). With a CLI config that defaulted
+        // redaction off, the oracle must still run on the strength of the
+        // recorded `enabled` flag.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = "[redaction]\nenabled = true\n";
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            serde_json::to_string(&serde_json::json!({
+                "config": { "resolved": resolved }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "Authorization: Bearer abcdefghijklmnop1234\n",
+        );
+
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false; // CLI defaulted off
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: false,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "bearer_token"),
+            "recorded enabled=true did not re-enable the oracle: {:?}",
+            report.findings
+        );
     }
 }

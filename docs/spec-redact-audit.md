@@ -117,13 +117,28 @@ fire.)
 ### Recorded sweep config
 
 When scanning a sweep directory, the auditor reads the resolved `[redaction]`
-config recorded in that sweep's `manifest.json` (the same `…/config/resolved`
-TOML that `bench bundle` consumes) and **unions** its `secret_literals` /
-`custom_patterns` with the CLI/default config. This means the documented
-`agent redact-audit runs/my-sweep` catches a custom short literal the sweep was
-run with even when invoked later with defaults. Recorded entries are added (never
-replace an explicit `--config`); redaction markers and uncompilable patterns are
-skipped; a missing or malformed manifest is ignored.
+config recorded in that sweep's `manifest.json` *and* `results.json` (the same
+`…/config/resolved` TOML that `bench bundle` consumes) and **unions** what it can
+recover with the CLI/default config. Specifically:
+
+- If the sweep recorded `redaction.enabled = true`, the runtime-redactor
+  **oracle is enabled** for the audit even when the CLI invocation defaulted it
+  off — so bearer tokens, sensitive env-assignments, sensitive JSON keys, etc.
+  from the sweep's own policy are still caught.
+- Any **non-redacted** recorded `custom_patterns` are added (regex still
+  compiles, not a `[REDACTED:…]` marker).
+
+> **Limitation — recorded literals are not recoverable.** The sweep writer
+> redacts its own provenance before serializing `config.resolved` (see
+> `build_manifest` in `src/run/swebench.rs`), so recorded `secret_literals` are
+> stored as `[REDACTED:…]` markers and cannot be reconstructed by the auditor.
+> To audit a sweep against a **custom literal** it was run with, pass the same
+> config: `agent redact-audit runs/my-sweep --config my-redaction.toml`. The
+> oracle and provider/structural detectors still run with defaults; only the
+> operator's *opaque literal values* require the original config.
+
+Recorded entries are added (never replace an explicit `--config`); a missing or
+malformed manifest/results file is ignored.
 
 ### Entropy heuristic
 
