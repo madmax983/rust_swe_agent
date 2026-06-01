@@ -1,8 +1,33 @@
 //! Run-scoped secret redaction.
 //!
-//! This is deliberately not a full DLP engine. It masks configured literals,
-//! common structured secret shapes, and current-process environment values
-//! with sensitive names before text reaches persisted or shareable surfaces.
+//! Why this exists: When autonomous agents operate in environments containing sensitive
+//! credentials (like `GITHUB_TOKEN` or `OPENAI_API_KEY`), there is a risk that these
+//! secrets will be leaked into trajectories, logs, or model inputs. This module
+//! acts as a safety net, actively intercepting strings before they hit persisted
+//! or shareable surfaces to mask secrets.
+//!
+//! This is deliberately not a full DLP engine. It uses a lightweight, rule-based
+//! approach to mask:
+//! - Explicitly configured literals.
+//! - Common structured secret shapes (e.g., typical Bearer tokens, GitHub keys).
+//! - Current-process environment variables whose names imply sensitive material
+//!   (e.g., `*SECRET*`, `*TOKEN*`).
+//!
+//! # Examples
+//!
+//! ```
+//! use maxwells_daemon::redaction::Redactor;
+//! use maxwells_daemon::config::RedactionCfg;
+//!
+//! // 1. Create a default-enabled redactor
+//! let redactor = Redactor::default_enabled();
+//!
+//! // 2. Redact potentially sensitive text before it reaches a surface
+//! let text = "My API key is sk-ant-1234567890abcdef1234567890abcdef";
+//! let safe_text = redactor.redact_text(text, "trajectory").text;
+//!
+//! assert!(safe_text.contains("[REDACTED:api_key:"));
+//! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -89,6 +114,14 @@ pub struct RedactionOutcome {
 }
 
 #[derive(Clone)]
+/// The central engine for masking secrets in text and structured data.
+///
+/// `Redactor` wraps an immutable core of compiled rules (configured literals,
+/// regex patterns, and active environment variables). It uses interior mutability
+/// to track telemetry (how many secrets of what kind were intercepted on which
+/// surface) and to assign stable, hashed replacement markers (so the same secret
+/// string gets the same marker throughout the run, allowing correlation without
+/// revealing the secret).
 pub struct Redactor {
     inner: Arc<RedactorInner>,
 }
@@ -243,6 +276,15 @@ impl Redactor {
         Self::from_config(cfg).unwrap_or_else(|_| Self::disabled())
     }
 
+    /// Creates a new `Redactor` enabled by default, using standard built-in rules
+    /// and scanning the current process environment for variables with sensitive names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    /// let redactor = Redactor::default_enabled();
+    /// ```
     pub fn default_enabled() -> Self {
         Self::from_config_lossy(&RedactionCfg::default())
     }
@@ -263,6 +305,21 @@ impl Redactor {
         }
     }
 
+    /// Scans the `input` string and replaces any detected secrets with stable markers.
+    ///
+    /// This method updates internal telemetry, recording that a secret was intercepted
+    /// on the specified `surface` (e.g., `"trajectory"`, `"model_observation"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use maxwells_daemon::redaction::Redactor;
+    /// let redactor = Redactor::default_enabled();
+    ///
+    /// let outcome = redactor.redact_text("Here is my secret sk-ant-1234567890abcdef1234567890abcdef", "log");
+    /// assert!(outcome.redacted);
+    /// assert!(outcome.text.contains("[REDACTED:api_key:"));
+    /// ```
     #[must_use]
     pub fn redact_text(&self, input: &str, surface: &str) -> RedactionOutcome {
         let (text, redacted) = self.apply_redaction(input, Some(surface));
@@ -449,7 +506,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike [`Redactor::redact_text`], this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]
