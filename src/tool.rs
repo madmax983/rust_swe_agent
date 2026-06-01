@@ -1057,6 +1057,57 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn mcp_response_result_handles_json_rpc_error() {
+        let stdout = format!(
+            "{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request"
+                }
+            })
+        );
+        let result = mcp_response_result("diagnostic-mcp", &stdout, 1);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("JSON-RPC error -32600: Invalid Request"));
+    }
+
+    #[test]
+    fn mcp_response_result_handles_missing_result() {
+        let stdout = format!(
+            "{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1
+            })
+        );
+        let result = mcp_response_result("diagnostic-mcp", &stdout, 1);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("omitted result"));
+    }
+
+    #[test]
+    fn mcp_response_result_handles_missing_id() {
+        let stdout = format!(
+            "{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {}
+            })
+        );
+        let result = mcp_response_result("diagnostic-mcp", &stdout, 1);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("did not return response id 1"));
+    }
+
     #[test]
     fn mcp_response_result_skips_stdout_noise_before_json_rpc() {
         let stdout = format!(
