@@ -28,6 +28,12 @@ pub struct EvaluatorProvenance {
     /// SWE-bench dataset split (e.g. `"dev"`, `"test"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_split: Option<String>,
+    /// SWE-bench dataset SHA-256 hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_sha256: Option<String>,
+    /// Optional SWE-bench dataset instance count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_instance_count: Option<usize>,
     /// Run ID supplied to the evaluator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -415,11 +421,21 @@ pub fn run(args: &EvaluateArgs) -> Result<EvaluationResults, Error> {
         resolved_by_run,
         effective_run_id,
     } = run_output;
+    let (dataset_sha256, dataset_instance_count) = if let Some(ref manifest) = loaded.manifest {
+        (
+            Some(manifest.dataset.sha256.clone()),
+            Some(manifest.dataset.instance_count),
+        )
+    } else {
+        (None, None)
+    };
     let provenance = build_provenance(
         args,
         &resolved_by_run,
         effective_run_id.as_deref(),
         eval_started_at,
+        dataset_sha256,
+        dataset_instance_count,
     );
     attach_patch_stats(&mut eval, args, &resolved_by_run)?;
     let (rollup, test_only_resolved_rate) = build_submission_class_rollup(&eval.instances);
@@ -470,6 +486,8 @@ fn build_provenance(
     resolved_by_run: &HashMap<RunSlotKey, bool>,
     effective_run_id: Option<&str>,
     started_at: String,
+    dataset_sha256: Option<String>,
+    dataset_instance_count: Option<usize>,
 ) -> EvaluatorProvenance {
     let run_id_str = effective_run_id
         .or(args.run_id.as_deref())
@@ -532,6 +550,8 @@ fn build_provenance(
             EvaluateBackend::SbCli => Some(args.sb_split.clone()),
             EvaluateBackend::None | EvaluateBackend::Rehearsal => None,
         },
+        dataset_sha256,
+        dataset_instance_count,
         run_id: recorded_run_id,
         prediction_path,
         prediction_sha256,
@@ -3048,7 +3068,14 @@ mod tests {
             breakdown: BreakdownSelection::none(),
             cost_attribution: false,
         };
-        let prov = build_provenance(&args, &HashMap::new(), None, "2026-01-01T00:00:00Z".into());
+        let prov = build_provenance(
+            &args,
+            &HashMap::new(),
+            None,
+            "2026-01-01T00:00:00Z".into(),
+            None,
+            None,
+        );
         assert_eq!(prov.backend, "none");
         assert!(prov.backend_version.is_none());
         assert!(prov.prediction_path.is_none());
@@ -3084,6 +3111,8 @@ mod tests {
             &HashMap::new(),
             Some("generated-123"),
             "2026-01-01T00:00:00Z".into(),
+            None,
+            None,
         );
         assert_eq!(prov.run_id.as_deref(), Some("generated-123"));
     }

@@ -172,6 +172,8 @@ fn evaluator_provenance_struct_exists_and_serializes() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: Some("test-run-001".into()),
         prediction_path: Some("/tmp/preds.jsonl".into()),
         prediction_sha256: Some("abc123".into()),
@@ -199,6 +201,8 @@ fn evaluation_results_roundtrip_with_provenance() {
         backend_version: None,
         dataset_subset: None,
         dataset_split: None,
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -342,6 +346,8 @@ fn compare_matching_provenance_gives_matching_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: Some("run-001".into()),
         prediction_path: Some("/tmp/preds.jsonl".into()),
         prediction_sha256: Some("abc".into()),
@@ -399,6 +405,8 @@ fn compare_backend_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -416,6 +424,8 @@ fn compare_backend_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -462,6 +472,8 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -479,6 +491,8 @@ fn compare_dataset_subset_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench_lite".into()), // DIFFERENT
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -524,6 +538,8 @@ fn compare_dataset_split_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some(split.into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -578,6 +594,8 @@ fn compare_one_side_missing_provenance_gives_unavailable() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -639,6 +657,8 @@ fn summary_report_has_evaluator_provenance_field() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -715,6 +735,8 @@ fn inspect_summary_loads_provenance_from_evaluation_json() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: Some("my-run-id".into()),
         prediction_path: None,
         prediction_sha256: None,
@@ -763,6 +785,8 @@ fn inspect_text_renders_provenance_summary() {
         backend_version: Some("1.2.3".into()),
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: Some("run-42".into()),
         prediction_path: Some("/tmp/preds.jsonl".into()),
         prediction_sha256: None,
@@ -828,6 +852,8 @@ fn evaluator_provenance_backend_version_optional() {
         backend_version: None, // None is valid for backend=none
         dataset_subset: None,
         dataset_split: None,
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -861,6 +887,8 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
         backend_version: Some("1.0.0".into()),
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -878,6 +906,8 @@ fn compare_backend_version_mismatch_gives_mismatched_status() {
         backend_version: Some("2.0.0".into()), // DIFFERENT VERSION
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -946,6 +976,8 @@ fn compare_run_id_diff_does_not_warn() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: Some("run-AAAA".into()),
         prediction_path: Some("/sweeps/run-a/predictions.jsonl".into()),
         prediction_sha256: Some("aaaa".into()),
@@ -1012,6 +1044,8 @@ fn compare_timeout_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -1076,6 +1110,8 @@ fn compare_parallel_mismatch_gives_mismatched_status() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -1157,6 +1193,8 @@ fn compare_human_table_shows_provenance_warnings() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -1174,6 +1212,8 @@ fn compare_human_table_shows_provenance_warnings() {
         backend_version: None,
         dataset_subset: Some("swe-bench-m".into()),
         dataset_split: Some("dev".into()),
+        dataset_sha256: Some("default_sha256_value".into()),
+        dataset_instance_count: Some(10),
         run_id: None,
         prediction_path: None,
         prediction_sha256: None,
@@ -1197,4 +1237,247 @@ fn compare_human_table_shows_provenance_warnings() {
         text.contains("backend"),
         "human_table() should show provenance warning text; got:\n{text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 27. dataset_sha256 mismatch -> Mismatched + warning + prefix/count rendering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_dataset_sha256_mismatch_gives_mismatched_status() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    // Baseline evaluation.json with dataset_sha256 A
+    let eval_b = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [
+            {
+                "instance_id": "task-a",
+                "resolved": true,
+                "runs": 1,
+                "resolved_count": 1,
+                "pass_at_1": true,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "resolved"
+            }
+        ],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "dev",
+            "dataset_sha256": "aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff",
+            "dataset_instance_count": 17
+        }
+    });
+
+    // Candidate evaluation.json with DIFFERENT dataset_sha256 B
+    let eval_c = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [
+            {
+                "instance_id": "task-a",
+                "resolved": true,
+                "runs": 1,
+                "resolved_count": 1,
+                "pass_at_1": true,
+                "tests_passed": [],
+                "tests_failed": [],
+                "eval_exit_reason": "resolved"
+            }
+        ],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "dev",
+            "dataset_sha256": "1111111111112222222222223333333333334444444444445555555555556666",
+            "dataset_instance_count": 23
+        }
+    });
+
+    std::fs::write(
+        dir_b.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_b).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir_c.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_c).unwrap(),
+    )
+    .unwrap();
+
+    let report =
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
+    assert!(
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("dataset content (sha256) differs")),
+        "expected dataset content mismatch warning, got: {:?}",
+        report.evaluator_provenance_warnings
+    );
+
+    let text = report.human_table();
+    assert!(
+        text.contains("aaaaaaaaaaaa"),
+        "human_table() should show baseline prefix: {text}"
+    );
+    assert!(
+        text.contains("111111111111"),
+        "human_table() should show candidate prefix: {text}"
+    );
+    assert!(
+        text.contains("n=17"),
+        "human_table() should show baseline instance count: {text}"
+    );
+    assert!(
+        text.contains("n=23"),
+        "human_table() should show candidate instance count: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 28. Legacy fixture (no dataset_sha256) + current -> Unavailable, not mismatched
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_legacy_and_current_gives_unavailable() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    // Legacy evaluation.json without dataset_sha256
+    let eval_b = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "dev"
+        }
+    });
+
+    // Current evaluation.json with dataset_sha256
+    let eval_c = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "dev",
+            "dataset_sha256": "1111111111112222222222223333333333334444444444445555555555556666",
+            "dataset_instance_count": 23
+        }
+    });
+
+    std::fs::write(
+        dir_b.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_b).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir_c.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_c).unwrap(),
+    )
+    .unwrap();
+
+    let report =
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Unavailable
+    );
+    assert!(
+        report
+            .evaluator_provenance_warnings
+            .iter()
+            .any(|w| w.contains("legacy artifact missing dataset_sha256")),
+        "expected legacy artifact warning, got: {:?}",
+        report.evaluator_provenance_warnings
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 29. Compare report JSON contains dataset_sha256_a, dataset_sha256_b, and dataset_content_matches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_json_contains_comparability_block() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    let eval_b = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "dataset_sha256": "aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff"
+        }
+    });
+
+    let eval_c = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "dataset_sha256": "1111111111112222222222223333333333334444444444445555555555556666"
+        }
+    });
+
+    std::fs::write(
+        dir_b.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_b).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir_c.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_c).unwrap(),
+    )
+    .unwrap();
+
+    let report =
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    let json = report.to_json_pretty().unwrap();
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    let comp = &val["comparability"];
+    assert!(
+        comp.is_object(),
+        "comparability should be a nested object in JSON"
+    );
+    assert_eq!(
+        comp["dataset_sha256_a"].as_str().unwrap(),
+        "aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff"
+    );
+    assert_eq!(
+        comp["dataset_sha256_b"].as_str().unwrap(),
+        "1111111111112222222222223333333333334444444444445555555555556666"
+    );
+    assert!(!comp["dataset_content_matches"].as_bool().unwrap());
 }
