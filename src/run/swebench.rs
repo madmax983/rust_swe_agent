@@ -7994,18 +7994,14 @@ instance = "inst"
         assert!(err.to_string().contains("invalid instance_id"));
     }
 
-    /// Integration test: drives a 2-instance sweep with DeterministicModel +
-    /// a local mock HTTP server, then asserts the full event sequence in order
-    /// (sweep_started → 2 × instance_completed → sweep_completed) and that
-    /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
-    #[tokio::test]
-    async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
+    async fn spawn_mock_webhook_server() -> (
+        u16,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
-
-        // ─── mock HTTP server ──────────────────────────────────────────────
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let collected: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -8018,11 +8014,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }
@@ -8054,23 +8046,23 @@ instance = "inst"
                 }
             }
         });
+        (port, collected)
+    }
 
-        // ─── 2-instance sweep with DeterministicModel ─────────────────────
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        init_test_repo(&repo);
-        let dataset = tmp.path().join("dataset.jsonl");
-        write_test_dataset(&dataset, &["alpha", "beta"]);
-        let output = tmp.path().join("out");
-
-        let args = SwebenchArgs {
+    #[cfg(feature = "webhook")]
+    fn default_test_args_with_webhook(
+        dataset: std::path::PathBuf,
+        output_dir: std::path::PathBuf,
+        repo: &std::path::Path,
+        port: u16,
+    ) -> SwebenchArgs {
+        SwebenchArgs {
             dataset_source: crate::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
-            output_dir: output.clone(),
+            output_dir,
             parallel: 1,
             reruns: 1,
-            config: test_config_with_workdir(&repo),
+            config: test_config_with_workdir(repo),
             resume: false,
             cost_limit_usd: None,
             task_timeout_secs: None,
@@ -8118,12 +8110,35 @@ instance = "inst"
             eval_timeout_secs: None,
             notify_webhook_url: Some(format!("http://127.0.0.1:{port}")),
             notify_webhook_headers: vec![],
-        };
+        }
+    }
 
-        let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
-            .await
-            .expect("sweep timed out")
-            .expect("sweep failed");
+    /// Integration test: drives a 2-instance sweep with DeterministicModel +
+    /// a local mock HTTP server, then asserts the full event sequence in order
+    /// (sweep_started → 2 × instance_completed → sweep_completed) and that
+    /// every payload carries the schema-version envelope (AC #8 from #315).
+    #[cfg(feature = "webhook")]
+    #[tokio::test]
+    async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
+        let (port, collected) = spawn_mock_webhook_server().await;
+
+        // ─── 2-instance sweep with DeterministicModel ─────────────────────
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+        let dataset = tmp.path().join("dataset.jsonl");
+        write_test_dataset(&dataset, &["alpha", "beta"]);
+        let output = tmp.path().join("out");
+
+        let args = default_test_args_with_webhook(dataset, output, &repo, port);
+
+        let results =
+            match tokio::time::timeout(std::time::Duration::from_secs(15), run(args)).await {
+                Ok(Ok(res)) => res,
+                Ok(Err(e)) => panic!("sweep failed: {e}"),
+                Err(e) => panic!("sweep timed out: {e}"),
+            };
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 
