@@ -34,6 +34,8 @@
   },
   "provenance": {
     "backend": "none",
+    "dataset_sha256": "aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff",
+    "dataset_instance_count": 1,
     "eval_started_at": "2026-01-01T00:00:00Z",
     "eval_ended_at": "2026-01-01T00:00:01Z"
   },

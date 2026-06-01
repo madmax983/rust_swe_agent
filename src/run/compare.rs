@@ -239,6 +239,22 @@ pub struct CompareReport {
     /// was loaded or when no flaky instances were found in the paired overlap.
     #[serde(default)]
     pub flaky_instances_excluded: usize,
+    /// Comparability metadata block
+    pub comparability: ComparabilityBlock,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ComparabilityBlock {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_sha256_a: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_sha256_b: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_instance_count_a: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_instance_count_b: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_content_matches: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -477,6 +493,28 @@ fn write_compare_overview(s: &mut String, report: &CompareReport) {
         &report.artifact_version_mismatches,
         &report.artifact_warnings,
     );
+    if report.evaluator_provenance_status == EvaluatorProvenanceStatus::Mismatched {
+        if let (Some(sha_a), Some(sha_b)) = (
+            &report.comparability.dataset_sha256_a,
+            &report.comparability.dataset_sha256_b,
+        ) {
+            if sha_a != sha_b {
+                let prefix_a = &sha_a[..12.min(sha_a.len())];
+                let prefix_b = &sha_b[..12.min(sha_b.len())];
+                let count_a = report
+                    .comparability
+                    .dataset_instance_count_a
+                    .map_or_else(|| "?".to_string(), |c| format!("n={c}"));
+                let count_b = report
+                    .comparability
+                    .dataset_instance_count_b
+                    .map_or_else(|| "?".to_string(), |c| format!("n={c}"));
+                let _ = writeln!(s, "Dataset mismatch:");
+                let _ = writeln!(s, "  Baseline:  {prefix_a} ({count_a})");
+                let _ = writeln!(s, "  Candidate: {prefix_b} ({count_b})");
+            }
+        }
+    }
     let _ = writeln!(
         s,
         "Resolved:           {} -> {} ({:+})",
@@ -1631,6 +1669,33 @@ pub fn compute(args: &CompareArgs) -> Result<CompareReport, Error> {
         },
     );
     apply_evaluator_provenance(&mut report, baseline_eval.as_ref(), candidate_eval.as_ref());
+    let dataset_sha256_a = baseline_eval
+        .as_ref()
+        .and_then(|e| e.results.provenance.as_ref())
+        .and_then(|p| p.dataset_sha256.clone());
+    let dataset_sha256_b = candidate_eval
+        .as_ref()
+        .and_then(|e| e.results.provenance.as_ref())
+        .and_then(|p| p.dataset_sha256.clone());
+    let dataset_instance_count_a = baseline_eval
+        .as_ref()
+        .and_then(|e| e.results.provenance.as_ref())
+        .and_then(|p| p.dataset_instance_count);
+    let dataset_instance_count_b = candidate_eval
+        .as_ref()
+        .and_then(|e| e.results.provenance.as_ref())
+        .and_then(|p| p.dataset_instance_count);
+    let dataset_content_matches = match (&dataset_sha256_a, &dataset_sha256_b) {
+        (Some(a), Some(b)) => Some(a == b),
+        _ => None,
+    };
+    report.comparability = ComparabilityBlock {
+        dataset_sha256_a,
+        dataset_sha256_b,
+        dataset_instance_count_a,
+        dataset_instance_count_b,
+        dataset_content_matches,
+    };
     // Sampling drift: scan trajectory files for both sweeps.
     let common_ids: Vec<String> = baseline
         .instances
@@ -1931,6 +1996,13 @@ fn diff_with_overrides<S: std::hash::BuildHasher>(
         candidate_test_only_resolved_rate: None,
         test_only_resolved_rate_delta: None,
         flaky_instances_excluded: 0,
+        comparability: ComparabilityBlock {
+            dataset_sha256_a: None,
+            dataset_sha256_b: None,
+            dataset_instance_count_a: None,
+            dataset_instance_count_b: None,
+            dataset_content_matches: None,
+        },
     }
 }
 
@@ -2779,6 +2851,16 @@ fn compare_evaluator_provenance(
 
     let mut warnings = Vec::new();
 
+    let mut has_legacy_missing_hash = false;
+    if let (Some(b_sha), Some(c_sha)) = (&b.dataset_sha256, &c.dataset_sha256) {
+        if b_sha != c_sha {
+            warnings.push("evaluator provenance: dataset content (sha256) differs".to_owned());
+        }
+    } else {
+        has_legacy_missing_hash = true;
+        warnings.push("evaluator provenance: legacy artifact missing dataset_sha256".to_owned());
+    }
+
     if b.backend != c.backend {
         warnings.push(format!(
             "evaluator provenance: backend differs (baseline={:?}, candidate={:?})",
@@ -2839,6 +2921,8 @@ fn compare_evaluator_provenance(
 
     if warnings.is_empty() {
         (EvaluatorProvenanceStatus::Matching, Vec::new())
+    } else if has_legacy_missing_hash && warnings.len() == 1 {
+        (EvaluatorProvenanceStatus::Unavailable, warnings)
     } else {
         (EvaluatorProvenanceStatus::Mismatched, warnings)
     }
@@ -4862,6 +4946,8 @@ mod tests {
             backend_version: None,
             dataset_subset: Some("swe-bench-m".into()),
             dataset_split: Some("dev".into()),
+            dataset_sha256: Some("default_sha256_value".into()),
+            dataset_instance_count: Some(10),
             run_id: None,
             prediction_path: None,
             prediction_sha256: None,

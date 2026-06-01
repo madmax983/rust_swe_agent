@@ -17,6 +17,8 @@ Every `evaluation.json` contains a top-level `provenance` object:
     "backend_version": "sb-cli 0.5.2",
     "dataset_subset": "swe-bench-m",
     "dataset_split": "dev",
+    "dataset_sha256": "aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff",
+    "dataset_instance_count": 17,
     "run_id": "my-sweep-2026-01-15",
     "prediction_path": "/sweeps/run-a/all_preds.jsonl",
     "prediction_sha256": "e3b0c44298fc1c149afb...",
@@ -50,15 +52,16 @@ field; they deserialize successfully with `provenance: null`.
 
 | Status | Meaning |
 |---|---|
-| `matching` | Both evaluations used the same backend, version, dataset subset, and split |
+| `matching` | Both evaluations used the same backend, version, dataset subset, split, and dataset content (SHA-256) |
 | `mismatched` | A scoring-affecting field differs; comparison may be unreliable |
-| `unavailable` | One or both sides lack provenance (legacy artifacts) |
+| `unavailable` | One or both sides lack provenance (legacy artifacts or missing `dataset_sha256`) |
 
 Fields checked for comparability:
 - `backend` — evaluator name (`"sb-cli"` vs `"none"`)
 - `backend_version` — version string when both sides recorded one
 - `dataset_subset` — e.g. `"swe-bench-m"` vs `"swe-bench_lite"`
 - `dataset_split` — e.g. `"dev"` vs `"test"`
+- `dataset_sha256` — SWE-bench dataset SHA-256 content hash (catches upstream re-publishes, partial downloads, or local edits)
 - `sb_cli.timeout_per_instance_secs` — when both used `sb-cli`
 - `sb_cli.parallel` — when both used `sb-cli`
 
@@ -80,8 +83,22 @@ Evaluator provenance: mismatched
   ! evaluator provenance: backend_version differs (baseline="sb-cli 0.5.0", candidate="sb-cli 0.6.1")
 ```
 
-and in the compare JSON report as `evaluator_provenance_status` and
-`evaluator_provenance_warnings`.
+and in the compare JSON report inside the `comparability` block as `dataset_sha256_a`, `dataset_sha256_b`, and `dataset_content_matches`.
+
+### Dataset Content Drift Detection
+
+If `bench compare` detects that the `dataset_sha256` content hash differs between the baseline and candidate (even if they share the same subset name and split), the overview table prints the mismatch with prefix-truncated hashes and instance counts before resolved-rate or regression numbers:
+
+```text
+Dataset mismatch:
+  Baseline:  aaaaaaaaaaaa (n=17)
+  Candidate: 111111111111 (n=23)
+```
+
+This prevents silent data drift from corrupting evaluation results due to:
+- Upstream republishes of the dataset
+- Interrupted or partial downloads into the local cache
+- Local file edits or different instance filtering
 
 ## Reproducible evaluation example
 
