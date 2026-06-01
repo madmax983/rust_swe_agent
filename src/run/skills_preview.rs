@@ -257,18 +257,27 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
         if task.active_skills.is_empty() {
             out.push_str("  (no skills activated)\n");
         } else {
+            let mut table = comfy_table::Table::new();
+            table
+                .load_preset(comfy_table::presets::UTF8_FULL)
+                .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+                .set_header(vec!["Skill", "Reason", "SHA256", "Bytes", "Path"]);
+
             for skill in &task.active_skills {
                 let reason_str = match skill.reason {
                     SkillActivationReason::ExplicitMention => "explicit",
                     SkillActivationReason::AutoMatch => "auto",
                 };
                 let path_str = skill.path.display().to_string();
-                let _ = writeln!(
-                    out,
-                    "  {} | {} | {} | {} bytes | {}",
-                    skill.name, reason_str, skill.sha256_prefix, skill.bytes, path_str,
-                );
+                table.add_row(vec![
+                    skill.name.as_str(),
+                    reason_str,
+                    &skill.sha256_prefix,
+                    &format!("{}", skill.bytes),
+                    &path_str,
+                ]);
             }
+            let _ = writeln!(out, "{table}");
         }
         let _ = writeln!(out, "  total_bytes_injected: {}", task.total_bytes_injected);
         let _ = writeln!(
@@ -283,20 +292,34 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
         );
     }
 
-    let _ = writeln!(
-        out,
-        "\n--- summary ---\n\
-         task_count: {}\n\
-         unique_skills_activated: {}\n\
-         p50_bytes_per_task: {}\n\
-         p95_bytes_per_task: {}\n\
-         tasks_hitting_max_active: {}",
-        report.summary.task_count,
-        report.summary.unique_skills_activated,
-        report.summary.p50_bytes_per_task,
-        report.summary.p95_bytes_per_task,
-        report.summary.tasks_hitting_max_active,
-    );
+    let mut summary_table = comfy_table::Table::new();
+    summary_table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Value"]);
+
+    summary_table.add_row(vec![
+        "task_count",
+        &format!("{}", report.summary.task_count),
+    ]);
+    summary_table.add_row(vec![
+        "unique_skills_activated",
+        &format!("{}", report.summary.unique_skills_activated),
+    ]);
+    summary_table.add_row(vec![
+        "p50_bytes_per_task",
+        &format!("{}", report.summary.p50_bytes_per_task),
+    ]);
+    summary_table.add_row(vec![
+        "p95_bytes_per_task",
+        &format!("{}", report.summary.p95_bytes_per_task),
+    ]);
+    summary_table.add_row(vec![
+        "tasks_hitting_max_active",
+        &format!("{}", report.summary.tasks_hitting_max_active),
+    ]);
+
+    let _ = writeln!(out, "\n--- summary ---\n{summary_table}");
 
     redactor.redact_text(&out, surface::TRAJECTORY).text
 }
