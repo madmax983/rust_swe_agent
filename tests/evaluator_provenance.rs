@@ -1528,3 +1528,77 @@ fn evaluate_custom_dataset_override_stamps_its_hash_and_count() {
     // Instance count should be Some(3)
     assert_eq!(prov.dataset_instance_count, Some(3));
 }
+
+// ---------------------------------------------------------------------------
+// 31. Legacy fixture + current with differing known fields -> Mismatched
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compare_legacy_and_current_with_mismatched_known_fields_gives_mismatched() {
+    let dir_b = tempfile::tempdir().unwrap();
+    let dir_c = tempfile::tempdir().unwrap();
+
+    write_results(dir_b.path(), vec![minimal_instance_result("task-a")]);
+    write_results(dir_c.path(), vec![minimal_instance_result("task-a")]);
+
+    // Legacy evaluation.json without dataset_sha256, split = dev
+    let eval_b = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "dev"
+        }
+    });
+
+    // Current evaluation.json with dataset_sha256, but split = test (differs from dev!)
+    let eval_c = serde_json::json!({
+        "artifact_kind": "evaluation_results",
+        "schema_version": {"major": 1, "minor": 1},
+        "instances": [],
+        "provenance": {
+            "backend": "none",
+            "backend_version": "1.0",
+            "dataset_subset": "swe-bench-m",
+            "dataset_split": "test",
+            "dataset_sha256": "1111111111112222222222223333333333334444444444445555555555556666",
+            "dataset_instance_count": 23
+        }
+    });
+
+    std::fs::write(
+        dir_b.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_b).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir_c.path().join("evaluation.json"),
+        serde_json::to_string_pretty(&eval_c).unwrap(),
+    )
+    .unwrap();
+
+    let report =
+        maxwells_daemon::run::compare::compute(&compare_args(dir_b.path(), dir_c.path())).unwrap();
+
+    // Since dataset_split differs, status MUST be Mismatched, not Unavailable!
+    assert_eq!(
+        report.evaluator_provenance_status,
+        EvaluatorProvenanceStatus::Mismatched
+    );
+
+    // It should have both the split mismatch and the legacy missing dataset_sha256 warnings
+    let warnings = &report.evaluator_provenance_warnings;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("legacy artifact missing dataset_sha256")),
+        "expected legacy artifact warning, got: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("dataset split differs")),
+        "expected dataset split differs warning, got: {warnings:?}"
+    );
+}

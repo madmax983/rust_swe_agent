@@ -2851,18 +2851,14 @@ fn compare_evaluator_provenance(
 
     let mut warnings = Vec::new();
 
-    match (&b.dataset_sha256, &c.dataset_sha256) {
-        (Some(b_sha), Some(c_sha)) => {
-            if b_sha != c_sha {
-                warnings.push("evaluator provenance: dataset content (sha256) differs".to_owned());
-            }
+    let mut has_legacy_missing_hash = false;
+    if let (Some(b_sha), Some(c_sha)) = (&b.dataset_sha256, &c.dataset_sha256) {
+        if b_sha != c_sha {
+            warnings.push("evaluator provenance: dataset content (sha256) differs".to_owned());
         }
-        _ => {
-            return (
-                EvaluatorProvenanceStatus::Unavailable,
-                vec!["evaluator provenance: legacy artifact missing dataset_sha256".to_owned()],
-            );
-        }
+    } else {
+        has_legacy_missing_hash = true;
+        warnings.push("evaluator provenance: legacy artifact missing dataset_sha256".to_owned());
     }
 
     if b.backend != c.backend {
@@ -2925,6 +2921,8 @@ fn compare_evaluator_provenance(
 
     if warnings.is_empty() {
         (EvaluatorProvenanceStatus::Matching, Vec::new())
+    } else if has_legacy_missing_hash && warnings.len() == 1 {
+        (EvaluatorProvenanceStatus::Unavailable, warnings)
     } else {
         (EvaluatorProvenanceStatus::Mismatched, warnings)
     }
