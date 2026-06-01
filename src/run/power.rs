@@ -661,3 +661,50 @@ pub fn render_text(report: &PowerReport) -> String {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phi_handles_zero_and_bounds() {
+        assert!((phi(0.0) - 0.5).abs() < 1e-6);
+        assert!(phi(-5.0) < 1e-6);
+        assert!(phi(5.0) > 1.0 - 1e-6);
+    }
+
+    #[test]
+    fn inverse_phi_reverses_phi() {
+        let p = 0.975;
+        let z = inverse_phi(p);
+        assert!((z - 1.95996).abs() < 1e-3);
+        let p2 = phi(z);
+        assert!((p - p2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cohens_h_calculates_correctly() {
+        assert!((cohens_h(0.5, 0.5) - 0.0).abs() < 1e-6);
+        assert!((cohens_h(0.2, 0.3) - 0.231).abs() < 1e-3);
+    }
+
+    #[test]
+    fn solve_sample_size_returns_expected() {
+        let n = solve_sample_size(0.20, 0.05, 0.05, 0.80, false);
+        // Approx 1094 per arm for these parameters
+        assert!((1000..=1200).contains(&n));
+    }
+
+    #[test]
+    fn solve_h_for_power_returns_expected() {
+        let h = solve_h_for_power(1094, 0.05, 0.80, false);
+        assert!(h > 0.1 && h < 0.2);
+    }
+
+    #[test]
+    fn h_to_delta_returns_expected() -> Result<(), Box<dyn std::error::Error>> {
+        let delta = h_to_delta(0.2, 0.12).ok_or("Expected Some value")?;
+        assert!(delta > 0.0 && delta < 0.1);
+        Ok(())
+    }
+}
