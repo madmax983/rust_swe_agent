@@ -7999,7 +7999,10 @@ instance = "inst"
     /// (sweep_started → 2 × instance_completed → sweep_completed) and that
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
-    async fn start_mock_webhook_server() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+    async fn start_mock_webhook_server() -> (
+        u16,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -8013,7 +8016,9 @@ instance = "inst"
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
                 while let Ok(n) = socket.read(&mut chunk).await {
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     buf.extend_from_slice(&chunk[..n]);
                     let req_str = String::from_utf8_lossy(&buf);
                     if let Some(end) = req_str.find("\r\n\r\n") {
@@ -8025,10 +8030,14 @@ instance = "inst"
                                     .and_then(|v| v.trim().parse::<usize>().ok())
                             })
                             .unwrap_or(0);
-                        if buf.len() >= end + 4 + cl { break; }
+                        if buf.len() >= end + 4 + cl {
+                            break;
+                        }
                     }
                 }
-                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
                 let req_str = String::from_utf8_lossy(&buf);
                 if let Some(body) = req_str.split_once("\r\n\r\n").map(|(_, b)| b) {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
