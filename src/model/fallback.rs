@@ -100,19 +100,19 @@ impl Model for FallbackModel {
                         failure_reason: coarse_reason(&e),
                         retry_after_secs: e.retry_after_secs(),
                     });
-                    let error_attempts: Vec<FailedAttempt> = failed_attempts
-                        .iter()
-                        .map(|a| FailedAttempt {
-                            model: a.model.clone(),
-                            reason: a.failure_reason.clone(),
-                            retry_after_secs: a.retry_after_secs,
-                        })
-                        .collect();
                     let summary = failed_attempts
                         .iter()
                         .map(|a| format!("{}: {}", a.model, a.failure_reason))
                         .collect::<Vec<_>>()
                         .join("; ");
+                    let error_attempts: Vec<FailedAttempt> = failed_attempts
+                        .into_iter()
+                        .map(|a| FailedAttempt {
+                            model: a.model,
+                            reason: a.failure_reason,
+                            retry_after_secs: a.retry_after_secs,
+                        })
+                        .collect();
                     return Err(ModelError::AllCandidatesFailed(summary, error_attempts));
                 }
             }
@@ -120,19 +120,19 @@ impl Model for FallbackModel {
 
         // Every candidate exhausted via transient failures. Preserve structured
         // attempt records so DefaultAgent can write telemetry even on all-fail.
-        let error_attempts: Vec<FailedAttempt> = failed_attempts
-            .iter()
-            .map(|a| FailedAttempt {
-                model: a.model.clone(),
-                reason: a.failure_reason.clone(),
-                retry_after_secs: a.retry_after_secs,
-            })
-            .collect();
         let summary = failed_attempts
             .iter()
             .map(|a| format!("{}: {}", a.model, a.failure_reason))
             .collect::<Vec<_>>()
             .join("; ");
+        let error_attempts: Vec<FailedAttempt> = failed_attempts
+            .into_iter()
+            .map(|a| FailedAttempt {
+                model: a.model,
+                reason: a.failure_reason,
+                retry_after_secs: a.retry_after_secs,
+            })
+            .collect();
         Err(ModelError::AllCandidatesFailed(summary, error_attempts))
     }
 }
