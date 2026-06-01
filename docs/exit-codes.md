@@ -88,6 +88,7 @@ coarse sweep-level result.
 | `agent skills-preview`          | `success`, `usage_error`, `skills_preview_warning`, `internal_error` |
 | `bench scriptability-check`     | `success`, `usage_error`, `scriptability_check_failure`, `internal_error` |
 | `agent redact-check`            | `success`, `usage_error`, `redact_check_stale_literals`, `redact_check_strict_fail`, `internal_error` |
+| `agent redact-audit`            | `success`, `usage_error`, `redact_audit_findings`, `redact_audit_scan_error`, `internal_error` |
 | `bench assert`                  | `success`, `usage_error`, `slo_rule_failure`, `internal_error` |
 | `agent apply`                   | `success`, `usage_error`, `apply_check_failed`, `apply_redacted_refused`, `apply_dirty_tree_refused`, `internal_error` |
 

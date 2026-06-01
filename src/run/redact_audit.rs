@@ -41,7 +41,6 @@ use crate::artifact::ArtifactSchemaVersion;
 use crate::config::Config;
 use crate::error::{ConfigError, Error};
 use crate::exit_code::ExitCode;
-use crate::redaction::Redactor;
 
 /// Schema version for the `redact_audit.json` artifact.
 ///
@@ -182,7 +181,7 @@ fn regex_specs() -> Vec<RegexSpec> {
             "github",
             "github_pat",
             Severity::High,
-            r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b",
+            r"\b(?:gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{22,})\b",
             None,
         ),
         (
@@ -375,11 +374,51 @@ struct ScanAcc {
     lines_scanned: usize,
 }
 
+/// Operator-defined matchers from the `[redaction]` config.
+///
+/// Scanned directly (not via `Redactor::check()`) so a configured secret that
+/// also matches a built-in structured shape — e.g. a literal used as
+/// `Bearer <literal>` — is still reported, instead of being silently dropped by
+/// the runtime redactor's internal overlap resolution.
+struct ConfiguredMatchers {
+    literals: Vec<String>,
+    patterns: Vec<Regex>,
+}
+
+impl ConfiguredMatchers {
+    /// Build from `[redaction]`. Returns a config error if a `custom_patterns`
+    /// entry fails to compile (same validation the runtime redactor performs).
+    fn from_cfg(cfg: &crate::config::RedactionCfg) -> Result<Self, Error> {
+        if !cfg.enabled {
+            return Ok(Self {
+                literals: Vec::new(),
+                patterns: Vec::new(),
+            });
+        }
+        let mut seen = BTreeSet::new();
+        let mut literals = Vec::new();
+        for lit in &cfg.secret_literals {
+            if !lit.is_empty() && seen.insert(lit.clone()) {
+                literals.push(lit.clone());
+            }
+        }
+        let mut patterns = Vec::new();
+        for pat in &cfg.custom_patterns {
+            patterns.push(Regex::new(pat).map_err(|e| {
+                Error::Config(ConfigError::Invalid(format!(
+                    "invalid custom_patterns regex: {e}"
+                )))
+            })?);
+        }
+        Ok(Self { literals, patterns })
+    }
+}
+
 /// Run the audit over `opts.dir`, returning a deterministic report.
 ///
-/// Resolves the redactor from `cfg.root.redaction` (same precedence as a real
-/// run) so the operator's configured `secret_literals` and `custom_patterns`
-/// are audited alongside the built-in detectors. No artifact is modified.
+/// Audits the operator's configured `secret_literals` and `custom_patterns`
+/// (from `cfg.root.redaction`) alongside the built-in detectors. No artifact is
+/// modified.
 pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, Error> {
     if !opts.dir.is_dir() {
         return Err(Error::Config(ConfigError::Usage(format!(
@@ -389,11 +428,7 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     }
 
     let detectors = select_detectors(opts)?;
-    let redactor = Redactor::from_config(&cfg.root.redaction).map_err(|e| {
-        Error::Config(ConfigError::Invalid(format!(
-            "invalid custom_patterns regex: {e}"
-        )))
-    })?;
+    let configured = ConfiguredMatchers::from_cfg(&cfg.root.redaction)?;
 
     let baseline = match &opts.baseline {
         Some(path) => Some(load_baseline(path)?),
@@ -408,7 +443,7 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     let mut acc = ScanAcc::default();
     acc.scan_errors.append(&mut walk_errors);
     for path in files {
-        scan_one(&path, &opts.dir, &detectors, &redactor, &mut acc);
+        scan_one(&path, &opts.dir, &detectors, &configured, &mut acc);
     }
 
     finalize(&mut acc.findings);
@@ -434,12 +469,12 @@ fn scan_one(
     path: &Path,
     base: &Path,
     detectors: &[Detector],
-    redactor: &Redactor,
+    configured: &ConfiguredMatchers,
     acc: &mut ScanAcc,
 ) {
     let rel = display_relative(base, path);
     if is_bundle(path) {
-        match scan_bundle(path, &rel, detectors, redactor) {
+        match scan_bundle(path, &rel, detectors, configured) {
             Ok((mut found, scanned, lines, mut member_errors)) => {
                 acc.findings.append(&mut found);
                 acc.files_scanned += scanned;
@@ -453,7 +488,7 @@ fn scan_one(
             Ok(text) => {
                 acc.files_scanned += 1;
                 acc.lines_scanned += line_count(&text);
-                scan_text(&text, &rel, detectors, redactor, &mut acc.findings);
+                scan_text(&text, &rel, detectors, configured, &mut acc.findings);
             }
             Err(msg) => acc.scan_errors.push(msg),
         }
@@ -523,7 +558,20 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut V
             return;
         }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                // A DirEntry that cannot be read (I/O / permission race) means
+                // a file or subtree is skipped; record it so an incomplete scan
+                // cannot report clean.
+                errors.push(format!(
+                    "{}: cannot read directory entry: {e}",
+                    display_relative(base, dir)
+                ));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
             collect_files(base, &path, out, errors);
@@ -551,7 +599,7 @@ fn is_audited_file(path: &Path) -> bool {
                 return false;
             }
             name == "evaluation.json"
-                || name == "all_preds.jsonl"
+                || (name.starts_with("all_preds") && name.ends_with(".jsonl"))
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
@@ -585,7 +633,7 @@ fn scan_bundle(
     path: &Path,
     rel: &str,
     detectors: &[Detector],
-    redactor: &Redactor,
+    configured: &ConfiguredMatchers,
 ) -> Result<BundleScan, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("{}: cannot open bundle: {e}", path.display()))?;
@@ -619,7 +667,7 @@ fn scan_bundle(
         let text = String::from_utf8_lossy(&bytes).into_owned();
         scanned += 1;
         lines += line_count(&text);
-        scan_text(&text, &member_label, detectors, redactor, &mut findings);
+        scan_text(&text, &member_label, detectors, configured, &mut findings);
     }
     Ok((findings, scanned, lines, member_errors))
 }
@@ -661,30 +709,44 @@ fn collect_detector_matches(text: &str, detectors: &[Detector], candidates: &mut
     }
 }
 
-/// Collect the configured redactor's operator-defined literal and custom-pattern
-/// matches into `candidates`, audited "in addition to" the built-in detectors.
+/// Collect the operator-defined configured literals and custom patterns, audited
+/// "in addition to" the built-in detectors.
 ///
-/// The built-in structured and env rules are intentionally skipped: the
-/// detectors cover the structured shapes precisely, and the env-assignment rule
-/// is too noisy for a leak audit.
-fn collect_configured_matches(text: &str, redactor: &Redactor, candidates: &mut Vec<RawMatch>) {
-    let check = redactor.check(text);
-    for m in &check.matches {
-        let (detector_id, match_class) = if m.source == "literal" {
-            ("configured_literal", "configured_literal")
-        } else if m.source.starts_with("custom_pattern") {
-            ("configured_pattern", "configured_custom_pattern")
-        } else {
-            continue;
-        };
-        if m.start < m.end {
+/// These are scanned directly (not via `Redactor::check()`) so a configured
+/// secret that also matches a built-in structured shape — e.g. a literal used as
+/// `Bearer <literal>` — is still reported, instead of being filtered out by the
+/// runtime redactor's internal overlap resolution.
+fn collect_configured_matches(
+    text: &str,
+    configured: &ConfiguredMatchers,
+    candidates: &mut Vec<RawMatch>,
+) {
+    for literal in &configured.literals {
+        let mut from = 0usize;
+        while let Some(off) = text[from..].find(literal.as_str()) {
+            let start = from + off;
+            let end = start + literal.len();
             candidates.push(RawMatch {
-                start: m.start,
-                end: m.end,
-                detector_id,
-                match_class,
+                start,
+                end,
+                detector_id: "configured_literal",
+                match_class: "configured_literal",
                 severity: Severity::High,
             });
+            from = end;
+        }
+    }
+    for re in &configured.patterns {
+        for m in re.find_iter(text) {
+            if m.start() < m.end() {
+                candidates.push(RawMatch {
+                    start: m.start(),
+                    end: m.end(),
+                    detector_id: "configured_pattern",
+                    match_class: "configured_custom_pattern",
+                    severity: Severity::High,
+                });
+            }
         }
     }
 }
@@ -700,14 +762,14 @@ fn scan_text(
     text: &str,
     file_label: &str,
     detectors: &[Detector],
-    redactor: &Redactor,
+    configured: &ConfiguredMatchers,
     out: &mut Vec<Finding>,
 ) {
     // Phase 1: structured detectors (built-in regex + configured literals and
     // custom patterns). These always win.
     let mut structured: Vec<RawMatch> = Vec::new();
     collect_detector_matches(text, detectors, &mut structured);
-    collect_configured_matches(text, redactor, &mut structured);
+    collect_configured_matches(text, configured, &mut structured);
     let kept_structured = filter_overlaps(structured);
 
     // Phase 2: the entropy heuristic only fills gaps the structured pass left,
@@ -1390,5 +1452,115 @@ mod tests {
         let unique: BTreeSet<&str> = ids.iter().copied().collect();
         assert_eq!(ids.len(), unique.len(), "duplicate ids: {ids:?}");
         assert!(ids.contains(&"aws"));
+    }
+
+    // ── PR #557 second-round review fixes ─────────────────────────────────
+
+    #[test]
+    fn audits_rerun_prediction_jsonl() {
+        // Rerun sweeps write `all_preds.run-<k>.jsonl`, not just the aggregate.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "all_preds.run-1.jsonl",
+            r#"{"model_patch":"+tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz"}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "rerun prediction jsonl not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn detects_classic_github_token_with_underscore() {
+        // Classic token bodies may contain `_`, like the runtime redactor.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "t.output.txt",
+            "token=ghp_ABCdef0123_456789_abcdef0123456789ABCD\n",
+        );
+        let report = audit(dir.path());
+        let gh: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.match_class == "github_pat")
+            .collect();
+        assert!(
+            !gh.is_empty(),
+            "github token with `_` missed: {:?}",
+            report.findings
+        );
+        assert_eq!(gh[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn configured_literal_not_shadowed_by_structured_shape() {
+        // A configured literal used in a `Bearer <literal>` context must still
+        // be reported, even though the runtime redactor would label that span
+        // `structured:bearer` and drop the literal in its overlap resolution.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "Authorization: Bearer my-internal-literal-secret-token\n",
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = true;
+        cfg.root.redaction.secret_literals = vec!["my-internal-literal-secret-token".to_owned()];
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "configured_literal"),
+            "configured literal shadowed by structured shape: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn configured_custom_pattern_is_audited() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "id=INTERNAL-TOKEN-abcdef123456\n",
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = true;
+        cfg.root.redaction.custom_patterns = vec![r"INTERNAL-TOKEN-[A-Za-z0-9]+".to_owned()];
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "configured_custom_pattern"),
+            "configured custom pattern not audited: {:?}",
+            report.findings
+        );
     }
 }
