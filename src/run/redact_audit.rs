@@ -440,52 +440,54 @@ struct ResolvedRedactionConfig {
     redaction: Option<RedactionCfg>,
 }
 
-/// Merge the `[redaction]` config recorded in `<dir>/manifest.json` into `cfg`.
+/// Merge the `[redaction]` config recorded in the sweep's provenance into `cfg`.
 ///
 /// Completed sweeps record their resolved config (as a TOML string under
-/// `/manifest/config/resolved` or `/config/resolved`), and `bench bundle` merges
-/// that recorded config before its redaction checks. Mirroring that here means
-/// auditing a sweep with defaults still applies the literals/custom_patterns the
-/// sweep actually ran with. Recorded entries are *added* to the CLI config
-/// (union, not replace), so an explicit `--config` is never weakened. Redaction
-/// markers and uncompilable patterns are skipped. Best-effort: a missing or
-/// malformed manifest leaves `cfg` unchanged.
+/// `/manifest/config/resolved` or `/config/resolved`) in `manifest.json` *and*
+/// embed the same block inside `results.json` (`build_manifest`); `bench bundle`
+/// falls back to the `results.json` copy when no standalone `manifest.json`
+/// exists. Mirroring that here means auditing a sweep with defaults still
+/// applies the literals/custom_patterns the sweep actually ran with. Recorded
+/// entries are *added* to the CLI config (union, not replace), so an explicit
+/// `--config` is never weakened. Redaction markers and uncompilable patterns are
+/// skipped. Best-effort: missing or malformed provenance leaves `cfg` unchanged.
 fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
-    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else {
-        return;
-    };
-    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
-    };
     let mut existing_literals: BTreeSet<String> = cfg.secret_literals.iter().cloned().collect();
     let mut existing_patterns: BTreeSet<String> = cfg.custom_patterns.iter().cloned().collect();
-    for pointer in ["/manifest/config/resolved", "/config/resolved"] {
-        let Some(resolved) = manifest
-            .pointer(pointer)
-            .and_then(serde_json::Value::as_str)
-        else {
+
+    // Both files can carry the resolved config; scan each, deduping across them.
+    for source_name in ["manifest.json", "results.json"] {
+        let Ok(text) = std::fs::read_to_string(dir.join(source_name)) else {
             continue;
         };
-        let Ok(parsed) = toml::from_str::<ResolvedRedactionConfig>(resolved) else {
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        let Some(recorded) = parsed.redaction else {
-            continue;
-        };
-        for lit in recorded.secret_literals {
-            if !lit.is_empty()
-                && !lit.starts_with("[REDACTED:")
-                && existing_literals.insert(lit.clone())
-            {
-                cfg.secret_literals.push(lit);
+        for pointer in ["/manifest/config/resolved", "/config/resolved"] {
+            let Some(resolved) = json.pointer(pointer).and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Ok(parsed) = toml::from_str::<ResolvedRedactionConfig>(resolved) else {
+                continue;
+            };
+            let Some(recorded) = parsed.redaction else {
+                continue;
+            };
+            for lit in recorded.secret_literals {
+                if !lit.is_empty()
+                    && !lit.starts_with("[REDACTED:")
+                    && existing_literals.insert(lit.clone())
+                {
+                    cfg.secret_literals.push(lit);
+                }
             }
-        }
-        for pat in recorded.custom_patterns {
-            if !pat.starts_with("[REDACTED:")
-                && Regex::new(&pat).is_ok()
-                && existing_patterns.insert(pat.clone())
-            {
-                cfg.custom_patterns.push(pat);
+            for pat in recorded.custom_patterns {
+                if !pat.starts_with("[REDACTED:")
+                    && Regex::new(&pat).is_ok()
+                    && existing_patterns.insert(pat.clone())
+                {
+                    cfg.custom_patterns.push(pat);
+                }
             }
         }
     }
@@ -636,6 +638,28 @@ fn active_detector_ids(detectors: &[Detector]) -> Vec<String> {
 /// silently: for a publish gate, an unreadable subtree means the scan is
 /// incomplete and a "clean" verdict cannot be trusted (drives exit code 33).
 fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
+    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
+    collect_files_inner(base, dir, out, errors, &mut visited);
+}
+
+/// Inner walk that guards against directory symlink loops by tracking the
+/// canonicalized path of every directory already descended into. A symlinked
+/// directory pointing back at an ancestor would otherwise recurse forever
+/// (`path.is_dir()` follows symlinks); a revisit is skipped silently.
+fn collect_files_inner(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    errors: &mut Vec<String>,
+    visited: &mut BTreeSet<PathBuf>,
+) {
+    // Use the canonical path as the loop-detection key; fall back to the literal
+    // path when canonicalization fails (e.g. permissions) so the read_dir below
+    // still produces a proper scan error.
+    let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(key) {
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -662,7 +686,7 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut V
         };
         let path = entry.path();
         if path.is_dir() {
-            collect_files(base, &path, out, errors);
+            collect_files_inner(base, &path, out, errors, visited);
         } else if is_audited_file(&path) {
             out.push(path);
         }
@@ -915,17 +939,32 @@ fn collect_redactor_oracle_matches(
     }
 }
 
+/// Gather sensitive string values from `text`, treating it as whole-file JSON
+/// when possible and otherwise as JSONL (one record per line).
+///
+/// JSONL artifacts (`all_preds*.jsonl`) fail a whole-file parse, so we fall back
+/// to per-line parsing — otherwise a sensitive key in a multi-record file would
+/// be skipped entirely. Blank/non-JSON lines are ignored.
+fn gather_json_hints(text: &str) -> Vec<String> {
+    let mut hints: Vec<String> = Vec::new();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        json_sensitive_string_values(&value, false, &mut hints);
+        return hints;
+    }
+    for line in text.lines() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            json_sensitive_string_values(&value, false, &mut hints);
+        }
+    }
+    hints
+}
+
 /// Walk JSON artifacts and flag values under sensitive keys (e.g. `password`,
 /// `api_key`, `*_token`) regardless of value shape, mirroring the runtime
 /// [`Redactor::redact_json_value`](crate::redaction::Redactor) structural pass.
-/// Falls back silently when the text is not valid JSON.
+/// Handles both whole-file JSON and JSONL; silent on non-JSON text.
 fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return;
-    };
-    let mut hints: Vec<String> = Vec::new();
-    json_sensitive_string_values(&value, false, &mut hints);
-    for raw in hints {
+    for raw in gather_json_hints(text) {
         if raw.is_empty() {
             continue;
         }
@@ -2141,5 +2180,97 @@ mod tests {
         // And the literal value itself is masked in the report.
         let json = format_json(&report).unwrap();
         assert!(!json.contains("sw33t"), "recorded literal leaked");
+    }
+
+    // ── PR #557 fifth-round review ────────────────────────────────────────
+
+    #[test]
+    fn jsonl_records_are_scanned_for_sensitive_keys() {
+        // A multi-record .jsonl fails a whole-file parse; per-line parsing must
+        // still flag a sensitive key in any record.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "all_preds.run-1.jsonl",
+            "{\"instance_id\":\"a\",\"model_patch\":\"ok\"}\n{\"instance_id\":\"b\",\"api_key\":\"short-ci-secret\"}\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "jsonl sensitive key missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("short-ci-secret"), "jsonl value leaked");
+    }
+
+    #[test]
+    fn recorded_config_is_read_from_results_json() {
+        // Ordinary sweeps embed the resolved config inside results.json (no
+        // standalone manifest.json). Auditing with defaults must still apply it.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = "[redaction]\nenabled = true\nsecret_literals = [\"zzliteral\"]\n";
+        let results = serde_json::json!({
+            "manifest": { "config": { "resolved": resolved } },
+            "instances": [],
+        });
+        std::fs::write(
+            dir.path().join("results.json"),
+            serde_json::to_string(&results).unwrap(),
+        )
+        .unwrap();
+        write(dir.path(), "log.output.txt", "value is zzliteral here");
+
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "configured_literal"),
+            "results.json recorded literal not applied: {:?}",
+            report.findings
+        );
+        assert!(!format_json(&report).unwrap().contains("zzliteral"));
+    }
+
+    #[test]
+    fn directory_symlink_loop_terminates() {
+        // A directory symlink pointing back at an ancestor must not loop; the
+        // real artifact is scanned once and the loop is skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        write(
+            &sub,
+            "leak.output.txt",
+            "tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        );
+        // Best-effort symlink; skip the assertion on platforms/sandboxes that
+        // disallow it rather than failing the suite.
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(dir.path(), sub.join("loop")).is_ok();
+        #[cfg(not(unix))]
+        let linked = false;
+
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "real artifact missed: {:?}",
+            report.findings
+        );
+        if linked {
+            // The loop must not have inflated the scan with repeated descents.
+            assert_eq!(
+                report.files_scanned, 1,
+                "symlink loop rescanned files: {}",
+                report.files_scanned
+            );
+        }
     }
 }
