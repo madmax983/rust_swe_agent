@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -257,18 +259,26 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
         if task.active_skills.is_empty() {
             out.push_str("  (no skills activated)\n");
         } else {
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .apply_modifier(UTF8_ROUND_CORNERS)
+                .set_header(vec!["Skill", "Reason", "Prefix", "Bytes", "Path"]);
             for skill in &task.active_skills {
                 let reason_str = match skill.reason {
                     SkillActivationReason::ExplicitMention => "explicit",
                     SkillActivationReason::AutoMatch => "auto",
                 };
                 let path_str = skill.path.display().to_string();
-                let _ = writeln!(
-                    out,
-                    "  {} | {} | {} | {} bytes | {}",
-                    skill.name, reason_str, skill.sha256_prefix, skill.bytes, path_str,
-                );
+                table.add_row(vec![
+                    skill.name.clone(),
+                    reason_str.to_owned(),
+                    skill.sha256_prefix.clone(),
+                    skill.bytes.to_string(),
+                    path_str,
+                ]);
             }
+            let _ = writeln!(out, "{table}");
         }
         let _ = writeln!(out, "  total_bytes_injected: {}", task.total_bytes_injected);
         let _ = writeln!(
