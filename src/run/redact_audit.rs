@@ -41,6 +41,7 @@ use crate::artifact::ArtifactSchemaVersion;
 use crate::config::Config;
 use crate::error::{ConfigError, Error};
 use crate::exit_code::ExitCode;
+use crate::redaction::{Redactor, sensitive_json_key_kind};
 
 /// Schema version for the `redact_audit.json` artifact.
 ///
@@ -376,13 +377,21 @@ struct ScanAcc {
 
 /// Operator-defined matchers from the `[redaction]` config.
 ///
-/// Scanned directly (not via `Redactor::check()`) so a configured secret that
-/// also matches a built-in structured shape — e.g. a literal used as
-/// `Bearer <literal>` — is still reported, instead of being silently dropped by
-/// the runtime redactor's internal overlap resolution.
+/// Configured literals/custom patterns are scanned directly (not only via the
+/// runtime redactor) so a configured secret that also matches a built-in
+/// structured shape — e.g. a literal used as `Bearer <literal>` — is still
+/// reported, instead of being dropped by the redactor's internal overlap
+/// resolution. The runtime [`Redactor`] is additionally used as a detection
+/// *oracle* (see [`collect_redactor_oracle_matches`]) so the audit reports every
+/// shape that would have been masked at write time: bearer tokens, sensitive
+/// `NAME=value` env-assignments, and ambient env-var literal values.
 struct ConfiguredMatchers {
     literals: Vec<String>,
     patterns: Vec<Regex>,
+    /// The runtime redactor built from the same `[redaction]` config, used as a
+    /// write-time-parity oracle. `None` when redaction is disabled or the
+    /// redactor failed to construct (configured-matcher fallback still applies).
+    redactor: Option<Redactor>,
 }
 
 impl ConfiguredMatchers {
@@ -393,6 +402,7 @@ impl ConfiguredMatchers {
             return Ok(Self {
                 literals: Vec::new(),
                 patterns: Vec::new(),
+                redactor: None,
             });
         }
         let mut seen = BTreeSet::new();
@@ -410,7 +420,16 @@ impl ConfiguredMatchers {
                 )))
             })?);
         }
-        Ok(Self { literals, patterns })
+        let redactor = Redactor::from_config(cfg).map_err(|e| {
+            Error::Config(ConfigError::Invalid(format!(
+                "invalid custom_patterns regex: {e}"
+            )))
+        })?;
+        Ok(Self {
+            literals,
+            patterns,
+            redactor: Some(redactor),
+        })
     }
 }
 
@@ -598,7 +617,13 @@ fn is_audited_file(path: &Path) -> bool {
             if name == "redact_audit.json" {
                 return false;
             }
+            // First-class sweep artifacts named exactly. `results.json` is the
+            // `sweep_results` summary (`bench bundle` redaction-checks it before
+            // archiving); `trajectory.json` is the legacy nested single-run
+            // layout still read across the repo.
             name == "evaluation.json"
+                || name == "results.json"
+                || name == "trajectory.json"
                 || (name.starts_with("all_preds") && name.ends_with(".jsonl"))
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
@@ -751,6 +776,118 @@ fn collect_configured_matches(
     }
 }
 
+/// Map a runtime redactor source label to `(detector_id, match_class, severity)`.
+///
+/// `None` for sources already covered precisely by a built-in detector
+/// (`literal`/`custom_pattern[N]` are handled by [`collect_configured_matches`];
+/// `structured:pem`/`api_key`/`github_token` are covered by the regex
+/// detectors), so the oracle only *adds* the classes the registry lacks.
+fn oracle_source_kind(source: &str) -> Option<(&'static str, &'static str, Severity)> {
+    match source {
+        // Bearer tokens have no provider prefix and are missed by the registry.
+        "structured:bearer" => Some(("redactor_bearer", "bearer_token", Severity::High)),
+        // Any sensitive `NAME=value` assignment the runtime redactor would mask.
+        "structured:env_assignment" => Some((
+            "redactor_env_assignment",
+            "sensitive_env_assignment",
+            Severity::Medium,
+        )),
+        _ if source.starts_with("env:") => {
+            // An ambient sensitive env-var value found verbatim in an artifact.
+            Some(("redactor_env_value", "sensitive_env_value", Severity::High))
+        }
+        _ => None,
+    }
+}
+
+/// Use the configured runtime [`Redactor`] as a detection oracle so the audit
+/// reports every shape it would have masked at write time — bearer tokens,
+/// sensitive env-assignments, and ambient env-var literal values — that the
+/// high-confidence registry does not already cover.
+fn collect_redactor_oracle_matches(
+    text: &str,
+    configured: &ConfiguredMatchers,
+    candidates: &mut Vec<RawMatch>,
+) {
+    let Some(redactor) = &configured.redactor else {
+        return;
+    };
+    for m in redactor.check(text).matches {
+        if m.start >= m.end {
+            continue;
+        }
+        if let Some((detector_id, match_class, severity)) = oracle_source_kind(&m.source) {
+            candidates.push(RawMatch {
+                start: m.start,
+                end: m.end,
+                detector_id,
+                match_class,
+                severity,
+            });
+        }
+    }
+}
+
+/// Walk JSON artifacts and flag values under sensitive keys (e.g. `password`,
+/// `api_key`, `*_token`) regardless of value shape, mirroring the runtime
+/// [`Redactor::redact_json_value`](crate::redaction::Redactor) structural pass.
+/// Falls back silently when the text is not valid JSON.
+fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let mut hints: Vec<String> = Vec::new();
+    json_sensitive_string_values(&value, false, &mut hints);
+    for raw in hints {
+        if raw.is_empty() {
+            continue;
+        }
+        // Re-locate each sensitive string value in the source bytes. We match on
+        // the serialized scalar so byte offsets/previews stay accurate; multiple
+        // occurrences are all reported.
+        let mut from = 0usize;
+        while let Some(off) = text[from..].find(&raw) {
+            let start = from + off;
+            let end = start + raw.len();
+            candidates.push(RawMatch {
+                start,
+                end,
+                detector_id: "json_sensitive_key",
+                match_class: "sensitive_json_value",
+                severity: Severity::Medium,
+            });
+            from = end;
+        }
+    }
+}
+
+/// Collect string values that sit under a sensitive key anywhere in `value`.
+fn json_sensitive_string_values(
+    value: &serde_json::Value,
+    under_sensitive_key: bool,
+    out: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::String(s) => {
+            if under_sensitive_key {
+                out.push(s.clone());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                json_sensitive_string_values(item, under_sensitive_key, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let sensitive = under_sensitive_key || sensitive_json_key_kind(key).is_some();
+                json_sensitive_string_values(child, sensitive, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Scan one text blob, appending findings for `file_label`.
 ///
 /// Safety model: every kept match span is replaced with its marker to build a
@@ -765,11 +902,14 @@ fn scan_text(
     configured: &ConfiguredMatchers,
     out: &mut Vec<Finding>,
 ) {
-    // Phase 1: structured detectors (built-in regex + configured literals and
-    // custom patterns). These always win.
+    // Phase 1: structured detectors — built-in regex, configured literals /
+    // custom patterns, the runtime-redactor oracle (bearer / env-assignment /
+    // env-value), and the JSON sensitive-key walk. These always win over entropy.
     let mut structured: Vec<RawMatch> = Vec::new();
     collect_detector_matches(text, detectors, &mut structured);
     collect_configured_matches(text, configured, &mut structured);
+    collect_redactor_oracle_matches(text, configured, &mut structured);
+    collect_json_sensitive_keys(text, &mut structured);
     let kept_structured = filter_overlaps(structured);
 
     // Phase 2: the entropy heuristic only fills gaps the structured pass left,
@@ -1560,6 +1700,149 @@ mod tests {
                 .iter()
                 .any(|f| f.match_class == "configured_custom_pattern"),
             "configured custom pattern not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audits_results_json_and_legacy_trajectory_json() {
+        // `results.json` (sweep summary) and the legacy nested `trajectory.json`
+        // are first-class artifacts that must not be skipped by name.
+        let dir = tempfile::tempdir().unwrap();
+        let inst = dir.path().join("inst-1");
+        std::fs::create_dir_all(&inst).unwrap();
+        std::fs::write(
+            dir.path().join("results.json"),
+            r#"{"instances":[{"error":"failed: AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            inst.join("trajectory.json"),
+            r#"{"messages":[{"content":"tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz"}]}"#,
+        )
+        .unwrap();
+
+        let report = audit(dir.path());
+        let files: BTreeSet<&str> = report.findings.iter().map(|f| f.file.as_str()).collect();
+        assert!(
+            files.iter().any(|f| f.ends_with("results.json")),
+            "results.json not audited: {files:?}"
+        );
+        assert!(
+            files.iter().any(|f| f.ends_with("trajectory.json")),
+            "legacy trajectory.json not audited: {files:?}"
+        );
+    }
+
+    // ── PR #557 third-round review: runtime-redactor parity oracle ────────
+
+    #[test]
+    fn oracle_catches_bearer_token() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "Authorization: Bearer abcdefghijklmnop1234\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "bearer_token"),
+            "bearer token missed: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn oracle_catches_generic_sensitive_env_assignment() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "DATABASE_PASSWORD=correcthorsebatterystaple\n",
+        );
+        let report = audit(dir.path());
+        let m: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.match_class == "sensitive_env_assignment")
+            .collect();
+        assert!(
+            !m.is_empty(),
+            "env assignment missed: {:?}",
+            report.findings
+        );
+        assert_eq!(m[0].severity, Severity::Medium);
+        // The value must not leak; the var name (benign context) may remain.
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("correcthorsebatterystaple"));
+    }
+
+    #[test]
+    fn oracle_ignores_benign_env_assignment() {
+        // Non-sensitive names must not be flagged (false-positive budget).
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "PATH=/usr/bin:/bin\nHOME=/root\n",
+        );
+        let report = audit(dir.path());
+        assert_eq!(report.summary.high, 0, "{:?}", report.findings);
+        assert_eq!(report.summary.medium, 0, "{:?}", report.findings);
+    }
+
+    #[test]
+    fn oracle_catches_sensitive_json_keys() {
+        // Sensitive keys are flagged regardless of value shape; the value never
+        // leaks into the report.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.traj.json",
+            r#"{"password":"hunter2","api_key":"abcd1234abcd1234","note":"all 42 tests passed"}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "sensitive json key missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("hunter2"), "json value leaked");
+    }
+
+    #[test]
+    fn oracle_catches_ambient_env_value() {
+        // A sensitive env value from the audit's own environment, appearing in
+        // an artifact without its variable name, is still caught.
+        // SAFETY: single-threaded test; restored immediately after the run.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "leaked: super-secret-ci-token-value-123\n",
+        );
+        // SAFETY: set/remove a process-local var in a serial unit test.
+        unsafe {
+            std::env::set_var("DATABASE_PASSWORD", "super-secret-ci-token-value-123");
+        }
+        let report = audit(dir.path());
+        unsafe {
+            std::env::remove_var("DATABASE_PASSWORD");
+        }
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_env_value"),
+            "ambient env value missed: {:?}",
             report.findings
         );
     }

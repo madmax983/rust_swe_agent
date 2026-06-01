@@ -45,9 +45,11 @@ agent redact-audit runs/my-sweep && publish-the-bundle
 
 The scanner walks the tree and inspects these file kinds:
 
-- `*.traj.json` (trajectories)
-- `evaluation.json`, `all_preds.jsonl`
+- `*.traj.json` (trajectories) and the legacy nested `trajectory.json`
+- `evaluation.json`, `results.json` (sweep summary)
+- `all_preds.jsonl` and rerun variants `all_preds.run-<k>.jsonl`
 - `*.output.txt`
+- `*.patch` (submitted patches — first-class, frequently-shared artifacts)
 - exported `*.md`, `*.html`, `*.csv`, `*.mermaid`
 - `*.tar.gz` / `*.tgz` bundles — extracted to a temp dir and scanned member by
   member. Findings inside a bundle are labelled `archive.tar.gz!inner/path`.
@@ -78,6 +80,29 @@ Detectors run **in addition to** the configured redactor's operator-defined
 | `jwt` | `jwt` | medium |
 | `pem` | `pem_private_key` | high |
 | `entropy` | `high_entropy_string` | entropy_only |
+
+### Write-time-redaction parity (oracle)
+
+To guarantee the audit catches everything the runtime `Redactor` masks at write
+time — not just the high-confidence provider shapes above — the configured
+redactor is also run over each artifact as a **detection oracle**. Anything it
+would have masked is reported, covering classes the provider registry does not:
+
+| `match_class` | What it catches | Severity |
+|---------------|-----------------|----------|
+| `bearer_token` | `Bearer <token>` header values | high |
+| `sensitive_env_assignment` | any sensitive `NAME=value` assignment (e.g. `DATABASE_PASSWORD=…`, `GITHUB_TOKEN=…`) | medium |
+| `sensitive_env_value` | a value matching a sensitive variable from the **audit process's own environment**, found verbatim in an artifact | high |
+| `sensitive_json_value` | a string value under a sensitive JSON key (`password`, `*_token`, `*key`, …) regardless of value shape, mirroring `Redactor::redact_json_value` | medium |
+| `configured_literal` / `configured_custom_pattern` | the operator's `secret_literals` / `custom_patterns` | high |
+
+The structured provider detectors (`pem`, `api_key`, `github_token`, …) are kept
+as the precise, named layer; the oracle only *adds* the classes the registry
+lacks (bearer / env-assignment / env-value / sensitive-JSON-key). Env-assignment
+and JSON-key findings are `medium` severity — they still drive the failing exit
+code (32) and the publish gate, but are distinguished from unambiguous
+provider-key leaks. Non-sensitive assignments (`PATH=…`, `HOME=…`) are not
+flagged, preserving the false-positive budget.
 
 ### Entropy heuristic
 
