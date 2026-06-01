@@ -341,6 +341,14 @@ fn serve_index(instances: &[InstanceEntry]) -> String {
          tr:hover{{background:#f9f9ff}}\n\
          a{{color:#0066cc;text-decoration:none}}\n\
          a:hover{{text-decoration:underline}}\n\
+         @media (prefers-color-scheme: dark) {{\n\
+         body{{background:#121212;color:#e0e0e0}}\n\
+         h1{{color:#fff}}\n\
+         th,td{{border:1px solid #444}}\n\
+         th{{background:#1e1e1e}}\n\
+         tr:hover{{background:#2a2a2a}}\n\
+         a{{color:#66b3ff}}\n\
+         }}\n\
          </style>\n\
          </head>\n\
          <body>\n\

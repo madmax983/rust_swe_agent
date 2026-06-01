@@ -136,6 +136,16 @@ impl TrajectoryExporter for HtmlExporter {
         html.push_str(".user { background-color: #d1ecf1; color: #0c5460; }\n");
         html.push_str(".assistant { background-color: #d4edda; color: #155724; }\n");
         html.push_str(".tool { background-color: #e2e3e5; color: #383d41; font-family: monospace; white-space: pre-wrap; }\n");
+        html.push_str("@media (prefers-color-scheme: dark) {\n");
+        html.push_str("body { background-color: #121212; color: #e0e0e0; }\n");
+        html.push_str(".message { border: 1px solid #333; }\n");
+        html.push_str(".system { background-color: #2c1a1d; color: #f8d7da; }\n");
+        html.push_str(".user { background-color: #1a2a30; color: #d1ecf1; }\n");
+        html.push_str(".assistant { background-color: #1a2e20; color: #d4edda; }\n");
+        html.push_str(
+            ".tool { background-color: #2b2d30; color: #e0e0e0; border: 1px solid #444; }\n",
+        );
+        html.push_str("}\n");
         html.push_str("</style>\n</head>\n<body>\n");
 
         html.push_str("<h1>Trajectory Export</h1>\n");
@@ -339,5 +349,6 @@ mod tests {
         assert!(html.contains("submitted"));
         assert!(html.contains("Hello agent"));
         assert!(html.contains("Hello user"));
+        assert!(html.contains("@media (prefers-color-scheme: dark)"));
     }
 }

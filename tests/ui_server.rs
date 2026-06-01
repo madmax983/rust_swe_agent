@@ -81,6 +81,10 @@ async fn index_returns_200_html_with_instance_rows() {
         body.contains("submitted"),
         "index should show outcome column"
     );
+    assert!(
+        body.contains("@media (prefers-color-scheme: dark)"),
+        "index should contain dark mode css"
+    );
 
     server.shutdown().await;
 }
