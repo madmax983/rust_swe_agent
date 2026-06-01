@@ -127,6 +127,16 @@ fn regex_specs() -> Vec<RegexSpec> {
             r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA)[0-9A-Z]{16}\b",
             None,
         ),
+        // AWS secret access keys have no fixed prefix, so anchor on the
+        // conventional variable name (the shape in env dumps / logs the runtime
+        // env-assignment redactor would catch). Group 1 masks the 40-char value.
+        (
+            "aws",
+            "aws_secret_access_key",
+            Severity::High,
+            r#"(?i)aws_secret_access_key["']?\s*[:=]\s*["']?([A-Za-z0-9/+]{40})"#,
+            Some(1),
+        ),
         (
             "gcp",
             "gcp_api_key",
@@ -150,11 +160,14 @@ fn regex_specs() -> Vec<RegexSpec> {
             r"\bsk-ant-[A-Za-z0-9_\-]{20,}",
             None,
         ),
+        // Body allows `_`/`-` separators, matching the runtime `structured:api_key`
+        // family; the `sk-ant-` family is covered by the `anthropic` detector and
+        // wins ties via the deterministic overlap filter.
         (
             "openai",
             "openai_api_key",
             Severity::High,
-            r"\bsk-(?:proj-)?[A-Za-z0-9]{20,}\b",
+            r"\bsk-(?:proj-)?[A-Za-z0-9][A-Za-z0-9_-]{16,}",
             None,
         ),
         (
@@ -222,12 +235,20 @@ fn detector_registry() -> Result<Vec<Detector>, regex::Error> {
     Ok(detectors)
 }
 
-/// Every selectable detector id (for `--detectors` validation and docs).
+/// Every selectable detector id (for `--detectors` validation and docs),
+/// deduplicated and in registry order (a detector family such as `aws` may have
+/// more than one underlying shape).
 #[must_use]
 pub fn detector_ids() -> Vec<&'static str> {
-    detector_registry()
-        .map(|d| d.into_iter().map(|det| det.id).collect())
-        .unwrap_or_default()
+    let regs = detector_registry().unwrap_or_default();
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for d in &regs {
+        if seen.insert(d.id) {
+            out.push(d.id);
+        }
+    }
+    out
 }
 
 // ── Options / report types ──────────────────────────────────────────────────
@@ -380,10 +401,12 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     };
 
     let mut files = Vec::new();
-    collect_files(&opts.dir, &mut files);
+    let mut walk_errors = Vec::new();
+    collect_files(&opts.dir, &opts.dir, &mut files, &mut walk_errors);
     files.sort();
 
     let mut acc = ScanAcc::default();
+    acc.scan_errors.append(&mut walk_errors);
     for path in files {
         scan_one(&path, &opts.dir, &detectors, &redactor, &mut acc);
     }
@@ -399,7 +422,7 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
         scanned_dir: opts.dir.display().to_string(),
         files_scanned: acc.files_scanned,
         lines_scanned: acc.lines_scanned,
-        detectors: detectors.iter().map(|d| d.id.to_owned()).collect(),
+        detectors: active_detector_ids(&detectors),
         findings: acc.findings,
         scan_errors: acc.scan_errors,
         summary,
@@ -417,10 +440,11 @@ fn scan_one(
     let rel = display_relative(base, path);
     if is_bundle(path) {
         match scan_bundle(path, &rel, detectors, redactor) {
-            Ok((mut found, scanned, lines)) => {
+            Ok((mut found, scanned, lines, mut member_errors)) => {
                 acc.findings.append(&mut found);
                 acc.files_scanned += scanned;
                 acc.lines_scanned += lines;
+                acc.scan_errors.append(&mut member_errors);
             }
             Err(msg) => acc.scan_errors.push(msg),
         }
@@ -469,15 +493,40 @@ fn select_detectors(opts: &AuditOpts) -> Result<Vec<Detector>, Error> {
     Ok(selected)
 }
 
+/// Deduplicated detector ids for the report's `detectors` field, in order.
+/// A family such as `aws` may have several underlying regex shapes; the report
+/// lists each selectable id once.
+fn active_detector_ids(detectors: &[Detector]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for d in detectors {
+        if seen.insert(d.id) {
+            out.push(d.id.to_owned());
+        }
+    }
+    out
+}
+
 /// Recursively collect candidate artifact files (names sorted by the caller).
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+///
+/// An unreadable directory is recorded in `errors` rather than skipped
+/// silently: for a publish gate, an unreadable subtree means the scan is
+/// incomplete and a "clean" verdict cannot be trusted (drives exit code 33).
+fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            errors.push(format!(
+                "{}: cannot read directory: {e}",
+                display_relative(base, dir)
+            ));
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_files(&path, out);
+            collect_files(base, &path, out, errors);
         } else if is_audited_file(&path) {
             out.push(path);
         }
@@ -486,9 +535,10 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// `true` for the artifact kinds the auditor scans.
 fn is_audited_file(path: &Path) -> bool {
-    const SUFFIXES: [&str; 6] = [
+    const SUFFIXES: [&str; 7] = [
         ".traj.json",
         ".output.txt",
+        ".patch",
         ".md",
         ".html",
         ".csv",
@@ -524,12 +574,19 @@ fn read_text(path: &Path) -> Result<String, String> {
 }
 
 /// Extract a `.tar.gz` bundle to memory and scan its audited members.
+///
+/// Returns `(findings, members_scanned, lines_scanned, member_errors)`. A member
+/// whose body cannot be read is recorded in `member_errors` (it surfaces as a
+/// scan error) rather than silently skipped. The outer `Err` is reserved for a
+/// bundle that cannot be opened or whose index is corrupt.
+type BundleScan = (Vec<Finding>, usize, usize, Vec<String>);
+
 fn scan_bundle(
     path: &Path,
     rel: &str,
     detectors: &[Detector],
     redactor: &Redactor,
-) -> Result<(Vec<Finding>, usize, usize), String> {
+) -> Result<BundleScan, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("{}: cannot open bundle: {e}", path.display()))?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
@@ -538,6 +595,7 @@ fn scan_bundle(
         .map_err(|e| format!("{}: cannot read bundle entries: {e}", path.display()))?;
 
     let mut findings = Vec::new();
+    let mut member_errors = Vec::new();
     let mut scanned = 0usize;
     let mut lines = 0usize;
     for entry in entries {
@@ -550,17 +608,20 @@ fn scan_bundle(
         if !is_audited_file(Path::new(&inner)) || inner.ends_with(".tar.gz") {
             continue;
         }
+        let member_label = format!("{rel}!{inner}");
         let mut bytes = Vec::new();
-        if entry.read_to_end(&mut bytes).is_err() {
+        if let Err(e) = entry.read_to_end(&mut bytes) {
+            // A readable header with an unreadable body means the scan of this
+            // member is incomplete; record it so the audit cannot report clean.
+            member_errors.push(format!("{member_label}: cannot read bundle member: {e}"));
             continue;
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let member_label = format!("{rel}!{inner}");
         scanned += 1;
         lines += line_count(&text);
         scan_text(&text, &member_label, detectors, redactor, &mut findings);
     }
-    Ok((findings, scanned, lines))
+    Ok((findings, scanned, lines, member_errors))
 }
 
 /// A pre-filter candidate match.
@@ -1221,5 +1282,113 @@ mod tests {
         // Whatever entropy finds, it must not push exit code to "findings".
         assert!(report.summary.high == 0 && report.summary.medium == 0);
         assert_eq!(report.exit_code(), ExitCode::Success);
+    }
+
+    // ── PR #557 review fixes ──────────────────────────────────────────────
+
+    #[test]
+    fn audits_patch_artifacts() {
+        // Submitted `.patch` files are first-class, shareable sweep artifacts;
+        // a secret in one must not slip the publish gate.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "run-1.patch",
+            "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "aws_access_key"),
+            "patch artifact not audited: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn detects_aws_secret_access_key_by_name() {
+        // The 40-char secret key has no fixed prefix; anchor on the var name.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "env.output.txt",
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "aws_secret_access_key"),
+            "aws secret key missed: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+        // The 40-char secret value must never appear verbatim.
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"));
+    }
+
+    #[test]
+    fn detects_openai_key_with_separators() {
+        // OpenAI keys may carry `_`/`-` in the body after the prefix.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "k.output.txt",
+            "OPENAI_API_KEY=sk-proj-AbC0_dEf-GhI1jKlMnOpQrStUv\n",
+        );
+        let report = audit(dir.path());
+        let openai: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.match_class == "openai_api_key")
+            .collect();
+        assert!(
+            !openai.is_empty(),
+            "openai key missed: {:?}",
+            report.findings
+        );
+        assert_eq!(openai[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn unreadable_member_is_recorded_as_scan_error() {
+        // A bundle whose declared member size exceeds its actual body fails on
+        // read_to_end; that must be recorded, not silently skipped.
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle.tar.gz");
+        {
+            let f = std::fs::File::create(&bundle).unwrap();
+            let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+            // Hand-craft a tar header claiming 512 bytes but write no body.
+            let mut header = tar::Header::new_gnu();
+            header.set_path("inner.output.txt").unwrap();
+            header.set_size(512);
+            header.set_mode(0o644);
+            header.set_cksum();
+            enc.write_all(header.as_bytes()).unwrap();
+            // No member body and no terminator → read_to_end fails.
+            enc.finish().unwrap();
+        }
+        let report = audit(dir.path());
+        assert!(
+            !report.scan_errors.is_empty(),
+            "truncated bundle member not recorded as scan error"
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditScanError);
+    }
+
+    #[test]
+    fn detector_ids_are_deduplicated() {
+        // `aws` has two underlying regex shapes but is one selectable id.
+        let ids = detector_ids();
+        let unique: BTreeSet<&str> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "duplicate ids: {ids:?}");
+        assert!(ids.contains(&"aws"));
     }
 }
