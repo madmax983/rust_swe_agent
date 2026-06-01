@@ -37,6 +37,8 @@ parsing human-oriented output.
 | 29   | `apply_check_failed`     | `agent apply` ran `git apply --check` and the patch cannot be applied cleanly to the current tree. The working tree is left unchanged. |
 | 30   | `apply_redacted_refused` | `agent apply` detected `[REDACTED:…]` markers in the patch content or the source trajectory recorded patch-submission redaction. Pass `--allow-redacted` to override. |
 | 31   | `apply_dirty_tree_refused` | `agent apply` found uncommitted changes in the target working tree. Pass `--allow-dirty` to override. |
+| 32   | `redact_audit_findings` | `agent redact-audit` found at least one new finding at `medium` or higher severity. Suitable as a publish gate (`redact-audit <dir> && publish`). Distinct from a scan error so CI can route a leak vs. an incomplete scan. |
+| 33   | `redact_audit_scan_error` | `agent redact-audit` could not read or extract an artifact (unreadable file/subtree, corrupt bundle member), so the scan is incomplete and a clean verdict cannot be trusted. Findings take precedence: exit 32 is returned instead when any new finding is also present. |
 | 130  | `interrupted`            | Graceful SIGINT / Ctrl-C cancellation (POSIX convention: 128 + SIGINT(2)). |
 | 137  | `killed`                 | SIGKILL escalation after the graceful-cancel deadline expired (128 + SIGKILL(9)). |
 
