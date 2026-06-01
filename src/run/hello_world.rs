@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use super::mini::{InteractiveMode, MiniArgs, run};
+use crate::Error;
 use crate::config::Config;
-use crate::error::Error;
 
 pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(), Error> {
     let cfg = match config_path {

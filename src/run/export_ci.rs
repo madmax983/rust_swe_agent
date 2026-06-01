@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::config::RedactionCfg;
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::swebench::{InstanceResult, SweepResults, trajectory_path_for};
 use crate::trajectory::FailureCategory;

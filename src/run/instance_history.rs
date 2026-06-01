@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
 use crate::run::swebench::{effective_runs, resolved_count as instance_resolved_count};

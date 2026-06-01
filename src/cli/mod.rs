@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use crate::Error;
 use crate::config::Config;
-use crate::error::Error;
 use crate::exit_code::ExitCode;
 
 pub mod args;
@@ -749,8 +749,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
     // the two cases where the trajectory and patch are guaranteed on disk.
     // For other errors (env setup, model API, pre-trajectory I/O) propagate
     // immediately so the real failure isn't masked by a trajectory-read error.
-    let is_verification_failure =
-        matches!(run_result, Err(crate::error::Error::VerificationFailed(..)));
+    let is_verification_failure = matches!(run_result, Err(crate::Error::VerificationFailed(..)));
     if run_result.is_ok() || is_verification_failure {
         maybe_publish_mini_github_pr(github_pr).await?;
     }
@@ -5728,7 +5727,7 @@ mod tests {
         swebench_github_pr_config, trajectory_submitted, validate_observation_head_ratio,
         validate_swebench_github_pr_args,
     };
-    use crate::error::Error;
+    use crate::Error;
     use crate::run::github_pr::PublishMode;
     use crate::run::swebench::{CANCEL_EXIT_CODE_ESCALATED, SweepResults};
     use crate::trajectory::{Trajectory, outcome};

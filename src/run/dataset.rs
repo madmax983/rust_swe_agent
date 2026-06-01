@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 
 /// Recognised SWE-bench dataset variant names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

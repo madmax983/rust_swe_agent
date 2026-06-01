@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, classify_json_value};
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
 use crate::trajectory::Trajectory;

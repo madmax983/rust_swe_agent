@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::error::Error;
+use crate::Error;
 use crate::run::swebench::{SweBenchInstance, SweepResults};
 use litellm_rs::utils::ai::counter::token_counter::TokenCounter;
 

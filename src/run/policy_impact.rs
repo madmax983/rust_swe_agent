@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, classify_json_value};
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::retry::load_sweep_results;
 use crate::trajectory::Trajectory;

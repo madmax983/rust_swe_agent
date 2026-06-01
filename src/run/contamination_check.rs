@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 
 // ── public configuration (TOML-configurable) ──────────────────────────────
 

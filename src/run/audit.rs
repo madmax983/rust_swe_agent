@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::cli::args::AuditCmd;
-use crate::error::Error;
 
 /// Recompute sweep-wide aggregates and reconcile with results.json and evaluation.json.
 #[allow(clippy::too_many_lines)]

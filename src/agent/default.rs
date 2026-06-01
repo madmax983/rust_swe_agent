@@ -1150,7 +1150,7 @@ impl Agent for DefaultAgent {
             self.trajectory.info.exit_reason = Some("error".into());
             self.trajectory.info.failure_category = Some(FailureCategory::ReadOnlyViolation);
             self.finalize_run_metadata(crate::trajectory::outcome::ERROR);
-            return Err(crate::error::Error::Trajectory(rejection));
+            return Err(crate::Error::Trajectory(rejection));
         }
         if !self.tool_registry.contains(&tool_name) {
             unreachable!("Submit and None handled above");

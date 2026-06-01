@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::ArtifactKind;
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::swebench::SweepResults;
 

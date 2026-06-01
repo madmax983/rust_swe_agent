@@ -23,7 +23,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::error::Error;
+use crate::Error;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

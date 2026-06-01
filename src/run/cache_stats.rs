@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::ArtifactKind;
 use crate::cost::{
     ANTHROPIC_CACHE_CREATION_MULTIPLIER, ANTHROPIC_CACHE_READ_MULTIPLIER, SONNET_INPUT_USD_PER_MTOK,
 };
-use crate::error::Error;
 use crate::run::compare::load_sweep;
 
 // ── public calculation helpers (unit-testable) ────────────────────────────────

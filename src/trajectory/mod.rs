@@ -828,7 +828,7 @@ impl Trajectory {
     /// let traj = Trajectory::new();
     /// traj.save_pretty(Path::new("run.traj.json")).unwrap();
     /// ```
-    pub fn save_pretty(&self, path: &Path) -> Result<(), crate::error::Error> {
+    pub fn save_pretty(&self, path: &Path) -> Result<(), crate::Error> {
         let s = serde_json::to_string_pretty(self)?;
         std::fs::write(path, s)?;
         Ok(())
@@ -848,7 +848,7 @@ impl Trajectory {
     /// let traj = Trajectory::new();
     /// traj.save_partial_atomic(Path::new("run.traj.json")).unwrap();
     /// ```
-    pub fn save_partial_atomic(&self, path: &Path) -> Result<(), crate::error::Error> {
+    pub fn save_partial_atomic(&self, path: &Path) -> Result<(), crate::Error> {
         // Build a clone with partial=true for the checkpoint write.
         let mut checkpoint = self.clone();
         checkpoint.info.partial = true;

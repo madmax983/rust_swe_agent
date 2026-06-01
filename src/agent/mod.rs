@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 
-use crate::error::Error;
+use crate::Error;
 
 pub mod confirm;
 pub mod confirm_cli;
@@ -34,7 +34,7 @@ pub use parse::{
 /// according to the rules of the environment, even if it didn't solve the task.
 ///
 /// True system errors (like network failures or I/O issues) are handled by the
-/// separate `crate::error::Error` type.
+/// separate `crate::Error` type.
 ///
 /// ## Examples
 ///

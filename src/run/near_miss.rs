@@ -20,8 +20,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::ArtifactKind;
-use crate::error::Error;
 use crate::run::compare::load_evaluation_results;
 
 // ── format ───────────────────────────────────────────────────────────────────

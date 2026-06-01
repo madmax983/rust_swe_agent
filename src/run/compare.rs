@@ -16,8 +16,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::{ArtifactCompatibility, ArtifactKind, classify_json_value};
-use crate::error::Error;
 use crate::run::evaluate::{
     BreakdownAxis, CostAttributionBucket, EvaluationResults, cost_attribution_bucket_label, pct,
     round_dp,

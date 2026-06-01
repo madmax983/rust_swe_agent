@@ -7,7 +7,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::compare::{load_run_slots, load_sweep};
 use crate::run::patch_stats::{PatchClassifiers, PatchStats, score_patch};

@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::ArtifactKind;
-use crate::error::Error;
 use crate::exit_code::ExitCode;
 use crate::redaction::Redactor;
 use crate::trajectory::{
@@ -540,10 +540,8 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
         };
 
         let run_outcome = crate::run::mini::run(mini_args).await;
-        let is_verification_error = matches!(
-            run_outcome,
-            Err(crate::error::Error::VerificationFailed(..))
-        );
+        let is_verification_error =
+            matches!(run_outcome, Err(crate::Error::VerificationFailed(..)));
 
         // ── Load trajectory from disk ─────────────────────────────────────
         let result = if let Some(traj) = try_load_terminal_trajectory(&traj_path) {

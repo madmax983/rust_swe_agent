@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::cost::{BASELINE_COST_MODEL, estimate_cost_usd, is_free_tier_model};
-use crate::error::Error;
 use crate::trajectory::{FailureCategory, Trajectory};
 
 const DEFAULT_PARALLELISM: usize = 4;

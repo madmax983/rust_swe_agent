@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::Error;
+use crate::Error;
 use crate::run::swebench::{
     CliManifest, ConfigManifest, DatasetManifest, FilterSpec, HarnessManifest, InstanceResult,
     ModelManifest, PromptTemplateManifest, ProvenanceManifest, RuntimeManifest,

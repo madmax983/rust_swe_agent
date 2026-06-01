@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion, classify_json_value};
-use crate::error::Error;
 use crate::run::compare::{self, CompareReport, LoadedSweep, load_sweep};
 use crate::run::evaluate::{BreakdownSelection, EvaluationResults, evaluation_path};
 use crate::run::swebench::{

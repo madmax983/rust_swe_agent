@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::env::RunResult;
-use crate::error::Error;
 use crate::trajectory::{FailureCategory, MessageRecord, TokenUsage, Trajectory};
 
 const DIFF_FIELD_ORDER: [&str; 6] = [

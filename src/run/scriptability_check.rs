@@ -12,10 +12,10 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::config::Config;
 use crate::env::{Environment, LocalEnvironment};
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::template::Renderer;
 use crate::tool::ToolProvider;

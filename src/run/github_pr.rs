@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::error::Error;
+use crate::Error;
 
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 

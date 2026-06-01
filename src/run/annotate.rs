@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::annotation::{Annotation, AnnotationStore, resolve_store_path};
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 
 // ── arg structs ───────────────────────────────────────────────────────────────
@@ -60,11 +60,9 @@ pub struct AnnotateRmReport {
 
 pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
     if args.tags.is_empty() {
-        return Err(crate::error::Error::Config(
-            crate::error::ConfigError::Invalid(
-                "annotate add: at least one --tag is required".into(),
-            ),
-        ));
+        return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+            "annotate add: at least one --tag is required".into(),
+        )));
     }
 
     // Validate note length on the raw input so redaction marker expansion
@@ -72,13 +70,13 @@ pub fn run_add(args: &AnnotateAddArgs) -> Result<AnnotateAddReport, Error> {
     if let Some(n) = args.note.as_deref() {
         let len = n.chars().count();
         if len > crate::annotation::NOTE_MAX_CHARS {
-            return Err(crate::error::Error::Config(
-                crate::error::ConfigError::Invalid(format!(
+            return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+                format!(
                     "annotations: note is {len} chars; maximum is {}; \
                      truncate or shorten the note before adding",
                     crate::annotation::NOTE_MAX_CHARS
-                )),
-            ));
+                ),
+            )));
         }
     }
 

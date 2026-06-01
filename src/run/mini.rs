@@ -1024,7 +1024,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
         return Err(err);
     }
     if let crate::agent::ExitReason::AgentStagnation { count, window, .. } = exit {
-        return Err(crate::error::Error::AgentStagnation { count, window });
+        return Err(crate::Error::AgentStagnation { count, window });
     }
     Ok(())
 }

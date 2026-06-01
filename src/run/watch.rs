@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
-use crate::error::Error;
+use crate::Error;
 use crate::redaction::Redactor;
 use crate::run::inspect::{
     InspectStep, build_inspect_steps_with_max, redact_trajectory_for_inspect, render_step_text,

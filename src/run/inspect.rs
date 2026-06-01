@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, classify_json_value};
 use crate::cost::CostSource;
 use crate::env::RunResult;
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::evaluate::{EvalExitReason, EvaluationResults};
 use crate::run::patch_stats::PatchStats;

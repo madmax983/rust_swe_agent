@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 use crate::run::compare::{load_evaluation_results_checked, load_sweep};
 use crate::run::triage::{
     TriageArgs, TriageCluster, TriageReport, candidate_instance_ids, extract_instance_signature,

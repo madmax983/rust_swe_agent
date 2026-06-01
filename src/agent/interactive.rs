@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 
 use super::{Agent, DefaultAgent, ExitReason, StepOutcome};
-use crate::error::Error;
+use crate::Error;
 
 pub struct InteractiveAgent {
     pub inner: DefaultAgent,

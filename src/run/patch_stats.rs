@@ -516,7 +516,7 @@ fn saturating_u32(value: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::error::Error;
+    use crate::Error;
 
     use super::{PatchClassifiers, score_patch};
 

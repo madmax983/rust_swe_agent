@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::error::Error;
+use crate::Error;
 
 pub struct Renderer {
     env: Environment<'static>,

@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::Error;
 use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use crate::config::Config;
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::skills::{SkillActivationReason, SkillRegistry, SkillResolveRequest};
 

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::Error;
 use crate::run::compare::{load_evaluation_results, load_sweep};
 use crate::run::swebench::{
     InstanceResult, SWEEP_STATUS_COMPLETED, resolved_count as instance_resolved_count,

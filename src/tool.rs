@@ -204,7 +204,7 @@ pub trait ToolProvider: Send + Sync {
         env: &dyn crate::env::Environment,
         invocation: ToolInvocation,
         cancellation: Option<crate::env::CancellationToken>,
-    ) -> Result<ToolOutput, crate::error::Error>;
+    ) -> Result<ToolOutput, crate::Error>;
 }
 
 /// A tool that executes via a shell command when invoked.
@@ -314,7 +314,7 @@ impl ToolRegistry {
     pub fn from_config_and_providers(
         tools: &[crate::config::ToolCfg],
         providers: Vec<Arc<dyn ToolProvider>>,
-    ) -> Result<Self, crate::error::Error> {
+    ) -> Result<Self, crate::Error> {
         let command_tools = tools
             .iter()
             .map(|tool| {
@@ -338,11 +338,11 @@ impl ToolRegistry {
         Ok(registry)
     }
 
-    fn index_provider_tools(&mut self) -> Result<(), crate::error::Error> {
+    fn index_provider_tools(&mut self) -> Result<(), crate::Error> {
         for (provider_index, provider) in self.providers.iter().enumerate() {
             for definition in provider.tools() {
                 validate_tool_name(&definition.name).map_err(|err| {
-                    crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+                    crate::Error::Config(crate::error::ConfigError::Invalid(format!(
                         "invalid tool provider name {:?}: {err}",
                         definition.name
                     )))
@@ -351,12 +351,9 @@ impl ToolRegistry {
                     || self.command_tools.contains_key(&definition.name)
                     || self.provider_tools.contains_key(&definition.name)
                 {
-                    return Err(crate::error::Error::Config(
-                        crate::error::ConfigError::Invalid(format!(
-                            "duplicate runtime tool name {:?}",
-                            definition.name
-                        )),
-                    ));
+                    return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+                        format!("duplicate runtime tool name {:?}", definition.name),
+                    )));
                 }
                 self.provider_tools.insert(
                     definition.name.clone(),
@@ -468,7 +465,7 @@ impl McpStdioServer {
         cfg: &crate::config::McpServerCfg,
         default_timeout_secs: u64,
         cancellation: Option<crate::env::CancellationToken>,
-    ) -> Result<Self, crate::error::Error> {
+    ) -> Result<Self, crate::Error> {
         let timeout = Duration::from_secs(cfg.timeout_secs.unwrap_or(default_timeout_secs));
         let mut cursor = None;
         let mut protocol_version = MCP_PROTOCOL_VERSION.to_owned();
@@ -486,12 +483,12 @@ impl McpStdioServer {
             .await?;
             let negotiated = parse_mcp_initialize_protocol(&cfg.command, initialize_result)?;
             if cursor.is_some() && negotiated != protocol_version {
-                return Err(crate::error::Error::Config(
-                    crate::error::ConfigError::Invalid(format!(
+                return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+                    format!(
                         "MCP server `{}` changed negotiated protocol version from `{}` to `{}` during tools/list pagination",
                         cfg.command, protocol_version, negotiated
-                    )),
-                ));
+                    ),
+                )));
             }
             protocol_version = negotiated;
 
@@ -533,7 +530,7 @@ impl ToolProvider for McpStdioServer {
         env: &dyn crate::env::Environment,
         invocation: ToolInvocation,
         cancellation: Option<crate::env::CancellationToken>,
-    ) -> Result<ToolOutput, crate::error::Error> {
+    ) -> Result<ToolOutput, crate::Error> {
         let arguments = tool_input_to_mcp_arguments(&invocation.input);
         let (initialize_result, call_result) = run_mcp_exchange(
             env,
@@ -546,12 +543,12 @@ impl ToolProvider for McpStdioServer {
         .await?;
         let protocol_version = parse_mcp_initialize_protocol(&self.command, initialize_result)?;
         if protocol_version != self.protocol_version {
-            return Err(crate::error::Error::Config(
-                crate::error::ConfigError::Invalid(format!(
+            return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+                format!(
                     "MCP server `{}` changed negotiated protocol version from `{}` to `{}`",
                     self.command, self.protocol_version, protocol_version
-                )),
-            ));
+                ),
+            )));
         }
         parse_mcp_tool_output(&self.command, &call_result)
     }
@@ -668,22 +665,22 @@ fn mcp_initialize_request(id: u64, protocol_version: &str) -> serde_json::Value 
 fn parse_mcp_initialize_protocol(
     command: &str,
     value: serde_json::Value,
-) -> Result<String, crate::error::Error> {
+) -> Result<String, crate::Error> {
     let result: McpInitializeResult = serde_json::from_value(value).map_err(|err| {
-        crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+        crate::Error::Config(crate::error::ConfigError::Invalid(format!(
             "MCP server `{command}` returned invalid initialize result: {err}"
         )))
     })?;
     if MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&result.protocol_version.as_str()) {
         Ok(result.protocol_version)
     } else {
-        Err(crate::error::Error::Config(
-            crate::error::ConfigError::Invalid(format!(
+        Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+            format!(
                 "MCP server `{command}` negotiated unsupported MCP protocol version `{}`; supported versions: {}",
                 result.protocol_version,
                 MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")
-            )),
-        ))
+            ),
+        )))
     }
 }
 
@@ -694,7 +691,7 @@ async fn run_mcp_exchange(
     messages: Vec<serde_json::Value>,
     response_id: u64,
     cancellation: Option<crate::env::CancellationToken>,
-) -> Result<(serde_json::Value, serde_json::Value), crate::error::Error> {
+) -> Result<(serde_json::Value, serde_json::Value), crate::Error> {
     let stdin = messages
         .into_iter()
         .map(|message| serde_json::to_string(&message))
@@ -709,14 +706,14 @@ async fn run_mcp_exchange(
     }
     let result = env.run(run_req).await?;
     if result.timed_out || result.exit_code != 0 {
-        return Err(crate::error::Error::Config(
-            crate::error::ConfigError::Invalid(format!(
+        return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+            format!(
                 "MCP server `{command}` failed during protocol exchange: exit_code={} timed_out={} stderr={}",
                 result.exit_code,
                 result.timed_out,
                 result.stderr.trim()
-            )),
-        ));
+            ),
+        )));
     }
     let initialize = mcp_response_result(command, &result.stdout, 1)?;
     let response = mcp_response_result(command, &result.stdout, response_id)?;
@@ -727,7 +724,7 @@ fn mcp_response_result(
     command: &str,
     stdout: &str,
     wanted_id: u64,
-) -> Result<serde_json::Value, crate::error::Error> {
+) -> Result<serde_json::Value, crate::Error> {
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(response) = serde_json::from_str::<McpJsonRpcResponse>(line) else {
             continue;
@@ -739,24 +736,22 @@ fn mcp_response_result(
             let data = error
                 .data
                 .map_or_else(String::new, |data| format!(" data={data}"));
-            return Err(crate::error::Error::Config(
-                crate::error::ConfigError::Invalid(format!(
+            return Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+                format!(
                     "MCP server `{command}` returned JSON-RPC error {}: {}{}",
                     error.code, error.message, data
-                )),
-            ));
+                ),
+            )));
         }
         return response.result.ok_or_else(|| {
-            crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+            crate::Error::Config(crate::error::ConfigError::Invalid(format!(
                 "MCP server `{command}` response id {wanted_id} omitted result"
             )))
         });
     }
-    Err(crate::error::Error::Config(
-        crate::error::ConfigError::Invalid(format!(
-            "MCP server `{command}` did not return response id {wanted_id}"
-        )),
-    ))
+    Err(crate::Error::Config(crate::error::ConfigError::Invalid(
+        format!("MCP server `{command}` did not return response id {wanted_id}"),
+    )))
 }
 
 fn json_id_matches(id: Option<&serde_json::Value>, wanted_id: u64) -> bool {
@@ -766,9 +761,9 @@ fn json_id_matches(id: Option<&serde_json::Value>, wanted_id: u64) -> bool {
 fn parse_mcp_tools_list(
     command: &str,
     value: serde_json::Value,
-) -> Result<ParsedMcpToolsList, crate::error::Error> {
+) -> Result<ParsedMcpToolsList, crate::Error> {
     let result: McpToolsListResult = serde_json::from_value(value).map_err(|err| {
-        crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+        crate::Error::Config(crate::error::ConfigError::Invalid(format!(
             "MCP server `{command}` returned invalid tools/list result: {err}"
         )))
     })?;
@@ -802,12 +797,12 @@ fn tool_input_to_mcp_arguments(input: &str) -> serde_json::Value {
 fn parse_mcp_tool_output(
     command: &str,
     value: &serde_json::Value,
-) -> Result<ToolOutput, crate::error::Error> {
+) -> Result<ToolOutput, crate::Error> {
     let content = value
         .get("content")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            crate::error::Error::Config(crate::error::ConfigError::Invalid(format!(
+            crate::Error::Config(crate::error::ConfigError::Invalid(format!(
                 "MCP server `{command}` returned tools/call result without content array"
             )))
         })?;
@@ -851,7 +846,7 @@ pub async fn discover_mcp_servers(
     servers: &[crate::config::McpServerCfg],
     default_timeout_secs: u64,
     cancellation: Option<crate::env::CancellationToken>,
-) -> Result<Vec<Arc<dyn ToolProvider>>, crate::error::Error> {
+) -> Result<Vec<Arc<dyn ToolProvider>>, crate::Error> {
     let mut providers: Vec<Arc<dyn ToolProvider>> = Vec::new();
     for server in servers {
         let provider =

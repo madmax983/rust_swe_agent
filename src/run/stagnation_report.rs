@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::artifact::ArtifactKind;
-use crate::error::Error;
 use crate::redaction::{Redactor, surface};
 use crate::run::compare::load_sweep;
 use crate::stagnation::{action_hash, canonicalize_action};

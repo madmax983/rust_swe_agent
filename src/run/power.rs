@@ -15,8 +15,8 @@
 //!
 //! Run completely offline (zero network/model calls) in under 100ms.
 
+use crate::Error;
 use crate::cli::args::PowerCmd;
-use crate::error::Error;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
