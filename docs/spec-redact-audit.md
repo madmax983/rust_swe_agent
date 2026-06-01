@@ -47,6 +47,7 @@ The scanner walks the tree and inspects these file kinds:
 
 - `*.traj.json` (trajectories) and the legacy nested `trajectory.json`
 - `evaluation.json`, `results.json` (sweep summary)
+- `manifest.json`, `annotations.json` (bundle JSON `bench bundle` redaction-checks)
 - `all_preds.jsonl` and rerun variants `all_preds.run-<k>.jsonl`
 - `*.output.txt`
 - `*.patch` (submitted patches — first-class, frequently-shared artifacts)
@@ -96,13 +97,33 @@ would have masked is reported, covering classes the provider registry does not:
 | `sensitive_json_value` | a string value under a sensitive JSON key (`password`, `*_token`, `*key`, …) regardless of value shape, mirroring `Redactor::redact_json_value` | medium |
 | `configured_literal` / `configured_custom_pattern` | the operator's `secret_literals` / `custom_patterns` | high |
 
-The structured provider detectors (`pem`, `api_key`, `github_token`, …) are kept
-as the precise, named layer; the oracle only *adds* the classes the registry
-lacks (bearer / env-assignment / env-value / sensitive-JSON-key). Env-assignment
-and JSON-key findings are `medium` severity — they still drive the failing exit
-code (32) and the publish gate, but are distinguished from unambiguous
-provider-key leaks. Non-sensitive assignments (`PATH=…`, `HOME=…`) are not
-flagged, preserving the false-positive budget.
+The oracle reports **every** structured shape the runtime redactor masks
+(`bearer`, `pem`, `github_token`, `api_key`, env-assignment, env-value) plus the
+JSON sensitive-key walk, so a value below the registry's tighter length/charset
+(e.g. a 24-char `ghp_` body) is still caught. The high-confidence regex registry
+remains the precise, named layer; the deterministic overlap filter de-dupes when
+both fire on the same span. Env-assignment and JSON-key findings are `medium`
+severity — they still drive the failing exit code (32) and the publish gate, but
+are distinguished from unambiguous provider-key leaks. Non-sensitive assignments
+(`PATH=…`, `HOME=…`) are not flagged, preserving the false-positive budget.
+
+The oracle, configured literals/patterns, and the JSON-key walk are the
+write-time-parity guarantee and **always run** — `--detectors` and
+`--disable-entropy` scope only the high-confidence regex registry and the
+entropy heuristic, never the safety nets. (Selecting `--detectors github` still
+catches an AWS key via the oracle; it only narrows which *registry* detectors
+fire.)
+
+### Recorded sweep config
+
+When scanning a sweep directory, the auditor reads the resolved `[redaction]`
+config recorded in that sweep's `manifest.json` (the same `…/config/resolved`
+TOML that `bench bundle` consumes) and **unions** its `secret_literals` /
+`custom_patterns` with the CLI/default config. This means the documented
+`agent redact-audit runs/my-sweep` catches a custom short literal the sweep was
+run with even when invoked later with defaults. Recorded entries are added (never
+replace an explicit `--config`); redaction markers and uncompilable patterns are
+skipped; a missing or malformed manifest is ignored.
 
 ### Entropy heuristic
 

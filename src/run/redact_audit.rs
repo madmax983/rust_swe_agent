@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::artifact::ArtifactSchemaVersion;
-use crate::config::Config;
+use crate::config::{Config, RedactionCfg};
 use crate::error::{ConfigError, Error};
 use crate::exit_code::ExitCode;
 use crate::redaction::{Redactor, sensitive_json_key_kind};
@@ -433,11 +433,74 @@ impl ConfiguredMatchers {
     }
 }
 
+/// Resolved-config view used to recover a sweep's recorded `[redaction]` block.
+#[derive(Deserialize)]
+struct ResolvedRedactionConfig {
+    #[serde(default)]
+    redaction: Option<RedactionCfg>,
+}
+
+/// Merge the `[redaction]` config recorded in `<dir>/manifest.json` into `cfg`.
+///
+/// Completed sweeps record their resolved config (as a TOML string under
+/// `/manifest/config/resolved` or `/config/resolved`), and `bench bundle` merges
+/// that recorded config before its redaction checks. Mirroring that here means
+/// auditing a sweep with defaults still applies the literals/custom_patterns the
+/// sweep actually ran with. Recorded entries are *added* to the CLI config
+/// (union, not replace), so an explicit `--config` is never weakened. Redaction
+/// markers and uncompilable patterns are skipped. Best-effort: a missing or
+/// malformed manifest leaves `cfg` unchanged.
+fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
+    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else {
+        return;
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let mut existing_literals: BTreeSet<String> = cfg.secret_literals.iter().cloned().collect();
+    let mut existing_patterns: BTreeSet<String> = cfg.custom_patterns.iter().cloned().collect();
+    for pointer in ["/manifest/config/resolved", "/config/resolved"] {
+        let Some(resolved) = manifest
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<ResolvedRedactionConfig>(resolved) else {
+            continue;
+        };
+        let Some(recorded) = parsed.redaction else {
+            continue;
+        };
+        for lit in recorded.secret_literals {
+            if !lit.is_empty()
+                && !lit.starts_with("[REDACTED:")
+                && existing_literals.insert(lit.clone())
+            {
+                cfg.secret_literals.push(lit);
+            }
+        }
+        for pat in recorded.custom_patterns {
+            if !pat.starts_with("[REDACTED:")
+                && Regex::new(&pat).is_ok()
+                && existing_patterns.insert(pat.clone())
+            {
+                cfg.custom_patterns.push(pat);
+            }
+        }
+    }
+    // The recorded config implies redaction was active for the sweep; ensure the
+    // oracle runs even if the CLI invocation defaulted it off.
+    if !cfg.secret_literals.is_empty() || !cfg.custom_patterns.is_empty() {
+        cfg.enabled = true;
+    }
+}
+
 /// Run the audit over `opts.dir`, returning a deterministic report.
 ///
 /// Audits the operator's configured `secret_literals` and `custom_patterns`
-/// (from `cfg.root.redaction`) alongside the built-in detectors. No artifact is
-/// modified.
+/// (from `cfg.root.redaction`, unioned with the sweep's recorded manifest
+/// config) alongside the built-in detectors. No artifact is modified.
 pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, Error> {
     if !opts.dir.is_dir() {
         return Err(Error::Config(ConfigError::Usage(format!(
@@ -447,7 +510,13 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     }
 
     let detectors = select_detectors(opts)?;
-    let configured = ConfiguredMatchers::from_cfg(&cfg.root.redaction)?;
+    // Audit with the union of the CLI/default `[redaction]` config and the
+    // resolved config recorded in the sweep's own `manifest.json` (if present),
+    // so a sweep run with custom literals/patterns is still caught when the
+    // documented `redact-audit runs/my-sweep` is later run with defaults.
+    let mut redaction_cfg = cfg.root.redaction.clone();
+    merge_recorded_sweep_redaction(&opts.dir, &mut redaction_cfg);
+    let configured = ConfiguredMatchers::from_cfg(&redaction_cfg)?;
 
     let baseline = match &opts.baseline {
         Some(path) => Some(load_baseline(path)?),
@@ -617,13 +686,16 @@ fn is_audited_file(path: &Path) -> bool {
             if name == "redact_audit.json" {
                 return false;
             }
-            // First-class sweep artifacts named exactly. `results.json` is the
-            // `sweep_results` summary (`bench bundle` redaction-checks it before
-            // archiving); `trajectory.json` is the legacy nested single-run
-            // layout still read across the repo.
+            // First-class sweep/bundle artifacts named exactly. `results.json`
+            // is the `sweep_results` summary; `trajectory.json` is the legacy
+            // nested single-run layout; `manifest.json` and `annotations.json`
+            // are bundle-only JSON that `bench bundle` redaction-checks before
+            // archiving — all read across the repo and worth scanning by name.
             name == "evaluation.json"
                 || name == "results.json"
                 || name == "trajectory.json"
+                || name == "manifest.json"
+                || name == "annotations.json"
                 || (name.starts_with("all_preds") && name.ends_with(".jsonl"))
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
@@ -648,10 +720,12 @@ fn read_text(path: &Path) -> Result<String, String> {
 
 /// Extract a `.tar.gz` bundle to memory and scan its audited members.
 ///
-/// Returns `(findings, members_scanned, lines_scanned, member_errors)`. A member
-/// whose body cannot be read is recorded in `member_errors` (it surfaces as a
-/// scan error) rather than silently skipped. The outer `Err` is reserved for a
-/// bundle that cannot be opened or whose index is corrupt.
+/// Returns `(findings, members_scanned, lines_scanned, member_errors)`. Both a
+/// member whose body cannot be read *and* a corrupt tar entry encountered
+/// mid-stream are recorded in `member_errors`; either way the findings already
+/// collected from earlier members are preserved (findings-over-scan-errors).
+/// The outer `Err` is reserved for a bundle that cannot even be opened or whose
+/// index is unreadable before any member is seen.
 type BundleScan = (Vec<Finding>, usize, usize, Vec<String>);
 
 fn scan_bundle(
@@ -672,8 +746,15 @@ fn scan_bundle(
     let mut scanned = 0usize;
     let mut lines = 0usize;
     for entry in entries {
-        let mut entry =
-            entry.map_err(|e| format!("{}: corrupt bundle entry: {e}", path.display()))?;
+        // A corrupt entry mid-stream ends iteration, but keep what we already
+        // found in earlier members rather than discarding the whole bundle.
+        let mut entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                member_errors.push(format!("{}: corrupt bundle entry: {e}", path.display()));
+                break;
+            }
+        };
         let inner = entry
             .path()
             .map(|p| p.to_string_lossy().into_owned())
@@ -778,14 +859,20 @@ fn collect_configured_matches(
 
 /// Map a runtime redactor source label to `(detector_id, match_class, severity)`.
 ///
-/// `None` for sources already covered precisely by a built-in detector
-/// (`literal`/`custom_pattern[N]` are handled by [`collect_configured_matches`];
-/// `structured:pem`/`api_key`/`github_token` are covered by the regex
-/// detectors), so the oracle only *adds* the classes the registry lacks.
+/// `None` only for sources already reported verbatim elsewhere
+/// (`literal`/`custom_pattern[N]` are handled by [`collect_configured_matches`]).
+/// Every *structured* shape the runtime redactor masks is surfaced here so the
+/// audit never misses a value that would have been redacted at write time, even
+/// when the high-confidence registry's tighter length/charset misses it (the
+/// deterministic overlap filter de-dupes when both fire on the same span).
 fn oracle_source_kind(source: &str) -> Option<(&'static str, &'static str, Severity)> {
     match source {
         // Bearer tokens have no provider prefix and are missed by the registry.
         "structured:bearer" => Some(("redactor_bearer", "bearer_token", Severity::High)),
+        // PEM blocks and provider API keys: high-confidence even via the oracle.
+        "structured:pem" => Some(("redactor_pem", "pem_private_key", Severity::High)),
+        "structured:github_token" => Some(("redactor_github", "github_pat", Severity::High)),
+        "structured:api_key" => Some(("redactor_api_key", "api_key", Severity::High)),
         // Any sensitive `NAME=value` assignment the runtime redactor would mask.
         "structured:env_assignment" => Some((
             "redactor_env_assignment",
@@ -842,21 +929,29 @@ fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
         if raw.is_empty() {
             continue;
         }
-        // Re-locate each sensitive string value in the source bytes. We match on
-        // the serialized scalar so byte offsets/previews stay accurate; multiple
-        // occurrences are all reported.
+        // Re-locate the value by its *JSON-escaped, quoted* form so the search
+        // matches the source bytes exactly even when the value contains escapes
+        // (e.g. `"abc\ndef"`, embedded quotes/backslashes). serde always escapes
+        // the same way, so the quoted literal appears verbatim in both compact
+        // and pretty-printed JSON. The quotes also bound the match, avoiding
+        // spurious hits on a decoded value that happens to occur elsewhere.
+        let Ok(quoted) = serde_json::to_string(&raw) else {
+            continue;
+        };
+        // Span the value bytes only (inside the surrounding quotes).
+        let inner_len = quoted.len().saturating_sub(2);
         let mut from = 0usize;
-        while let Some(off) = text[from..].find(&raw) {
-            let start = from + off;
-            let end = start + raw.len();
+        while let Some(off) = text[from..].find(&quoted) {
+            let value_start = from + off + 1; // skip opening quote
+            let value_end = value_start + inner_len;
             candidates.push(RawMatch {
-                start,
-                end,
+                start: value_start,
+                end: value_end,
                 detector_id: "json_sensitive_key",
                 match_class: "sensitive_json_value",
                 severity: Severity::Medium,
             });
-            from = end;
+            from = from + off + quoted.len();
         }
     }
 }
@@ -1438,7 +1533,13 @@ mod tests {
     }
 
     #[test]
-    fn detector_selection_and_entropy_toggle() {
+    fn detector_selection_scopes_only_the_registry() {
+        // `--detectors` / `--disable-entropy` tune the high-confidence regex
+        // registry + entropy heuristic only. The runtime-redactor oracle is the
+        // write-time-parity guarantee and ALWAYS runs, so an AWS key is still
+        // caught (as `api_key`, via the oracle) even though only the `github`
+        // registry detector was selected. The reported `detectors` list still
+        // reflects the selected registry subset.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.output.txt", "AKIAIOSFODNN7EXAMPLE");
         let report = run_redact_audit(
@@ -1451,9 +1552,50 @@ mod tests {
             },
         )
         .unwrap();
-        // AWS key present but only the github detector selected → no findings.
-        assert!(report.findings.is_empty());
         assert_eq!(report.detectors, vec!["github".to_owned()]);
+        // The oracle still flags the AWS key — the safety net is not gated.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.detector_id == "redactor_api_key"),
+            "oracle should still catch the AWS key: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn registry_detector_selection_still_narrows_the_named_layer() {
+        // With the oracle disabled (redaction off), `--detectors` narrows the
+        // registry as before: only the selected provider detector fires.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.output.txt",
+            "aws=AKIAIOSFODNN7EXAMPLE gh=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false; // disable the oracle
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: Some(vec!["github".to_owned()]),
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        let classes: BTreeSet<&str> = report
+            .findings
+            .iter()
+            .map(|f| f.match_class.as_str())
+            .collect();
+        assert!(classes.contains("github_pat"), "github missed: {classes:?}");
+        assert!(
+            !classes.contains("aws_access_key"),
+            "aws should be excluded when only github selected + oracle off: {classes:?}"
+        );
     }
 
     #[test]
@@ -1845,5 +1987,159 @@ mod tests {
             "ambient env value missed: {:?}",
             report.findings
         );
+    }
+
+    // ── PR #557 fourth-round review ───────────────────────────────────────
+
+    #[test]
+    fn oracle_catches_short_github_token() {
+        // `ghp_` + 24-char body: below the registry's 36+ pattern but masked by
+        // the runtime redactor (20+), so the oracle must still flag it.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "tok=ghp_short012345678901234567\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "short github token missed: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn json_sensitive_value_with_escapes_is_located() {
+        // A value containing escapes (`\n`, `\"`) must be found by its escaped
+        // source form and never leak its decoded bytes.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.traj.json", r#"{"password":"abc\ndef\"ghi"}"#);
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "escaped json value missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        // Neither the escaped source nor the decoded value may appear.
+        assert!(!json.contains(r"abc\ndef"), "escaped value leaked");
+        assert!(!json.contains("def\"ghi"), "decoded value leaked");
+    }
+
+    #[test]
+    fn audits_bundle_manifest_and_annotations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            r#"{"model":{"name":"ghp_0123456789abcdefghijklmnopqrstuvwxyz"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("annotations.json"),
+            r#"{"note":"token AKIAIOSFODNN7EXAMPLE in run"}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        let files: BTreeSet<&str> = report.findings.iter().map(|f| f.file.as_str()).collect();
+        assert!(
+            files.contains("manifest.json"),
+            "manifest not audited: {files:?}"
+        );
+        assert!(
+            files.contains("annotations.json"),
+            "annotations not audited: {files:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_bundle_member_preserves_earlier_findings() {
+        // A readable member carrying a secret, followed by a member whose body
+        // is shorter than its declared size (read_to_end fails). The earlier
+        // finding must survive and the bad member must be a recorded scan error.
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle.tar.gz");
+        {
+            let f = std::fs::File::create(&bundle).unwrap();
+            let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+
+            // Member 1: valid, contains a secret.
+            let body = b"tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz\n";
+            let mut h1 = tar::Header::new_gnu();
+            h1.set_path("a.output.txt").unwrap();
+            h1.set_size(body.len() as u64);
+            h1.set_mode(0o644);
+            h1.set_cksum();
+            enc.write_all(h1.as_bytes()).unwrap();
+            enc.write_all(body).unwrap();
+            // pad member 1 to a 512-byte block
+            let pad = (512 - body.len() % 512) % 512;
+            enc.write_all(&vec![0u8; pad]).unwrap();
+
+            // Member 2: header claims 512 bytes but body is absent → read fails.
+            let mut h2 = tar::Header::new_gnu();
+            h2.set_path("b.output.txt").unwrap();
+            h2.set_size(512);
+            h2.set_mode(0o644);
+            h2.set_cksum();
+            enc.write_all(h2.as_bytes()).unwrap();
+            enc.finish().unwrap();
+        }
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "earlier-member finding dropped: {:?}",
+            report.findings
+        );
+        assert!(
+            !report.scan_errors.is_empty(),
+            "corrupt member not recorded as scan error"
+        );
+        // Findings present → exit code reflects findings, not just scan error.
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn loads_recorded_redaction_config_from_manifest() {
+        // A sweep recorded a custom short literal in its manifest's resolved
+        // config. Auditing with DEFAULTS (no --config) must still catch a value
+        // that has no provider/entropy shape, because the recorded config is
+        // merged in.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = "[redaction]\nenabled = true\nsecret_literals = [\"sw33t\"]\n";
+        let manifest = serde_json::json!({
+            "config": { "resolved": resolved }
+        });
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        write(dir.path(), "log.output.txt", "the password is sw33t today");
+
+        // Default config has no such literal.
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "configured_literal"),
+            "recorded-config literal not applied: {:?}",
+            report.findings
+        );
+        // And the literal value itself is masked in the report.
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("sw33t"), "recorded literal leaked");
     }
 }
