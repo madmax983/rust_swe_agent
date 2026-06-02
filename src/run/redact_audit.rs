@@ -960,88 +960,253 @@ fn is_redaction_marker(value: &str) -> bool {
     value.contains("[REDACTED:")
 }
 
-/// Gather sensitive string values from `text`, treating it as whole-file JSON
-/// when possible and otherwise as JSONL (one record per line).
-///
-/// JSONL artifacts (`all_preds*.jsonl`) fail a whole-file parse, so we fall back
-/// to per-line parsing — otherwise a sensitive key in a multi-record file would
-/// be skipped entirely. Blank/non-JSON lines are ignored.
-fn gather_json_hints(text: &str) -> Vec<String> {
-    let mut hints: Vec<String> = Vec::new();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-        json_sensitive_string_values(&value, false, &mut hints);
-        return hints;
-    }
-    for line in text.lines() {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-            json_sensitive_string_values(&value, false, &mut hints);
-        }
-    }
-    hints
-}
-
 /// Walk JSON artifacts and flag values under sensitive keys (e.g. `password`,
 /// `api_key`, `*_token`) regardless of value shape, mirroring the runtime
 /// [`Redactor::redact_json_value`](crate::redaction::Redactor) structural pass.
 /// Handles both whole-file JSON and JSONL; silent on non-JSON text.
+///
+/// Values are located by their *verbatim source bytes* via a lightweight
+/// source-span scanner rather than via serde decode + re-serialization.
+/// The earlier re-serialization approach decoded the value through serde and
+/// then searched for the canonical re-encoded form, causing it to miss inputs
+/// that used non-canonical escape sequences such as `hunter2` (unicode
+/// escape for `h`) or `abc\/def` (escaped forward slash): serde would
+/// round-trip both to their canonical forms (`hunter2`, `abc/def`), making
+/// the source bytes unfindable with a simple `str::find`.
 fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
-    for raw in gather_json_hints(text) {
-        if raw.is_empty() || is_redaction_marker(&raw) {
-            // Empty, or an already-redacted value under a sensitive key — not a
-            // fresh leak, so it must not fail the publish gate.
+    let src = text.as_bytes();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+
+    // Try whole-file JSON first.
+    let mut pos = 0usize;
+    json_skip_ws(src, &mut pos);
+    if pos < src.len() {
+        json_scan_value(src, &mut pos, false, &mut spans, 0);
+    }
+    json_skip_ws(src, &mut pos);
+
+    if pos < src.len() {
+        // Whole-file parse did not consume the full text — treat as JSONL.
+        spans.clear();
+        let mut line_byte_offset = 0usize;
+        for line in text.split('\n') {
+            let trim_prefix = line.len() - line.trim_start().len();
+            let trimmed = &line[trim_prefix..];
+            if !trimmed.is_empty() {
+                let line_src = trimmed.as_bytes();
+                let mut lpos = 0usize;
+                json_scan_value(
+                    line_src,
+                    &mut lpos,
+                    false,
+                    &mut spans,
+                    line_byte_offset + trim_prefix,
+                );
+            }
+            line_byte_offset += line.len() + 1; // +1 for the '\n' separator
+        }
+    }
+
+    for (start, end) in spans {
+        if start >= end {
+            continue; // empty string value
+        }
+        // Markers are plain ASCII and are never escape-encoded by the runtime
+        // redactor, so a raw-byte scan is safe here.
+        if src[start..end].windows(10).any(|w| w == b"[REDACTED:") {
             continue;
         }
-        // Re-locate the value by its *JSON-escaped, quoted* form so the search
-        // matches the source bytes exactly even when the value contains escapes
-        // (e.g. `"abc\ndef"`, embedded quotes/backslashes). serde always escapes
-        // the same way, so the quoted literal appears verbatim in both compact
-        // and pretty-printed JSON. The quotes also bound the match, avoiding
-        // spurious hits on a decoded value that happens to occur elsewhere.
-        let Ok(quoted) = serde_json::to_string(&raw) else {
-            continue;
-        };
-        // Span the value bytes only (inside the surrounding quotes).
-        let inner_len = quoted.len().saturating_sub(2);
-        let mut from = 0usize;
-        while let Some(off) = text[from..].find(&quoted) {
-            let value_start = from + off + 1; // skip opening quote
-            let value_end = value_start + inner_len;
-            candidates.push(RawMatch {
-                start: value_start,
-                end: value_end,
-                detector_id: "json_sensitive_key",
-                match_class: "sensitive_json_value",
-                severity: Severity::Medium,
-            });
-            from = from + off + quoted.len();
-        }
+        candidates.push(RawMatch {
+            start,
+            end,
+            detector_id: "json_sensitive_key",
+            match_class: "sensitive_json_value",
+            severity: Severity::Medium,
+        });
     }
 }
 
-/// Collect string values that sit under a sensitive key anywhere in `value`.
-fn json_sensitive_string_values(
-    value: &serde_json::Value,
+/// Advance `*pos` past ASCII whitespace in `src`.
+fn json_skip_ws(src: &[u8], pos: &mut usize) {
+    while *pos < src.len() && matches!(src[*pos], b' ' | b'\t' | b'\n' | b'\r') {
+        *pos += 1;
+    }
+}
+
+/// Scan a JSON string at `src[*pos]` (must be `"`).  Returns
+/// `(content_start, content_end)` — positions *inside* the surrounding quotes
+/// in `src`-relative coordinates — and advances `*pos` past the closing quote.
+/// Returns `None` if `*pos` is not at `"` or the string is unterminated.
+fn json_scan_string(src: &[u8], pos: &mut usize) -> Option<(usize, usize)> {
+    if *pos >= src.len() || src[*pos] != b'"' {
+        return None;
+    }
+    *pos += 1;
+    let content_start = *pos;
+    while *pos < src.len() {
+        match src[*pos] {
+            b'"' => {
+                let content_end = *pos;
+                *pos += 1;
+                return Some((content_start, content_end));
+            }
+            b'\\' => {
+                *pos += 1;
+                if *pos < src.len() {
+                    if src[*pos] == b'u' {
+                        *pos = (*pos + 5).min(src.len()); // \uXXXX: skip u + 4 hex digits
+                    } else {
+                        *pos += 1; // single-char escape
+                    }
+                }
+            }
+            _ => *pos += 1,
+        }
+    }
+    None // unterminated string
+}
+
+/// Decode JSON string escape sequences in `raw` (the bytes between the quotes).
+/// Used only for key-name lookup — values are retained as verbatim source spans.
+fn json_decode_key(raw: &[u8]) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+    while i < raw.len() {
+        if raw[i] == b'\\' && i + 1 < raw.len() {
+            i += 1;
+            match raw[i] {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'b' => out.push('\x08'),
+                b'f' => out.push('\x0c'),
+                b'u' if i + 4 < raw.len() => {
+                    let hex = &raw[i + 1..i + 5];
+                    if let Ok(s) = std::str::from_utf8(hex) {
+                        if let Ok(n) = u16::from_str_radix(s, 16) {
+                            if let Some(c) = char::from_u32(u32::from(n)) {
+                                out.push(c);
+                            }
+                        }
+                    }
+                    i += 4; // outer loop adds 1 more → 5 total (u + 4 hex)
+                }
+                _ => out.push(raw[i] as char),
+            }
+        } else {
+            out.push(raw[i] as char);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Scan any JSON value at `src[*pos]`.  Records content spans (in
+/// original-text coordinates via `base_offset`) for string values that are
+/// under a sensitive key.
+fn json_scan_value(
+    src: &[u8],
+    pos: &mut usize,
     under_sensitive_key: bool,
-    out: &mut Vec<String>,
+    spans: &mut Vec<(usize, usize)>,
+    base_offset: usize,
 ) {
-    match value {
-        serde_json::Value::String(s) => {
-            if under_sensitive_key {
-                out.push(s.clone());
+    json_skip_ws(src, pos);
+    if *pos >= src.len() {
+        return;
+    }
+    match src[*pos] {
+        b'"' => {
+            if let Some((cs, ce)) = json_scan_string(src, pos) {
+                if under_sensitive_key {
+                    spans.push((base_offset + cs, base_offset + ce));
+                }
             }
         }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                json_sensitive_string_values(item, under_sensitive_key, out);
-            }
+        b'{' => json_scan_object(src, pos, spans, base_offset),
+        b'[' => json_scan_array(src, pos, spans, base_offset, under_sensitive_key),
+        _ => json_skip_primitive(src, pos),
+    }
+}
+
+/// Scan a JSON object `{ "key": value, … }`.
+fn json_scan_object(
+    src: &[u8],
+    pos: &mut usize,
+    spans: &mut Vec<(usize, usize)>,
+    base_offset: usize,
+) {
+    if *pos >= src.len() || src[*pos] != b'{' {
+        return;
+    }
+    *pos += 1;
+    loop {
+        json_skip_ws(src, pos);
+        if *pos >= src.len() {
+            break;
         }
-        serde_json::Value::Object(map) => {
-            for (key, child) in map {
-                let sensitive = under_sensitive_key || sensitive_json_key_kind(key).is_some();
-                json_sensitive_string_values(child, sensitive, out);
+        match src[*pos] {
+            b'}' => {
+                *pos += 1;
+                break;
             }
+            b',' => {
+                *pos += 1;
+                continue;
+            }
+            _ => {}
         }
-        _ => {}
+        let key_sensitive = json_scan_string(src, pos)
+            .is_some_and(|(ks, ke)| sensitive_json_key_kind(&json_decode_key(&src[ks..ke])).is_some());
+        json_skip_ws(src, pos);
+        if *pos < src.len() && src[*pos] == b':' {
+            *pos += 1;
+        }
+        json_scan_value(src, pos, key_sensitive, spans, base_offset);
+    }
+}
+
+/// Scan a JSON array `[ value, … ]`.
+fn json_scan_array(
+    src: &[u8],
+    pos: &mut usize,
+    spans: &mut Vec<(usize, usize)>,
+    base_offset: usize,
+    under_sensitive_key: bool,
+) {
+    if *pos >= src.len() || src[*pos] != b'[' {
+        return;
+    }
+    *pos += 1;
+    loop {
+        json_skip_ws(src, pos);
+        if *pos >= src.len() {
+            break;
+        }
+        match src[*pos] {
+            b']' => {
+                *pos += 1;
+                break;
+            }
+            b',' => {
+                *pos += 1;
+                continue;
+            }
+            _ => {}
+        }
+        json_scan_value(src, pos, under_sensitive_key, spans, base_offset);
+    }
+}
+
+/// Skip a JSON primitive (number, `true`, `false`, `null`).
+fn json_skip_primitive(src: &[u8], pos: &mut usize) {
+    while *pos < src.len()
+        && !matches!(src[*pos], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r')
+    {
+        *pos += 1;
     }
 }
 
@@ -2094,6 +2259,60 @@ mod tests {
         // Neither the escaped source nor the decoded value may appear.
         assert!(!json.contains(r"abc\ndef"), "escaped value leaked");
         assert!(!json.contains("def\"ghi"), "decoded value leaked");
+    }
+
+    #[test]
+    fn json_non_canonical_encodings_are_located() {
+        // `h` is the JSON unicode escape for ASCII `h`; the old
+        // re-serialization approach decoded it to `hunter2` and then searched
+        // for the canonical `"hunter2"`, which is absent from the source bytes
+        // `"hunter2"`.  Similarly `\/` is a valid but non-canonical
+        // escaped slash that round-trips to an unescaped `/`, so
+        // `find("abc/def")` would fail on source bytes `abc\/def`.
+        let dir = tempfile::tempdir().unwrap();
+        // JSON source uses h (JSON unicode escape for 'h'); serde decodes
+        // this to 'h' and re-serializes canonically, so the old approach would
+        // search for `"hunter2"` which is absent from the source bytes
+        // `"hunter2"`.
+        write(
+            dir.path(),
+            "a.traj.json",
+            "{\"password\":\"\\u0068unter2\"}",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "unicode-escaped value missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("hunter2"), "decoded unicode value leaked");
+        assert!(!json.contains("unter2"), "partial unicode value leaked");
+
+        // JSON source uses \/ (escaped forward slash).
+        let dir2 = tempfile::tempdir().unwrap();
+        write(
+            dir2.path(),
+            "b.traj.json",
+            r#"{"api_key":"abc\/def\/secret"}"#,
+        );
+        let report2 = audit(dir2.path());
+        assert!(
+            report2
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "escaped-slash value missed: {:?}",
+            report2.findings
+        );
+        let json2 = format_json(&report2).unwrap();
+        assert!(
+            !json2.contains("abc/def/secret"),
+            "decoded slash value leaked"
+        );
     }
 
     #[test]

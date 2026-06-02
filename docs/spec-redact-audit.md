@@ -125,17 +125,19 @@ recover with the CLI/default config. Specifically:
   **oracle is enabled** for the audit even when the CLI invocation defaulted it
   off — so bearer tokens, sensitive env-assignments, sensitive JSON keys, etc.
   from the sweep's own policy are still caught.
-- Any **non-redacted** recorded `custom_patterns` are added (regex still
-  compiles, not a `[REDACTED:…]` marker).
+- Any **non-redacted** recorded `secret_literals` / `custom_patterns` are added
+  (when present verbatim, e.g. a hand-written or unredacted manifest).
 
-> **Limitation — recorded literals are not recoverable.** The sweep writer
-> redacts its own provenance before serializing `config.resolved` (see
-> `build_manifest` in `src/run/swebench.rs`), so recorded `secret_literals` are
-> stored as `[REDACTED:…]` markers and cannot be reconstructed by the auditor.
-> To audit a sweep against a **custom literal** it was run with, pass the same
-> config: `agent redact-audit runs/my-sweep --config my-redaction.toml`. The
-> oracle and provider/structural detectors still run with defaults; only the
-> operator's *opaque literal values* require the original config.
+> **Limitation — recorded literals and patterns are not recoverable from a
+> standard sweep.** The sweep writer redacts its own provenance before
+> serializing `config.resolved` (see `build_manifest` in `src/run/swebench.rs`),
+> and `sensitive_key_kind` classifies both `secret_literals` *and*
+> `custom_patterns` as sensitive — so both are stored as `[REDACTED:…]` markers
+> and cannot be reconstructed by the auditor. To audit a sweep against a custom
+> **literal or pattern** it was run with, pass the same config:
+> `agent redact-audit runs/my-sweep --config my-redaction.toml`. The oracle and
+> provider/structural detectors still run with defaults; only the operator's
+> *opaque configured values* require the original config.
 
 Recorded entries are added (never replace an explicit `--config`); a missing or
 malformed manifest/results file is ignored.

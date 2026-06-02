@@ -293,14 +293,27 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
         }
     }
     let json = format_json(&report).map_err(Error::Json)?;
-    std::fs::write(&out_path, &json)?;
+    let exit_code = report.exit_code();
+
+    // Persist the report. If writing fails *after* a scan that already found
+    // leaks or scan errors, surface the audit's own exit code (32/33) rather
+    // than letting the I/O error collapse to a generic internal_error (1) — CI
+    // gates route on the documented outcome class, and the result is known.
+    if let Err(e) = std::fs::write(&out_path, &json) {
+        if exit_code == ExitCode::Success {
+            return Err(Error::Io(e));
+        }
+        eprintln!(
+            "warning: redact-audit could not write report to {}: {e}",
+            out_path.display()
+        );
+    }
 
     match format {
         AuditFormat::Json => println!("{json}"),
         AuditFormat::Human => print!("{}", format_human(&report)),
     }
 
-    let exit_code = report.exit_code();
     if exit_code != ExitCode::Success {
         exit_with_outcome(exit_code, exit_code.outcome_class());
     }
