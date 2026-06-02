@@ -645,7 +645,11 @@ fn active_detector_ids(detectors: &[Detector]) -> Vec<String> {
 /// incomplete and a "clean" verdict cannot be trusted (drives exit code 33).
 fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
     let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
-    collect_files_inner(base, dir, out, errors, &mut visited);
+    // Canonical root used to keep the walk inside the scanned sweep: a directory
+    // symlink pointing outside `base` must not be followed (see below). Fall back
+    // to the literal path when canonicalization fails so a normal walk proceeds.
+    let canonical_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    collect_files_inner(base, &canonical_base, dir, out, errors, &mut visited);
 }
 
 /// Inner walk that guards against directory symlink loops by tracking the
@@ -654,6 +658,7 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>, errors: &mut V
 /// (`path.is_dir()` follows symlinks); a revisit is skipped silently.
 fn collect_files_inner(
     base: &Path,
+    canonical_base: &Path,
     dir: &Path,
     out: &mut Vec<PathBuf>,
     errors: &mut Vec<String>,
@@ -663,6 +668,14 @@ fn collect_files_inner(
     // path when canonicalization fails (e.g. permissions) so the read_dir below
     // still produces a proper scan error.
     let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    // Keep the walk inside the sweep: a directory symlink whose canonical target
+    // escapes the scanned root would otherwise pull in unrelated files (a home
+    // or workspace tree), producing false publish-gate failures. Skip it
+    // silently, consistent with the loop guard — out-of-tree files are not part
+    // of the sweep, so not following the link does not make the scan incomplete.
+    if key != *canonical_base && !key.starts_with(canonical_base) {
+        return;
+    }
     if !visited.insert(key) {
         return;
     }
@@ -692,7 +705,7 @@ fn collect_files_inner(
         };
         let path = entry.path();
         if path.is_dir() {
-            collect_files_inner(base, &path, out, errors, visited);
+            collect_files_inner(base, canonical_base, &path, out, errors, visited);
         } else if is_audited_file(&path) {
             out.push(path);
         }
@@ -785,10 +798,16 @@ fn scan_bundle(
                 break;
             }
         };
-        let inner = entry
-            .path()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let inner = match entry.path() {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(e) => {
+                // A member whose path metadata cannot be decoded cannot be
+                // classified by `is_audited_file`. Record it instead of silently
+                // dropping it, so a malformed bundle cannot report clean.
+                member_errors.push(format!("{rel}: cannot read bundle member path: {e}"));
+                continue;
+            }
+        };
         if !is_audited_file(Path::new(&inner)) || inner.ends_with(".tar.gz") {
             continue;
         }
@@ -935,9 +954,12 @@ fn collect_redactor_oracle_matches(
         }
         // An artifact that was already redacted at write time contains
         // `[REDACTED:…]` markers; the redactor re-matches the marker text (e.g.
-        // a `DATABASE_PASSWORD=[REDACTED:…]` assignment). Reporting it would fail
-        // the publish gate on a correctly-redacted artifact, so skip markers.
-        if is_redaction_marker(&text[m.start..m.end]) {
+        // a `DATABASE_PASSWORD=[REDACTED:…]` assignment). Reporting a *fully*
+        // redacted value would fail the publish gate on correctly-redacted
+        // output, so skip it — but a value that is only partially redacted
+        // (marker + raw residue like `[REDACTED:…]hunter2`) still leaks and must
+        // be flagged.
+        if is_fully_redacted(&text[m.start..m.end]) {
             continue;
         }
         if let Some((detector_id, match_class, severity)) = oracle_source_kind(&m.source) {
@@ -952,12 +974,44 @@ fn collect_redactor_oracle_matches(
     }
 }
 
-/// `true` when `value` is (or contains) an existing runtime redaction marker.
+/// `true` when `value` is *fully* covered by existing runtime redaction markers
+/// — i.e. it carries at least one `[REDACTED:…]` marker and, once every marker
+/// is stripped, no raw secret-ish residue remains.
 ///
 /// Already-redacted artifacts carry `[REDACTED:KIND:SIZE:HASH]` markers; treating
 /// them as fresh leaks would fail the publish gate on correctly-redacted output.
-fn is_redaction_marker(value: &str) -> bool {
-    value.contains("[REDACTED:")
+/// But a *partially* redacted value such as
+/// `DATABASE_PASSWORD=[REDACTED:…]hunter2` still contains raw secret material
+/// (`hunter2`): the runtime redactor would re-mask the whole assignment value, so
+/// the audit must still flag it rather than skip on the mere presence of a
+/// marker. Residue is "secret-ish" if it contains any alphanumeric byte;
+/// structural leftovers (quotes, whitespace) do not count.
+fn is_fully_redacted(value: &str) -> bool {
+    if !value.contains("[REDACTED:") {
+        return false;
+    }
+    !strip_redaction_markers(value)
+        .chars()
+        .any(char::is_alphanumeric)
+}
+
+/// Remove every `[REDACTED:…]` marker substring from `value`, returning the
+/// remaining (non-marker) text. An unterminated `[REDACTED:` consumes the rest.
+fn strip_redaction_markers(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(idx) = rest.find("[REDACTED:") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx..];
+        if let Some(close) = after.find(']') {
+            rest = &after[close + 1..];
+        } else {
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Walk JSON artifacts and flag values under sensitive keys (e.g. `password`,
@@ -1011,9 +1065,9 @@ fn collect_json_sensitive_keys(text: &str, candidates: &mut Vec<RawMatch>) {
         if start >= end {
             continue; // empty string value
         }
-        // Markers are plain ASCII and are never escape-encoded by the runtime
-        // redactor, so a raw-byte scan is safe here.
-        if src[start..end].windows(10).any(|w| w == b"[REDACTED:") {
+        // Skip values fully covered by existing markers, but still flag a value
+        // that mixes a marker with raw residue (e.g. `[REDACTED:…]hunter2`).
+        if is_fully_redacted(&String::from_utf8_lossy(&src[start..end])) {
             continue;
         }
         candidates.push(RawMatch {
@@ -1126,16 +1180,23 @@ fn json_scan_value(
                 }
             }
         }
-        b'{' => json_scan_object(src, pos, spans, base_offset),
+        b'{' => json_scan_object(src, pos, under_sensitive_key, spans, base_offset),
         b'[' => json_scan_array(src, pos, spans, base_offset, under_sensitive_key),
         _ => json_skip_primitive(src, pos),
     }
 }
 
 /// Scan a JSON object `{ "key": value, … }`.
+///
+/// `under_sensitive_key` carries the enclosing context: when the object is
+/// itself the value of a sensitive key, *every* nested value is sensitive,
+/// mirroring the runtime `Redactor::redact_sensitive_value`, which recurses
+/// through all values under a sensitive key regardless of inner field names
+/// (e.g. `{"credentials":{"value":"…"}}`).
 fn json_scan_object(
     src: &[u8],
     pos: &mut usize,
+    under_sensitive_key: bool,
     spans: &mut Vec<(usize, usize)>,
     base_offset: usize,
 ) {
@@ -1159,9 +1220,13 @@ fn json_scan_object(
             }
             _ => {}
         }
-        let key_sensitive = json_scan_string(src, pos).is_some_and(|(ks, ke)| {
+        // Always consume the key string (advancing `pos`), then OR its own
+        // sensitivity with the inherited context — short-circuiting on
+        // `under_sensitive_key` would leave `pos` parked on the key.
+        let key_is_sensitive = json_scan_string(src, pos).is_some_and(|(ks, ke)| {
             sensitive_json_key_kind(&json_decode_key(&src[ks..ke])).is_some()
         });
+        let key_sensitive = under_sensitive_key || key_is_sensitive;
         json_skip_ws(src, pos);
         if *pos < src.len() && src[*pos] == b':' {
             *pos += 1;
@@ -2573,6 +2638,102 @@ mod tests {
             "real json secret missed: {:?}",
             report.findings
         );
+    }
+
+    // ── PR #557 eighth-round review ───────────────────────────────────────
+
+    #[test]
+    fn partially_redacted_env_assignment_is_still_flagged() {
+        // A marker plus raw residue (`hunter2`) still leaks; the mere presence
+        // of a marker must not let it pass the gate.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "DATABASE_PASSWORD=[REDACTED:env_assignment:short:abc123def456]hunter2\n",
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_env_assignment"),
+            "partially-redacted env value missed: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("hunter2"), "raw residue leaked");
+    }
+
+    #[test]
+    fn partially_redacted_json_value_is_still_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.traj.json",
+            r#"{"api_key":"[REDACTED:env_key:medium:deadbeef0000]leftoversecret"}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "partially-redacted json value missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("leftoversecret"), "raw residue leaked");
+    }
+
+    #[test]
+    fn sensitive_json_object_value_propagates_to_nested_fields() {
+        // A sensitive key whose value is an object: every nested value must be
+        // treated as sensitive, even when the inner field name is benign —
+        // mirroring the runtime redactor's recursion.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.traj.json",
+            r#"{"credentials":{"value":"short-ci-secret","note":"x"}}"#,
+        );
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "sensitive_json_value"),
+            "nested sensitive value missed: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(!json.contains("short-ci-secret"), "nested value leaked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_symlink_escaping_sweep_is_not_followed() {
+        // A directory symlink pointing outside the scanned sweep must not be
+        // descended into — otherwise unrelated external files get scanned.
+        let outside = tempfile::tempdir().unwrap();
+        write(
+            outside.path(),
+            "leak.output.txt",
+            "tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz\n",
+        );
+        let sweep = tempfile::tempdir().unwrap();
+        write(sweep.path(), "clean.output.txt", "all 42 tests passed\n");
+        // Best-effort symlink; skip on sandboxes that disallow it.
+        if std::os::unix::fs::symlink(outside.path(), sweep.path().join("external")).is_ok() {
+            let report = audit(sweep.path());
+            assert!(
+                report.findings.is_empty(),
+                "followed escaping symlink and scanned external files: {:?}",
+                report.findings
+            );
+            assert_eq!(report.exit_code(), ExitCode::Success);
+        }
     }
 
     #[test]
