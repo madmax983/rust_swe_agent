@@ -540,6 +540,11 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     // enables the oracle for its files even if the audit invocation defaulted it
     // off. Per-scope configs are cached by governing directory.
     let base_redaction = cfg.root.redaction.clone();
+    // Matchers built from the invocation's own config, used to mask secrets that
+    // appear in *path-shaped* report fields (the scanned root and scan-error
+    // strings) just like finding labels — see `mask_label`. The built-in
+    // provider detectors catch `ghp_…`-style tokens regardless of config.
+    let base_configured = ConfiguredMatchers::from_cfg(&base_redaction)?;
     let mut scopes = ScopeMatchers::new(base_redaction);
 
     let baseline = match &opts.baseline {
@@ -563,12 +568,22 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     finalize(&mut acc.findings);
     mark_new(&mut acc.findings, baseline.as_ref());
     acc.scan_errors.sort();
+    // A secret in a path can reach the report through a scan-error string
+    // (e.g. `ghp_….output.txt: cannot read file`) as well as a finding label;
+    // mask both so the report honors the no-raw-secrets contract everywhere.
+    for e in &mut acc.scan_errors {
+        *e = mask_label(e, &detectors, &base_configured);
+    }
 
     let summary = summarize(&acc.findings);
     Ok(AuditReport {
         artifact_kind: "redact_audit".to_owned(),
         schema_version: REDACT_AUDIT_SCHEMA_VERSION,
-        scanned_dir: opts.dir.display().to_string(),
+        scanned_dir: mask_label(
+            &opts.dir.display().to_string(),
+            &detectors,
+            &base_configured,
+        ),
         files_scanned: acc.files_scanned,
         lines_scanned: acc.lines_scanned,
         detectors: active_detector_ids(&detectors),
@@ -822,16 +837,21 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
             }
             // First-class sweep/bundle artifacts named exactly. `results.json`
             // is the `sweep_results` summary; `suite-results.json` is the
-            // shareable `agent suite` aggregate; `trajectory.json` is the legacy
-            // nested single-run layout; `manifest.json` and `annotations.json`
-            // are bundle-only JSON that `bench bundle` redaction-checks before
-            // archiving — all read across the repo and worth scanning by name.
+            // shareable `agent suite` aggregate; `tool-coverage.json` is the
+            // `bench tool-coverage` report (redaction-surfaced tool/server
+            // names); `trajectory.json` is the legacy nested single-run layout;
+            // `manifest.json`, `annotations.json` and the `BUNDLE.json`
+            // inventory (see `bundle::BUNDLE_MANIFEST_PATH`) are bundle JSON that
+            // `bench bundle` redaction-checks before archiving — all read across
+            // the repo and worth scanning by name.
             name == "evaluation.json"
                 || name == "results.json"
                 || name == "suite-results.json"
+                || name == "tool-coverage.json"
                 || name == "trajectory.json"
                 || name == "manifest.json"
                 || name == "annotations.json"
+                || name == "BUNDLE.json"
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
@@ -2502,6 +2522,85 @@ mod tests {
             !json.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
             "raw path token leaked into JSON report"
         );
+    }
+
+    #[test]
+    fn audits_tool_coverage_and_bundle_inventory_json() {
+        // `bench tool-coverage` writes a redaction-surfaced `tool-coverage.json`
+        // and `bench bundle` appends a `BUNDLE.json` inventory; both are
+        // first-class stored artifacts and must be scanned by name.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tool-coverage.json"),
+            r#"{"tools":[{"name":"x","cmd":"run AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("BUNDLE.json"),
+            r#"{"instance":"tok ghp_0123456789abcdefghijklmnopqrstuvwxyz"}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        let files: BTreeSet<&str> = report.findings.iter().map(|f| f.file.as_str()).collect();
+        assert!(
+            files.iter().any(|f| f.ends_with("tool-coverage.json")),
+            "tool-coverage.json not audited: {files:?}"
+        );
+        assert!(
+            files.iter().any(|f| f.ends_with("BUNDLE.json")),
+            "BUNDLE.json inventory not audited: {files:?}"
+        );
+    }
+
+    #[test]
+    fn masks_secret_in_scanned_dir() {
+        // The scanned root path is echoed in `scanned_dir` and the human
+        // summary; a token in the root directory name must be masked there too.
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent
+            .path()
+            .join("ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+        std::fs::create_dir_all(&root).unwrap();
+        write(&root, "x.output.txt", "nothing sensitive here\n");
+        let report = audit(&root);
+        assert!(
+            !report
+                .scanned_dir
+                .contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "raw token leaked through scanned_dir: {}",
+            report.scanned_dir
+        );
+        assert!(
+            !format_human(&report).contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "raw token leaked through human summary"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn masks_secret_in_scan_error() {
+        // A token in a path also reaches the report through scan-error strings
+        // (e.g. an unreadable artifact); those must be masked like finding
+        // labels. A broken symlink with a token-shaped, audited name yields a
+        // read error whose message embeds the path.
+        let dir = tempfile::tempdir().unwrap();
+        let linked = std::os::unix::fs::symlink(
+            dir.path().join("does-not-exist"),
+            dir.path()
+                .join("ghp_0123456789abcdefghijklmnopqrstuvwxyz.output.txt"),
+        )
+        .is_ok();
+        if !linked {
+            return; // sandbox without symlink support
+        }
+        let report = audit(dir.path());
+        assert!(!report.scan_errors.is_empty(), "expected a scan error");
+        for e in &report.scan_errors {
+            assert!(
+                !e.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+                "raw token leaked through scan error: {e}"
+            );
+        }
     }
 
     // ── PR #557 third-round review: runtime-redactor parity oracle ────────
