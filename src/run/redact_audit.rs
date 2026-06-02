@@ -397,13 +397,20 @@ struct ConfiguredMatchers {
 impl ConfiguredMatchers {
     /// Build from `[redaction]`. Returns a config error if a `custom_patterns`
     /// entry fails to compile (same validation the runtime redactor performs).
+    /// An empty matcher set (no configured literals/patterns, no oracle). Used as
+    /// the disabled-redaction case and as a fallback when masking a message whose
+    /// own config could not be built.
+    fn none() -> Self {
+        Self {
+            literals: Vec::new(),
+            patterns: Vec::new(),
+            redactor: None,
+        }
+    }
+
     fn from_cfg(cfg: &crate::config::RedactionCfg) -> Result<Self, Error> {
         if !cfg.enabled {
-            return Ok(Self {
-                literals: Vec::new(),
-                patterns: Vec::new(),
-                redactor: None,
-            });
+            return Ok(Self::none());
         }
         let mut seen = BTreeSet::new();
         let mut literals = Vec::new();
@@ -574,6 +581,14 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     files.sort();
 
     let mut acc = ScanAcc::default();
+    // Directory-walk errors have no governing scope at hand (the subtree could
+    // not be read), so scrub them with the invocation's base config. Per-file
+    // read errors and bundle member errors are masked at their scoped scan sites
+    // (see `scan_one` / `scan_bundle`), which can apply a child sweep's recorded
+    // oracle that the base config may not enable.
+    for e in &mut walk_errors {
+        *e = mask_label(e, &mask_detectors, &base_configured);
+    }
     acc.scan_errors.append(&mut walk_errors);
     for path in files {
         let gov = governing_sweep_dir(&path, &opts.dir);
@@ -591,13 +606,9 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
 
     finalize(&mut acc.findings);
     mark_new(&mut acc.findings, baseline.as_ref());
+    // All scan-error labels are already masked at their scoped sites (walk errors
+    // above, read/bundle errors in scan_one/scan_bundle); just order them.
     acc.scan_errors.sort();
-    // A secret in a path can reach the report through a scan-error string
-    // (e.g. `ghp_….output.txt: cannot read file`) as well as a finding label;
-    // mask both so the report honors the no-raw-secrets contract everywhere.
-    for e in &mut acc.scan_errors {
-        *e = mask_label(e, &mask_detectors, &base_configured);
-    }
 
     let summary = summarize(&acc.findings);
     Ok(AuditReport {
@@ -729,6 +740,8 @@ fn scan_one(
 ) {
     let rel = display_relative(base, path);
     if is_bundle(path) {
+        // `scan_bundle` masks its own error labels with the bundle's recorded
+        // config, so member/bundle errors arrive already scrubbed.
         match scan_bundle(path, &rel, detectors, mask_detectors, gov_cfg) {
             Ok((mut found, scanned, lines, mut member_errors)) => {
                 acc.findings.append(&mut found);
@@ -743,16 +756,36 @@ fn scan_one(
             Ok(text) => {
                 acc.files_scanned += 1;
                 acc.lines_scanned += line_count(&text);
+                // A standalone `bench mini` trajectory records its redaction
+                // policy inside the file rather than a sweep manifest; recover the
+                // recorded `enabled` flag so the oracle runs for this file even
+                // when the audit invocation (and governing scope) disabled it.
+                let recovered = if !gov_cfg.enabled
+                    && is_trajectory(path)
+                    && trajectory_recorded_enabled(&text)
+                {
+                    let mut merged = gov_cfg.clone();
+                    merged.enabled = true;
+                    ConfiguredMatchers::from_cfg(&merged).ok()
+                } else {
+                    None
+                };
+                let active = recovered.as_ref().unwrap_or(configured);
                 scan_text(
                     &text,
                     &rel,
                     detectors,
                     mask_detectors,
-                    configured,
+                    active,
                     &mut acc.findings,
                 );
             }
-            Err(msg) => acc.scan_errors.push(msg),
+            // Mask the read-error label with the scoped config so an oracle-only
+            // secret in the path (e.g. a short env assignment) cannot leak when a
+            // child sweep recorded redaction enabled but the invocation did not.
+            Err(msg) => acc
+                .scan_errors
+                .push(mask_label(&msg, mask_detectors, configured)),
         }
     }
 }
@@ -929,9 +962,10 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
             }
             // First-class sweep/bundle artifacts named exactly. `results.json`
             // is the `sweep_results` summary; `suite-results.json` is the
-            // shareable `agent suite` aggregate; `tool-coverage.json` and
-            // `test-progress.json` are the `bench tool-coverage` / `bench
-            // test-progress` reports (redaction-surfaced tool/test names);
+            // shareable `agent suite` aggregate; `tool-coverage.json`,
+            // `test-progress.json` and `scriptability_check.json` are the `bench
+            // tool-coverage` / `bench test-progress` / `bench scriptability-check`
+            // reports (redaction-surfaced tool/test/server names);
             // `trajectory.json` is the legacy nested single-run layout;
             // `manifest.json`, `annotations.json` and the `BUNDLE.json`
             // inventory (see `bundle::BUNDLE_MANIFEST_PATH`) are bundle JSON that
@@ -942,6 +976,7 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || name == "suite-results.json"
                 || name == "tool-coverage.json"
                 || name == "test-progress.json"
+                || name == "scriptability_check.json"
                 || name == "trajectory.json"
                 || name == "manifest.json"
                 || name == "annotations.json"
@@ -949,6 +984,31 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
+}
+
+/// `true` for trajectory artifacts that may carry an embedded `bench mini`
+/// provenance manifest (`info.manifest.config_redacted`).
+fn is_trajectory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.ends_with(".traj.json") || name == "trajectory.json")
+}
+
+/// `true` if a trajectory's embedded provenance recorded `redaction.enabled`.
+///
+/// A standalone `bench mini` run records its resolved redaction policy inside the
+/// trajectory (`info.manifest.config_redacted.redaction`), not a sweep-level
+/// `manifest.json` / `results.json`, so the per-directory config recovery never
+/// sees it. Recovering at least the recorded `enabled` flag lets the runtime
+/// redactor oracle run for that file even when the audit invocation disabled
+/// redaction, so an oracle-only leak (e.g. a short `Bearer …` value) is caught.
+fn trajectory_recorded_enabled(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.pointer("/info/manifest/config_redacted/redaction/enabled"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 /// `true` for gzip bundle archives. The issue names `bundle.tar.zst`, but the
@@ -992,18 +1052,32 @@ fn scan_bundle(
     let mut bundle_cfg = gov_cfg.clone();
     merge_recorded_bundle_redaction(path, &mut bundle_cfg);
     let configured = ConfiguredMatchers::from_cfg(&bundle_cfg).map_err(|e| {
-        format!(
-            "{}: invalid recorded bundle redaction config: {e}",
-            path.display()
+        // The config failed to build, so use a detectors-only mask for this label.
+        mask_label(
+            &format!(
+                "{}: invalid recorded bundle redaction config: {e}",
+                path.display()
+            ),
+            mask_detectors,
+            &ConfiguredMatchers::none(),
         )
     })?;
 
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("{}: cannot open bundle: {e}", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| {
+        mask_label(
+            &format!("{}: cannot open bundle: {e}", path.display()),
+            mask_detectors,
+            &configured,
+        )
+    })?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("{}: cannot read bundle entries: {e}", path.display()))?;
+    let entries = archive.entries().map_err(|e| {
+        mask_label(
+            &format!("{}: cannot read bundle entries: {e}", path.display()),
+            mask_detectors,
+            &configured,
+        )
+    })?;
 
     let mut findings = Vec::new();
     let mut member_errors = Vec::new();
@@ -1051,6 +1125,12 @@ fn scan_bundle(
             &configured,
             &mut findings,
         );
+    }
+    // Scrub member/bundle error labels with the bundle's own (recovered) config,
+    // so an oracle-only secret in a member path is masked even when the audit
+    // invocation disabled redaction.
+    for e in &mut member_errors {
+        *e = mask_label(e, mask_detectors, &configured);
     }
     Ok((findings, scanned, lines, member_errors))
 }
@@ -3719,5 +3799,111 @@ mod tests {
             "recorded enabled=true did not re-enable the oracle: {:?}",
             report.findings
         );
+    }
+
+    #[test]
+    fn audits_scriptability_check_json() {
+        // `bench scriptability-check --output` writes a redaction-surfaced
+        // `scriptability_check.json`; a token in a server command must be caught.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("scriptability_check.json"),
+            r#"{"servers":[{"cmd":"mcp AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("scriptability_check.json")
+                    && f.match_class == "aws_access_key"),
+            "scriptability_check.json not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn mini_trajectory_recorded_enabled_enables_oracle() {
+        // A standalone `bench mini` trajectory records its policy in
+        // `info.manifest.config_redacted`, not a sweep manifest. With the audit
+        // config defaulted off, that recorded `enabled` flag must still turn on
+        // the oracle for this file so an oracle-only leak (short Bearer) is found.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "run.traj.json",
+            r#"{"info":{"manifest":{"config_redacted":{"redaction":{"enabled":true}}}},"messages":[{"content":"Authorization: Bearer abcdefghijklmnop1234"}]}"#,
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false;
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: false,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "bearer_token"),
+            "mini trajectory recorded enabled did not enable the oracle: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scan_error_masked_with_scoped_recorded_config() {
+        // A child sweep recorded a `secret_literal` (with redaction enabled) while
+        // the audit config has redaction off. An unreadable artifact under that
+        // child whose path embeds that literal must be masked in `scan_errors`
+        // using the child's scoped matchers, not the (disabled) base config.
+        // (Provider-shaped tokens are config-independent and masked either way;
+        // configured literals are the config-dependent case this guards.)
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(
+            child.join("manifest.json"),
+            serde_json::to_string(&serde_json::json!({
+                "config": {
+                    "resolved": "[redaction]\nenabled = true\nsecret_literals = [\"sw33tcustom\"]\n"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Broken symlink whose audited name embeds the recorded literal -> read error.
+        std::os::unix::fs::symlink(
+            child.join("does-not-exist"),
+            child.join("tok-sw33tcustom.output.txt"),
+        )
+        .unwrap();
+
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false;
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: false,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(!report.scan_errors.is_empty(), "expected a scan error");
+        for e in &report.scan_errors {
+            assert!(
+                !e.contains("sw33tcustom"),
+                "scoped config did not mask recorded literal in scan error: {e}"
+            );
+        }
     }
 }
