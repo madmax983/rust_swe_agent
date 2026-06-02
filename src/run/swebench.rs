@@ -7999,78 +7999,19 @@ instance = "inst"
     /// (sweep_started → 2 × instance_completed → sweep_completed) and that
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
-    #[tokio::test]
-    async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
-        use std::sync::{Arc, Mutex};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
-
-        // ─── mock HTTP server ──────────────────────────────────────────────
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let collected: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let collected_bg = collected.clone();
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    let req_str = String::from_utf8_lossy(&buf);
-                    let Some(end) = req_str.find("\r\n\r\n") else {
-                        continue;
-                    };
-                    let cl = req_str[..end]
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .and_then(|v| v.trim().parse::<usize>().ok())
-                        })
-                        .unwrap_or(0);
-                    if buf.len() >= end + 4 + cl {
-                        break;
-                    }
-                }
-                let _ = socket
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                    .await;
-                let req_str = String::from_utf8_lossy(&buf);
-                if let Some(body) = req_str.split_once("\r\n\r\n").map(|(_, b)| b) {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-                        collected_bg.lock().unwrap().push(v);
-                    }
-                }
-            }
-        });
-
-        // ─── 2-instance sweep with DeterministicModel ─────────────────────
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        init_test_repo(&repo);
-        let dataset = tmp.path().join("dataset.jsonl");
-        write_test_dataset(&dataset, &["alpha", "beta"]);
-        let output = tmp.path().join("out");
-
-        let args = SwebenchArgs {
+    fn create_test_swebench_args(
+        dataset: std::path::PathBuf,
+        output_dir: std::path::PathBuf,
+        repo: &std::path::Path,
+        port: u16,
+    ) -> SwebenchArgs {
+        SwebenchArgs {
             dataset_source: crate::run::dataset::DatasetSource::LocalPath(dataset),
             dataset_cache_dir: std::path::PathBuf::from("/nonexistent"),
-            output_dir: output.clone(),
+            output_dir,
             parallel: 1,
             reruns: 1,
-            config: test_config_with_workdir(&repo),
+            config: test_config_with_workdir(repo),
             resume: false,
             cost_limit_usd: None,
             task_timeout_secs: None,
@@ -8118,12 +8059,86 @@ instance = "inst"
             eval_timeout_secs: None,
             notify_webhook_url: Some(format!("http://127.0.0.1:{port}")),
             notify_webhook_headers: vec![],
-        };
+        }
+    }
+
+    #[cfg(feature = "webhook")]
+    async fn spawn_mock_webhook_server() -> (
+        u16,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let collected: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_bg = collected.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = socket.read(&mut chunk).await {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let req_str = String::from_utf8_lossy(&buf);
+                    let Some(end) = req_str.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let cl = req_str[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + cl {
+                        break;
+                    }
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                let req_str = String::from_utf8_lossy(&buf);
+                if let Some(body) = req_str.split_once("\r\n\r\n").map(|(_, b)| b) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+                        collected_bg.lock().unwrap().push(v);
+                    }
+                }
+            }
+        });
+
+        (port, collected)
+    }
+
+    #[cfg(feature = "webhook")]
+    #[tokio::test]
+    async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
+        let (port, collected) = spawn_mock_webhook_server().await;
+
+        // ─── 2-instance sweep with DeterministicModel ─────────────────────
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_test_repo(&repo);
+        let dataset = tmp.path().join("dataset.jsonl");
+        write_test_dataset(&dataset, &["alpha", "beta"]);
+        let output = tmp.path().join("out");
+
+        let args = create_test_swebench_args(dataset, output.clone(), &repo, port);
 
         let results = tokio::time::timeout(std::time::Duration::from_secs(15), run(args))
             .await
-            .expect("sweep timed out")
-            .expect("sweep failed");
+            .unwrap_or_else(|e| panic!("sweep timed out: {e}"))
+            .unwrap_or_else(|e| panic!("sweep failed: {e}"));
 
         assert_eq!(results.submitted, 2, "both instances must submit");
 
