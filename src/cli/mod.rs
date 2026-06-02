@@ -287,19 +287,23 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
         .output
         .clone()
         .unwrap_or_else(|| a.dir.join("redact_audit.json"));
-    if let Some(parent) = out_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
     let json = format_json(&report).map_err(Error::Json)?;
     let exit_code = report.exit_code();
 
-    // Persist the report. If writing fails *after* a scan that already found
-    // leaks or scan errors, surface the audit's own exit code (32/33) rather
-    // than letting the I/O error collapse to a generic internal_error (1) — CI
-    // gates route on the documented outcome class, and the result is known.
-    if let Err(e) = std::fs::write(&out_path, &json) {
+    // Persist the report. If any filesystem step (creating the output parent or
+    // writing the file) fails *after* a scan that already found leaks or scan
+    // errors, surface the audit's own exit code (32/33) rather than letting the
+    // I/O error collapse to a generic internal_error (1) — CI gates route on the
+    // documented outcome class, and the result is known.
+    let write_result = (|| -> std::io::Result<()> {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(&out_path, &json)
+    })();
+    if let Err(e) = write_result {
         if exit_code == ExitCode::Success {
             return Err(Error::Io(e));
         }
