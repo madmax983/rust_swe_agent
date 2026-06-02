@@ -707,7 +707,18 @@ fn collect_files_inner(
         if path.is_dir() {
             collect_files_inner(base, canonical_base, &path, out, errors, visited);
         } else if is_audited_file(&path) {
-            out.push(path);
+            // Keep file symlinks inside the sweep too: an artifact-looking
+            // symlink whose canonical target escapes the scanned root would let
+            // the scan read (and fail the gate on) unrelated external files.
+            // Only escaping symlinks fail this check — a regular file always
+            // canonicalizes to within `canonical_base`; if canonicalization
+            // fails, keep the entry so read_text below surfaces a real error.
+            let escapes = std::fs::canonicalize(&path)
+                .map(|c| c != *canonical_base && !c.starts_with(canonical_base))
+                .unwrap_or(false);
+            if !escapes {
+                out.push(path);
+            }
         }
     }
 }
@@ -2730,6 +2741,37 @@ mod tests {
             assert!(
                 report.findings.is_empty(),
                 "followed escaping symlink and scanned external files: {:?}",
+                report.findings
+            );
+            assert_eq!(report.exit_code(), ExitCode::Success);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_symlink_escaping_sweep_is_not_followed() {
+        // An artifact-looking file symlink pointing outside the scanned sweep
+        // must not be scanned — otherwise an unrelated external file's secrets
+        // fail the publish gate.
+        let outside = tempfile::tempdir().unwrap();
+        write(
+            outside.path(),
+            "secret.output.txt",
+            "tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz\n",
+        );
+        let sweep = tempfile::tempdir().unwrap();
+        write(sweep.path(), "clean.output.txt", "all 42 tests passed\n");
+        // Best-effort symlink; skip on sandboxes that disallow it.
+        if std::os::unix::fs::symlink(
+            outside.path().join("secret.output.txt"),
+            sweep.path().join("linked.output.txt"),
+        )
+        .is_ok()
+        {
+            let report = audit(sweep.path());
+            assert!(
+                report.findings.is_empty(),
+                "followed escaping file symlink: {:?}",
                 report.findings
             );
             assert_eq!(report.exit_code(), ExitCode::Success);
