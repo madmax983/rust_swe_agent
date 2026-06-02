@@ -531,12 +531,13 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     }
 
     let detectors = select_detectors(opts)?;
-    // The *full* detector registry (honouring only `--disable-entropy`), used to
-    // scrub previews and path labels. `--detectors` narrows which findings are
-    // *reported*, but a secret of an unselected family sitting next to a reported
-    // one must still never survive raw in a preview or label, so masking always
-    // runs every family. Reported findings still come from `detectors` alone.
-    let mask_detectors = full_mask_detectors(opts)?;
+    // The *full* detector registry (every family, entropy included), used to
+    // scrub previews and path labels. `--detectors` / `--disable-entropy` narrow
+    // which findings are *reported*, but a secret of an unselected or
+    // entropy-suppressed class sitting next to a reported one must still never
+    // survive raw in a preview or label, so masking always runs every family.
+    // Reported findings still come from `detectors` alone.
+    let mask_detectors = full_mask_detectors()?;
     // Audit with the union of the CLI/default `[redaction]` config and each
     // *scope's* recorded resolved config. The recorded policy is resolved per
     // governing sweep directory (the nearest ancestor with `manifest.json` /
@@ -554,7 +555,16 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     let mut scopes = ScopeMatchers::new(base_redaction);
 
     let baseline = match &opts.baseline {
-        Some(path) => Some(load_baseline(path)?),
+        Some(path) => {
+            // Mask the operator-supplied baseline path before it can reach a
+            // stderr error message (the path itself may embed a secret).
+            let label = mask_label(
+                &path.display().to_string(),
+                &mask_detectors,
+                &base_configured,
+            );
+            Some(load_baseline(path, &label)?)
+        }
         None => None,
     };
 
@@ -749,18 +759,17 @@ fn scan_one(
 
 /// The full detector registry used for *masking* (preview/label scrubbing),
 /// honouring only `--disable-entropy`. Unlike [`select_detectors`], `--detectors`
-/// never narrows this set: masking must cover every family so a secret of an
-/// unselected class cannot survive raw in a preview window or path label.
-fn full_mask_detectors(opts: &AuditOpts) -> Result<Vec<Detector>, Error> {
-    let mut all = detector_registry().map_err(|e| {
+/// never narrows this set, and `--disable-entropy` never removes the entropy
+/// heuristic from it: masking must cover every family — including high-entropy
+/// blobs — so a secret of an unselected (or entropy-suppressed) class cannot
+/// survive raw in a preview window or path label next to a reported finding.
+/// `--disable-entropy` still suppresses entropy *findings* via [`select_detectors`].
+fn full_mask_detectors() -> Result<Vec<Detector>, Error> {
+    detector_registry().map_err(|e| {
         Error::Config(ConfigError::Invalid(format!(
             "internal detector regex failed to compile: {e}"
         )))
-    })?;
-    if opts.disable_entropy {
-        all.retain(|d| !matches!(d.kind, DetectorKind::Entropy));
-    }
-    Ok(all)
+    })
 }
 
 /// Resolve the active detector set from `--detectors` / `--disable-entropy`.
@@ -1933,17 +1942,20 @@ fn finding_identity(f: &Finding) -> String {
 }
 
 /// Load a previous report and build its finding-identity set.
-fn load_baseline(path: &Path) -> Result<BTreeSet<String>, Error> {
+/// Load a `--baseline` report's finding identities. `label` is the masked
+/// display path used in error messages: the operator-supplied path can itself
+/// contain a provider token or configured literal (e.g. a CI temp dir named with
+/// `ghp_…`), so it is scrubbed by the caller before reaching stderr, honouring
+/// the no-raw-secrets output contract even on the error path.
+fn load_baseline(path: &Path, label: &str) -> Result<BTreeSet<String>, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         Error::Config(ConfigError::Usage(format!(
-            "cannot read --baseline '{}': {e}",
-            path.display()
+            "cannot read --baseline '{label}': {e}"
         )))
     })?;
     let report: AuditReport = serde_json::from_str(&text).map_err(|e| {
         Error::Config(ConfigError::Invalid(format!(
-            "--baseline '{}' is not a valid redact_audit.json: {e}",
-            path.display()
+            "--baseline '{label}' is not a valid redact_audit.json: {e}"
         )))
     })?;
     Ok(report.findings.iter().map(finding_identity).collect())
@@ -2701,6 +2713,73 @@ mod tests {
         assert!(
             !masked.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
             "token left raw in masked report path: {masked}"
+        );
+    }
+
+    #[test]
+    fn baseline_error_masks_token_in_path() {
+        // A `--baseline` path that embeds a token must be masked in the error
+        // message even though the failure happens before any report is built.
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir
+            .path()
+            .join("ghp_0123456789abcdefghijklmnopqrstuvwxyz.json");
+        let err = run_redact_audit(
+            &default_cfg(),
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: false,
+                baseline: Some(bad),
+            },
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "raw token leaked through baseline error: {msg}"
+        );
+        assert!(msg.contains("--baseline"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn preview_masks_entropy_neighbor_under_disable_entropy() {
+        // `--disable-entropy` suppresses entropy *findings*, but an entropy-only
+        // secret sitting inside a reported token's preview window must still be
+        // scrubbed — masking always runs the entropy heuristic.
+        let dir = tempfile::tempdir().unwrap();
+        let blob = "aZ9xQ2bW8kL4mN7pR1sT3vY6cE5dH0jF2gB4nM8qP1wA";
+        write(
+            dir.path(),
+            "x.output.txt",
+            &format!("gh=ghp_0123456789abcdefghijklmnopqrstuvwxyz r={blob}\n"),
+        );
+        let report = run_redact_audit(
+            &default_cfg(),
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "github token not reported: {:?}",
+            report.findings
+        );
+        assert!(
+            !report.findings.iter().any(|f| f.detector_id == "entropy"),
+            "entropy finding must be suppressed under --disable-entropy"
+        );
+        let json = format_json(&report).unwrap();
+        assert!(
+            !json.contains(&blob[..24]),
+            "entropy-only neighbor leaked into preview: {json}"
         );
     }
 
