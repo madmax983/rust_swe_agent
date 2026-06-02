@@ -920,7 +920,7 @@ fn collect_files_inner(
         let path = entry.path();
         if path.is_dir() {
             collect_files_inner(base, canonical_base, &path, out, errors, visited);
-        } else if is_audited_file(&path) {
+        } else if is_audited_file(&path) || is_schema_versioned_json(&path) {
             // Keep file symlinks inside the sweep too: an artifact-looking
             // symlink whose canonical target escapes the scanned root would let
             // the scan read (and fail the gate on) unrelated external files.
@@ -986,6 +986,36 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
+}
+
+/// `true` if `text` is a harness artifact report — a JSON object carrying a
+/// top-level `artifact_kind` or `schema_version` header.
+///
+/// Every first-class harness report (`bench …` summaries, bundles, exports) is
+/// written with this artifact header (see `src/artifact.rs`, which keys on the
+/// same two fields). Sniffing it lets `redact-audit` scan *any* such report —
+/// current or future — without maintaining a hard-coded filename allowlist, so a
+/// new schema-versioned report cannot silently slip the publish gate.
+fn json_has_artifact_header(text: &str) -> bool {
+    matches!(
+        serde_json::from_str::<serde_json::Value>(text),
+        Ok(serde_json::Value::Object(map))
+            if map.contains_key("artifact_kind") || map.contains_key("schema_version")
+    )
+}
+
+/// `true` for a `.json` file (other than the audit's own `redact_audit.json`)
+/// whose content carries an artifact header — see [`json_has_artifact_header`].
+/// Used to schema-sniff JSON reports the name allowlist does not list explicitly.
+fn is_schema_versioned_json(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str());
+    if name == Some("redact_audit.json") {
+        return false;
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return false;
+    }
+    std::fs::read_to_string(path).is_ok_and(|text| json_has_artifact_header(&text))
 }
 
 /// `true` for trajectory artifacts that may carry an embedded `bench mini`
@@ -1105,7 +1135,18 @@ fn scan_bundle(
                 continue;
             }
         };
-        if !is_audited_file(Path::new(&inner)) || inner.ends_with(".tar.gz") {
+        let inner_path = Path::new(&inner);
+        if inner.ends_with(".tar.gz") {
+            continue;
+        }
+        // A member is scanned if it is name-allowlisted, or if it is a `.json`
+        // that turns out to carry an artifact header (sniffed from its bytes
+        // below). Non-audited, non-JSON members are skipped.
+        let named = is_audited_file(inner_path);
+        let sniff_json = !named
+            && inner_path.extension().and_then(|e| e.to_str()) == Some("json")
+            && inner_path.file_name().and_then(|n| n.to_str()) != Some("redact_audit.json");
+        if !named && !sniff_json {
             continue;
         }
         let member_label = format!("{rel}!{inner}");
@@ -1117,6 +1158,11 @@ fn scan_bundle(
             continue;
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
+        // A sniffed `.json` member is only an audited artifact if it carries the
+        // artifact header; otherwise it is an ordinary JSON file and is skipped.
+        if sniff_json && !json_has_artifact_header(&text) {
+            continue;
+        }
         scanned += 1;
         lines += line_count(&text);
         scan_text(
@@ -3842,6 +3888,47 @@ mod tests {
                 .iter()
                 .any(|f| f.file.ends_with("triage.json") && f.match_class == "github_pat"),
             "triage.json not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn schema_versioned_json_is_audited_by_sniff() {
+        // A JSON report the name allowlist does not list is still scanned when it
+        // carries an artifact header (`artifact_kind` / `schema_version`).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("future_report.json"),
+            r#"{"artifact_kind":"future_kind","schema_version":{"major":1,"minor":0},"note":"AKIAIOSFODNN7EXAMPLE"}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report.findings.iter().any(
+                |f| f.file.ends_with("future_report.json") && f.match_class == "aws_access_key"
+            ),
+            "schema-versioned json not audited by sniff: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn plain_json_without_artifact_header_is_skipped() {
+        // An ordinary `.json` with no artifact header is not a harness report and
+        // is not scanned — the sniffer targets schema-versioned artifacts only.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"some_key":"AKIAIOSFODNN7EXAMPLE"}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("settings.json")),
+            "plain json without artifact header should be skipped: {:?}",
             report.findings
         );
     }
