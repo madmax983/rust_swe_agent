@@ -250,12 +250,29 @@ fn sha256_prefix_12(bytes: &[u8]) -> String {
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String {
-    let mut out = String::from("=== agent skills-preview (no model call made) ===\n");
+    use comfy_table::{Table, modifiers::UTF8_ROUND_CORNERS};
+
+    let mut out = String::from(
+        "=== agent skills-preview (no model call made) ===
+",
+    );
 
     for task in &report.tasks {
-        let _ = write!(out, "\ntask_hash: {}\n", task.task_hash);
+        let _ = writeln!(
+            out,
+            "
+task_hash: {}",
+            task.task_hash
+        );
+
+        let mut table = Table::new();
+        table
+            .load_preset(comfy_table::presets::UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Skill", "Reason", "SHA256", "Bytes", "Path"]);
+
         if task.active_skills.is_empty() {
-            out.push_str("  (no skills activated)\n");
+            table.add_row(vec!["(no skills activated)", "-", "-", "-", "-"]);
         } else {
             for skill in &task.active_skills {
                 let reason_str = match skill.reason {
@@ -263,13 +280,16 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
                     SkillActivationReason::AutoMatch => "auto",
                 };
                 let path_str = skill.path.display().to_string();
-                let _ = writeln!(
-                    out,
-                    "  {} | {} | {} | {} bytes | {}",
-                    skill.name, reason_str, skill.sha256_prefix, skill.bytes, path_str,
-                );
+                table.add_row(vec![
+                    skill.name.as_str(),
+                    reason_str,
+                    skill.sha256_prefix.as_str(),
+                    skill.bytes.to_string().as_str(),
+                    path_str.as_str(),
+                ]);
             }
         }
+        let _ = writeln!(out, "{table}");
         let _ = writeln!(out, "  total_bytes_injected: {}", task.total_bytes_injected);
         let _ = writeln!(
             out,
@@ -283,19 +303,38 @@ pub fn format_text(report: &SkillsPreviewReport, redactor: &Redactor) -> String 
         );
     }
 
+    let mut summary_table = Table::new();
+    summary_table
+        .load_preset(comfy_table::presets::UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Metric", "Value"]);
+
+    summary_table.add_row(vec![
+        "task_count",
+        report.summary.task_count.to_string().as_str(),
+    ]);
+    summary_table.add_row(vec![
+        "unique_skills_activated",
+        report.summary.unique_skills_activated.to_string().as_str(),
+    ]);
+    summary_table.add_row(vec![
+        "p50_bytes_per_task",
+        report.summary.p50_bytes_per_task.to_string().as_str(),
+    ]);
+    summary_table.add_row(vec![
+        "p95_bytes_per_task",
+        report.summary.p95_bytes_per_task.to_string().as_str(),
+    ]);
+    summary_table.add_row(vec![
+        "tasks_hitting_max_active",
+        report.summary.tasks_hitting_max_active.to_string().as_str(),
+    ]);
+
     let _ = writeln!(
         out,
-        "\n--- summary ---\n\
-         task_count: {}\n\
-         unique_skills_activated: {}\n\
-         p50_bytes_per_task: {}\n\
-         p95_bytes_per_task: {}\n\
-         tasks_hitting_max_active: {}",
-        report.summary.task_count,
-        report.summary.unique_skills_activated,
-        report.summary.p50_bytes_per_task,
-        report.summary.p95_bytes_per_task,
-        report.summary.tasks_hitting_max_active,
+        "
+--- summary ---
+{summary_table}"
     );
 
     redactor.redact_text(&out, surface::TRAJECTORY).text
