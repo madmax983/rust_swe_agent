@@ -714,8 +714,7 @@ fn collect_files_inner(
             // canonicalizes to within `canonical_base`; if canonicalization
             // fails, keep the entry so read_text below surfaces a real error.
             let escapes = std::fs::canonicalize(&path)
-                .map(|c| c != *canonical_base && !c.starts_with(canonical_base))
-                .unwrap_or(false);
+                .is_ok_and(|c| c != *canonical_base && !c.starts_with(canonical_base));
             if !escapes {
                 out.push(path);
             }
