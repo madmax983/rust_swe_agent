@@ -644,11 +644,9 @@ pub(crate) fn output_aliases_scanned_artifact(scan_dir: &Path, out_path: &Path) 
     let mut files = Vec::new();
     let mut errors = Vec::new();
     collect_files(scan_dir, scan_dir, &mut files, &mut errors);
-    files.iter().any(|p| {
-        std::fs::metadata(p)
-            .map(|m| (m.dev(), m.ino()) == target)
-            .unwrap_or(false)
-    })
+    files
+        .iter()
+        .any(|p| std::fs::metadata(p).is_ok_and(|m| (m.dev(), m.ino()) == target))
 }
 
 #[cfg(not(unix))]
