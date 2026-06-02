@@ -460,47 +460,60 @@ fn merge_recorded_sweep_redaction(dir: &Path, cfg: &mut RedactionCfg) {
         let Ok(text) = std::fs::read_to_string(dir.join(source_name)) else {
             continue;
         };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        for pointer in ["/manifest/config/resolved", "/config/resolved"] {
-            let Some(resolved) = json.pointer(pointer).and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let Ok(parsed) = toml::from_str::<ResolvedRedactionConfig>(resolved) else {
-                continue;
-            };
-            let Some(recorded) = parsed.redaction else {
-                continue;
-            };
-            // If the sweep recorded redaction as active, run the oracle even when
-            // the CLI invocation defaulted `enabled` off and the manifest carries
-            // no recoverable literals/patterns (they are stored already-redacted).
-            if recorded.enabled {
-                cfg.enabled = true;
-            }
-            for lit in recorded.secret_literals {
-                if !lit.is_empty()
-                    && !lit.starts_with("[REDACTED:")
-                    && existing_literals.insert(lit.clone())
-                {
-                    cfg.secret_literals.push(lit);
-                }
-            }
-            for pat in recorded.custom_patterns {
-                if !pat.starts_with("[REDACTED:")
-                    && Regex::new(&pat).is_ok()
-                    && existing_patterns.insert(pat.clone())
-                {
-                    cfg.custom_patterns.push(pat);
-                }
-            }
-        }
+        apply_recorded_redaction_json(&text, cfg, &mut existing_literals, &mut existing_patterns);
     }
     // The recorded config implies redaction was active for the sweep; ensure the
     // oracle runs even if the CLI invocation defaulted it off.
     if !cfg.secret_literals.is_empty() || !cfg.custom_patterns.is_empty() {
         cfg.enabled = true;
+    }
+}
+
+/// Apply the `[redaction]` block recorded in one provenance JSON document
+/// (`manifest.json` / `results.json` text) into `cfg`, deduping recovered
+/// literals/patterns against the shared `existing_*` sets. Best-effort: malformed
+/// JSON/TOML or a missing block is silently ignored.
+fn apply_recorded_redaction_json(
+    text: &str,
+    cfg: &mut RedactionCfg,
+    existing_literals: &mut BTreeSet<String>,
+    existing_patterns: &mut BTreeSet<String>,
+) {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    for pointer in ["/manifest/config/resolved", "/config/resolved"] {
+        let Some(resolved) = json.pointer(pointer).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<ResolvedRedactionConfig>(resolved) else {
+            continue;
+        };
+        let Some(recorded) = parsed.redaction else {
+            continue;
+        };
+        // If the sweep recorded redaction as active, run the oracle even when the
+        // CLI invocation defaulted `enabled` off and the manifest carries no
+        // recoverable literals/patterns (they are stored already-redacted).
+        if recorded.enabled {
+            cfg.enabled = true;
+        }
+        for lit in recorded.secret_literals {
+            if !lit.is_empty()
+                && !lit.starts_with("[REDACTED:")
+                && existing_literals.insert(lit.clone())
+            {
+                cfg.secret_literals.push(lit);
+            }
+        }
+        for pat in recorded.custom_patterns {
+            if !pat.starts_with("[REDACTED:")
+                && Regex::new(&pat).is_ok()
+                && existing_patterns.insert(pat.clone())
+            {
+                cfg.custom_patterns.push(pat);
+            }
+        }
     }
 }
 
@@ -518,13 +531,16 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     }
 
     let detectors = select_detectors(opts)?;
-    // Audit with the union of the CLI/default `[redaction]` config and the
-    // resolved config recorded in the sweep's own `manifest.json` (if present),
-    // so a sweep run with custom literals/patterns is still caught when the
-    // documented `redact-audit runs/my-sweep` is later run with defaults.
-    let mut redaction_cfg = cfg.root.redaction.clone();
-    merge_recorded_sweep_redaction(&opts.dir, &mut redaction_cfg);
-    let configured = ConfiguredMatchers::from_cfg(&redaction_cfg)?;
+    // Audit with the union of the CLI/default `[redaction]` config and each
+    // *scope's* recorded resolved config. The recorded policy is resolved per
+    // governing sweep directory (the nearest ancestor with `manifest.json` /
+    // `results.json`) rather than only once at `opts.dir`, so a recursive audit
+    // of a `runs/` root applies each child sweep's own recorded redaction policy
+    // to that child's artifacts — e.g. a child that recorded `enabled = true`
+    // enables the oracle for its files even if the audit invocation defaulted it
+    // off. Per-scope configs are cached by governing directory.
+    let base_redaction = cfg.root.redaction.clone();
+    let mut scopes = ScopeMatchers::new(base_redaction);
 
     let baseline = match &opts.baseline {
         Some(path) => Some(load_baseline(path)?),
@@ -539,7 +555,9 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     let mut acc = ScanAcc::default();
     acc.scan_errors.append(&mut walk_errors);
     for path in files {
-        scan_one(&path, &opts.dir, &detectors, &configured, &mut acc);
+        let gov = governing_sweep_dir(&path, &opts.dir);
+        let (gov_cfg, configured) = scopes.resolve(&gov)?;
+        scan_one(&path, &opts.dir, &detectors, gov_cfg, configured, &mut acc);
     }
 
     finalize(&mut acc.findings);
@@ -560,17 +578,73 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     })
 }
 
+/// Per-governing-directory cache of merged redaction config + compiled matchers.
+///
+/// Resolving the recorded config and compiling a `Redactor` is not free, and a
+/// recursive audit typically has only a handful of distinct sweep directories,
+/// so each scope is built once and reused for every artifact it governs.
+struct ScopeMatchers {
+    base: RedactionCfg,
+    cache: std::collections::BTreeMap<PathBuf, (RedactionCfg, ConfiguredMatchers)>,
+}
+
+impl ScopeMatchers {
+    fn new(base: RedactionCfg) -> Self {
+        Self {
+            base,
+            cache: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// The merged config and matchers governing `dir`, building and caching them
+    /// on first use. The merged config is also returned so bundle scanning can
+    /// layer the archive's own recorded config on top of the directory's.
+    fn resolve(&mut self, dir: &Path) -> Result<(&RedactionCfg, &ConfiguredMatchers), Error> {
+        if !self.cache.contains_key(dir) {
+            let mut cfg = self.base.clone();
+            merge_recorded_sweep_redaction(dir, &mut cfg);
+            let matchers = ConfiguredMatchers::from_cfg(&cfg)?;
+            self.cache.insert(dir.to_path_buf(), (cfg, matchers));
+        }
+        let Some((cfg, matchers)) = self.cache.get(dir) else {
+            // Unreachable: just inserted above when absent.
+            return Err(Error::Config(ConfigError::Invalid(
+                "redact-audit: scope cache miss after insert".to_owned(),
+            )));
+        };
+        Ok((cfg, matchers))
+    }
+}
+
+/// The nearest ancestor of `file` (at or below `root`) that looks like a sweep
+/// directory — one carrying `manifest.json` or `results.json`. Falls back to
+/// `root` when no recorded provenance is found along the way.
+fn governing_sweep_dir(file: &Path, root: &Path) -> PathBuf {
+    let mut cur = file.parent();
+    while let Some(dir) = cur {
+        if dir.join("manifest.json").is_file() || dir.join("results.json").is_file() {
+            return dir.to_path_buf();
+        }
+        if dir == root {
+            break;
+        }
+        cur = dir.parent();
+    }
+    root.to_path_buf()
+}
+
 /// Scan a single artifact path (plain file or bundle) into `acc`.
 fn scan_one(
     path: &Path,
     base: &Path,
     detectors: &[Detector],
+    gov_cfg: &RedactionCfg,
     configured: &ConfiguredMatchers,
     acc: &mut ScanAcc,
 ) {
     let rel = display_relative(base, path);
     if is_bundle(path) {
-        match scan_bundle(path, &rel, detectors, configured) {
+        match scan_bundle(path, &rel, detectors, gov_cfg) {
             Ok((mut found, scanned, lines, mut member_errors)) => {
                 acc.findings.append(&mut found);
                 acc.files_scanned += scanned;
@@ -750,6 +824,12 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || name == "manifest.json"
                 || name == "annotations.json"
                 || (name.starts_with("all_preds") && name.ends_with(".jsonl"))
+                // `--event-log` writes append-only JSONL (`event-log-v1`) through
+                // the same redaction sink; a surfaced leak can still land here.
+                // The path is operator-chosen but documented as `events.jsonl` /
+                // `<name>.events.jsonl` (see docs/spec-event-log.md).
+                || name == "events.jsonl"
+                || name.ends_with(".events.jsonl")
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
@@ -785,8 +865,22 @@ fn scan_bundle(
     path: &Path,
     rel: &str,
     detectors: &[Detector],
-    configured: &ConfiguredMatchers,
+    gov_cfg: &RedactionCfg,
 ) -> Result<BundleScan, String> {
+    // First pass: recover the bundle's *own* recorded redaction config from its
+    // `manifest.json` / `results.json` members and layer it on top of the
+    // governing directory's config. Otherwise a bundle whose manifest recorded
+    // `enabled = true` (but whose audit config has redaction off) would have its
+    // members scanned without the oracle, letting oracle-only leaks pass clean.
+    let mut bundle_cfg = gov_cfg.clone();
+    merge_recorded_bundle_redaction(path, &mut bundle_cfg);
+    let configured = ConfiguredMatchers::from_cfg(&bundle_cfg).map_err(|e| {
+        format!(
+            "{}: invalid recorded bundle redaction config: {e}",
+            path.display()
+        )
+    })?;
+
     let file = std::fs::File::open(path)
         .map_err(|e| format!("{}: cannot open bundle: {e}", path.display()))?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
@@ -832,12 +926,56 @@ fn scan_bundle(
         let text = String::from_utf8_lossy(&bytes).into_owned();
         scanned += 1;
         lines += line_count(&text);
-        scan_text(&text, &member_label, detectors, configured, &mut findings);
+        scan_text(&text, &member_label, detectors, &configured, &mut findings);
     }
     Ok((findings, scanned, lines, member_errors))
 }
 
+/// Recover the recorded `[redaction]` config from a bundle's own `manifest.json`
+/// / `results.json` members and merge it into `cfg`. Re-opens the archive for a
+/// dedicated first pass (tar streams are forward-only). Best-effort: an
+/// unreadable archive or absent provenance leaves `cfg` unchanged.
+fn merge_recorded_bundle_redaction(path: &Path, cfg: &mut RedactionCfg) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    let mut archive = tar::Archive::new(GzDecoder::new(file));
+    let Ok(entries) = archive.entries() else {
+        return;
+    };
+    let mut existing_literals: BTreeSet<String> = cfg.secret_literals.iter().cloned().collect();
+    let mut existing_patterns: BTreeSet<String> = cfg.custom_patterns.iter().cloned().collect();
+    for entry in entries {
+        let Ok(mut entry) = entry else {
+            break;
+        };
+        let Ok(inner) = entry.path().map(|p| p.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let name = Path::new(&inner)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name != "manifest.json" && name != "results.json" {
+            continue;
+        }
+        let mut buf = String::new();
+        if entry.read_to_string(&mut buf).is_ok() {
+            apply_recorded_redaction_json(
+                &buf,
+                cfg,
+                &mut existing_literals,
+                &mut existing_patterns,
+            );
+        }
+    }
+    if !cfg.secret_literals.is_empty() || !cfg.custom_patterns.is_empty() {
+        cfg.enabled = true;
+    }
+}
+
 /// A pre-filter candidate match.
+#[derive(Clone, Copy)]
 struct RawMatch {
     start: usize,
     end: usize,
@@ -1288,11 +1426,12 @@ fn json_skip_primitive(src: &[u8], pos: &mut usize) {
 
 /// Scan one text blob, appending findings for `file_label`.
 ///
-/// Safety model: every kept match span is replaced with its marker to build a
-/// single fully-redacted copy of `text`, and each finding's preview is derived
-/// as a *slice of that redacted copy*. Because the redacted copy contains no raw
-/// secret bytes anywhere, no preview can ever leak a raw secret — this holds
-/// regardless of detector span precision.
+/// Safety model: the preview source is a copy of `text` with the **union of
+/// every detected span** (structured + entropy, *before* overlap de-duplication)
+/// replaced by markers. Because that copy contains no raw secret bytes anywhere
+/// — even bytes belonging to a longer span the overlap filter dropped in favour
+/// of an earlier, shorter one — no preview can leak a raw secret regardless of
+/// which span is reported.
 fn scan_text(
     text: &str,
     file_label: &str,
@@ -1308,7 +1447,7 @@ fn scan_text(
     collect_configured_matches(text, configured, &mut structured);
     collect_redactor_oracle_matches(text, configured, &mut structured);
     collect_json_sensitive_keys(text, &mut structured);
-    let kept_structured = filter_overlaps(structured);
+    let kept_structured = filter_overlaps(structured.clone());
 
     // Phase 2: the entropy heuristic only fills gaps the structured pass left,
     // so a greedy high-entropy token can never shadow a precise key match.
@@ -1318,29 +1457,24 @@ fn scan_text(
         .find(|d| matches!(d.kind, DetectorKind::Entropy))
     {
         collect_entropy_matches(text, det, &mut entropy);
-        entropy.retain(|e| !kept_structured.iter().any(|s| overlaps(s, e)));
     }
-    let kept_entropy = filter_overlaps(entropy);
+    let mut entropy_for_report = entropy.clone();
+    entropy_for_report.retain(|e| !kept_structured.iter().any(|s| overlaps(s, e)));
+    let kept_entropy = filter_overlaps(entropy_for_report);
 
-    // Merge into a single set of non-overlapping spans in positional order.
-    let mut all: Vec<RawMatch> = kept_structured;
-    all.extend(kept_entropy);
-    all.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    // Reported findings: the de-duplicated set, in positional order.
+    let mut reported: Vec<RawMatch> = kept_structured;
+    reported.extend(kept_entropy);
+    reported.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
 
-    // Build the fully-redacted copy and record each marker's position within it.
-    let mut redacted_text = String::with_capacity(text.len());
-    let mut last = 0usize;
-    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(all.len());
-    for c in &all {
-        redacted_text.push_str(&text[last..c.start]);
-        let span_start = redacted_text.len();
-        redacted_text.push_str(&marker(c.match_class, &text[c.start..c.end]));
-        spans.push((span_start, redacted_text.len()));
-        last = c.end;
-    }
-    redacted_text.push_str(&text[last..]);
+    // Preview source: mask the *union* of every candidate span (including the
+    // ones the overlap filter dropped), so no raw secret byte survives.
+    let mut mask: Vec<RawMatch> = structured;
+    mask.extend(entropy);
+    let masked = build_masked(text, &mask);
 
-    for (c, &(span_start, span_end)) in all.iter().zip(spans.iter()) {
+    for c in &reported {
+        let (span_start, span_end) = masked.region_for(c.start);
         out.push(Finding {
             file: file_label.to_owned(),
             byte_offset: c.start,
@@ -1349,9 +1483,78 @@ fn scan_text(
             severity: c.severity,
             match_class: c.match_class.to_owned(),
             match_fingerprint: fingerprint(&text[c.start..c.end]),
-            preview: preview_from_masked(&redacted_text, span_start, span_end),
+            preview: preview_from_masked(&masked.text, span_start, span_end),
             is_new: true,
         });
+    }
+}
+
+/// `text` with every detected span replaced by a marker, plus a map from each
+/// masked region's original byte range to its position in the redacted copy.
+struct MaskedText {
+    text: String,
+    /// `(orig_start, orig_end, red_start, red_end)`, sorted by `orig_start`.
+    regions: Vec<(usize, usize, usize, usize)>,
+}
+
+impl MaskedText {
+    /// The redacted-copy span of the masked region containing original byte
+    /// `offset`. Falls back to a zero-width point if `offset` is unmasked (every
+    /// reported finding is a member of the masked union, so this is just a
+    /// defensive default).
+    fn region_for(&self, offset: usize) -> (usize, usize) {
+        for &(os, oe, rs, re) in &self.regions {
+            if offset >= os && offset < oe {
+                return (rs, re);
+            }
+        }
+        (0, 0)
+    }
+}
+
+/// Build the preview source by replacing the union of `candidates` with markers.
+///
+/// Overlapping candidate spans are merged into maximal regions so the resulting
+/// copy never interleaves a marker with raw secret bytes. Each region's marker
+/// uses the highest-severity (then longest) contributing candidate's class.
+fn build_masked(text: &str, candidates: &[RawMatch]) -> MaskedText {
+    let mut spans: Vec<RawMatch> = candidates.to_vec();
+    spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+
+    // Merge overlapping spans into maximal regions, tracking a representative
+    // class/severity for the marker shown in previews.
+    let mut merged: Vec<(usize, usize, &'static str, Severity)> = Vec::new();
+    for s in spans {
+        if let Some(last) = merged.last_mut() {
+            if s.start < last.1 {
+                last.1 = last.1.max(s.end);
+                let region_len = last.1 - last.0;
+                if s.severity > last.3 || (s.severity == last.3 && (s.end - s.start) >= region_len)
+                {
+                    last.2 = s.match_class;
+                    last.3 = s.severity;
+                }
+                continue;
+            }
+        }
+        merged.push((s.start, s.end, s.match_class, s.severity));
+    }
+
+    let mut redacted = String::with_capacity(text.len());
+    let mut regions = Vec::with_capacity(merged.len());
+    let mut last = 0usize;
+    for (os, oe, class, _sev) in merged {
+        redacted.push_str(&text[last..os]);
+        let rs = redacted.len();
+        redacted.push_str(&marker(class, &text[os..oe]));
+        regions.push((os, oe, rs, redacted.len()));
+        last = oe;
+    }
+    redacted.push_str(&text[last..]);
+
+    MaskedText {
+        text: redacted,
+        regions,
     }
 }
 
@@ -2498,6 +2701,186 @@ mod tests {
         // And the literal value itself is masked in the report.
         let json = format_json(&report).unwrap();
         assert!(!json.contains("sw33t"), "recorded literal leaked");
+    }
+
+    // ── PR #557 ninth-round review ────────────────────────────────────────
+
+    #[test]
+    fn audits_event_log_jsonl() {
+        // `--event-log` writes `events.jsonl` / `<name>.events.jsonl` through the
+        // redaction sink; a surfaced leak there must still be scanned.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "events.jsonl",
+            "{\"schema\":\"event-log-v1\",\"event_type\":\"bash_result\",\"output\":\"tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz\"}\n",
+        );
+        write(
+            dir.path(),
+            "sweep.events.jsonl",
+            "{\"schema\":\"event-log-v1\",\"event_type\":\"observation\",\"text\":\"id=AKIAIOSFODNN7EXAMPLE\"}\n",
+        );
+        let report = audit(dir.path());
+        let files: BTreeSet<&str> = report.findings.iter().map(|f| f.file.as_str()).collect();
+        assert!(
+            files.contains("events.jsonl"),
+            "events.jsonl not audited: {files:?}"
+        );
+        assert!(
+            files.contains("sweep.events.jsonl"),
+            "named event log not audited: {files:?}"
+        );
+    }
+
+    #[test]
+    fn preview_masks_dropped_overlapping_secret_suffix() {
+        // A configured literal that starts before and ends inside a provider
+        // token: the overlap filter keeps the shorter literal and drops the
+        // longer github span, but the preview source must mask the *union* so the
+        // token suffix never leaks. Literal `token=ghp_0123` overlaps the full
+        // `ghp_0123456789abcdefghijklmnopqrstuvwxyz`.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "here token=ghp_0123456789abcdefghijklmnopqrstuvwxyz end\n",
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.secret_literals = vec!["token=ghp_0123".to_owned()];
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: None,
+                disable_entropy: false,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        let json = format_json(&report).unwrap();
+        // No fragment of the raw token may survive in any preview.
+        assert!(
+            !json.contains("456789abcdef"),
+            "token suffix leaked in preview: {json}"
+        );
+        assert!(
+            !json.contains("ghp_0123456789"),
+            "raw token leaked in preview: {json}"
+        );
+    }
+
+    #[test]
+    fn bundle_recorded_config_enables_oracle_for_members() {
+        // A bundle whose own manifest recorded `enabled = true`, audited with a
+        // config that has redaction OFF. Oracle-only leaks in other members (a
+        // bearer token below the registry shapes) must still be caught.
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle.tar.gz");
+        {
+            let f = std::fs::File::create(&bundle).unwrap();
+            let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+            let mut add = |name: &str, body: &[u8]| {
+                let mut h = tar::Header::new_gnu();
+                h.set_path(name).unwrap();
+                h.set_size(body.len() as u64);
+                h.set_mode(0o644);
+                h.set_cksum();
+                enc.write_all(h.as_bytes()).unwrap();
+                enc.write_all(body).unwrap();
+                let pad = (512 - body.len() % 512) % 512;
+                enc.write_all(&vec![0u8; pad]).unwrap();
+            };
+            let manifest = serde_json::to_string(&serde_json::json!({
+                "config": { "resolved": "[redaction]\nenabled = true\n" }
+            }))
+            .unwrap();
+            add("manifest.json", manifest.as_bytes());
+            add(
+                "step.output.txt",
+                b"Authorization: Bearer my-internal-bundle-secret-token\n",
+            );
+            enc.finish().unwrap();
+        }
+        // Audit config has redaction disabled; only the bundle's own recorded
+        // policy can turn the oracle on for its members.
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false;
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: Some(vec![]), // no registry detectors; oracle only
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        // The oracle (enabled only by the bundle's recorded config) must flag the
+        // member secret, and the raw value must not leak.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file == "bundle.tar.gz!step.output.txt"),
+            "bundle-recorded oracle did not catch member secret: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(
+            !json.contains("my-internal-bundle-secret-token"),
+            "bundle member secret leaked"
+        );
+    }
+
+    #[test]
+    fn child_sweep_recorded_config_applies_to_its_artifacts() {
+        // Recursive audit of a parent root: a child sweep recorded
+        // `enabled = true`; its oracle-only leak must be caught even though the
+        // audit config defaulted redaction off and the parent has no manifest.
+        let root = tempfile::tempdir().unwrap();
+        let child = root.path().join("sweep-a");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(
+            child.join("manifest.json"),
+            serde_json::to_string(&serde_json::json!({
+                "config": { "resolved": "[redaction]\nenabled = true\n" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write(
+            &child,
+            "step.output.txt",
+            "Authorization: Bearer my-internal-child-secret-token\n",
+        );
+        let mut cfg = Config::defaults().unwrap();
+        cfg.root.redaction.enabled = false;
+        let report = run_redact_audit(
+            &cfg,
+            &AuditOpts {
+                dir: root.path().to_path_buf(),
+                detectors: Some(vec![]),
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        // The oracle, enabled only by the child sweep's recorded config, must
+        // flag the secret in that child's artifact; the raw value must not leak.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file == "sweep-a/step.output.txt"),
+            "child-sweep recorded oracle not applied: {:?}",
+            report.findings
+        );
+        let json = format_json(&report).unwrap();
+        assert!(
+            !json.contains("my-internal-child-secret-token"),
+            "child secret leaked"
+        );
     }
 
     // ── PR #557 fifth-round review ────────────────────────────────────────

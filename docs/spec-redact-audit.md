@@ -34,7 +34,7 @@ agent redact-audit runs/my-sweep && publish-the-bundle
 |------|--------|
 | `<dir>` | Directory tree of sweep artifacts to scan (positional, required). |
 | `--config <PATH>` | TOML config; its `secret_literals` and `custom_patterns` are audited too. |
-| `--output <PATH>` | Where to write `redact_audit.json`. Default: `<dir>/redact_audit.json`. |
+| `--output <PATH>` | Where to write `redact_audit.json`. Default: `<dir>/redact_audit.json`. Refused (usage error) if it resolves to an existing audited source artifact — including via a symlink — since the command is detector-only and must never overwrite the sweep it scans. |
 | `--format human\|json` | stdout summary format (default `human`). |
 | `--json` | Shorthand for `--format json`. |
 | `--detectors a,b,c` | Run only the named detectors (default: all). |
@@ -49,6 +49,9 @@ The scanner walks the tree and inspects these file kinds:
 - `evaluation.json`, `results.json` (sweep summary)
 - `manifest.json`, `annotations.json` (bundle JSON `bench bundle` redaction-checks)
 - `all_preds.jsonl` and rerun variants `all_preds.run-<k>.jsonl`
+- event-log JSONL: `events.jsonl` and `*.events.jsonl` (the `--event-log`
+  append-only stream, which is redaction-surfaced but can still carry a leak;
+  see `docs/spec-event-log.md`)
 - `*.output.txt`
 - `*.patch` (submitted patches — first-class, frequently-shared artifacts)
 - exported `*.md`, `*.html`, `*.csv`, `*.mermaid`
@@ -127,6 +130,22 @@ recover with the CLI/default config. Specifically:
   from the sweep's own policy are still caught.
 - Any **non-redacted** recorded `secret_literals` / `custom_patterns` are added
   (when present verbatim, e.g. a hand-written or unredacted manifest).
+
+**Per-scope resolution.** The recorded config is resolved *per governing scope*,
+not just once at the top-level directory:
+
+- **Per child sweep directory.** Each artifact is governed by the nearest
+  ancestor directory (at or below the scanned root) that carries a
+  `manifest.json` / `results.json`. Auditing a `runs/` root that contains many
+  child sweeps therefore applies *each child's* recorded policy to that child's
+  artifacts — a child that recorded `enabled = true` enables the oracle for its
+  files even if the audit invocation defaulted redaction off. Resolved configs
+  are cached per governing directory.
+- **Per bundle.** A `.tar.gz` / `.tgz` bundle's own `manifest.json` /
+  `results.json` members are parsed first, and their recorded config is layered
+  on top of the bundle's governing-directory config before the other members are
+  scanned. A bundle that recorded `enabled = true` thus has the oracle applied to
+  its members even when the audit config has redaction off.
 
 > **Limitation — recorded literals and patterns are not recoverable from a
 > standard sweep.** The sweep writer redacts its own provenance before
