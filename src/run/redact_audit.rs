@@ -1159,8 +1159,9 @@ fn json_scan_object(
             }
             _ => {}
         }
-        let key_sensitive = json_scan_string(src, pos)
-            .is_some_and(|(ks, ke)| sensitive_json_key_kind(&json_decode_key(&src[ks..ke])).is_some());
+        let key_sensitive = json_scan_string(src, pos).is_some_and(|(ks, ke)| {
+            sensitive_json_key_kind(&json_decode_key(&src[ks..ke])).is_some()
+        });
         json_skip_ws(src, pos);
         if *pos < src.len() && src[*pos] == b':' {
             *pos += 1;
