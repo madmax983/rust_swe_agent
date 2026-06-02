@@ -965,8 +965,9 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
             // shareable `agent suite` aggregate; `tool-coverage.json`,
             // `test-progress.json` and `scriptability_check.json` are the `bench
             // tool-coverage` / `bench test-progress` / `bench scriptability-check`
-            // reports (redaction-surfaced tool/test/server names);
-            // `trajectory.json` is the legacy nested single-run layout;
+            // reports (redaction-surfaced tool/test/server names); `triage.json`
+            // is the `bench triage` cluster report (signatures from terminal
+            // signals); `trajectory.json` is the legacy nested single-run layout;
             // `manifest.json`, `annotations.json` and the `BUNDLE.json`
             // inventory (see `bundle::BUNDLE_MANIFEST_PATH`) are bundle JSON that
             // `bench bundle` redaction-checks before archiving — all read across
@@ -977,6 +978,7 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || name == "tool-coverage.json"
                 || name == "test-progress.json"
                 || name == "scriptability_check.json"
+                || name == "triage.json"
                 || name == "trajectory.json"
                 || name == "manifest.json"
                 || name == "annotations.json"
@@ -3819,6 +3821,27 @@ mod tests {
                 .any(|f| f.file.ends_with("scriptability_check.json")
                     && f.match_class == "aws_access_key"),
             "scriptability_check.json not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn audits_triage_json() {
+        // `bench triage` writes `triage.json`; its signatures derive from
+        // terminal signals, so a missed token there must not slip the gate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("triage.json"),
+            r#"{"clusters":[{"signature_summary":"panic: tok ghp_0123456789abcdefghijklmnopqrstuvwxyz"}]}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("triage.json") && f.match_class == "github_pat"),
+            "triage.json not audited: {:?}",
             report.findings
         );
     }

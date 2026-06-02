@@ -301,7 +301,9 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
         return Err(Error::Config(crate::error::ConfigError::Usage(format!(
             "redact-audit: --output '{}' would overwrite an audited source artifact; \
              choose a different path (the report is detector-only and must not mutate the sweep)",
-            out_path.display()
+            // The rejected path may itself embed a secret; mask it like other
+            // path-shaped report fields before it reaches stderr.
+            mask_report_path(&cfg, &out_path.display().to_string())
         ))));
     }
 

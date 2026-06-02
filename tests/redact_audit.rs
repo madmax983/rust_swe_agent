@@ -381,6 +381,35 @@ fn refuses_output_hardlinked_to_scanned_artifact() {
 }
 
 #[test]
+fn guard_rejection_masks_token_in_output_path() {
+    // The overwrite guard rejects an in-sweep audited path; if that path embeds
+    // a token, the usage error must mask it, not echo it raw to stderr.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leaky = dir
+        .path()
+        .join("ghp_0123456789abcdefghijklmnopqrstuvwxyz.output.txt");
+    std::fs::write(&leaky, "nothing sensitive\n").expect("write artifact");
+
+    let out = support::command()
+        .args(["agent", "redact-audit"])
+        .arg(dir.path())
+        .arg("--output")
+        .arg(&leaky)
+        .output()
+        .expect("run redact-audit");
+    assert_eq!(out.status.code(), Some(2), "expected usage_error exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("would overwrite an audited source artifact"),
+        "missing guard message: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+        "raw token leaked through guard rejection error: {stderr}"
+    );
+}
+
+#[test]
 fn help_lists_redact_audit() {
     let out = support::command()
         .args(["agent", "redact-audit", "--help"])
