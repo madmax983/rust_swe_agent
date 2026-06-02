@@ -347,6 +347,40 @@ fn allows_output_outside_scanned_dir() {
 }
 
 #[test]
+#[cfg(unix)]
+fn refuses_output_hardlinked_to_scanned_artifact() {
+    // `--output report` hard-linked to `<dir>/results.json` has a non-audited
+    // name but shares the artifact's inode; writing it would truncate the
+    // scanned artifact. The guard must refuse it via the inode check.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let artifact = dir.path().join("results.json");
+    std::fs::write(&artifact, r#"{"resolved":1,"note":"clean"}"#).expect("write results.json");
+    let before = std::fs::read(&artifact).expect("read before");
+    let link = dir.path().join("report");
+    std::fs::hard_link(&artifact, &link).expect("hard link");
+
+    let out = support::command()
+        .args(["agent", "redact-audit"])
+        .arg(dir.path())
+        .arg("--output")
+        .arg(&link)
+        .output()
+        .expect("run redact-audit");
+    assert_eq!(out.status.code(), Some(2), "expected usage_error exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("would overwrite an audited source artifact"),
+        "missing guard message: {stderr}"
+    );
+    // The shared inode (and thus the artifact) must be untouched.
+    let after = std::fs::read(&artifact).expect("read after");
+    assert_eq!(
+        before, after,
+        "scanned artifact was modified through hard link"
+    );
+}
+
+#[test]
 fn help_lists_redact_audit() {
     let out = support::command()
         .args(["agent", "redact-audit", "--help"])

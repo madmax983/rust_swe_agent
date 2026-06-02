@@ -262,8 +262,8 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
 
 fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     use crate::run::redact_audit::{
-        AuditFormat, AuditOpts, format_human, format_json, is_audited_file, parse_format,
-        run_redact_audit,
+        AuditFormat, AuditOpts, format_human, format_json, is_audited_file, mask_report_path,
+        output_aliases_scanned_artifact, parse_format, run_redact_audit,
     };
 
     let cfg = match &a.config {
@@ -281,9 +281,12 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     // instance `trajectory.json`) is rejected before the scan runs so the
     // completed sweep cannot be corrupted. A path outside the scanned tree (e.g.
     // `--output /tmp/results.json`) is never a scanned source artifact and is
-    // allowed even if its name looks audited. The canonical target is checked
-    // for both the containment test and the name test, so a symlink with a
-    // non-audited name (e.g. `report -> <dir>/results.json`) is still caught.
+    // allowed even if its name looks audited. Two checks catch a write that
+    // would mutate a scanned artifact: (1) the canonical target resolves inside
+    // the scanned tree under an audited name (covers a symlink such as
+    // `report -> <dir>/results.json`); (2) the output shares an on-disk inode
+    // with a scanned artifact (covers a hard link whose own name is not
+    // allowlisted), since `std::fs::write` would truncate the shared inode.
     let out_path = a
         .output
         .clone()
@@ -292,8 +295,8 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     let canonical_dir = std::fs::canonicalize(&a.dir).unwrap_or_else(|_| a.dir.clone());
     let inside_scan = resolved_out.starts_with(&canonical_dir);
     if out_path.exists()
-        && inside_scan
-        && (is_audited_file(&out_path) || is_audited_file(&resolved_out))
+        && ((inside_scan && (is_audited_file(&out_path) || is_audited_file(&resolved_out)))
+            || output_aliases_scanned_artifact(&a.dir, &out_path))
     {
         return Err(Error::Config(crate::error::ConfigError::Usage(format!(
             "redact-audit: --output '{}' would overwrite an audited source artifact; \
@@ -333,7 +336,7 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
         }
         eprintln!(
             "warning: redact-audit could not write report to {}: {e}",
-            out_path.display()
+            mask_report_path(&cfg, &out_path.display().to_string())
         );
     }
 

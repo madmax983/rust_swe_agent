@@ -607,7 +607,54 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     })
 }
 
-/// Per-governing-directory cache of merged redaction config + compiled matchers.
+/// Mask a path-shaped string for operator-facing messages, using the same
+/// detectors and `[REDACTED:…]` markers as report fields.
+///
+/// The CLI uses this for the output-write-failure warning so an operator-supplied
+/// `--output` path that embeds a provider token or configured literal is not
+/// echoed raw to stderr. Best-effort: if the detector registry or matchers fail
+/// to build, the original label is returned (the same config already drove the
+/// scan, so a failure here is purely defensive).
+pub(crate) fn mask_report_path(cfg: &Config, label: &str) -> String {
+    let Ok(detectors) = detector_registry() else {
+        return label.to_owned();
+    };
+    let Ok(configured) = ConfiguredMatchers::from_cfg(&cfg.root.redaction) else {
+        return label.to_owned();
+    };
+    mask_label(label, &detectors, &configured)
+}
+
+/// `true` when an existing `out_path` is the same on-disk inode as any audited
+/// source artifact under `scan_dir`.
+///
+/// This catches a hard link (or symlink) whose own name is *not* allowlisted but
+/// which shares an inode with a scanned artifact — e.g. `report` hard-linked to
+/// `<dir>/results.json`. Writing such a path with `std::fs::write` would truncate
+/// the scanned artifact through the shared inode, violating the detector-only
+/// contract. Unix-only; on other platforms hard links to audited artifacts are
+/// not a practical concern, so it returns `false`.
+#[cfg(unix)]
+pub(crate) fn output_aliases_scanned_artifact(scan_dir: &Path, out_path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(out_meta) = std::fs::metadata(out_path) else {
+        return false;
+    };
+    let target = (out_meta.dev(), out_meta.ino());
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    collect_files(scan_dir, scan_dir, &mut files, &mut errors);
+    files.iter().any(|p| {
+        std::fs::metadata(p)
+            .map(|m| (m.dev(), m.ino()) == target)
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn output_aliases_scanned_artifact(_scan_dir: &Path, _out_path: &Path) -> bool {
+    false
+}
 ///
 /// Resolving the recorded config and compiling a `Redactor` is not free, and a
 /// recursive audit typically has only a handful of distinct sweep directories,
@@ -875,9 +922,10 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
             }
             // First-class sweep/bundle artifacts named exactly. `results.json`
             // is the `sweep_results` summary; `suite-results.json` is the
-            // shareable `agent suite` aggregate; `tool-coverage.json` is the
-            // `bench tool-coverage` report (redaction-surfaced tool/server
-            // names); `trajectory.json` is the legacy nested single-run layout;
+            // shareable `agent suite` aggregate; `tool-coverage.json` and
+            // `test-progress.json` are the `bench tool-coverage` / `bench
+            // test-progress` reports (redaction-surfaced tool/test names);
+            // `trajectory.json` is the legacy nested single-run layout;
             // `manifest.json`, `annotations.json` and the `BUNDLE.json`
             // inventory (see `bundle::BUNDLE_MANIFEST_PATH`) are bundle JSON that
             // `bench bundle` redaction-checks before archiving — all read across
@@ -886,6 +934,7 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 || name == "results.json"
                 || name == "suite-results.json"
                 || name == "tool-coverage.json"
+                || name == "test-progress.json"
                 || name == "trajectory.json"
                 || name == "manifest.json"
                 || name == "annotations.json"
@@ -2620,6 +2669,40 @@ mod tests {
         assert!(
             files.iter().any(|f| f.ends_with("BUNDLE.json")),
             "BUNDLE.json inventory not audited: {files:?}"
+        );
+    }
+
+    #[test]
+    fn audits_test_progress_json() {
+        // `bench test-progress` writes a redaction-surfaced `test-progress.json`;
+        // a token in a hot test name must not slip the publish gate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("test-progress.json"),
+            r#"{"hot":[{"test":"t AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report.findings.iter().any(
+                |f| f.file.ends_with("test-progress.json") && f.match_class == "aws_access_key"
+            ),
+            "test-progress.json not audited: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn mask_report_path_masks_tokens() {
+        // The CLI write-failure warning runs the `--output` path through this;
+        // a token in the path must be masked before it reaches stderr.
+        let masked = mask_report_path(
+            &default_cfg(),
+            "/tmp/ghp_0123456789abcdefghijklmnopqrstuvwxyz/out.json",
+        );
+        assert!(
+            !masked.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "token left raw in masked report path: {masked}"
         );
     }
 
