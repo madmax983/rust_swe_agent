@@ -723,7 +723,7 @@ fn collect_files_inner(
 }
 
 /// `true` for the artifact kinds the auditor scans.
-fn is_audited_file(path: &Path) -> bool {
+pub(crate) fn is_audited_file(path: &Path) -> bool {
     const SUFFIXES: [&str; 7] = [
         ".traj.json",
         ".output.txt",

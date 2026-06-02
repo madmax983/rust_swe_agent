@@ -284,6 +284,36 @@ fn scans_gzip_bundle_members() {
 }
 
 #[test]
+fn refuses_output_overwriting_scanned_artifact() {
+    // `--output <dir>/results.json` would clobber a scanned source artifact;
+    // the detector-only command must refuse before mutating the sweep.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("results.json"),
+        r#"{"resolved":42,"note":"all 42 tests passed"}"#,
+    )
+    .expect("write results.json");
+    let before = std::fs::read(dir.path().join("results.json")).expect("read before");
+
+    let out = support::command()
+        .args(["agent", "redact-audit"])
+        .arg(dir.path())
+        .arg("--output")
+        .arg(dir.path().join("results.json"))
+        .output()
+        .expect("run redact-audit");
+    assert_eq!(out.status.code(), Some(2), "expected usage_error exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("would overwrite an audited source artifact"),
+        "missing guard message: {stderr}"
+    );
+    // The original artifact must be untouched.
+    let after = std::fs::read(dir.path().join("results.json")).expect("read after");
+    assert_eq!(before, after, "scanned artifact was modified");
+}
+
+#[test]
 fn help_lists_redact_audit() {
     let out = support::command()
         .args(["agent", "redact-audit", "--help"])

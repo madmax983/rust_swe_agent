@@ -262,7 +262,8 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
 
 fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     use crate::run::redact_audit::{
-        AuditFormat, AuditOpts, format_human, format_json, parse_format, run_redact_audit,
+        AuditFormat, AuditOpts, format_human, format_json, is_audited_file, parse_format,
+        run_redact_audit,
     };
 
     let cfg = match &a.config {
@@ -271,6 +272,24 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     };
 
     let format = parse_format(a.json, a.format.as_str())?;
+
+    // Resolve the report path up front and refuse to overwrite a scanned source
+    // artifact: `redact-audit` is detector-only and must never mutate the sweep
+    // it audits. The default `redact_audit.json` is never itself audited, so it
+    // is always allowed; any other path that resolves to an existing audited
+    // artifact (e.g. `<dir>/results.json`, an instance `trajectory.json`) is
+    // rejected before the scan runs so the completed sweep cannot be corrupted.
+    let out_path = a
+        .output
+        .clone()
+        .unwrap_or_else(|| a.dir.join("redact_audit.json"));
+    if is_audited_file(&out_path) && out_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+            "redact-audit: --output '{}' would overwrite an audited source artifact; \
+             choose a different path (the report is detector-only and must not mutate the sweep)",
+            out_path.display()
+        ))));
+    }
 
     let opts = AuditOpts {
         dir: a.dir.clone(),
@@ -281,12 +300,6 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
 
     let report = run_redact_audit(&cfg, &opts)?;
 
-    // Always persist the deterministic JSON report. Default location is inside
-    // the scanned directory; `redact_audit.json` is never itself audited.
-    let out_path = a
-        .output
-        .clone()
-        .unwrap_or_else(|| a.dir.join("redact_audit.json"));
     let json = format_json(&report).map_err(Error::Json)?;
     let exit_code = report.exit_code();
 
