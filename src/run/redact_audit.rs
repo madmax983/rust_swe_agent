@@ -2434,11 +2434,9 @@ mod tests {
         .unwrap();
         let report = audit(dir.path());
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.file.ends_with("suite-results.json")
-                    && f.match_class == "aws_access_key"),
+            report.findings.iter().any(
+                |f| f.file.ends_with("suite-results.json") && f.match_class == "aws_access_key"
+            ),
             "suite-results.json not audited: {:?}",
             report.findings
         );
