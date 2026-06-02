@@ -798,7 +798,7 @@ fn collect_files_inner(
 
 /// `true` for the artifact kinds the auditor scans.
 pub(crate) fn is_audited_file(path: &Path) -> bool {
-    const SUFFIXES: [&str; 7] = [
+    const SUFFIXES: [&str; 8] = [
         ".traj.json",
         ".output.txt",
         ".patch",
@@ -806,6 +806,13 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
         ".html",
         ".csv",
         ".mermaid",
+        // Any JSON-Lines artifact. `--event-log <PATH>` is operator-chosen with
+        // no filename restriction (it writes `schema:"event-log-v1"` records to
+        // e.g. `run.log.jsonl` or `stream.jsonl`), and rerun sweeps write
+        // `all_preds.run-<k>.jsonl`; auditing every `.jsonl` under the sweep
+        // covers those event streams and prediction files without relying on
+        // example names. `collect_json_sensitive_keys` parses JSONL by content.
+        ".jsonl",
     ];
     path.file_name()
         .and_then(|n| n.to_str())
@@ -814,22 +821,17 @@ pub(crate) fn is_audited_file(path: &Path) -> bool {
                 return false;
             }
             // First-class sweep/bundle artifacts named exactly. `results.json`
-            // is the `sweep_results` summary; `trajectory.json` is the legacy
+            // is the `sweep_results` summary; `suite-results.json` is the
+            // shareable `agent suite` aggregate; `trajectory.json` is the legacy
             // nested single-run layout; `manifest.json` and `annotations.json`
             // are bundle-only JSON that `bench bundle` redaction-checks before
             // archiving — all read across the repo and worth scanning by name.
             name == "evaluation.json"
                 || name == "results.json"
+                || name == "suite-results.json"
                 || name == "trajectory.json"
                 || name == "manifest.json"
                 || name == "annotations.json"
-                || (name.starts_with("all_preds") && name.ends_with(".jsonl"))
-                // `--event-log` writes append-only JSONL (`event-log-v1`) through
-                // the same redaction sink; a surfaced leak can still land here.
-                // The path is operator-chosen but documented as `events.jsonl` /
-                // `<name>.events.jsonl` (see docs/spec-event-log.md).
-                || name == "events.jsonl"
-                || name.ends_with(".events.jsonl")
                 || SUFFIXES.iter().any(|s| name.ends_with(s))
                 || is_bundle(path)
         })
@@ -1424,6 +1426,41 @@ fn json_skip_primitive(src: &[u8], pos: &mut usize) {
     }
 }
 
+/// Mask any detected secret that appears in a *path label* before it is stored
+/// in a finding's `file` field.
+///
+/// A secret can leak through the path itself — an operator-named event log such
+/// as `ghp_<token>.jsonl`, or a dataset instance id carrying a provider-shaped
+/// token — not only through file *contents*. Copying the raw relative path into
+/// the report would violate the command's no-raw-secrets contract, so every
+/// `file` label is run through the same structured / configured / oracle
+/// detectors and matched spans are replaced with `[REDACTED:…]` markers.
+///
+/// The entropy heuristic is intentionally *not* applied to labels: ordinary run
+/// directories contain high-entropy-looking segments (uuids, content hashes)
+/// that are not secrets, and mangling them would make findings hard to locate.
+fn mask_label(label: &str, detectors: &[Detector], configured: &ConfiguredMatchers) -> String {
+    let mut candidates: Vec<RawMatch> = Vec::new();
+    collect_detector_matches(label, detectors, &mut candidates);
+    collect_configured_matches(label, configured, &mut candidates);
+    collect_redactor_oracle_matches(label, configured, &mut candidates);
+    let kept = filter_overlaps(candidates);
+    if kept.is_empty() {
+        return label.to_owned();
+    }
+    let mut ordered = kept;
+    ordered.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    let mut out = String::with_capacity(label.len());
+    let mut last = 0usize;
+    for c in &ordered {
+        out.push_str(&label[last..c.start]);
+        out.push_str(&marker(c.match_class, &label[c.start..c.end]));
+        last = c.end;
+    }
+    out.push_str(&label[last..]);
+    out
+}
+
 /// Scan one text blob, appending findings for `file_label`.
 ///
 /// Safety model: the preview source is a copy of `text` with the **union of
@@ -1439,6 +1476,8 @@ fn scan_text(
     configured: &ConfiguredMatchers,
     out: &mut Vec<Finding>,
 ) {
+    // A secret in the artifact path must not be printed raw in the `file` field.
+    let file_label = mask_label(file_label, detectors, configured);
     // Phase 1: structured detectors — built-in regex, configured literals /
     // custom patterns, the runtime-redactor oracle (bearer / env-assignment /
     // env-value), and the JSON sensitive-key walk. These always win over entropy.
@@ -1476,7 +1515,7 @@ fn scan_text(
     for c in &reported {
         let (span_start, span_end) = masked.region_for(c.start);
         out.push(Finding {
-            file: file_label.to_owned(),
+            file: file_label.clone(),
             byte_offset: c.start,
             line: line_at(text, c.start),
             detector_id: c.detector_id.to_owned(),
@@ -2379,6 +2418,91 @@ mod tests {
         assert!(
             files.iter().any(|f| f.ends_with("trajectory.json")),
             "legacy trajectory.json not audited: {files:?}"
+        );
+    }
+
+    #[test]
+    fn audits_suite_results_json() {
+        // `agent suite` writes a shareable, redaction-surfaced
+        // `suite-results.json`; a provider token in a task id / stop reason /
+        // trajectory path inside it must not slip the publish gate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("suite-results.json"),
+            r#"{"tasks":[{"stop_reason":"failed: AKIAIOSFODNN7EXAMPLE"}]}"#,
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("suite-results.json")
+                    && f.match_class == "aws_access_key"),
+            "suite-results.json not audited: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn audits_operator_named_event_log_jsonl() {
+        // `--event-log <PATH>` is operator-chosen with no filename restriction;
+        // a sweep may write its `schema:"event-log-v1"` stream as e.g.
+        // `run.log.jsonl`. Auditing every `.jsonl` covers these by content.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("run.log.jsonl"),
+            "{\"schema\":\"event-log-v1\",\"msg\":\"tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz\"}\n",
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("run.log.jsonl") && f.match_class == "github_pat"),
+            "operator-named event-log jsonl not audited: {:?}",
+            report.findings
+        );
+        assert_eq!(report.exit_code(), ExitCode::RedactAuditFindings);
+    }
+
+    #[test]
+    fn masks_secret_in_artifact_path() {
+        // A secret can appear in the artifact *path* (an operator-named file or
+        // a dataset instance id), not only in its contents. The report's `file`
+        // field must never print the raw token.
+        let dir = tempfile::tempdir().unwrap();
+        let leaky_dir = dir.path().join("ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+        std::fs::create_dir_all(&leaky_dir).unwrap();
+        std::fs::write(
+            leaky_dir.join("x.output.txt"),
+            "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+        )
+        .unwrap();
+        let report = audit(dir.path());
+        // The content leak is still detected.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "aws_access_key"),
+            "content leak missed: {:?}",
+            report.findings
+        );
+        // The raw token in the path is masked everywhere it is reported.
+        for f in &report.findings {
+            assert!(
+                !f.file.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+                "raw token leaked through path label: {}",
+                f.file
+            );
+        }
+        let json = format_json(&report).unwrap();
+        assert!(
+            !json.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "raw path token leaked into JSON report"
         );
     }
 
