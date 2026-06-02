@@ -449,7 +449,7 @@ impl Redactor {
 
     /// Run redaction and return per-match annotations for operator verification.
     ///
-    /// Unlike [`redact_text`], this method does not update surface-level telemetry
+    /// Unlike [`Redactor::redact_text`], this method does not update surface-level telemetry
     /// counts and does not require a surface label. It is designed for the
     /// `agent redact-check` preflight command.
     #[must_use]
