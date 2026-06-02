@@ -103,10 +103,33 @@ pub enum PatchValidationFailure {
     ApplyFailed(String),
 }
 
+/// Selects which agent backend drives a single-task run.
+///
+/// The harness ships a built-in bash-first loop, but operators exploring
+/// "could a more capable coding agent drive this loop and still produce an
+/// inspectable trajectory?" can swap in the Claude Code CLI without losing
+/// the `.traj.json` artifact, patch capture, or verification machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum RunDriver {
+    /// The native bash-only agent loop that calls the configured `Model`
+    /// directly. This is the default and the only fully-deterministic path.
+    #[default]
+    Builtin,
+    /// Drive the `claude` CLI (Claude Code) in headless `stream-json` mode
+    /// as the agent, translating its message stream into the harness
+    /// trajectory. Local environment only.
+    ClaudeCode,
+}
+
 pub struct MiniArgs {
     pub task: String,
     pub extra_context: Option<String>,
     pub config: Config,
+    /// Which agent backend drives the loop. `Builtin` is the bash-first
+    /// loop that calls the `Model` trait directly; `ClaudeCode` shells out
+    /// to the Claude Code CLI and translates its stream into the same
+    /// trajectory artifact. See `docs/spec-claude-driver.md`.
+    pub driver: RunDriver,
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
@@ -368,6 +391,19 @@ fn build_mini_manifest(
 
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
+    // The Claude Code driver shells out to the host `claude` binary and edits
+    // the host working tree directly; it has no path into a Docker sandbox.
+    // Fail fast with a clear message rather than silently ignoring `--env docker`.
+    if args.driver == RunDriver::ClaudeCode
+        && matches!(args.config.root.environment.kind, EnvKind::Docker)
+    {
+        return Err(Error::Config(ConfigError::Invalid(
+            "--driver claude-code is only supported with the local environment, \
+             not --env docker"
+                .into(),
+        )));
+    }
+
     std::fs::create_dir_all(&args.output_dir)?;
 
     // Capture provenance data before any async/fallible work so the manifest
@@ -804,7 +840,24 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
     // record of what happened — then propagate.
-    let mut run_result = run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await;
+    //
+    // The driver selection swaps *only* the loop that fills the trajectory:
+    // patch capture, verification, and the final write below are identical
+    // for both backends, so the Claude-Code path produces the same artifacts.
+    let mut run_result = match args.driver {
+        RunDriver::Builtin => {
+            run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await
+        }
+        RunDriver::ClaudeCode => {
+            crate::run::claude_driver::drive(
+                &mut agent,
+                args.task.clone(),
+                args.local_workdir.as_deref(),
+                args.task_timeout_secs,
+            )
+            .await
+        }
+    };
     if let Err(e) = &run_result {
         finalize_error_trajectory(&mut agent, e);
     }
@@ -2449,6 +2502,7 @@ index 8a1218a..24c5735 100644\n\
 
         // Resume args: one deterministic response (the submit) for the 4th step.
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: partial.info.task.clone().unwrap(),
             extra_context: None,
             config: cfg,
@@ -2618,6 +2672,7 @@ index 8a1218a..24c5735 100644\n\
         // Step 1: Run the "parent" with a deterministic submit, producing a
         // terminal trajectory.
         let parent_args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "fix the original bug".into(),
             extra_context: None,
             config: cfg.clone(),
@@ -2675,6 +2730,7 @@ index 8a1218a..24c5735 100644\n\
 
         // Step 3: Run the continuation — one deterministic submit response.
         let child_args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "also fix the edge case".into(),
             extra_context: None,
             config: cfg,
@@ -2786,6 +2842,7 @@ index 8a1218a..24c5735 100644\n\
         cfg.root.agent.step_limit = 5;
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "do nothing".into(),
             extra_context: None,
             config: cfg,
@@ -2884,6 +2941,7 @@ index 8a1218a..24c5735 100644\n\
         };
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "edit then submit".into(),
             extra_context: None,
             config: cfg,
@@ -2977,6 +3035,7 @@ index 8a1218a..24c5735 100644\n\
         let mut cfg = crate::config::Config::defaults().unwrap();
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3045,6 +3104,7 @@ index 8a1218a..24c5735 100644\n\
         let mut cfg = crate::config::Config::defaults().unwrap();
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3114,6 +3174,7 @@ index 8a1218a..24c5735 100644\n\
         });
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3233,6 +3294,7 @@ index 8a1218a..24c5735 100644\n\
         traj_name: &str,
     ) -> MiniArgs {
         MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
             task: "test-manifest-task".into(),
             extra_context: None,
             config: crate::config::Config::defaults().unwrap(),

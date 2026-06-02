@@ -18,6 +18,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         task: "Say hello".to_owned(),
         extra_context: None,
         config: cfg,
+        driver: super::mini::RunDriver::Builtin,
         output_dir: output_dir.clone(),
         trajectory_name: "hello-world".into(),
         deterministic_responses: Some(vec![

@@ -20,6 +20,7 @@ fn mini_args(work: &tempfile::TempDir, name: &str, checks: Vec<VerificationCheck
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 5;
     MiniArgs {
+        driver: maxwells_daemon::run::mini::RunDriver::Builtin,
         task: "test task".into(),
         extra_context: None,
         config: cfg,

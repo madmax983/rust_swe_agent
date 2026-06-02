@@ -462,6 +462,13 @@ pub struct MiniCmd {
     #[arg(long)]
     pub extra_context: Option<String>,
 
+    /// Agent backend that drives the loop. `builtin` (default) is the
+    /// bash-first loop that calls the model directly; `claude-code` shells
+    /// out to the Claude Code CLI and translates its stream into the same
+    /// trajectory artifact (local env only). See `docs/spec-claude-driver.md`.
+    #[arg(long, value_enum, default_value_t = crate::run::mini::RunDriver::Builtin)]
+    pub driver: crate::run::mini::RunDriver,
+
     /// Model name (e.g. `claude-opus-4-7`).
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,
