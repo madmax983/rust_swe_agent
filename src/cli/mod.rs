@@ -277,16 +277,24 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
     // artifact: `redact-audit` is detector-only and must never mutate the sweep
     // it audits. The default `redact_audit.json` is never itself audited, so it
     // is always allowed; any other path that resolves to an existing audited
-    // artifact (e.g. `<dir>/results.json`, an instance `trajectory.json`) is
-    // rejected before the scan runs so the completed sweep cannot be corrupted.
-    // Check the canonical target too: a symlink with a non-audited name (e.g.
-    // `report -> results.json`) is still followed by `std::fs::write`.
+    // artifact *inside the scanned directory* (e.g. `<dir>/results.json`, an
+    // instance `trajectory.json`) is rejected before the scan runs so the
+    // completed sweep cannot be corrupted. A path outside the scanned tree (e.g.
+    // `--output /tmp/results.json`) is never a scanned source artifact and is
+    // allowed even if its name looks audited. The canonical target is checked
+    // for both the containment test and the name test, so a symlink with a
+    // non-audited name (e.g. `report -> <dir>/results.json`) is still caught.
     let out_path = a
         .output
         .clone()
         .unwrap_or_else(|| a.dir.join("redact_audit.json"));
     let resolved_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
-    if out_path.exists() && (is_audited_file(&out_path) || is_audited_file(&resolved_out)) {
+    let canonical_dir = std::fs::canonicalize(&a.dir).unwrap_or_else(|_| a.dir.clone());
+    let inside_scan = resolved_out.starts_with(&canonical_dir);
+    if out_path.exists()
+        && inside_scan
+        && (is_audited_file(&out_path) || is_audited_file(&resolved_out))
+    {
         return Err(Error::Config(crate::error::ConfigError::Usage(format!(
             "redact-audit: --output '{}' would overwrite an audited source artifact; \
              choose a different path (the report is detector-only and must not mutate the sweep)",

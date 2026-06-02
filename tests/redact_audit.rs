@@ -314,6 +314,39 @@ fn refuses_output_overwriting_scanned_artifact() {
 }
 
 #[test]
+fn allows_output_outside_scanned_dir() {
+    // `--output` pointing at an existing audited-looking file *outside* the
+    // scanned tree is not a source artifact and must be allowed: writing it
+    // cannot mutate the sweep being audited.
+    let sweep = tempfile::tempdir().expect("sweep dir");
+    std::fs::write(sweep.path().join("x.output.txt"), "nothing sensitive\n")
+        .expect("write artifact");
+    let elsewhere = tempfile::tempdir().expect("output dir");
+    let out_file = elsewhere.path().join("results.json");
+    std::fs::write(&out_file, "{}").expect("seed output file");
+
+    let out = support::command()
+        .args(["agent", "redact-audit"])
+        .arg(sweep.path())
+        .arg("--output")
+        .arg(&out_file)
+        .output()
+        .expect("run redact-audit");
+    // Clean sweep -> success; the guard must not have rejected the outside path.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "outside-dir --output was rejected: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let written = std::fs::read_to_string(&out_file).expect("report written");
+    assert!(
+        written.contains("\"redact_audit\""),
+        "report not written to outside path: {written}"
+    );
+}
+
+#[test]
 fn help_lists_redact_audit() {
     let out = support::command()
         .args(["agent", "redact-audit", "--help"])

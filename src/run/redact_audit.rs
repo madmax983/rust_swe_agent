@@ -531,6 +531,12 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     }
 
     let detectors = select_detectors(opts)?;
+    // The *full* detector registry (honouring only `--disable-entropy`), used to
+    // scrub previews and path labels. `--detectors` narrows which findings are
+    // *reported*, but a secret of an unselected family sitting next to a reported
+    // one must still never survive raw in a preview or label, so masking always
+    // runs every family. Reported findings still come from `detectors` alone.
+    let mask_detectors = full_mask_detectors(opts)?;
     // Audit with the union of the CLI/default `[redaction]` config and each
     // *scope's* recorded resolved config. The recorded policy is resolved per
     // governing sweep directory (the nearest ancestor with `manifest.json` /
@@ -562,7 +568,15 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     for path in files {
         let gov = governing_sweep_dir(&path, &opts.dir);
         let (gov_cfg, configured) = scopes.resolve(&gov)?;
-        scan_one(&path, &opts.dir, &detectors, gov_cfg, configured, &mut acc);
+        scan_one(
+            &path,
+            &opts.dir,
+            &detectors,
+            &mask_detectors,
+            gov_cfg,
+            configured,
+            &mut acc,
+        );
     }
 
     finalize(&mut acc.findings);
@@ -572,7 +586,7 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
     // (e.g. `ghp_….output.txt: cannot read file`) as well as a finding label;
     // mask both so the report honors the no-raw-secrets contract everywhere.
     for e in &mut acc.scan_errors {
-        *e = mask_label(e, &detectors, &base_configured);
+        *e = mask_label(e, &mask_detectors, &base_configured);
     }
 
     let summary = summarize(&acc.findings);
@@ -581,7 +595,7 @@ pub fn run_redact_audit(cfg: &Config, opts: &AuditOpts) -> Result<AuditReport, E
         schema_version: REDACT_AUDIT_SCHEMA_VERSION,
         scanned_dir: mask_label(
             &opts.dir.display().to_string(),
-            &detectors,
+            &mask_detectors,
             &base_configured,
         ),
         files_scanned: acc.files_scanned,
@@ -653,13 +667,14 @@ fn scan_one(
     path: &Path,
     base: &Path,
     detectors: &[Detector],
+    mask_detectors: &[Detector],
     gov_cfg: &RedactionCfg,
     configured: &ConfiguredMatchers,
     acc: &mut ScanAcc,
 ) {
     let rel = display_relative(base, path);
     if is_bundle(path) {
-        match scan_bundle(path, &rel, detectors, gov_cfg) {
+        match scan_bundle(path, &rel, detectors, mask_detectors, gov_cfg) {
             Ok((mut found, scanned, lines, mut member_errors)) => {
                 acc.findings.append(&mut found);
                 acc.files_scanned += scanned;
@@ -673,11 +688,34 @@ fn scan_one(
             Ok(text) => {
                 acc.files_scanned += 1;
                 acc.lines_scanned += line_count(&text);
-                scan_text(&text, &rel, detectors, configured, &mut acc.findings);
+                scan_text(
+                    &text,
+                    &rel,
+                    detectors,
+                    mask_detectors,
+                    configured,
+                    &mut acc.findings,
+                );
             }
             Err(msg) => acc.scan_errors.push(msg),
         }
     }
+}
+
+/// The full detector registry used for *masking* (preview/label scrubbing),
+/// honouring only `--disable-entropy`. Unlike [`select_detectors`], `--detectors`
+/// never narrows this set: masking must cover every family so a secret of an
+/// unselected class cannot survive raw in a preview window or path label.
+fn full_mask_detectors(opts: &AuditOpts) -> Result<Vec<Detector>, Error> {
+    let mut all = detector_registry().map_err(|e| {
+        Error::Config(ConfigError::Invalid(format!(
+            "internal detector regex failed to compile: {e}"
+        )))
+    })?;
+    if opts.disable_entropy {
+        all.retain(|d| !matches!(d.kind, DetectorKind::Entropy));
+    }
+    Ok(all)
 }
 
 /// Resolve the active detector set from `--detectors` / `--disable-entropy`.
@@ -887,6 +925,7 @@ fn scan_bundle(
     path: &Path,
     rel: &str,
     detectors: &[Detector],
+    mask_detectors: &[Detector],
     gov_cfg: &RedactionCfg,
 ) -> Result<BundleScan, String> {
     // First pass: recover the bundle's *own* recorded redaction config from its
@@ -948,7 +987,14 @@ fn scan_bundle(
         let text = String::from_utf8_lossy(&bytes).into_owned();
         scanned += 1;
         lines += line_count(&text);
-        scan_text(&text, &member_label, detectors, &configured, &mut findings);
+        scan_text(
+            &text,
+            &member_label,
+            detectors,
+            mask_detectors,
+            &configured,
+            &mut findings,
+        );
     }
     Ok((findings, scanned, lines, member_errors))
 }
@@ -1453,8 +1499,14 @@ fn json_skip_primitive(src: &[u8], pos: &mut usize) {
 /// as `ghp_<token>.jsonl`, or a dataset instance id carrying a provider-shaped
 /// token — not only through file *contents*. Copying the raw relative path into
 /// the report would violate the command's no-raw-secrets contract, so every
-/// `file` label is run through the same structured / configured / oracle
-/// detectors and matched spans are replaced with `[REDACTED:…]` markers.
+/// `file` label is run through the structured / configured / oracle detectors
+/// and matched spans are replaced with `[REDACTED:…]` markers.
+///
+/// Masking uses [`build_masked`] so the **union** of every candidate span is
+/// replaced: when a configured literal overlaps a longer provider token (e.g.
+/// `token=ghp_…` where `token=ghp_0123` is also a configured literal), the whole
+/// maximal region is masked rather than only the span the overlap filter would
+/// have kept, so no raw secret suffix survives in the label.
 ///
 /// The entropy heuristic is intentionally *not* applied to labels: ordinary run
 /// directories contain high-entropy-looking segments (uuids, content hashes)
@@ -1464,60 +1516,77 @@ fn mask_label(label: &str, detectors: &[Detector], configured: &ConfiguredMatche
     collect_detector_matches(label, detectors, &mut candidates);
     collect_configured_matches(label, configured, &mut candidates);
     collect_redactor_oracle_matches(label, configured, &mut candidates);
-    let kept = filter_overlaps(candidates);
-    if kept.is_empty() {
+    if candidates.is_empty() {
         return label.to_owned();
     }
-    let mut ordered = kept;
-    ordered.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
-    let mut out = String::with_capacity(label.len());
-    let mut last = 0usize;
-    for c in &ordered {
-        out.push_str(&label[last..c.start]);
-        out.push_str(&marker(c.match_class, &label[c.start..c.end]));
-        last = c.end;
-    }
-    out.push_str(&label[last..]);
-    out
+    build_masked(label, &candidates).text
 }
 
 /// Scan one text blob, appending findings for `file_label`.
 ///
+/// `detectors` is the *reported* set (narrowed by `--detectors`); `mask_detectors`
+/// is the full registry used only to scrub previews and labels.
+///
 /// Safety model: the preview source is a copy of `text` with the **union of
-/// every detected span** (structured + entropy, *before* overlap de-duplication)
-/// replaced by markers. Because that copy contains no raw secret bytes anywhere
-/// — even bytes belonging to a longer span the overlap filter dropped in favour
-/// of an earlier, shorter one — no preview can leak a raw secret regardless of
-/// which span is reported.
+/// every detected span** — across *every* detector family, not just the reported
+/// ones, and before overlap de-duplication — replaced by markers. Because that
+/// copy contains no raw secret bytes anywhere (not from a longer span the overlap
+/// filter dropped, nor from an unselected family's secret sitting beside a
+/// reported one), no preview can leak a raw secret regardless of which span is
+/// reported or which detectors `--detectors` selected.
 fn scan_text(
     text: &str,
     file_label: &str,
     detectors: &[Detector],
+    mask_detectors: &[Detector],
     configured: &ConfiguredMatchers,
     out: &mut Vec<Finding>,
 ) {
     // A secret in the artifact path must not be printed raw in the `file` field.
-    let file_label = mask_label(file_label, detectors, configured);
-    // Phase 1: structured detectors — built-in regex, configured literals /
-    // custom patterns, the runtime-redactor oracle (bearer / env-assignment /
-    // env-value), and the JSON sensitive-key walk. These always win over entropy.
-    let mut structured: Vec<RawMatch> = Vec::new();
-    collect_detector_matches(text, detectors, &mut structured);
-    collect_configured_matches(text, configured, &mut structured);
-    collect_redactor_oracle_matches(text, configured, &mut structured);
-    collect_json_sensitive_keys(text, &mut structured);
-    let kept_structured = filter_overlaps(structured.clone());
+    let file_label = mask_label(file_label, mask_detectors, configured);
+
+    // Config-driven matches (configured literals / custom patterns, the runtime
+    // redactor oracle, and the JSON sensitive-key walk) are independent of
+    // `--detectors` and always both reported and masked.
+    let mut base: Vec<RawMatch> = Vec::new();
+    collect_configured_matches(text, configured, &mut base);
+    collect_redactor_oracle_matches(text, configured, &mut base);
+    collect_json_sensitive_keys(text, &mut base);
+
+    // Built-in regex matches across the *full* registry, collected once. The
+    // reported subset is filtered by the selected detector ids; the mask uses all.
+    let mut all_regex: Vec<RawMatch> = Vec::new();
+    collect_detector_matches(text, mask_detectors, &mut all_regex);
+    let selected_ids: BTreeSet<&str> = detectors.iter().map(|d| d.id).collect();
+
+    // Phase 1: structured matches that win over entropy (base + selected regex).
+    let mut structured: Vec<RawMatch> = base.clone();
+    structured.extend(
+        all_regex
+            .iter()
+            .filter(|m| selected_ids.contains(m.detector_id))
+            .copied(),
+    );
+    let kept_structured = filter_overlaps(structured);
 
     // Phase 2: the entropy heuristic only fills gaps the structured pass left,
-    // so a greedy high-entropy token can never shadow a precise key match.
-    let mut entropy = Vec::new();
-    if let Some(det) = detectors
+    // so a greedy high-entropy token can never shadow a precise key match. Run it
+    // once from the full set; report it only when entropy is among the selected.
+    let mut all_entropy: Vec<RawMatch> = Vec::new();
+    if let Some(det) = mask_detectors
         .iter()
         .find(|d| matches!(d.kind, DetectorKind::Entropy))
     {
-        collect_entropy_matches(text, det, &mut entropy);
+        collect_entropy_matches(text, det, &mut all_entropy);
     }
-    let mut entropy_for_report = entropy.clone();
+    let entropy_selected = detectors
+        .iter()
+        .any(|d| matches!(d.kind, DetectorKind::Entropy));
+    let mut entropy_for_report = if entropy_selected {
+        all_entropy.clone()
+    } else {
+        Vec::new()
+    };
     entropy_for_report.retain(|e| !kept_structured.iter().any(|s| overlaps(s, e)));
     let kept_entropy = filter_overlaps(entropy_for_report);
 
@@ -1526,10 +1595,12 @@ fn scan_text(
     reported.extend(kept_entropy);
     reported.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
 
-    // Preview source: mask the *union* of every candidate span (including the
-    // ones the overlap filter dropped), so no raw secret byte survives.
-    let mut mask: Vec<RawMatch> = structured;
-    mask.extend(entropy);
+    // Preview source: mask the *union* of every candidate span across the full
+    // registry (including spans the overlap filter dropped), so no raw secret
+    // byte survives — even one belonging to an unselected detector family.
+    let mut mask: Vec<RawMatch> = base;
+    mask.extend(all_regex);
+    mask.extend(all_entropy);
     let masked = build_masked(text, &mask);
 
     for c in &reported {
@@ -2601,6 +2672,71 @@ mod tests {
                 "raw token leaked through scan error: {e}"
             );
         }
+    }
+
+    #[test]
+    fn mask_label_masks_overlapping_configured_literal_union() {
+        // A configured literal that overlaps (but neither contains nor is
+        // contained by) a longer provider token in a path must mask the whole
+        // union, not just the kept span — otherwise the token's suffix stays raw.
+        let detectors = detector_registry().unwrap();
+        let mut rcfg = default_cfg().root.redaction;
+        rcfg.enabled = true;
+        rcfg.secret_literals = vec!["token=ghp_0123".to_owned()];
+        let configured = ConfiguredMatchers::from_cfg(&rcfg).unwrap();
+        let label = "token=ghp_0123456789abcdefghijklmnopqrstuvwxyz.output.txt";
+        let masked = mask_label(label, &detectors, &configured);
+        assert!(
+            !masked.contains("456789abcdefghijklmnopqrstuvwxyz"),
+            "token suffix left raw after union masking: {masked}"
+        );
+        assert!(
+            !masked.contains("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+            "full token left raw: {masked}"
+        );
+    }
+
+    #[test]
+    fn preview_masks_unselected_detector_family() {
+        // `--detectors github` reports only GitHub tokens, but an AWS key sharing
+        // a line with a reported token must still be scrubbed from previews so the
+        // report never carries a raw secret of an unselected family.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "x.output.txt",
+            "tok=ghp_0123456789abcdefghijklmnopqrstuvwxyz aws=AKIAIOSFODNN7EXAMPLE\n",
+        );
+        let report = run_redact_audit(
+            &default_cfg(),
+            &AuditOpts {
+                dir: dir.path().to_path_buf(),
+                detectors: Some(vec!["github".to_owned()]),
+                disable_entropy: true,
+                baseline: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "github_pat"),
+            "github token not reported: {:?}",
+            report.findings
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.match_class == "aws_access_key"),
+            "aws must not be reported under --detectors github"
+        );
+        let json = format_json(&report).unwrap();
+        assert!(
+            !json.contains("AKIAIOSFODNN7EXAMPLE"),
+            "unselected-family secret leaked into report: {json}"
+        );
     }
 
     // ── PR #557 third-round review: runtime-redactor parity oracle ────────
