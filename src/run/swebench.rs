@@ -4590,6 +4590,9 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             task: task.clone(),
             extra_context: None,
             config: cfg.clone(),
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             output_dir: run_output_dir.clone(),
             trajectory_name: trajectory_name.clone(),
             deterministic_responses: det_for_attempt,
@@ -5261,6 +5264,7 @@ impl XorShift64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     #![allow(clippy::unwrap_used)]
     use super::*;
     use futures::FutureExt;
@@ -8000,6 +8004,7 @@ instance = "inst"
     /// (sweep_started → 2 × instance_completed → sweep_completed) and that
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};

@@ -65,10 +65,10 @@ fn wallclock_warning_before(timeout: Duration) -> Duration {
 }
 
 #[derive(Debug, Clone)]
-struct TruncateResult {
-    text: String,
-    bytes_omitted: usize,
-    truncated: bool,
+pub(crate) struct TruncateResult {
+    pub(crate) text: String,
+    pub(crate) bytes_omitted: usize,
+    pub(crate) truncated: bool,
 }
 
 /// Output of `elide_history_for_model`.
@@ -281,7 +281,11 @@ fn elide_history_for_model(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-fn truncate_observation_text(input: &str, max_bytes: usize, head_ratio: f64) -> TruncateResult {
+pub(crate) fn truncate_observation_text(
+    input: &str,
+    max_bytes: usize,
+    head_ratio: f64,
+) -> TruncateResult {
     if max_bytes == 0 {
         return TruncateResult {
             text: String::new(),

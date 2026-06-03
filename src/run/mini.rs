@@ -46,6 +46,9 @@ fn current_git_sha() -> Option<String> {
 const PATCH_BASE_ENV: &str = "MAXWELL_PATCH_BASE";
 const LEGACY_PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 const VERIFICATION_PREVIEW_MAX_BYTES: usize = 2 * 1024;
+// Default value from EnvCfg::default_timeout_secs; used to detect non-default
+// per-command timeout that the claude-code driver cannot enforce.
+const DEFAULT_ENV_TIMEOUT_SECS: u64 = 60;
 
 #[cfg(test)]
 struct CancelBeforePatchCaptureHook {
@@ -103,10 +106,46 @@ pub enum PatchValidationFailure {
     ApplyFailed(String),
 }
 
+/// Selects which agent backend drives a single-task run.
+///
+/// The harness ships a built-in bash-first loop, but operators exploring
+/// "could a more capable coding agent drive this loop and still produce an
+/// inspectable trajectory?" can swap in the Claude Code CLI without losing
+/// the `.traj.json` artifact, patch capture, or verification machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum RunDriver {
+    /// The native bash-only agent loop that calls the configured `Model`
+    /// directly. This is the default and the only fully-deterministic path.
+    #[default]
+    Builtin,
+    /// Drive the `claude` CLI (Claude Code) in headless `stream-json` mode
+    /// as the agent, translating its message stream into the harness
+    /// trajectory. Local environment only.
+    ClaudeCode,
+}
+
+#[allow(clippy::struct_excessive_bools)]
 pub struct MiniArgs {
     pub task: String,
     pub extra_context: Option<String>,
     pub config: Config,
+    /// Which agent backend drives the loop. `Builtin` is the bash-first
+    /// loop that calls the `Model` trait directly; `ClaudeCode` shells out
+    /// to the Claude Code CLI and translates its stream into the same
+    /// trajectory artifact. See `docs/spec-claude-driver.md`.
+    pub driver: RunDriver,
+    /// When `true` and `driver == ClaudeCode`, forward the rendered operator
+    /// system prompt to the CLI via `--append-system-prompt`. Default `false`
+    /// because the built-in default template contains harness bash-protocol
+    /// text; only enable with a CC-compatible custom `[prompts].system` override.
+    pub driver_append_system_prompt: bool,
+    /// When `true` and `driver == ClaudeCode`, spawn the CLI in an isolated,
+    /// reproducible posture: `--bare` (skip ambient `.claude` discovery),
+    /// `--tools` (restrict the toolset), and `--no-session-persistence`. Default
+    /// `false` runs in fidelity mode (ambient config + OAuth live, recorded for
+    /// audit). Note: `--bare` forces API-key-only auth — OAuth/keychain logins
+    /// do not apply in isolated mode.
+    pub driver_isolated: bool,
     pub output_dir: PathBuf,
     pub trajectory_name: String,
     pub deterministic_responses: Option<Vec<String>>,
@@ -384,6 +423,165 @@ fn build_mini_manifest(
 
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
+    // The Claude Code driver shells out to the host `claude` binary and edits
+    // the host working tree directly. It cannot honor several safety contracts
+    // the built-in loop enforces inside `DefaultAgent::step`, so reject the
+    // combinations it would silently violate rather than mislead the operator.
+    if args.driver == RunDriver::ClaudeCode {
+        if matches!(args.config.root.environment.kind, EnvKind::Docker) {
+            // No path into a Docker sandbox — it runs on the host.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code is only supported with the local environment, \
+                 not --env docker"
+                    .into(),
+            )));
+        }
+        if args.read_only {
+            // Claude Code auto-allows Bash/Edit/Write, so it would mutate the
+            // worktree despite the analysis-only contract.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot honor --read-only (it auto-allows \
+                 mutation tools); drop one of the two flags"
+                    .into(),
+            )));
+        }
+        if matches!(
+            args.interactive_mode,
+            InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
+        ) {
+            // Per-action operator confirmation is gated inside DefaultAgent;
+            // the driver can't route Claude's tool calls through the confirmer.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot honor interactive confirmation \
+                 (--interactive/--ui); tool calls would run unattended"
+                    .into(),
+            )));
+        }
+        if args.config.root.policy.profile != "yolo" {
+            // The built-in policy deny corpus is enforced inside
+            // DefaultAgent::step before every bash command. Claude Code
+            // executes tools itself, so safe/ask deny rules would never fire;
+            // a "safe" trajectory would be a false promise. Operators must
+            // explicitly set `policy.profile = "yolo"` to acknowledge that
+            // the external CLI owns tool execution.
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver claude-code cannot enforce the built-in policy deny \
+                 corpus (profile={:?}); the CLI runs tools itself. \
+                 Set policy.profile = \"yolo\" in config to acknowledge this, \
+                 or switch to --driver builtin",
+                args.config.root.policy.profile
+            ))));
+        }
+        if !args.config.root.policy.extra_deny_patterns.is_empty()
+            || !args.config.root.policy.extra_allow_patterns.is_empty()
+        {
+            // The command policy engine gates `env.run` in the built-in loop;
+            // Claude Code executes tools itself, bypassing custom rules.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot enforce custom command policy \
+                 (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
+                 runs tools itself"
+                    .into(),
+            )));
+        }
+        if args.resume_from.is_some() || args.continue_from.is_some() {
+            // Claude Code is spawned with only the new task prompt; there is
+            // no mechanism to seed the external CLI with prior message history,
+            // so --resume/--continue would silently lose the prior context
+            // while the trajectory claims it was continued.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code does not support --resume or --continue; \
+                 the external CLI cannot be seeded with prior message history"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.hooks.pre_tool_use.is_empty()
+            || !args.config.root.agent.hooks.post_tool_use.is_empty()
+        {
+            // PreToolUse/PostToolUse hooks fire around `env.run`, which the
+            // driver never calls.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot run pre/post_tool_use hooks; the \
+                 CLI executes tools outside the harness loop"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.chaos_fail_every > 0 {
+            // Chaos injection wraps `env.run`; the driver bypasses it, so the
+            // configured failures would never fire.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot inject chaos faults \
+                 (environment.chaos_fail_every); it bypasses the wrapped \
+                 environment"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.mcp_servers.is_empty() {
+            // The driver spawns claude with the fixed ALLOWED_TOOLS set; it
+            // never routes tool calls through the harness ToolRegistry, so
+            // configured MCP servers would be silently unavailable — or
+            // advertised in the system prompt but uncallable.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot bridge MCP server configs; \
+                 the CLI manages its own tool routing outside the harness. \
+                 Remove agent.mcp_servers or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.agent.detect_stagnation {
+            // The built-in stagnation detector runs inside DefaultAgent::step
+            // after each action. Claude Code manages its own loop so the
+            // detector would never fire; a stagnating run would exhaust
+            // max-turns or the budget instead of producing a clean stagnation
+            // outcome.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot enforce stagnation detection; \
+                 set agent.detect_stagnation = false in config, or switch \
+                 to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
+            // The built-in loop wraps every bash call in RunRequest::with_timeout
+            // using this value. Claude Code executes tools itself and cannot
+            // receive per-command timeouts from the harness, so a non-default
+            // value would be silently ignored.
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver claude-code cannot enforce per-command timeout \
+                 (environment.timeout_secs={}); the CLI runs tools itself. \
+                 Remove the override or switch to --driver builtin",
+                args.config.root.environment.timeout_secs
+            ))));
+        }
+        if args.config.root.agent.per_task_budget_usd.is_some()
+            && !args.config.root.agent.hide_budget_from_agent
+        {
+            // The built-in loop appends a budget block to each observation when
+            // hide_budget_from_agent is false, letting the agent track spend.
+            // The driver records only raw Claude tool results, so this template
+            // would never fire and the agent would have no budget visibility.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot append budget-visibility blocks \
+                 (agent.hide_budget_from_agent = false with per_task_budget_usd); \
+                 set hide_budget_from_agent = true or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.tools.is_empty() {
+            // DefaultAgentBuilder registers configured command tools in the
+            // ToolRegistry and may render them into the system prompt, but the
+            // driver hands Claude Code only the fixed ALLOWED_TOOLS set and never
+            // routes calls through the registry. A tool-ablation or custom-tool
+            // run would be recorded as having capabilities Claude cannot call.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot bridge configured command tools \
+                 (agent.tools); the CLI manages its own toolset outside the \
+                 harness registry. Remove agent.tools or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+    }
+
     std::fs::create_dir_all(&args.output_dir)?;
 
     // Capture provenance data before any async/fallible work so the manifest
@@ -820,7 +1018,42 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // Run the agent. On error, finalize the trajectory with
     // `outcome="error"` so the partial run is still a self-contained
     // record of what happened — then propagate.
-    let mut run_result = run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await;
+    //
+    // The driver selection swaps *only* the loop that fills the trajectory:
+    // patch capture, verification, and the final write below are identical
+    // for both backends, so the Claude-Code path produces the same artifacts.
+    let mut run_result = match args.driver {
+        RunDriver::Builtin => {
+            run_agent_with_optional_timeout(&mut agent, args.task_timeout_secs).await
+        }
+        RunDriver::ClaudeCode => {
+            // When the caller opted in, forward the rendered system prompt to the
+            // CLI as `--append-system-prompt`. Pull it from `agent.history` (the
+            // RAW messages sent to the model), NOT `trajectory.messages` — the
+            // latter is redacted before storage, so a configured secret literal
+            // in a custom prompt would reach Claude Code as `[REDACTED:...]` and
+            // the run would no longer measure the real prompt.
+            let system_prompt = if args.driver_append_system_prompt {
+                agent
+                    .history
+                    .first()
+                    .filter(|m| m.role == crate::model::Role::System)
+                    .map(|m| m.content.clone())
+            } else {
+                None
+            };
+            crate::run::claude_driver::drive(
+                &mut agent,
+                args.task.clone(),
+                resolved_skills.merged_extra_context.as_deref(),
+                args.local_workdir.as_deref(),
+                args.task_timeout_secs,
+                system_prompt.as_deref(),
+                args.driver_isolated,
+            )
+            .await
+        }
+    };
     if let Err(e) = &run_result {
         finalize_error_trajectory(&mut agent, e);
     }
@@ -2417,6 +2650,7 @@ index 8a1218a..24c5735 100644\n\
 
     /// AC #3 / #10: run 3 turns, build a partial trajectory, resume for 2 more,
     /// assert final trajectory has 5 total steps and resume_history is populated.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn mini_resume_continues_from_partial_trajectory() {
         let work = tempfile::tempdir().unwrap();
@@ -2465,6 +2699,9 @@ index 8a1218a..24c5735 100644\n\
 
         // Resume args: one deterministic response (the submit) for the 4th step.
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: partial.info.task.clone().unwrap(),
             extra_context: None,
             config: cfg,
@@ -2635,6 +2872,9 @@ index 8a1218a..24c5735 100644\n\
         // Step 1: Run the "parent" with a deterministic submit, producing a
         // terminal trajectory.
         let parent_args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "fix the original bug".into(),
             extra_context: None,
             config: cfg.clone(),
@@ -2693,6 +2933,9 @@ index 8a1218a..24c5735 100644\n\
 
         // Step 3: Run the continuation — one deterministic submit response.
         let child_args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "also fix the edge case".into(),
             extra_context: None,
             config: cfg,
@@ -2805,6 +3048,9 @@ index 8a1218a..24c5735 100644\n\
         cfg.root.agent.step_limit = 5;
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "do nothing".into(),
             extra_context: None,
             config: cfg,
@@ -2904,6 +3150,9 @@ index 8a1218a..24c5735 100644\n\
         };
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "edit then submit".into(),
             extra_context: None,
             config: cfg,
@@ -2998,6 +3247,9 @@ index 8a1218a..24c5735 100644\n\
         let mut cfg = crate::config::Config::defaults().unwrap();
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3067,6 +3319,9 @@ index 8a1218a..24c5735 100644\n\
         let mut cfg = crate::config::Config::defaults().unwrap();
         cfg.root.agent.step_limit = 10;
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3137,6 +3392,9 @@ index 8a1218a..24c5735 100644\n\
         });
 
         let args = MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "say hello".into(),
             extra_context: None,
             config: cfg,
@@ -3257,6 +3515,9 @@ index 8a1218a..24c5735 100644\n\
         traj_name: &str,
     ) -> MiniArgs {
         MiniArgs {
+            driver: crate::run::mini::RunDriver::Builtin,
+            driver_append_system_prompt: false,
+            driver_isolated: false,
             task: "test-manifest-task".into(),
             extra_context: None,
             config: crate::config::Config::defaults().unwrap(),

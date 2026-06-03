@@ -512,6 +512,28 @@ pub struct MiniCmd {
     #[arg(long)]
     pub extra_context: Option<String>,
 
+    /// Agent backend that drives the loop. `builtin` (default) is the
+    /// bash-first loop that calls the model directly; `claude-code` shells
+    /// out to the Claude Code CLI and translates its stream into the same
+    /// trajectory artifact (local env only). See `docs/spec-claude-driver.md`.
+    #[arg(long, value_enum, default_value_t = crate::run::mini::RunDriver::Builtin)]
+    pub driver: crate::run::mini::RunDriver,
+
+    /// Forward the rendered operator system prompt to `claude --append-system-prompt`
+    /// when using `--driver claude-code`. Disabled by default because the built-in
+    /// default template contains harness bash-protocol text; only enable with a
+    /// CC-compatible custom `[prompts].system` override.
+    #[arg(long, default_value_t = false, requires = "driver")]
+    pub driver_append_system_prompt: bool,
+
+    /// Run `--driver claude-code` in an isolated, reproducible posture: pass
+    /// `--bare` (skip ambient `.claude` discovery), `--tools` (restrict the
+    /// toolset), and `--no-session-persistence`. Default (off) is fidelity mode,
+    /// which runs with ambient config + OAuth and records the discovered config
+    /// for audit. Note: `--bare` forces API-key-only auth (no OAuth/keychain).
+    #[arg(long, default_value_t = false, requires = "driver")]
+    pub driver_isolated: bool,
+
     /// Model name (e.g. `claude-opus-4-7`).
     #[arg(long, default_value = "claude-opus-4-7")]
     pub model: String,

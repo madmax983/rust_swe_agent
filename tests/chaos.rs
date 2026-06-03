@@ -22,6 +22,9 @@ fn chaos_args(cfg: Config, output: std::path::PathBuf, name: &str) -> MiniArgs {
         "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ndone\n```".into(),
     ];
     MiniArgs {
+        driver: maxwells_daemon::run::mini::RunDriver::Builtin,
+        driver_append_system_prompt: false,
+        driver_isolated: false,
         task: "exercise chaos".into(),
         extra_context: None,
         config: cfg,
