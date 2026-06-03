@@ -5376,6 +5376,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn queued_cancel_signal_stops_dispatch_after_joined_worker() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
@@ -5476,6 +5477,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn github_pr_publication_is_noop_when_disabled() {
         let result = test_instance_result("inst", true, false);
         let redaction = crate::config::RedactionCfg::default();
@@ -5501,6 +5503,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn github_pr_publication_failure_preserves_submission_outcome() {
         let result = test_instance_result("inst", true, true);
         let redaction = crate::config::RedactionCfg::default();
@@ -6603,6 +6606,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn panic_after_initial_manifest_still_leaves_manifest_on_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let dataset = tmp.path().join("d.jsonl");
@@ -7163,6 +7167,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn timed_sync_succeeds_within_budget() {
         let deadline = Instant::now() + Duration::from_secs(1);
         let out = timed_sync("ok", 1, deadline, || -> Result<u32, std::io::Error> {
@@ -7174,6 +7179,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn timed_sync_times_out() {
         let deadline = Instant::now() + Duration::from_secs(1);
         let err = timed_sync("slow", 0, deadline, || -> Result<(), std::io::Error> {
@@ -7373,6 +7379,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_acquire_is_immediate_when_bucket_has_capacity() {
         use crate::run::rate_limit::RateLimitGovernor;
         // 6000 RPM = 100 req/sec bucket; first call should be instant
@@ -7386,6 +7393,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_acquire_blocks_when_rpm_bucket_empty() {
         use crate::run::rate_limit::RateLimitGovernor;
         // 60 RPM = 1 req/sec; drain the bucket then acquire should block ~1s
@@ -7403,6 +7411,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_global_retry_after_blocks_subsequent_acquire() {
         use crate::run::rate_limit::RateLimitGovernor;
         // High RPM so bucket is not the bottleneck
@@ -7420,6 +7429,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_retry_after_applies_globally_to_concurrent_workers() {
         use crate::run::rate_limit::RateLimitGovernor;
         use std::sync::Arc;
@@ -7438,6 +7448,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_aimd_not_triggered_before_three_429s() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -7448,6 +7459,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_aimd_triggers_after_three_consecutive_429s_without_retry_after() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -7461,6 +7473,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_retry_after_resets_aimd_counter() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -7475,6 +7488,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_events_tracks_throttled_calls() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -7560,6 +7574,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn deterministic_model_rate_limit_sentinel_returns_error() {
         use crate::model::{DeterministicModel, Model, QueryOpts};
         // Sentinel prefix "__rate_limited__:2" should cause ModelError::RateLimited
@@ -7716,6 +7731,7 @@ instance = "inst"
     // ── Coverage: governor TPM gating and tick_aimd ──────────────────────────
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_tpm_gates_when_estimate_exceeds_bucket() {
         use crate::run::rate_limit::RateLimitGovernor;
         // 60 TPM = 1 token/sec. Start with 1 token (initial bucket).
@@ -7732,6 +7748,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_tick_aimd_restores_suppressed_slot() {
         use crate::run::rate_limit::RateLimitGovernor;
         // Trigger AIMD with 3 consecutive no-retry-after 429s.
@@ -7747,6 +7764,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_tick_aimd_no_op_when_no_suppression() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -7756,6 +7774,7 @@ instance = "inst"
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn governor_update_peak_concurrent_tracks_maximum() {
         use crate::run::rate_limit::RateLimitGovernor;
         let g = RateLimitGovernor::new(Some(6000), None, 4).unwrap();
@@ -8000,6 +8019,7 @@ instance = "inst"
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
     #[tokio::test]
+    #[allow(clippy::too_many_lines, clippy::expect_used)]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8018,11 +8038,7 @@ instance = "inst"
                 };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 8192];
-                loop {
-                    let n = match socket.read(&mut chunk).await {
-                        Ok(n) => n,
-                        Err(_) => break,
-                    };
+                while let Ok(n) = socket.read(&mut chunk).await {
                     if n == 0 {
                         break;
                     }

@@ -12,15 +12,9 @@ use std::fmt::Write as _;
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
 
 /// Serialize tests that mutate `OTEL_EXPORTER_OTLP_ENDPOINT` — env vars are
 /// process-global, so concurrent tests would race on them.
-static ENV_VAR_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-fn env_var_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_VAR_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
-}
-
 use maxwells_daemon::run::swebench::{InstanceResult, SwebenchArgs, SweepResults, run};
 use maxwells_daemon::trajectory::{Trajectory, TrajectoryInfo};
 
@@ -312,25 +306,30 @@ async fn no_otlp_traffic_when_endpoint_unset() {
         notify_webhook_headers: vec![],
     };
 
-    // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
-    let _guard = env_var_lock();
-    // Also ensure both OTLP env vars are unset.
-    // SAFETY: test-only, single-threaded context.
-    unsafe {
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        std::env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
-    }
+    // OTLP env vars are isolated by std::process::Command (or temp_env).
+    // In this codebase, we simply don't set them for this test.
+    #[allow(clippy::large_futures)]
+    temp_env::async_with_vars(
+        vec![
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", None::<String>),
+            ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None::<String>),
+        ],
+        async move {
+            let _results = run(args).await.unwrap();
 
-    let _results = run(args).await.unwrap();
-
-    // The TCP listener must NOT have received any connections.
-    match listener.accept() {
-        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            // Good — no connection was made.
-        }
-        Ok(_) => panic!("OTLP socket received a connection even though endpoint was not set"),
-        Err(e) => panic!("unexpected listener error: {e}"),
-    }
+            // The TCP listener must NOT have received any connections.
+            match listener.accept() {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Good — no connection was made.
+                }
+                Ok(_) => {
+                    panic!("OTLP socket received a connection even though endpoint was not set")
+                }
+                Err(e) => panic!("unexpected listener error: {e}"),
+            }
+        },
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -626,84 +625,82 @@ async fn env_var_activates_otlp_tracing() {
     std::fs::create_dir_all(&output).unwrap();
     write_dataset(&dataset, &["repo__E__1"]);
 
-    // Serialize against other tests that mutate OTEL_EXPORTER_OTLP_ENDPOINT.
-    let _guard = env_var_lock();
-    // Set env var to a dead endpoint.
-    // SAFETY: test-only, single-threaded context.
-    unsafe {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1");
-    }
+    #[allow(clippy::large_futures)]
+    temp_env::async_with_vars(
+        vec![(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            Some("http://127.0.0.1:1".to_string()),
+        )],
+        async move {
+            let cfg = config_with_workdir(&repo);
+            let args = SwebenchArgs {
+                dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
+                dataset_cache_dir: work.path().to_path_buf(),
+                output_dir: output.clone(),
+                parallel: 1,
+                config: cfg,
+                reruns: 1,
+                resume: false,
+                cost_limit_usd: None,
+                task_timeout_secs: None,
+                instance_ids: None,
+                limit: None,
+                sample: None,
+                seed: None,
+                stratify_by: None,
+                stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
+                max_retries: 0,
+                retry_on: None,
+                retry_backoff_base_ms: 1000,
+                retry_backoff_cap_s: 60,
+                retry_on_resume: false,
+                deterministic_responses: Some(vec![
+                    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
+                ]),
+                deterministic_usage_per_call: None,
+                config_overlay_paths: vec![],
+                dry_run: false,
+                skip_preflight: true,
+                preflight_format: "text".into(),
+                skip_model_probe: true,
+                preflight_check_timeout_s: 10,
+                preflight_total_timeout_s: 60,
+                preflight_mode: "swebench".into(),
+                skip_patch_validation: true,
+                event_log: None,
+                max_rpm: None,
+                max_input_tpm: None,
+                cancel_deadline_secs: 30,
+                install_os_signal_handlers: false,
+                cancellation_signals: None,
+                github_pr: None,
+                reproduced_from: None,
+                abort_on_systemic_failure: false,
+                systemic_failure_min_samples: 5,
+                systemic_failure_share_pct: 80,
+                otlp_endpoint: None,
+                rehearse: false,
+                skip_evaluator: false,
+                eval_backend: "rehearsal".to_string(),
+                sb_subset: None,
+                sb_split: None,
+                eval_timeout_secs: None, // env var activates instead of CLI flag
+                notify_webhook_url: None,
+                notify_webhook_headers: vec![],
+            };
 
-    let cfg = config_with_workdir(&repo);
-    let args = SwebenchArgs {
-        dataset_source: maxwells_daemon::run::dataset::DatasetSource::LocalPath(dataset),
-        dataset_cache_dir: work.path().to_path_buf(),
-        output_dir: output.clone(),
-        parallel: 1,
-        config: cfg,
-        reruns: 1,
-        resume: false,
-        cost_limit_usd: None,
-        task_timeout_secs: None,
-        instance_ids: None,
-        limit: None,
-        sample: None,
-        seed: None,
-        stratify_by: None,
-        stratify_mode: maxwells_daemon::run::swebench::StratifyMode::Proportional,
-        max_retries: 0,
-        retry_on: None,
-        retry_backoff_base_ms: 1000,
-        retry_backoff_cap_s: 60,
-        retry_on_resume: false,
-        deterministic_responses: Some(vec![
-            "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\ntest\n```".into(),
-        ]),
-        deterministic_usage_per_call: None,
-        config_overlay_paths: vec![],
-        dry_run: false,
-        skip_preflight: true,
-        preflight_format: "text".into(),
-        skip_model_probe: true,
-        preflight_check_timeout_s: 10,
-        preflight_total_timeout_s: 60,
-        preflight_mode: "swebench".into(),
-        skip_patch_validation: true,
-        event_log: None,
-        max_rpm: None,
-        max_input_tpm: None,
-        cancel_deadline_secs: 30,
-        install_os_signal_handlers: false,
-        cancellation_signals: None,
-        github_pr: None,
-        reproduced_from: None,
-        abort_on_systemic_failure: false,
-        systemic_failure_min_samples: 5,
-        systemic_failure_share_pct: 80,
-        otlp_endpoint: None,
-        rehearse: false,
-        skip_evaluator: false,
-        eval_backend: "rehearsal".to_string(),
-        sb_subset: None,
-        sb_split: None,
-        eval_timeout_secs: None, // env var activates instead of CLI flag
-        notify_webhook_url: None,
-        notify_webhook_headers: vec![],
-    };
+            let results = run(args).await.unwrap();
 
-    let results = run(args).await.unwrap();
+            // Unset for subsequent tests (handled by temp_env closure end).
 
-    // Unset for subsequent tests.
-    // SAFETY: test-only, single-threaded context.
-    unsafe {
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-    }
-
-    for inst in &results.instances {
-        assert!(
-            inst.trace_id.is_some(),
-            "instance {} must have trace_id when env var is set",
-            inst.instance_id
-        );
-    }
+            for inst in &results.instances {
+                assert!(
+                    inst.trace_id.is_some(),
+                    "instance {} must have trace_id when env var is set",
+                    inst.instance_id
+                );
+            }
+        },
+    )
+    .await;
 }
