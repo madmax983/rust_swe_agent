@@ -249,13 +249,28 @@ pub async fn drive(
         }
     };
 
-    let status = child.wait().await?;
+    // Wait for the child to exit, still bounded by the original timeout so
+    // a CLI that closes stdout but hangs during shutdown can't block the run
+    // indefinitely. A generous grace period covers normal cleanup; if it
+    // fires we kill the child and proceed with whatever parsed result we have.
+    const WAIT_GRACE: Duration = Duration::from_secs(30);
+    let wait_deadline = timeout_dur.map(|d| d.saturating_sub(WAIT_GRACE));
+    let exit_code =
+        match tokio::time::timeout(wait_deadline.unwrap_or(WAIT_GRACE), child.wait()).await {
+            Ok(Ok(status)) => status.code(),
+            Ok(Err(_)) | Err(_) => {
+                // Timed out or error during wait; kill the process and continue.
+                let _ = child.start_kill();
+                None
+            }
+        };
+
     let stderr_text = match stderr_handle {
         Some(h) => h.await.unwrap_or_default(),
         None => String::new(),
     };
 
-    finalize(agent, parsed, step_limit, status.code(), &stderr_text)
+    finalize(agent, parsed, step_limit, exit_code, &stderr_text)
 }
 
 /// How the streaming race resolved: the stream finished, or the timeout /

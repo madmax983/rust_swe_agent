@@ -490,6 +490,31 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     .into(),
             )));
         }
+        if !args.config.root.agent.mcp_servers.is_empty() {
+            // The driver spawns claude with the fixed ALLOWED_TOOLS set; it
+            // never routes tool calls through the harness ToolRegistry, so
+            // configured MCP servers would be silently unavailable — or
+            // advertised in the system prompt but uncallable.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot bridge MCP server configs; \
+                 the CLI manages its own tool routing outside the harness. \
+                 Remove agent.mcp_servers or switch to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.agent.detect_stagnation {
+            // The built-in stagnation detector runs inside DefaultAgent::step
+            // after each action. Claude Code manages its own loop so the
+            // detector would never fire; a stagnating run would exhaust
+            // max-turns or the budget instead of producing a clean stagnation
+            // outcome.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot enforce stagnation detection; \
+                 set agent.detect_stagnation = false in config, or switch \
+                 to --driver builtin"
+                    .into(),
+            )));
+        }
     }
 
     std::fs::create_dir_all(&args.output_dir)?;

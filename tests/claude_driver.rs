@@ -101,9 +101,12 @@ fn ensure_fake_claude() {
 fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
     let mut cfg = Config::defaults().unwrap();
     cfg.root.agent.step_limit = 10;
-    // claude-code driver requires yolo because it executes tools itself and
-    // cannot enforce the built-in safe/ask deny corpus.
+    // claude-code driver requires yolo: it executes tools itself and cannot
+    // enforce the built-in safe/ask deny corpus.
     cfg.root.policy.profile = "yolo".into();
+    // Stagnation detection runs inside DefaultAgent::step; the external CLI
+    // manages its own loop so the detector never fires.
+    cfg.root.agent.detect_stagnation = false;
     MiniArgs {
         driver: RunDriver::ClaudeCode,
         driver_append_system_prompt: false,
@@ -320,6 +323,44 @@ async fn claude_driver_downgrades_over_budget_run() {
     let traj = read_traj(out.path(), "cc-budget");
     assert_eq!(traj["info"]["outcome"], "budget_exhausted");
     assert_eq!(traj["info"]["failure_category"], "budget_exhausted");
+}
+
+/// `--driver claude-code` is rejected when stagnation detection is on: the
+/// detector runs inside `DefaultAgent::step` and never fires for the external
+/// CLI's own loop.
+#[tokio::test]
+async fn claude_driver_rejects_stagnation_detection() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-stagnation");
+    // Revert to the default (true) that base_args overrides to false.
+    args.config.root.agent.detect_stagnation = true;
+
+    let err = run(args)
+        .await
+        .expect_err("stagnation detection should be rejected");
+    assert!(
+        err.to_string().contains("stagnation"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `--driver claude-code` is rejected when MCP servers are configured: the
+/// CLI manages its own tool routing and never calls the harness ToolRegistry.
+#[tokio::test]
+async fn claude_driver_rejects_mcp_servers() {
+    use maxwells_daemon::config::McpServerCfg;
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-mcp");
+    args.config.root.agent.mcp_servers = vec![McpServerCfg {
+        command: "false".into(),
+        timeout_secs: None,
+    }];
+
+    let err = run(args).await.expect_err("mcp servers should be rejected");
+    assert!(
+        err.to_string().contains("MCP") || err.to_string().contains("mcp"),
+        "unexpected error: {err}"
+    );
 }
 
 /// `--driver claude-code` is rejected with a non-yolo policy profile: the
