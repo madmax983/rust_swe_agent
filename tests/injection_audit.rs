@@ -725,7 +725,10 @@ fn corrupt_traj_json_yields_scan_error() {
     let (code, report) = run_audit_json(dir.path(), &[]);
     assert_eq!(code, 38, "corrupt .traj.json must produce exit 38");
     let scan_errors = report["scan_errors"].as_array().expect("scan_errors array");
-    assert!(!scan_errors.is_empty(), "scan_errors must be non-empty for corrupt file");
+    assert!(
+        !scan_errors.is_empty(),
+        "scan_errors must be non-empty for corrupt file"
+    );
 }
 
 #[test]
@@ -778,7 +781,10 @@ fn output_flag_creates_subdirectory() {
         &["--format", "json", "--output", out_file.to_str().unwrap()],
     );
     assert_eq!(code, 0);
-    assert!(out_file.exists(), "--output must create parent subdirectory");
+    assert!(
+        out_file.exists(),
+        "--output must create parent subdirectory"
+    );
 }
 
 // ── --output to .traj.json path is rejected ───────────────────────────────────
@@ -787,10 +793,7 @@ fn output_flag_creates_subdirectory() {
 fn output_traj_json_path_exits_2() {
     let dir = tempfile::tempdir().expect("tempdir");
     let bad_out = dir.path().join("report.traj.json");
-    let (code, _stdout, stderr) = run_audit(
-        dir.path(),
-        &["--output", bad_out.to_str().unwrap()],
-    );
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--output", bad_out.to_str().unwrap()]);
     assert_eq!(code, 2, "--output to a .traj.json path must exit 2");
     assert!(
         stderr.contains("traj.json") || stderr.contains("output"),
@@ -827,11 +830,15 @@ fn invalid_fail_on_exits_2() {
 #[test]
 fn missing_signatures_file_exits_2() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (code, _stdout, stderr) =
-        run_audit(dir.path(), &["--signatures", "/tmp/__nonexistent_sig_file__.yaml"]);
+    let (code, _stdout, stderr) = run_audit(
+        dir.path(),
+        &["--signatures", "/tmp/__nonexistent_sig_file__.yaml"],
+    );
     assert_eq!(code, 2, "missing --signatures file must exit 2");
     assert!(
-        stderr.contains("cannot read") || stderr.contains("signatures") || stderr.contains("No such"),
+        stderr.contains("cannot read")
+            || stderr.contains("signatures")
+            || stderr.contains("No such"),
         "stderr must describe the I/O failure: {stderr}"
     );
 }
@@ -925,7 +932,8 @@ fn yml_extension_parsed_as_yaml() {
     assert_eq!(code, 37, ".yml custom signature must be detected");
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
-        hits.iter().any(|h| h["signature_name"].as_str() == Some("yml_signal")),
+        hits.iter()
+            .any(|h| h["signature_name"].as_str() == Some("yml_signal")),
         ".yml signature name must appear in hits"
     );
 }
