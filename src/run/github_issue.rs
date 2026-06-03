@@ -22,19 +22,25 @@ pub struct IssueProvenance {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GithubIssueSnapshot {
     pub title: String,
-    pub body: String,
+    pub body: Option<String>,
     pub comments: Option<Vec<GithubIssueComment>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GithubIssueComment {
-    pub body: String,
+    pub body: Option<String>,
     pub author: Option<GithubIssueCommentAuthor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GithubIssueCommentAuthor {
     pub login: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GithubIssueOnline {
+    pub title: String,
+    pub body: Option<String>,
 }
 
 /// Parses a GitHub issue reference (`owner/repo#123`) or issue URL
@@ -171,7 +177,8 @@ pub fn format_issue_prompt(title: &str, body: &str, comments: &[GithubIssueComme
                 .author
                 .as_ref()
                 .map_or("anonymous", |a| a.login.as_str());
-            let comment_block = format!("{}:\n{}", author, c.body);
+            let comment_body = c.body.as_deref().unwrap_or("");
+            let comment_block = format!("{}:\n{}", author, comment_body);
             out.push_str(&PromptGuard::wrap(UntrustedKind::TaskText, &comment_block));
             out.push_str("\n\n");
         }
@@ -203,7 +210,7 @@ pub async fn resolve_issue_task_async(
     token_env: &str,
 ) -> Result<(String, IssueProvenance), Error> {
     if let Some(path) = snapshot_path {
-        let content = std::fs::read_to_string(&path).map_err(|e| {
+        let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
             Error::Config(crate::error::ConfigError::Usage(format!(
                 "failed to read snapshot file: {e}"
             )))
@@ -214,9 +221,10 @@ pub async fn resolve_issue_task_async(
             )))
         })?;
 
-        let body_hash = compute_body_sha256(&snapshot.body);
+        let snapshot_body = snapshot.body.as_deref().unwrap_or("");
+        let body_hash = compute_body_sha256(snapshot_body);
         let comments = snapshot.comments.unwrap_or_default();
-        let task_prompt = format_issue_prompt(&snapshot.title, &snapshot.body, &comments);
+        let task_prompt = format_issue_prompt(&snapshot.title, snapshot_body, &comments);
 
         let prov = IssueProvenance {
             issue_repo: None,
@@ -267,41 +275,58 @@ pub async fn resolve_issue_task_async(
             return Err(handle_api_error(status, &body));
         }
 
-        let issue_data: GithubIssueSnapshot = serde_json::from_str(&body).map_err(|e| {
+        let issue_data: GithubIssueOnline = serde_json::from_str(&body).map_err(|e| {
             Error::GithubIssue(GithubIssueError::RequestFailed(format!(
                 "failed to parse issue JSON: {e}"
             )))
         })?;
 
-        // 2. Fetch comments (optional)
-        let comments_url = format!(
-            "https://api.github.com/repos/{}/{}/issues/{}/comments",
-            issue_ref.owner, issue_ref.repo, issue_ref.number
-        );
-        let res_comments = client
-            .get(&comments_url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("Authorization", format!("Bearer {token}"))
-            .send()
-            .await
-            .map_err(|e| {
+        // 2. Fetch comments with pagination
+        let mut comments = Vec::new();
+        let mut page = 1;
+        loop {
+            let comments_url = format!(
+                "https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=100&page={}",
+                issue_ref.owner, issue_ref.repo, issue_ref.number, page
+            );
+            let res_comments = client
+                .get(&comments_url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .send()
+                .await
+                .map_err(|e| {
+                    Error::GithubIssue(GithubIssueError::RequestFailed(format!(
+                        "failed to send comments request on page {page}: {e}"
+                    )))
+                })?;
+
+            let status_comments = res_comments.status();
+            let comments_body = res_comments.text().await.unwrap_or_default();
+
+            if !status_comments.is_success() {
+                return Err(handle_api_error(status_comments, &comments_body));
+            }
+
+            let page_comments: Vec<GithubIssueComment> = serde_json::from_str(&comments_body).map_err(|e| {
                 Error::GithubIssue(GithubIssueError::RequestFailed(format!(
-                    "failed to send comments request: {e}"
+                    "failed to parse comments JSON on page {page}: {e}"
                 )))
             })?;
 
-        let status_comments = res_comments.status();
-        let comments_body = res_comments.text().await.unwrap_or_default();
+            let page_len = page_comments.len();
+            comments.extend(page_comments);
 
-        let comments: Vec<GithubIssueComment> = if status_comments.is_success() {
-            serde_json::from_str(&comments_body).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+            if page_len < 100 {
+                break;
+            }
+            page += 1;
+        }
 
-        let body_hash = compute_body_sha256(&issue_data.body);
-        let task_prompt = format_issue_prompt(&issue_data.title, &issue_data.body, &comments);
+        let issue_body = issue_data.body.as_deref().unwrap_or("");
+        let body_hash = compute_body_sha256(issue_body);
+        let task_prompt = format_issue_prompt(&issue_data.title, issue_body, &comments);
 
         let prov = IssueProvenance {
             issue_repo: Some(format!("{}/{}", issue_ref.owner, issue_ref.repo)),
