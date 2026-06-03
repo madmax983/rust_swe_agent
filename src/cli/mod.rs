@@ -381,7 +381,7 @@ fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
         }
     };
 
-    let exit_code = report.exit_code(fail_on, &report.hits.clone());
+    let exit_code = report.exit_code(fail_on);
 
     match format {
         AuditFormat::Json => {

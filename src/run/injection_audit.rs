@@ -298,11 +298,11 @@ pub struct InjectionAuditReport {
 
 impl InjectionAuditReport {
     /// Compute the process exit code for this report.
-    pub fn exit_code(&self, fail_on: HitSeverity, hits: &[HitRecord]) -> ExitCode {
+    pub fn exit_code(&self, fail_on: HitSeverity) -> ExitCode {
         if !self.scan_errors.is_empty() && self.trajectories_scanned == 0 {
             return ExitCode::InjectionAuditScanError;
         }
-        let has_actionable = hits.iter().any(|h| {
+        let has_actionable = self.hits.iter().any(|h| {
             HitSeverity::from_str(&h.severity)
                 .map(|s| s >= fail_on)
                 .unwrap_or(false)
