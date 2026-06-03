@@ -3046,6 +3046,21 @@ pub struct NearMissCmd {
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
 }
+/// `catalog` — self-describing command catalog for operator discoverability.
+#[derive(Debug, Args, Clone)]
+pub struct CatalogCmd {
+    /// Filter entries by stage: preflight, run, inspect, analyze, publish.
+    #[arg(long)]
+    pub stage: Option<String>,
+
+    /// Filter to free-only (no model calls) commands.
+    #[arg(long = "free-only", default_value_t = false)]
+    pub free_only: bool,
+
+    /// Output format: `text` or `json`.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
 
 #[cfg(test)]
 mod tests {
