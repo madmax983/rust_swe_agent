@@ -3517,7 +3517,7 @@ mod tests {
             report
                 .findings
                 .iter()
-                .any(|f| f.file == "sweep-a/step.output.txt"),
+                .any(|f| f.file.replace('\\', "/") == "sweep-a/step.output.txt"),
             "child-sweep recorded oracle not applied: {:?}",
             report.findings
         );

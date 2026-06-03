@@ -41,7 +41,7 @@ max agent injection-audit --sweep <DIR> [OPTIONS]
 | `--sweep <DIR>` | (required) | Sweep directory containing `*.traj.json` files |
 | `--signatures <FILE>` | none | YAML or JSON file with custom signature entries to add |
 | `--format <FMT>` | `text` | Output format: `text`, `json`, or `jsonl` |
-| `--fail-on <SEV>` | `medium` | Minimum severity that triggers exit code 34 |
+| `--fail-on <SEV>` | `medium` | Minimum severity that triggers exit code 37 |
 | `--output <FILE>` | stdout | Write report to this file in addition to stdout |
 
 ## Exit Codes
@@ -49,8 +49,8 @@ max agent injection-audit --sweep <DIR> [OPTIONS]
 | Code | Meaning |
 |------|---------|
 | 0 | No hits at or above the `--fail-on` threshold |
-| 34 (`injection_audit_hits`) | At least one hit at or above the threshold |
-| 35 (`injection_audit_scan_error`) | Could not read the sweep directory or a trajectory file |
+| 37 (`injection_audit_hits`) | At least one hit at or above the threshold |
+| 38 (`injection_audit_scan_error`) | Could not read the sweep directory or a trajectory file |
 | 1 (`internal_error`) | Unexpected internal error |
 | 2 (`usage_error`) | Invalid flag value or configuration error |
 
@@ -162,7 +162,7 @@ Each hit record (in `--format json` hits array or `--format jsonl` lines):
 The `--fail-on <SEVERITY>` flag configures the minimum severity that triggers
 exit code 34:
 
-| `--fail-on` value | Exit 34 when … |
+| `--fail-on` value | Exit 37 when … |
 |-------------------|----------------|
 | `high` | Any `high`-severity hit found |
 | `medium` (default) | Any `medium` or `high` hit found |

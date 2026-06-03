@@ -45,6 +45,7 @@ pub async fn main(output_dir: PathBuf, config_path: Option<&Path>) -> Result<(),
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     };
     run(args).await?;
     println!("hello-world smoke complete");

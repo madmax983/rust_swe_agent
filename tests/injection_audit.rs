@@ -125,7 +125,7 @@ fn injection_hit_exits_34() {
     fs::write(dir.path().join("evil.traj.json"), traj).unwrap();
 
     let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-    assert_eq!(code, 34, "sweep with injection hits must exit 34");
+    assert_eq!(code, 37, "sweep with injection hits must exit 37");
 }
 
 // ── Exit code 35: I/O error (non-existent directory) ─────────────────────────
@@ -133,7 +133,7 @@ fn injection_hit_exits_34() {
 #[test]
 fn nonexistent_sweep_dir_exits_35() {
     let (code, _stdout, _stderr) = run_audit(Path::new("/tmp/__does_not_exist_xyz__"), &[]);
-    assert_eq!(code, 35, "non-existent sweep dir must exit 35");
+    assert_eq!(code, 38, "non-existent sweep dir must exit 38");
 }
 
 // ── Per-envelope-kind detection ───────────────────────────────────────────────
@@ -146,7 +146,7 @@ fn detects_injection_in_task_text_envelope() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
         hits.iter()
@@ -163,7 +163,7 @@ fn detects_injection_in_extra_context_envelope() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
         hits.iter()
@@ -180,7 +180,7 @@ fn detects_injection_in_tool_output_envelope() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
         hits.iter()
@@ -197,7 +197,7 @@ fn detects_injection_in_hook_output_envelope() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
         hits.iter()
@@ -214,7 +214,7 @@ fn detects_injection_in_repo_content_envelope() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
         hits.iter()
@@ -253,7 +253,7 @@ fn hit_record_contains_all_required_fields() {
     fs::write(dir.path().join("myinstance.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits array");
     assert!(!hits.is_empty(), "must have at least one hit");
 
@@ -339,7 +339,7 @@ fn jsonl_format_emits_one_record_per_hit() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, stdout, _) = run_audit(dir.path(), &["--format", "jsonl"]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
     assert!(
         !lines.is_empty(),
@@ -366,7 +366,7 @@ fn text_format_mentions_hit_count() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, stdout, _) = run_audit(dir.path(), &["--format", "text"]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     // Should mention the hit count or "injection" somewhere
     let lower = stdout.to_lowercase();
     assert!(
@@ -393,7 +393,7 @@ fn default_pack_catches_instruction_override_phrase() {
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
         assert_eq!(
-            code, 34,
+            code, 37,
             "instruction-override phrase must be caught: {phrase}"
         );
     }
@@ -413,7 +413,7 @@ fn default_pack_catches_role_reassignment_phrase() {
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
         assert_eq!(
-            code, 34,
+            code, 37,
             "role-reassignment phrase must be caught: {phrase}"
         );
     }
@@ -428,7 +428,7 @@ fn default_pack_catches_fake_system_markup() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(code, 34, "fake system markup must be caught: {markup}");
+        assert_eq!(code, 37, "fake system markup must be caught: {markup}");
     }
 }
 
@@ -444,7 +444,7 @@ fn default_pack_catches_curl_pipe_sh_exfil() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(code, 34, "curl|sh exfil pattern must be caught: {cmd}");
+        assert_eq!(code, 37, "curl|sh exfil pattern must be caught: {cmd}");
     }
 }
 
@@ -460,7 +460,7 @@ fn default_pack_catches_webhook_host_exfil() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(code, 34, "webhook exfil host must be caught: {host}");
+        assert_eq!(code, 37, "webhook exfil host must be caught: {host}");
     }
 }
 
@@ -475,7 +475,7 @@ fn default_pack_catches_base64_api_key_exfil() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-    assert_eq!(code, 34, "base64 API key exfil pattern must be caught");
+    assert_eq!(code, 37, "base64 API key exfil pattern must be caught");
 }
 
 // ── --fail-on severity threshold ─────────────────────────────────────────────
@@ -505,7 +505,7 @@ fn fail_on_medium_triggers_on_medium_hits() {
 
     let (code, _stdout, _stderr) = run_audit(dir.path(), &["--fail-on", "medium"]);
     assert_eq!(
-        code, 34,
+        code, 37,
         "--fail-on medium must trigger on medium-severity hits"
     );
 }
@@ -535,7 +535,7 @@ fn custom_yaml_signatures_extend_default_pack() {
 
     let sig_path = sig_file.to_string_lossy().into_owned();
     let (code, report) = run_audit_json(dir.path(), &["--signatures", &sig_path]);
-    assert_eq!(code, 34, "custom signature must be detected");
+    assert_eq!(code, 37, "custom signature must be detected");
 
     let hits = report["hits"].as_array().expect("hits array");
     assert!(
@@ -562,7 +562,7 @@ fn custom_json_signatures_extend_default_pack() {
 
     let sig_path = sig_file.to_string_lossy().into_owned();
     let (code, _report) = run_audit_json(dir.path(), &["--signatures", &sig_path]);
-    assert_eq!(code, 34, "JSON custom signature must be detected");
+    assert_eq!(code, 37, "JSON custom signature must be detected");
 }
 
 // ── Only scans envelope content, not operator instructions ────────────────────
@@ -701,7 +701,7 @@ fn multi_step_trajectory_all_envelopes_scanned() {
     fs::write(dir.path().join("multi.traj.json"), traj).unwrap();
 
     let (code, report) = run_audit_json(dir.path(), &[]);
-    assert_eq!(code, 34);
+    assert_eq!(code, 37);
     let hits = report["hits"].as_array().expect("hits");
     // Should detect the injection in step 2
     let step2_hit = hits
