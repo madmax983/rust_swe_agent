@@ -377,11 +377,11 @@ pub fn run_injection_audit(opts: &AuditOpts) -> Result<InjectionAuditReport, Err
         signatures.extend(compile_custom(&raw)?);
     }
 
-    // Collect .traj.json files
-    let traj_files = collect_traj_files(&opts.sweep_dir);
+    // Collect .traj.json files; walk errors are treated as scan errors.
+    let (traj_files, walk_errors) = collect_traj_files(&opts.sweep_dir);
 
     let mut hits: Vec<HitRecord> = Vec::new();
-    let mut scan_errors: Vec<String> = Vec::new();
+    let mut scan_errors: Vec<String> = walk_errors;
 
     for traj_path in &traj_files {
         match scan_trajectory(traj_path, &signatures, &opts.sweep_dir) {
@@ -414,16 +414,23 @@ pub fn run_injection_audit(opts: &AuditOpts) -> Result<InjectionAuditReport, Err
 }
 
 /// Collect all `*.traj.json` files under `dir`, sorted for determinism.
-fn collect_traj_files(dir: &Path) -> Vec<PathBuf> {
+/// Also returns any directory-walk errors so callers can record them as
+/// scan errors — an unreadable subtree means the scan is incomplete.
+fn collect_traj_files(dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_traj_files_recursive(dir, &mut files);
+    let mut errors: Vec<String> = Vec::new();
+    collect_traj_files_recursive(dir, &mut files, &mut errors);
     files.sort();
-    files
+    (files, errors)
 }
 
-fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            errors.push(format!("{}: {e}", dir.display()));
+            return;
+        }
     };
     for entry in entries.flatten() {
         // Use file_type() to avoid a follow-symlink stat call and prevent
@@ -433,7 +440,7 @@ fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         };
         let path = entry.path();
         if ft.is_dir() {
-            collect_traj_files_recursive(&path, out);
+            collect_traj_files_recursive(&path, out, errors);
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
