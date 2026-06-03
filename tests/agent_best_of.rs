@@ -40,7 +40,7 @@ fn validate_runs_one_is_error() {
     assert!(err.is_err(), "expected error for --runs 1");
     let msg = err.unwrap_err();
     assert!(
-        msg.contains("mini") || msg.contains("2"),
+        msg.contains("mini") || msg.contains('2'),
         "error should mention minimum 2 or suggest mini; got: {msg}"
     );
 }
@@ -239,8 +239,8 @@ fn select_winner_skipped_runs_not_selected() {
     run0.verify_checks_passed = 0;
     run0.patch_byte_len = None;
     let run1 = make_run(1, 1, 2, 0.010, 15, "patch-b");
-    let runs = vec![run0, run1];
-    let (idx, _rationale, _tie_break) = select_winner(&runs);
+    let run_list = vec![run0, run1];
+    let (idx, _rationale, _tie_break) = select_winner(&run_list);
     assert_eq!(idx, 1, "skipped run should not be selected as winner");
 }
 

@@ -198,14 +198,14 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
     // Tie-break 1: lowest cost
     let min_cost = tier1
         .iter()
-        .map(|d| ordered_f64(d.total_cost_usd.unwrap_or(f64::MAX)))
-        .min()
-        .unwrap_or_else(|| ordered_f64(0.0));
+        .map(|d| d.total_cost_usd.unwrap_or(f64::MAX))
+        .min_by(f64::total_cmp)
+        .unwrap_or(f64::MAX);
 
     let tier2: Vec<&BestOfRunDetail> = tier1
         .iter()
         .copied()
-        .filter(|d| ordered_f64(d.total_cost_usd.unwrap_or(f64::MAX)) == min_cost)
+        .filter(|d| d.total_cost_usd.unwrap_or(f64::MAX).total_cmp(&min_cost) == std::cmp::Ordering::Equal)
         .collect();
 
     if tier2.len() == 1 {
@@ -277,18 +277,6 @@ pub fn select_winner(runs: &[BestOfRunDetail]) -> (u32, String, bool) {
     )
 }
 
-/// Total ordering wrapper for f64 (NaN treated as MAX).
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct OrderedF64(u64);
-
-fn ordered_f64(v: f64) -> OrderedF64 {
-    if v.is_nan() {
-        OrderedF64(u64::MAX)
-    } else {
-        OrderedF64(v.to_bits())
-    }
-}
-
 // ── Runner arguments ──────────────────────────────────────────────────────────
 
 /// Arguments for `agent best-of`.
@@ -349,7 +337,8 @@ pub fn validate_runs(n: u32) -> Result<(), String> {
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
     // ── Validate name (no path traversal) ────────────────────────────────────
-    if args.best_of_name.contains('/')
+    if args.best_of_name.is_empty()
+        || args.best_of_name.contains('/')
         || args.best_of_name.contains('\\')
         || args.best_of_name.contains("..")
     {
@@ -420,7 +409,13 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
             task_timeout_secs: args.task_timeout_secs,
             cancellation: None,
             stream_addr: None,
-            patch_capture: None,
+            patch_capture: Some(crate::run::mini::PatchCaptureSpec {
+                base_commit: None,
+                workdir: std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                patch_path: best_of_dir.join(format!("{trajectory_name}.patch")),
+                skip_patch_validation: false,
+            }),
             verification_checks: verification_checks.clone(),
             verification_timeout_secs: args.verify_timeout_secs,
             resume_from: None,
@@ -483,7 +478,6 @@ pub async fn run(args: BestOfArgs) -> Result<ExitCode, Error> {
                 skip_reason: None,
             }
         } else {
-            run_patch_texts.push(None);
             BestOfRunDetail {
                 run_index,
                 outcome: "error".into(),

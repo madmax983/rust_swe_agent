@@ -61,6 +61,12 @@ pub fn entries() -> &'static [CatalogEntry] {
         },
         // Agent subcommands
         CatalogEntry {
+            path: "agent best-of",
+            summary: "Sample N runs and emit the best patch by --verify oracle",
+            cost_tier: "paid",
+            stage: "run",
+        },
+        CatalogEntry {
             path: "agent apply",
             summary: "Apply a captured patch artifact to a working tree",
             cost_tier: "free",
