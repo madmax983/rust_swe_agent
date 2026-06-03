@@ -551,6 +551,19 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     .into(),
             )));
         }
+        if !args.config.root.agent.tools.is_empty() {
+            // DefaultAgentBuilder registers configured command tools in the
+            // ToolRegistry and may render them into the system prompt, but the
+            // driver hands Claude Code only the fixed ALLOWED_TOOLS set and never
+            // routes calls through the registry. A tool-ablation or custom-tool
+            // run would be recorded as having capabilities Claude cannot call.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot bridge configured command tools \
+                 (agent.tools); the CLI manages its own toolset outside the \
+                 harness registry. Remove agent.tools or switch to --driver builtin"
+                    .into(),
+            )));
+        }
     }
 
     std::fs::create_dir_all(&args.output_dir)?;

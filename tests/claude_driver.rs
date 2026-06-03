@@ -438,6 +438,50 @@ async fn claude_driver_rejects_budget_visibility() {
     );
 }
 
+/// `--max-turns` bounds Claude's agentic turns, but the harness step cap counts
+/// tool_use blocks and a single turn can emit several. When the parsed tool-use
+/// count exceeds `step_limit`, the outcome is downgraded to `step_limit` so a run
+/// never reports `submitted` after taking more tool actions than the cap allows.
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_downgrades_step_overflow() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+
+    let mut args = base_args(repo.path(), out.path(), "cc-steps");
+    // The fixture transcript emits two tool_use blocks; cap at one.
+    args.config.root.agent.step_limit = 1;
+    run(args).await.expect("run should complete");
+
+    let traj = read_traj(out.path(), "cc-steps");
+    assert_eq!(traj["info"]["steps"], 2);
+    assert_eq!(traj["info"]["exit_reason"], "step_limit");
+    assert_eq!(traj["info"]["failure_category"], "step_limit");
+}
+
+/// `--driver claude-code` is rejected when `agent.tools` defines custom command
+/// tools: DefaultAgentBuilder registers them but the driver hands Claude Code a
+/// fixed toolset and never routes through the harness registry.
+#[tokio::test]
+async fn claude_driver_rejects_configured_tools() {
+    use maxwells_daemon::config::ToolCfg;
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-tools");
+    args.config.root.agent.tools = vec![ToolCfg {
+        name: "lint".into(),
+        description: None,
+        command: "true".into(),
+        timeout_secs: None,
+    }];
+
+    let err = run(args)
+        .await
+        .expect_err("configured tools should be rejected");
+    assert!(err.to_string().contains("tools"), "unexpected error: {err}");
+}
+
 /// Fidelity mode (default) records the ambient Claude Code config that shaped
 /// the run — path, scope, raw-bytes hash, and (redacted) content — into
 /// `info.claude_code_config`, so the run is auditable without being sterilized.

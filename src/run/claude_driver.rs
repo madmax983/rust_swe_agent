@@ -1053,7 +1053,18 @@ fn finalize(
             .per_task_budget_usd
             .is_some_and(|cap| result.total_cost_usd >= cap);
 
-    if result.subtype == "success" && !result.is_error && !cost_limit_exceeded && !budget_exhausted
+    // Claude Code's `--max-turns` bounds *agentic turns*, but the harness step
+    // cap counts *tool_use* blocks — and a single turn can emit several. If the
+    // parsed tool-use count exceeded the configured limit, downgrade the outcome
+    // to step_limit so a run can never report `submitted` while having taken more
+    // tool actions than the cap advertised.
+    let step_overflow = parsed.steps > step_limit;
+
+    if result.subtype == "success"
+        && !result.is_error
+        && !cost_limit_exceeded
+        && !budget_exhausted
+        && !step_overflow
     {
         let final_output = agent
             .redactor
@@ -1097,7 +1108,7 @@ fn finalize(
             limit_usd,
             spent_usd: result.total_cost_usd,
         })
-    } else if is_max_turns {
+    } else if is_max_turns || step_overflow {
         agent.trajectory.info.exit_reason = Some("step_limit".into());
         agent.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
         agent.finalize_run_metadata(outcome::STEP_LIMIT_REACHED);
@@ -1118,9 +1129,16 @@ fn finalize(
         );
         agent.finalize_run_metadata(outcome::ERROR);
         let err_msg = if result.is_error {
+            // Redact before truncating: this string is surfaced to the CLI and
+            // logs, not just the (separately redacted) trajectory, so an error
+            // result carrying a prompt snippet or secret must be scrubbed here.
+            let redacted = agent
+                .redactor
+                .redact_text(&result.final_text, surface::TRAJECTORY)
+                .text;
             format!(
                 "claude driver ended with error: {}",
-                truncate(&result.final_text, 500)
+                truncate(&redacted, 500)
             )
         } else {
             format!(
