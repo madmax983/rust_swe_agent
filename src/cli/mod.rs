@@ -356,8 +356,8 @@ fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
 
 fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
     use crate::run::injection_audit::{
-        AuditOpts, format_json, format_jsonl, format_text, parse_fail_on, parse_format,
-        run_injection_audit, AuditFormat,
+        AuditFormat, AuditOpts, format_json, format_jsonl, format_text, parse_fail_on,
+        parse_format, run_injection_audit,
     };
 
     let format = parse_format(a.format.as_str()).map_err(Error::Config)?;

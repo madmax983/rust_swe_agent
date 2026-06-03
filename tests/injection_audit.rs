@@ -83,11 +83,7 @@ fn run_audit(dir: &Path, extra: &[&str]) -> (i32, String, String) {
 }
 
 fn run_audit_json(dir: &Path, extra: &[&str]) -> (i32, Value) {
-    let combined: Vec<&str> = extra
-        .iter()
-        .copied()
-        .chain(["--format", "json"])
-        .collect();
+    let combined: Vec<&str> = extra.iter().copied().chain(["--format", "json"]).collect();
     let (code, stdout, _) = run_audit(dir, &combined);
     let parsed: Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("json parse (exit {code}): {e}\nstdout:\n{stdout}"));
@@ -241,7 +237,10 @@ fn innocent_instructions_mention_does_not_trip() {
     fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
     let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-    assert_eq!(code, 0, "innocent content mentioning 'instructions' must not trigger");
+    assert_eq!(
+        code, 0,
+        "innocent content mentioning 'instructions' must not trigger"
+    );
 }
 
 // ── Hit record fields ─────────────────────────────────────────────────────────
@@ -279,10 +278,7 @@ fn hit_record_contains_all_required_fields() {
         hit["signature_name"].is_string(),
         "hit must have signature_name string"
     );
-    assert!(
-        hit["severity"].is_string(),
-        "hit must have severity string"
-    );
+    assert!(hit["severity"].is_string(), "hit must have severity string");
     assert!(
         hit["byte_offset_start"].is_number(),
         "hit must have byte_offset_start"
@@ -345,12 +341,18 @@ fn jsonl_format_emits_one_record_per_hit() {
     let (code, stdout, _) = run_audit(dir.path(), &["--format", "jsonl"]);
     assert_eq!(code, 34);
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert!(!lines.is_empty(), "JSONL must have at least one line per hit");
+    assert!(
+        !lines.is_empty(),
+        "JSONL must have at least one line per hit"
+    );
     // Each non-empty line must be valid JSON
     for line in &lines {
         let v: Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("JSONL line not valid JSON: {e}\nline: {line}"));
-        assert!(v["instance_id"].is_string(), "JSONL record must have instance_id");
+        assert!(
+            v["instance_id"].is_string(),
+            "JSONL record must have instance_id"
+        );
     }
 }
 
@@ -426,10 +428,7 @@ fn default_pack_catches_fake_system_markup() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(
-            code, 34,
-            "fake system markup must be caught: {markup}"
-        );
+        assert_eq!(code, 34, "fake system markup must be caught: {markup}");
     }
 }
 
@@ -445,10 +444,7 @@ fn default_pack_catches_curl_pipe_sh_exfil() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(
-            code, 34,
-            "curl|sh exfil pattern must be caught: {cmd}"
-        );
+        assert_eq!(code, 34, "curl|sh exfil pattern must be caught: {cmd}");
     }
 }
 
@@ -464,10 +460,7 @@ fn default_pack_catches_webhook_host_exfil() {
         fs::write(dir.path().join("t.traj.json"), traj).unwrap();
 
         let (code, _stdout, _stderr) = run_audit(dir.path(), &[]);
-        assert_eq!(
-            code, 34,
-            "webhook exfil host must be caught: {host}"
-        );
+        assert_eq!(code, 34, "webhook exfil host must be caught: {host}");
     }
 }
 
@@ -695,10 +688,7 @@ fn multi_step_trajectory_all_envelopes_scanned() {
         "multi-step",
         &[
             // step 0: task envelope in user turn
-            (
-                "user",
-                &envelope("task_text", "fix the bug in foo.rs"),
-            ),
+            ("user", &envelope("task_text", "fix the bug in foo.rs")),
             ("assistant", "I'll fix it."),
             // step 2: tool output with injection in user turn
             (
