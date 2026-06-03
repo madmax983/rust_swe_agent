@@ -730,7 +730,8 @@ fn finalize(
             .per_task_budget_usd
             .is_some_and(|cap| result.total_cost_usd >= cap);
 
-    if result.subtype == "success" && !result.is_error && !cost_limit_exceeded && !budget_exhausted {
+    if result.subtype == "success" && !result.is_error && !cost_limit_exceeded && !budget_exhausted
+    {
         let final_output = agent
             .redactor
             .redact_text(&result.final_text, surface::TRAJECTORY)
