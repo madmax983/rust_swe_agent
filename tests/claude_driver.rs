@@ -138,6 +138,7 @@ fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
         no_step_persist: false,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance: None,
     }
 }
 

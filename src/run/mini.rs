@@ -211,6 +211,7 @@ pub struct MiniArgs {
     /// `bench swebench`. Recorded in the per-trajectory provenance manifest.
     /// `None` for standalone `bench mini` invocations.
     pub parent_sweep_run_id: Option<String>,
+    pub issue_provenance: Option<crate::run::github_issue::IssueProvenance>,
 }
 
 /// Operator-interaction mode for `mini --interactive` (issue #312).
@@ -383,6 +384,17 @@ fn build_mini_manifest(
 
     let working_dir = args.local_workdir.as_ref().map(|p| p.display().to_string());
 
+    let (issue_repo, issue_number, issue_fetched_at_utc, issue_body_sha256) =
+        match &args.issue_provenance {
+            Some(p) => (
+                p.issue_repo.clone(),
+                p.issue_number,
+                p.issue_fetched_at_utc.clone(),
+                p.issue_body_sha256.clone(),
+            ),
+            None => (None, None, None, None),
+        };
+
     crate::trajectory::MiniProvenanceManifest {
         harness_git_sha,
         harness_binary_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -402,6 +414,10 @@ fn build_mini_manifest(
         deterministic_mode: args.deterministic_responses.is_some(),
         chaos_fail_every: args.config.root.environment.chaos_fail_every,
         parent_sweep_run_id: args.parent_sweep_run_id.clone(),
+        issue_repo,
+        issue_number,
+        issue_fetched_at_utc,
+        issue_body_sha256,
     }
 }
 
@@ -2715,6 +2731,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
 
         run(args).await.unwrap();
@@ -2887,6 +2904,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            issue_provenance: None,
         };
         run(parent_args).await.unwrap();
 
@@ -2947,6 +2965,7 @@ index 8a1218a..24c5735 100644\n\
             rehearsal_gold_patch: None,
             no_step_persist: false,
             parent_sweep_run_id: None,
+            issue_provenance: None,
         };
         run(child_args).await.unwrap();
 
@@ -3067,6 +3086,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
 
         run(args).await.unwrap();
@@ -3168,6 +3188,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
 
         run(args).await.unwrap();
@@ -3260,6 +3281,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: true,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
         run(args).await.unwrap();
 
@@ -3331,6 +3353,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
         run(args).await.unwrap();
 
@@ -3404,6 +3427,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
 
         run(args).await.unwrap();
@@ -3523,6 +3547,7 @@ index 8a1218a..24c5735 100644\n\
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         }
     }
 

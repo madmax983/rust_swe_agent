@@ -134,6 +134,7 @@ pub async fn run() -> Result<(), Error> {
         Command::Agent { cmd } => match *cmd {
             args::AgentCmd::SkillsPreview(s) => agent_skills_preview_cmd(&s),
             args::AgentCmd::RedactCheck(r) => agent_redact_check_cmd(&r),
+            args::AgentCmd::RedactAudit(a) => agent_redact_audit_cmd(&a),
             args::AgentCmd::Env {
                 cmd: args::AgentEnvCmd::Preview(ref p),
             } => agent_env_preview_cmd(p),
@@ -251,6 +252,99 @@ fn agent_redact_check_cmd(r: &args::RedactCheckCmd) -> Result<(), Error> {
         RedactCheckFormat::Human => {
             print!("{}", format_human(&output));
         }
+    }
+
+    if exit_code != ExitCode::Success {
+        exit_with_outcome(exit_code, exit_code.outcome_class());
+    }
+    Ok(())
+}
+
+fn agent_redact_audit_cmd(a: &args::RedactAuditCmd) -> Result<(), Error> {
+    use crate::run::redact_audit::{
+        AuditFormat, AuditOpts, format_human, format_json, is_audited_file, mask_report_path,
+        output_aliases_scanned_artifact, parse_format, run_redact_audit,
+    };
+
+    let cfg = match &a.config {
+        Some(path) => Config::load(path)?,
+        None => Config::defaults()?,
+    };
+
+    let format = parse_format(a.json, a.format.as_str())?;
+
+    // Resolve the report path up front and refuse to overwrite a scanned source
+    // artifact: `redact-audit` is detector-only and must never mutate the sweep
+    // it audits. The default `redact_audit.json` is never itself audited, so it
+    // is always allowed; any other path that resolves to an existing audited
+    // artifact *inside the scanned directory* (e.g. `<dir>/results.json`, an
+    // instance `trajectory.json`) is rejected before the scan runs so the
+    // completed sweep cannot be corrupted. A path outside the scanned tree (e.g.
+    // `--output /tmp/results.json`) is never a scanned source artifact and is
+    // allowed even if its name looks audited. Two checks catch a write that
+    // would mutate a scanned artifact: (1) the canonical target resolves inside
+    // the scanned tree under an audited name (covers a symlink such as
+    // `report -> <dir>/results.json`); (2) the output shares an on-disk inode
+    // with a scanned artifact (covers a hard link whose own name is not
+    // allowlisted), since `std::fs::write` would truncate the shared inode.
+    let out_path = a
+        .output
+        .clone()
+        .unwrap_or_else(|| a.dir.join("redact_audit.json"));
+    let resolved_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
+    let canonical_dir = std::fs::canonicalize(&a.dir).unwrap_or_else(|_| a.dir.clone());
+    let inside_scan = resolved_out.starts_with(&canonical_dir);
+    if out_path.exists()
+        && ((inside_scan && (is_audited_file(&out_path) || is_audited_file(&resolved_out)))
+            || output_aliases_scanned_artifact(&a.dir, &out_path))
+    {
+        return Err(Error::Config(crate::error::ConfigError::Usage(format!(
+            "redact-audit: --output '{}' would overwrite an audited source artifact; \
+             choose a different path (the report is detector-only and must not mutate the sweep)",
+            // The rejected path may itself embed a secret; mask it like other
+            // path-shaped report fields before it reaches stderr.
+            mask_report_path(&cfg, &out_path.display().to_string())
+        ))));
+    }
+
+    let opts = AuditOpts {
+        dir: a.dir.clone(),
+        detectors: a.detectors.clone(),
+        disable_entropy: a.disable_entropy,
+        baseline: a.baseline.clone(),
+    };
+
+    let report = run_redact_audit(&cfg, &opts)?;
+
+    let json = format_json(&report).map_err(Error::Json)?;
+    let exit_code = report.exit_code();
+
+    // Persist the report. If any filesystem step (creating the output parent or
+    // writing the file) fails *after* a scan that already found leaks or scan
+    // errors, surface the audit's own exit code (32/33) rather than letting the
+    // I/O error collapse to a generic internal_error (1) — CI gates route on the
+    // documented outcome class, and the result is known.
+    let write_result = (|| -> std::io::Result<()> {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        std::fs::write(&out_path, &json)
+    })();
+    if let Err(e) = write_result {
+        if exit_code == ExitCode::Success {
+            return Err(Error::Io(e));
+        }
+        eprintln!(
+            "warning: redact-audit could not write report to {}: {e}",
+            mask_report_path(&cfg, &out_path.display().to_string())
+        );
+    }
+
+    match format {
+        AuditFormat::Json => println!("{json}"),
+        AuditFormat::Human => print!("{}", format_human(&report)),
     }
 
     if exit_code != ExitCode::Success {
@@ -482,22 +576,49 @@ fn agent_apply_cmd(a: &args::AgentApplyCmd) -> Result<(), Error> {
 
 #[allow(clippy::too_many_lines)]
 async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
-    let task = if m.resume_from.is_some() {
+    let mut issue_provenance = None;
+    let sources_count = [
+        m.task.is_some(),
+        m.task_file.is_some(),
+        m.resume_from.is_some(),
+        m.from_issue.is_some(),
+        m.from_issue_file.is_some(),
+    ]
+    .iter()
+    .filter(|&&b| b)
+    .count();
+
+    if sources_count > 1 {
+        let mut provided = Vec::new();
         if m.task.is_some() {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "both --task and --resume were provided".into(),
-            )));
+            provided.push("--task");
         }
         if m.task_file.is_some() {
-            return Err(Error::Config(crate::error::ConfigError::Invalid(
-                "both --task-file and --resume were provided".into(),
-            )));
+            provided.push("--task-file");
         }
+        if m.resume_from.is_some() {
+            provided.push("--resume");
+        }
+        if m.from_issue.is_some() {
+            provided.push("--from-issue");
+        }
+        if m.from_issue_file.is_some() {
+            provided.push("--from-issue-file");
+        }
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "multiple task sources provided ({}); only one may be used",
+            provided.join(", ")
+        ))));
+    }
+
+    let task = if m.resume_from.is_some() {
         String::new()
     } else if m.continue_from.is_some() {
-        // --continue REQUIRES --task (or --task-file) — the follow-up instruction.
-        // Clap enforces that --task is present when --continue is set; if the task is
-        // empty we catch it here the same way the normal path does below.
+        if m.from_issue.is_some() || m.from_issue_file.is_some() {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "cannot use --from-issue or --from-issue-file with --continue".into(),
+            )));
+        }
         match (&m.task, &m.task_file) {
             (Some(_), Some(_)) => {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(
@@ -551,6 +672,15 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
                 raw_content
             }
         }
+    } else if m.from_issue.is_some() || m.from_issue_file.is_some() {
+        let (t, prov) = crate::run::github_issue::resolve_issue_task_async(
+            m.from_issue.clone(),
+            m.from_issue_file.clone(),
+            &m.github_pr.github_token_env,
+        )
+        .await?;
+        issue_provenance = Some(prov);
+        t
     } else {
         match (&m.task, &m.task_file) {
             (Some(_), Some(_)) => {
@@ -560,7 +690,8 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
             }
             (None, None) => {
                 return Err(Error::Config(crate::error::ConfigError::Invalid(
-                    "either --task or --task-file must be provided".into(),
+                    "either --task, --task-file, --from-issue, or --from-issue-file must be provided"
+                        .into(),
                 )));
             }
             (Some(t), None) => {
@@ -746,6 +877,7 @@ async fn mini_cmd(m: args::MiniCmd) -> Result<(), Error> {
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance,
     };
     let run_result = crate::run::mini::run(args).await;
     // Only publish when the run succeeded or failed at verification — those are
@@ -1121,6 +1253,23 @@ async fn mini_resume_cmd(
         std::path::Path::to_path_buf,
     );
 
+    let issue_provenance = traj.info.manifest.as_ref().and_then(|man| {
+        if man.issue_repo.is_some()
+            || man.issue_number.is_some()
+            || man.issue_fetched_at_utc.is_some()
+            || man.issue_body_sha256.is_some()
+        {
+            Some(crate::run::github_issue::IssueProvenance {
+                issue_repo: man.issue_repo.clone(),
+                issue_number: man.issue_number,
+                issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                issue_body_sha256: man.issue_body_sha256.clone(),
+            })
+        } else {
+            None
+        }
+    });
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1152,6 +1301,7 @@ async fn mini_resume_cmd(
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
         continue_from: None,
+        issue_provenance,
     };
     crate::run::mini::run(args).await
 }
@@ -1420,6 +1570,7 @@ async fn mini_continue_cmd(
         rehearsal_gold_patch: None,
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
+        issue_provenance: None,
     };
     crate::run::mini::run(args).await
 }
@@ -6050,6 +6201,8 @@ mod tests {
             driver: crate::run::mini::RunDriver::Builtin,
             driver_append_system_prompt: false,
             driver_isolated: false,
+            from_issue: None,
+            from_issue_file: None,
             resume_from: None,
             resume_allow_step_bump: false,
             continue_from: None,
@@ -6316,5 +6469,98 @@ mod tests {
             }
             assert_eq!(path, PathBuf::from(expected));
         }
+    }
+
+    #[tokio::test]
+    async fn test_mini_cmd_mutual_exclusivity() {
+        let mut cmd = mini_cmd(false, false);
+        cmd.task = Some("Fix it".into());
+        cmd.from_issue = Some("owner/repo#123".into());
+
+        let res = super::mini_cmd(cmd).await;
+        assert!(res.is_err());
+        let err_str = res.unwrap_err().to_string();
+        assert!(err_str.contains("multiple task sources provided"));
+    }
+
+    #[test]
+    fn test_issue_provenance_extraction_from_trajectory() {
+        use crate::trajectory::{MiniProvenanceManifest, Trajectory};
+
+        // Case 1: Trajectory with provenance
+        let mut traj = Trajectory::default();
+        let manifest = MiniProvenanceManifest {
+            harness_git_sha: None,
+            harness_binary_version: "0.1.0".to_string(),
+            started_at_utc: "2026-06-01T00:00:00Z".to_string(),
+            ended_at_utc: None,
+            env_kind: "local".to_string(),
+            working_dir: None,
+            config_sha256: "dummy".to_string(),
+            config_redacted: serde_json::Value::Null,
+            cli_invocation: vec![],
+            extra_context_present: false,
+            task_timeout_secs: None,
+            step_limit: 50,
+            model_name: "claude-3-5-sonnet".to_string(),
+            fallback_models: vec![],
+            redaction_policy_id: "dummy".to_string(),
+            deterministic_mode: false,
+            chaos_fail_every: 0,
+            parent_sweep_run_id: None,
+            issue_repo: Some("owner/repo".to_string()),
+            issue_number: Some(123),
+            issue_fetched_at_utc: Some("2026-06-01T00:00:00Z".to_string()),
+            issue_body_sha256: Some("abcdef".to_string()),
+        };
+        traj.info.manifest = Some(manifest);
+
+        let issue_provenance = traj.info.manifest.as_ref().and_then(|man| {
+            if man.issue_repo.is_some()
+                || man.issue_number.is_some()
+                || man.issue_fetched_at_utc.is_some()
+                || man.issue_body_sha256.is_some()
+            {
+                Some(crate::run::github_issue::IssueProvenance {
+                    issue_repo: man.issue_repo.clone(),
+                    issue_number: man.issue_number,
+                    issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                    issue_body_sha256: man.issue_body_sha256.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        let prov = issue_provenance.unwrap();
+        assert_eq!(prov.issue_repo, Some("owner/repo".to_string()));
+        assert_eq!(prov.issue_number, Some(123));
+        assert_eq!(
+            prov.issue_fetched_at_utc,
+            Some("2026-06-01T00:00:00Z".to_string())
+        );
+        assert_eq!(prov.issue_body_sha256, Some("abcdef".to_string()));
+
+        // Case 2: Trajectory without provenance
+        let mut traj_empty = Trajectory::default();
+        traj_empty.info.manifest = None;
+
+        let issue_provenance_empty = traj_empty.info.manifest.as_ref().and_then(|man| {
+            if man.issue_repo.is_some()
+                || man.issue_number.is_some()
+                || man.issue_fetched_at_utc.is_some()
+                || man.issue_body_sha256.is_some()
+            {
+                Some(crate::run::github_issue::IssueProvenance {
+                    issue_repo: man.issue_repo.clone(),
+                    issue_number: man.issue_number,
+                    issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                    issue_body_sha256: man.issue_body_sha256.clone(),
+                })
+            } else {
+                None
+            }
+        });
+        assert!(issue_provenance_empty.is_none());
     }
 }

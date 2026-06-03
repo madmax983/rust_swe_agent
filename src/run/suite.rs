@@ -540,6 +540,7 @@ pub async fn run(args: SuiteArgs) -> Result<ExitCode, Error> {
             no_step_persist: false,
             parent_sweep_run_id: None,
             continue_from: None,
+            issue_provenance: None,
         };
 
         let run_outcome = crate::run::mini::run(mini_args).await;

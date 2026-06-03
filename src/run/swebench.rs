@@ -4622,6 +4622,7 @@ async fn run_one(inst: SweBenchInstance, run_index: u32, params: RunOneParams) -
             no_step_persist: false,
             parent_sweep_run_id: Some(parent_sweep_run_id.clone()),
             continue_from: None,
+            issue_provenance: None,
         };
         let run_err = crate::run::mini::run(args).await.err();
 

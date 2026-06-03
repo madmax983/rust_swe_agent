@@ -549,6 +549,18 @@ pub struct MiniProvenanceManifest {
     /// `None` for standalone `bench mini` runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_sweep_run_id: Option<String>,
+    /// GitHub repository where the issue originated, in `owner/repo` form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_repo: Option<String>,
+    /// GitHub issue number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_number: Option<u64>,
+    /// ISO 8601 UTC timestamp when the GitHub issue was fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_fetched_at_utc: Option<String>,
+    /// SHA-256 hash of the ingested issue body content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_body_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1320,6 +1332,12 @@ mod tests {
             deterministic_mode: false,
             chaos_fail_every: 0,
             parent_sweep_run_id: None,
+            issue_repo: Some("owner/repo".into()),
+            issue_number: Some(123),
+            issue_fetched_at_utc: Some("2024-01-01T00:00:00Z".into()),
+            issue_body_sha256: Some(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+            ),
         };
         let json = serde_json::to_string_pretty(&m).unwrap();
         let back: MiniProvenanceManifest = serde_json::from_str(&json).unwrap();
@@ -1347,6 +1365,10 @@ mod tests {
             deterministic_mode: false,
             chaos_fail_every: 0,
             parent_sweep_run_id: Some("abcdef0123456789".into()),
+            issue_repo: None,
+            issue_number: None,
+            issue_fetched_at_utc: None,
+            issue_body_sha256: None,
         };
         let json = serde_json::to_string_pretty(&m).unwrap();
         assert!(json.contains("\"parent_sweep_run_id\""));
@@ -1377,6 +1399,10 @@ mod tests {
             deterministic_mode: true,
             chaos_fail_every: 0,
             parent_sweep_run_id: None,
+            issue_repo: None,
+            issue_number: None,
+            issue_fetched_at_utc: None,
+            issue_body_sha256: None,
         });
         let json = t.to_json_pretty().unwrap();
         assert!(

@@ -286,6 +286,46 @@ pub struct AgentApplyCmd {
     pub report: Option<PathBuf>,
 }
 
+/// `agent redact-audit` — post-hoc secret-leak detection for sweep artifacts (issue #342).
+#[derive(Debug, Args)]
+pub struct RedactAuditCmd {
+    /// Directory tree of sweep artifacts to scan.
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
+
+    /// Optional path to a TOML config file (overlays defaults). The configured
+    /// `secret_literals` and `custom_patterns` are audited alongside the
+    /// built-in detectors.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Where to write `redact_audit.json`. Defaults to `<dir>/redact_audit.json`.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    /// Output format for the summary printed to stdout: `human` (default) or `json`.
+    #[arg(long, default_value = "human")]
+    pub format: String,
+
+    /// Emit the JSON report on stdout (shorthand for `--format json`).
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+
+    /// Comma-separated subset of detectors to run (e.g. `aws,github,jwt`).
+    /// Defaults to all. Run `--help` to see the detector ids.
+    #[arg(long, value_delimiter = ',')]
+    pub detectors: Option<Vec<String>>,
+
+    /// Drop the high-entropy heuristic detector (reduces noise).
+    #[arg(long, default_value_t = false)]
+    pub disable_entropy: bool,
+
+    /// A previous `redact_audit.json`; exit 0 when no *new* findings appear,
+    /// allowing grandfathered known false positives.
+    #[arg(long, value_name = "PATH")]
+    pub baseline: Option<PathBuf>,
+}
+
 /// `agent` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AgentCmd {
@@ -296,6 +336,8 @@ pub enum AgentCmd {
     },
     /// Verify the secret-redaction config against sample input (zero-cost, no model call).
     RedactCheck(RedactCheckCmd),
+    /// Audit a finished sweep tree for secret leaks in stored artifacts (issue #342).
+    RedactAudit(RedactAuditCmd),
     /// Preview which skills will activate for one or more tasks (zero-cost, no model call).
     SkillsPreview(SkillsPreviewCmd),
     /// Run an operator-defined personal eval task pack and produce suite-results.json.
@@ -421,6 +463,14 @@ pub struct MiniCmd {
     /// Path to a file containing the task prompt, or '-' to read from stdin.
     #[arg(long)]
     pub task_file: Option<String>,
+
+    /// Seed the task prompt directly from a GitHub issue reference or URL.
+    #[arg(long = "from-issue", value_name = "ISSUE_REF")]
+    pub from_issue: Option<String>,
+
+    /// Seed the task prompt from a local GitHub issue JSON snapshot file.
+    #[arg(long = "from-issue-file", value_name = "PATH")]
+    pub from_issue_file: Option<PathBuf>,
 
     /// Resume from a partial (in-progress) trajectory file instead of starting a new run.
     /// The trajectory is the sole source of truth for task, model, env, and budget settings.
