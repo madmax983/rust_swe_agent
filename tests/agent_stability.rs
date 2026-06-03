@@ -558,6 +558,38 @@ mod integration {
     }
 
     #[tokio::test]
+    async fn path_traversal_in_stability_name_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut args = make_args(tmp.path(), 1, vec![submit_response()]);
+        args.stability_name = "../escape".to_owned();
+        assert!(
+            run(args).await.is_err(),
+            "stability name with '..' must be rejected before any I/O"
+        );
+        // No directory should have been created outside the tmp root.
+        assert!(!tmp.path().parent().unwrap().join("escape").exists());
+    }
+
+    #[tokio::test]
+    async fn task_unsuccessful_exit_code_when_run_fails_without_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Provide a non-submit response so the run ends without submitting.
+        let mut args = make_args(
+            tmp.path(),
+            1,
+            vec!["I am unable to solve this task.".to_owned()],
+        );
+        // Cap at 1 step so the agent stops immediately after the single response.
+        args.step_limit = Some(1);
+        let exit_code = run(args).await.unwrap();
+        assert_eq!(
+            exit_code,
+            ExitCode::TaskUnsuccessful,
+            "expected task_unsuccessful when a run fails with no --fail-under gate"
+        );
+    }
+
+    #[tokio::test]
     async fn deterministic_aggregation_same_inputs_yield_same_stats() {
         let tmp1 = tempfile::tempdir().unwrap();
         let tmp2 = tempfile::tempdir().unwrap();
