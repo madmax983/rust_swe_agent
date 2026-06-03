@@ -714,3 +714,218 @@ fn multi_step_trajectory_all_envelopes_scanned() {
         "step 2 hit must be in tool_output envelope"
     );
 }
+
+// ── Corrupt .traj.json → scan error ──────────────────────────────────────────
+
+#[test]
+fn corrupt_traj_json_yields_scan_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("corrupt.traj.json"), "not valid json {{ ").unwrap();
+
+    let (code, report) = run_audit_json(dir.path(), &[]);
+    assert_eq!(code, 38, "corrupt .traj.json must produce exit 38");
+    let scan_errors = report["scan_errors"].as_array().expect("scan_errors array");
+    assert!(!scan_errors.is_empty(), "scan_errors must be non-empty for corrupt file");
+}
+
+#[test]
+fn text_format_shows_scan_errors_section() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("corrupt.traj.json"), "not valid json {{ ").unwrap();
+
+    let (code, stdout, _) = run_audit(dir.path(), &["--format", "text"]);
+    assert_eq!(code, 38);
+    let lower = stdout.to_lowercase();
+    assert!(
+        lower.contains("scan error") || lower.contains("error"),
+        "text output must include scan error section: {stdout}"
+    );
+}
+
+// ── --output flag writes report to file ──────────────────────────────────────
+
+#[test]
+fn output_flag_writes_report_to_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let traj = make_traj("clean", &[("user", "hello world")]);
+    fs::write(dir.path().join("clean.traj.json"), traj).unwrap();
+
+    let out_file = dir.path().join("report.json");
+    let (code, _stdout, _stderr) = run_audit(
+        dir.path(),
+        &["--format", "json", "--output", out_file.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "clean run must still exit 0 with --output");
+    assert!(out_file.exists(), "--output file must be created");
+    let content = fs::read_to_string(&out_file).unwrap();
+    let parsed: Value = serde_json::from_str(&content).expect("output must be valid JSON");
+    assert_eq!(
+        parsed["artifact_kind"].as_str(),
+        Some("injection_audit"),
+        "output file must contain injection_audit report"
+    );
+}
+
+#[test]
+fn output_flag_creates_subdirectory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let traj = make_traj("clean", &[("user", "hello world")]);
+    fs::write(dir.path().join("clean.traj.json"), traj).unwrap();
+
+    let out_file = dir.path().join("subdir").join("report.json");
+    let (code, _stdout, _stderr) = run_audit(
+        dir.path(),
+        &["--format", "json", "--output", out_file.to_str().unwrap()],
+    );
+    assert_eq!(code, 0);
+    assert!(out_file.exists(), "--output must create parent subdirectory");
+}
+
+// ── --output to .traj.json path is rejected ───────────────────────────────────
+
+#[test]
+fn output_traj_json_path_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bad_out = dir.path().join("report.traj.json");
+    let (code, _stdout, stderr) = run_audit(
+        dir.path(),
+        &["--output", bad_out.to_str().unwrap()],
+    );
+    assert_eq!(code, 2, "--output to a .traj.json path must exit 2");
+    assert!(
+        stderr.contains("traj.json") || stderr.contains("output"),
+        "stderr must mention the rejection reason: {stderr}"
+    );
+}
+
+// ── Invalid --format / --fail-on → exit 2 ────────────────────────────────────
+
+#[test]
+fn invalid_format_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--format", "xml"]);
+    assert_eq!(code, 2, "invalid --format must exit 2");
+    assert!(
+        stderr.contains("xml") || stderr.contains("format"),
+        "stderr must mention the invalid format: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_fail_on_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--fail-on", "critical"]);
+    assert_eq!(code, 2, "invalid --fail-on must exit 2");
+    assert!(
+        stderr.contains("critical") || stderr.contains("fail"),
+        "stderr must mention the invalid severity: {stderr}"
+    );
+}
+
+// ── Bad --signatures file → exit 2 ───────────────────────────────────────────
+
+#[test]
+fn missing_signatures_file_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (code, _stdout, stderr) =
+        run_audit(dir.path(), &["--signatures", "/tmp/__nonexistent_sig_file__.yaml"]);
+    assert_eq!(code, 2, "missing --signatures file must exit 2");
+    assert!(
+        stderr.contains("cannot read") || stderr.contains("signatures") || stderr.contains("No such"),
+        "stderr must describe the I/O failure: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_yaml_signatures_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sig_file = dir.path().join("bad.yaml");
+    fs::write(&sig_file, "this: is: not: valid:\n  yaml: [\n").unwrap();
+
+    let sig_path = sig_file.to_string_lossy().into_owned();
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--signatures", &sig_path]);
+    assert_eq!(code, 2, "unparseable YAML --signatures must exit 2");
+    assert!(
+        stderr.contains("YAML") || stderr.contains("yaml") || stderr.contains("invalid"),
+        "stderr must describe the YAML error: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_json_signatures_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sig_file = dir.path().join("bad.json");
+    fs::write(&sig_file, "[{\"name\":\"x\", BROKEN").unwrap();
+
+    let sig_path = sig_file.to_string_lossy().into_owned();
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--signatures", &sig_path]);
+    assert_eq!(code, 2, "unparseable JSON --signatures must exit 2");
+    assert!(
+        stderr.contains("JSON") || stderr.contains("json") || stderr.contains("invalid"),
+        "stderr must describe the JSON error: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_regex_in_signatures_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sig_file = dir.path().join("bad_regex.yaml");
+    fs::write(
+        &sig_file,
+        "- name: bad_regex_sig\n  pattern: \"[\"\n  kind: custom\n  severity: high\n",
+    )
+    .unwrap();
+
+    let sig_path = sig_file.to_string_lossy().into_owned();
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--signatures", &sig_path]);
+    assert_eq!(code, 2, "invalid regex in --signatures must exit 2");
+    assert!(
+        stderr.contains("invalid regex") || stderr.contains("pattern") || stderr.contains("regex"),
+        "stderr must describe the regex error: {stderr}"
+    );
+}
+
+#[test]
+fn unknown_severity_in_signatures_exits_2() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sig_file = dir.path().join("bad_sev.yaml");
+    fs::write(
+        &sig_file,
+        "- name: bad_sev_sig\n  pattern: \"xyzzy\"\n  kind: custom\n  severity: critical\n",
+    )
+    .unwrap();
+
+    let sig_path = sig_file.to_string_lossy().into_owned();
+    let (code, _stdout, stderr) = run_audit(dir.path(), &["--signatures", &sig_path]);
+    assert_eq!(code, 2, "unknown severity in --signatures must exit 2");
+    assert!(
+        stderr.contains("critical") || stderr.contains("severity") || stderr.contains("unknown"),
+        "stderr must describe the severity error: {stderr}"
+    );
+}
+
+// ── .yml extension is parsed as YAML ─────────────────────────────────────────
+
+#[test]
+fn yml_extension_parsed_as_yaml() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sig_file = dir.path().join("custom.yml");
+    fs::write(
+        &sig_file,
+        "- name: yml_signal\n  pattern: \"yml_injection_marker\"\n  kind: custom\n  severity: high\n",
+    )
+    .unwrap();
+
+    let payload = envelope("task_text", "yml_injection_marker");
+    let traj = make_traj("task", &[("user", &payload)]);
+    fs::write(dir.path().join("t.traj.json"), traj).unwrap();
+
+    let sig_path = sig_file.to_string_lossy().into_owned();
+    let (code, report) = run_audit_json(dir.path(), &["--signatures", &sig_path]);
+    assert_eq!(code, 37, ".yml custom signature must be detected");
+    let hits = report["hits"].as_array().expect("hits array");
+    assert!(
+        hits.iter().any(|h| h["signature_name"].as_str() == Some("yml_signal")),
+        ".yml signature name must appear in hits"
+    );
+}

@@ -758,4 +758,149 @@ mod tests {
         assert!(HitSeverity::Low < HitSeverity::Medium);
         assert!(HitSeverity::Medium < HitSeverity::High);
     }
+
+    #[test]
+    fn format_text_includes_scan_errors_section() {
+        let report = InjectionAuditReport {
+            artifact_kind: "injection_audit".to_owned(),
+            schema_version: SCHEMA_VERSION,
+            sweep_dir: "./runs".to_owned(),
+            trajectories_scanned: 1,
+            total_hits: 0,
+            hit_counts_by_signature: BTreeMap::new(),
+            hit_counts_by_envelope_kind: BTreeMap::new(),
+            hits: vec![],
+            scan_errors: vec!["bad.traj.json: parse error".to_owned()],
+        };
+        let text = format_text(&report);
+        assert!(
+            text.contains("Scan errors"),
+            "format_text must include 'Scan errors' section when scan_errors is non-empty"
+        );
+        assert!(
+            text.contains("bad.traj.json"),
+            "format_text must include the error message"
+        );
+    }
+
+    #[test]
+    fn format_text_includes_hit_details_section() {
+        let hit = HitRecord {
+            instance_id: "inst1".to_owned(),
+            trajectory_path: "inst1.traj.json".to_owned(),
+            step_index: 0,
+            envelope_kind: "task_text".to_owned(),
+            signature_name: "instruction_override".to_owned(),
+            severity: "high".to_owned(),
+            byte_offset_start: 0,
+            byte_offset_end: 5,
+            context: "ignore".to_owned(),
+        };
+        let mut by_sig = BTreeMap::new();
+        by_sig.insert("instruction_override".to_owned(), 1usize);
+        let mut by_kind = BTreeMap::new();
+        by_kind.insert("task_text".to_owned(), 1usize);
+
+        let report = InjectionAuditReport {
+            artifact_kind: "injection_audit".to_owned(),
+            schema_version: SCHEMA_VERSION,
+            sweep_dir: "./runs".to_owned(),
+            trajectories_scanned: 1,
+            total_hits: 1,
+            hit_counts_by_signature: by_sig,
+            hit_counts_by_envelope_kind: by_kind,
+            hits: vec![hit],
+            scan_errors: vec![],
+        };
+        let text = format_text(&report);
+        assert!(
+            text.contains("instruction_override"),
+            "format_text must list hit signature names"
+        );
+        assert!(
+            text.contains("task_text"),
+            "format_text must list envelope kinds"
+        );
+        assert!(
+            text.contains("Details"),
+            "format_text must include Details section"
+        );
+    }
+
+    #[test]
+    fn compile_custom_rejects_invalid_severity() {
+        let raw = vec![RawSignature {
+            name: "bad_sev".to_owned(),
+            pattern: "xyzzy".to_owned(),
+            kind: "custom".to_owned(),
+            severity: "critical".to_owned(),
+        }];
+        let result = compile_custom(&raw);
+        assert!(
+            result.is_err(),
+            "compile_custom must reject unknown severity 'critical'"
+        );
+    }
+
+    #[test]
+    fn compile_custom_rejects_invalid_regex() {
+        let raw = vec![RawSignature {
+            name: "bad_regex".to_owned(),
+            pattern: "[".to_owned(),
+            kind: "custom".to_owned(),
+            severity: "high".to_owned(),
+        }];
+        let result = compile_custom(&raw);
+        assert!(
+            result.is_err(),
+            "compile_custom must reject an invalid regex pattern"
+        );
+    }
+
+    #[test]
+    fn exit_code_scan_error_when_errors_but_no_hits() {
+        let report = InjectionAuditReport {
+            artifact_kind: "injection_audit".to_owned(),
+            schema_version: SCHEMA_VERSION,
+            sweep_dir: "./runs".to_owned(),
+            trajectories_scanned: 1,
+            total_hits: 0,
+            hit_counts_by_signature: BTreeMap::new(),
+            hit_counts_by_envelope_kind: BTreeMap::new(),
+            hits: vec![],
+            scan_errors: vec!["parse error".to_owned()],
+        };
+        assert_eq!(
+            report.exit_code(HitSeverity::Medium),
+            ExitCode::InjectionAuditScanError,
+            "scan errors with no hits must produce InjectionAuditScanError"
+        );
+    }
+
+    #[test]
+    fn parse_format_rejects_unknown_format() {
+        assert!(parse_format("xml").is_err());
+        assert!(parse_format("csv").is_err());
+    }
+
+    #[test]
+    fn parse_format_accepts_known_formats() {
+        assert_eq!(parse_format("text").unwrap(), AuditFormat::Text);
+        assert_eq!(parse_format("json").unwrap(), AuditFormat::Json);
+        assert_eq!(parse_format("jsonl").unwrap(), AuditFormat::Jsonl);
+        assert_eq!(parse_format("").unwrap(), AuditFormat::Text);
+    }
+
+    #[test]
+    fn parse_fail_on_rejects_unknown_severity() {
+        assert!(parse_fail_on("critical").is_err());
+        assert!(parse_fail_on("urgent").is_err());
+    }
+
+    #[test]
+    fn parse_fail_on_accepts_known_severities() {
+        assert_eq!(parse_fail_on("low").unwrap(), HitSeverity::Low);
+        assert_eq!(parse_fail_on("medium").unwrap(), HitSeverity::Medium);
+        assert_eq!(parse_fail_on("high").unwrap(), HitSeverity::High);
+    }
 }
