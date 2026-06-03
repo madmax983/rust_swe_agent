@@ -622,6 +622,7 @@ mod tests {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
+    #[allow(clippy::match_wild_err_arm)]
     async fn accept(listener: &TcpListener) -> tokio::net::TcpStream {
         match tokio::time::timeout(TEST_IO_TIMEOUT, listener.accept()).await {
             Ok(Ok((s, _))) => s,
@@ -630,6 +631,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::match_wild_err_arm)]
     async fn read_http(mut socket: tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];
@@ -654,7 +656,7 @@ mod tests {
     }
 
     fn body_of(req: &str) -> &str {
-        req.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
+        req.split_once("\r\n\r\n").map_or("", |(_, b)| b)
     }
 
     fn is_complete_http(buf: &[u8]) -> bool {
