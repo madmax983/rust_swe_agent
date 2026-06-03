@@ -96,6 +96,7 @@ fn init_repo(dir: &Path) -> String {
     git(dir, &["config", "user.name", "Test"]);
     git(dir, &["config", "commit.gpgSign", "false"]);
     git(dir, &["config", "tag.gpgSign", "false"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("hello.txt"), "before\n").unwrap();
     git(dir, &["add", "hello.txt"]);
     git(dir, &["commit", "-q", "-m", "base"]);
@@ -1571,6 +1572,7 @@ fn apply_dirty_path_with_whitespace_not_excluded() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_report_symlink_to_patched_file_is_overlap() {
     // When --report is a symlink pointing at a file the patch modifies, the
     // overlap check must detect the conflict (fix: canonicalize report_dest
@@ -1611,6 +1613,7 @@ fn apply_report_symlink_to_patched_file_is_overlap() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_broken_report_symlink_rejected_before_apply() {
     // When --report names a broken symlink, preflight must reject it before
     // apply_patch runs (fix: detect symlink_metadata().is_ok() && !exists()).

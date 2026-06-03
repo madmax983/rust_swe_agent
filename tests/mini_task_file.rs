@@ -61,7 +61,7 @@ fn both_specified_fails_mutual_exclusion() {
     assert!(!status.success());
     assert_eq!(status.code(), Some(2));
     assert!(
-        stderr.contains("both --task and --task-file"),
+        stderr.contains("multiple task sources provided"),
         "stderr must report mutual exclusion: {stderr}"
     );
     assert!(
@@ -76,7 +76,7 @@ fn neither_specified_fails() {
     assert!(!status.success());
     assert_eq!(status.code(), Some(2));
     assert!(
-        stderr.contains("either --task or --task-file must be provided"),
+        stderr.contains("either --task, --task-file, --from-issue, or --from-issue-file must be provided"),
         "stderr must report missing task argument: {stderr}"
     );
     assert!(

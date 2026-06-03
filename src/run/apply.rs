@@ -23,6 +23,19 @@ use crate::artifact::{ArtifactKind, ArtifactSchemaVersion};
 /// The `[REDACTED:` prefix written by the harness redactor.
 const REDACTION_MARKER: &str = "[REDACTED:";
 
+/// Canonicalize a path but strip Windows verbatim UNC prefix `\\?\` if present.
+fn canonicalize<P: AsRef<Path>>(path: P) -> std::io::Result<PathBuf> {
+    let p = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if s.starts_with(r"\\?\") {
+            return Ok(PathBuf::from(&s[4..]));
+        }
+    }
+    Ok(p)
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// How the source patch file is located.
@@ -141,7 +154,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
 
     // Canonicalize the patch path so that relative paths are anchored to the
     // caller's CWD before any `current_dir()` changes in git subprocess calls.
-    let patch_path = std::fs::canonicalize(&patch_path).unwrap_or(patch_path);
+    let patch_path = canonicalize(&patch_path).unwrap_or(patch_path);
 
     // ── 2. Verify target is a git working tree ────────────────────────────────
     if !is_git_tree(&opts.target) {
@@ -172,7 +185,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
     if !opts.allow_dirty {
         let traj_canon = traj_path_opt
             .as_deref()
-            .map(|tp| std::fs::canonicalize(tp).unwrap_or_else(|_| tp.to_owned()));
+            .map(|tp| canonicalize(tp).unwrap_or_else(|_| tp.to_owned()));
 
         let mut exclude: Vec<&Path> = vec![patch_path.as_path()];
         if let Some(ref tc) = traj_canon {
@@ -243,12 +256,12 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
         // When report_dest already exists (including as a symlink), canonicalize
         // it fully so that a symlink pointing at a patched file is detected.
         // When it doesn't exist yet, canonicalize the parent and append the name.
-        let report_abs = std::fs::canonicalize(&report_dest).ok().or_else(|| {
+        let report_abs = canonicalize(&report_dest).ok().or_else(|| {
             let rp_parent = report_dest
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            std::fs::canonicalize(rp_parent)
+            canonicalize(rp_parent)
                 .or_else(|_| std::path::absolute(rp_parent))
                 .ok()
                 .map(|p| p.join(report_dest.file_name().unwrap_or_default()))
@@ -258,7 +271,7 @@ pub fn run_agent_apply(opts: AgentApplyOpts) -> Result<ApplyReport, ApplyError> 
                 let file_abs = git_root.join(f);
                 // Canonicalize the patch file path too so that symlinks in the
                 // working tree are followed before the comparison.
-                let file_abs = std::fs::canonicalize(&file_abs).unwrap_or(file_abs);
+                let file_abs = canonicalize(&file_abs).unwrap_or(file_abs);
                 // Direct conflict: the patch touches exactly the report file.
                 if file_abs == *report_abs {
                     return Err(ApplyError::Io(std::io::Error::new(
@@ -643,9 +656,9 @@ fn dirty_paths_excluding(
             let abs = git_root.join(&rel_os);
             // Canonicalize for comparison; fall back to raw path if it doesn't
             // exist yet (e.g. untracked file whose parent isn't resolved).
-            let abs_canon = std::fs::canonicalize(&abs).unwrap_or(abs);
+            let abs_canon = canonicalize(&abs).unwrap_or(abs);
             let excluded = exclude_abs.iter().any(|ex| {
-                let ex_canon = std::fs::canonicalize(ex).unwrap_or_else(|_| ex.to_path_buf());
+                let ex_canon = canonicalize(ex).unwrap_or_else(|_| ex.to_path_buf());
                 abs_canon == ex_canon
             });
             if excluded {
