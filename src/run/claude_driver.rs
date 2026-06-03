@@ -70,6 +70,10 @@ const ALLOWED_TOOLS: [&str; 8] = [
 /// tests to substitute a deterministic fixture script.
 const CLAUDE_BIN_ENV: &str = "MAXWELLS_CLAUDE_BIN";
 
+/// Grace period for `child.wait()` after the stream closes. Covers normal
+/// cleanup; exceeded → kill and continue with whatever was parsed.
+const WAIT_GRACE_SECS: Duration = Duration::from_secs(30);
+
 /// Drive a single run through the Claude Code CLI, filling `agent.trajectory`
 /// and returning the terminal [`ExitReason`].
 ///
@@ -253,17 +257,16 @@ pub async fn drive(
     // a CLI that closes stdout but hangs during shutdown can't block the run
     // indefinitely. A generous grace period covers normal cleanup; if it
     // fires we kill the child and proceed with whatever parsed result we have.
-    const WAIT_GRACE: Duration = Duration::from_secs(30);
-    let wait_deadline = timeout_dur.map(|d| d.saturating_sub(WAIT_GRACE));
-    let exit_code =
-        match tokio::time::timeout(wait_deadline.unwrap_or(WAIT_GRACE), child.wait()).await {
-            Ok(Ok(status)) => status.code(),
-            Ok(Err(_)) | Err(_) => {
-                // Timed out or error during wait; kill the process and continue.
-                let _ = child.start_kill();
-                None
-            }
-        };
+    let wait_deadline = timeout_dur.map(|d| d.saturating_sub(WAIT_GRACE_SECS));
+    let exit_code = if let Ok(Ok(status)) =
+        tokio::time::timeout(wait_deadline.unwrap_or(WAIT_GRACE_SECS), child.wait()).await
+    {
+        status.code()
+    } else {
+        // Timed out or error during wait; kill the process and continue.
+        let _ = child.start_kill();
+        None
+    };
 
     let stderr_text = match stderr_handle {
         Some(h) => h.await.unwrap_or_default(),
