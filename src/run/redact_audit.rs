@@ -3934,6 +3934,37 @@ mod tests {
     }
 
     #[test]
+    fn real_header_flattened_artifact_is_audited_by_sniff() {
+        // Reports written via the standard artifact writer (`to_string_pretty` /
+        // `to_writer_pretty`) flatten `artifact_kind`/`schema_version` to the top
+        // level. This is exactly how `bench cache-stats` (cache-stats.json) and
+        // `agent audit` (audit.json) serialize, so the sniffer must scan them even
+        // though their names are not in the allowlist.
+        let dir = tempfile::tempdir().unwrap();
+        let json = crate::artifact::to_string_pretty(
+            crate::artifact::ArtifactKind::CacheStatsReport,
+            &serde_json::json!({ "sweep": "runs/x", "leak": "AKIAIOSFODNN7EXAMPLE" }),
+        )
+        .unwrap();
+        // Confirm the header really is at the top level (regression guard for the
+        // sniffer's contract with the artifact writer).
+        assert!(
+            json.contains("\"artifact_kind\""),
+            "artifact writer did not flatten the header: {json}"
+        );
+        std::fs::write(dir.path().join("cache-stats.json"), json).unwrap();
+        let report = audit(dir.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.file.ends_with("cache-stats.json") && f.match_class == "aws_access_key"),
+            "real header-flattened artifact not audited by sniff: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
     fn mini_trajectory_recorded_enabled_enables_oracle() {
         // A standalone `bench mini` trajectory records its policy in
         // `info.manifest.config_redacted`, not a sweep manifest. With the audit
