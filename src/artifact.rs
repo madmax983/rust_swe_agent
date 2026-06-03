@@ -69,6 +69,7 @@ pub enum ArtifactKind {
     ScriptabilityCheck,
     NearMissReport,
     ApplyReport,
+    StabilityResults,
 }
 
 impl ArtifactKind {
@@ -95,6 +96,7 @@ impl ArtifactKind {
             Self::ScriptabilityCheck => "scriptability_check",
             Self::NearMissReport => "near_miss_report",
             Self::ApplyReport => "apply_report",
+            Self::StabilityResults => "stability_results",
         }
     }
 }
