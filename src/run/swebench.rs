@@ -8002,6 +8002,7 @@ instance = "inst"
     /// (sweep_started → 2 × instance_completed → sweep_completed) and that
     /// every payload carries the schema-version envelope (AC #8 from #315).
     #[cfg(feature = "webhook")]
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn notify_webhook_posts_events_in_order_with_schema_envelope() {
         use std::sync::{Arc, Mutex};

@@ -2582,6 +2582,7 @@ index 8a1218a..24c5735 100644\n\
 
     /// AC #3 / #10: run 3 turns, build a partial trajectory, resume for 2 more,
     /// assert final trajectory has 5 total steps and resume_history is populated.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn mini_resume_continues_from_partial_trajectory() {
         let work = tempfile::tempdir().unwrap();
