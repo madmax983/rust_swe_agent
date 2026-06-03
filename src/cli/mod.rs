@@ -120,6 +120,7 @@ pub async fn run() -> Result<(), Error> {
             args::BenchCmd::Fork(f) => Box::pin(crate::run::fork::run(f)).await,
             args::BenchCmd::Power(p) => bench_power(&p),
             args::BenchCmd::DatasetStats(s) => bench_dataset_stats(s),
+            args::BenchCmd::DatasetVerify(s) => bench_dataset_verify(s),
             args::BenchCmd::Bisect(b) => Box::pin(bench_bisect(b)).await,
             args::BenchCmd::Audit(a) => bench_audit(a),
             args::BenchCmd::FailureDigest(f) => bench_failure_digest(f),
@@ -5533,6 +5534,100 @@ fn bench_dataset_stats(s: args::DatasetStatsCmd) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)]
+fn bench_dataset_verify(s: args::DatasetVerifyCmd) -> Result<(), Error> {
+    use crate::run::dataset::DatasetSource;
+
+    if s.format != "text" && s.format != "json" {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "dataset-verify: unknown --format `{}`; valid values: text, json",
+            s.format
+        ))));
+    }
+
+    if s.dataset_path.is_none() && s.dataset.is_none() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(
+            "one of --dataset-path or --dataset is required".into(),
+        )));
+    }
+
+    let cache_dir = s
+        .dataset_cache_dir
+        .clone()
+        .unwrap_or_else(crate::run::dataset::default_cache_dir);
+
+    // Determine target canonical alias/split
+    let alias_str = s.dataset.as_ref().ok_or_else(|| {
+        Error::Config(crate::error::ConfigError::Invalid(
+            "when using --dataset-path, --dataset must also be specified to identify the target canonical release".into()
+        ))
+    })?;
+    let alias = alias_str
+        .parse::<crate::run::dataset::SwebenchAlias>()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+    let split_str = s.split.as_deref().unwrap_or("test");
+    let split = split_str
+        .parse::<crate::run::dataset::SwebenchSplit>()
+        .map_err(|e| Error::Config(crate::error::ConfigError::Invalid(e)))?;
+
+    // Determine candidate source
+    let candidate_source = if let Some(path) = &s.dataset_path {
+        DatasetSource::LocalPath(path.clone())
+    } else {
+        DatasetSource::Named {
+            alias: alias.clone(),
+            split: split.clone(),
+        }
+    };
+
+    // Determine canonical reference path
+    let canonical_dir = s
+        .canonical_dir
+        .clone()
+        .unwrap_or_else(|| cache_dir.join("canonical"));
+    let reference_path = canonical_dir
+        .join(alias.as_str())
+        .join(format!("{}.jsonl", split.as_str()));
+
+    if !reference_path.exists() {
+        return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
+            "canonical reference for dataset alias `{alias}` split `{split}` not found: \
+            expected file at `{path}`\n\
+            \n\
+            To populate the reference, download the official SWE-bench JSONL for the \
+            `{alias}` dataset (`{split}` split) and place it at:\n\
+            \n  {path}",
+            path = reference_path.display()
+        ))));
+    }
+
+    // Load candidate dataset
+    let (cand_bytes, _meta) = crate::run::dataset::resolve_dataset(&candidate_source, &cache_dir)?;
+    let candidate_instances = crate::run::swebench::load_dataset_from_bytes_pub(&cand_bytes)?;
+
+    // Load reference dataset
+    let ref_bytes = std::fs::read(&reference_path)?;
+    let reference_instances = crate::run::swebench::load_dataset_from_bytes_pub(&ref_bytes)?;
+
+    // Verify
+    let report =
+        crate::run::dataset_verify::verify_dataset(&candidate_instances, &reference_instances)?;
+
+    if s.format == "json" {
+        let serialized = serde_json::to_string_pretty(&report)?;
+        println!("{serialized}");
+    } else {
+        let text = crate::run::dataset_verify::render_text(&report);
+        print!("{text}");
+    }
+
+    if report.verdict == "mismatch" {
+        exit_with_outcome(ExitCode::DatasetVerifyMismatch, "dataset mismatch detected");
+    }
+
+    Ok(())
+}
+
 async fn bench_bisect(b: args::BisectCmd) -> Result<(), Error> {
     crate::run::bisect::run(&b).await
 }
@@ -6786,5 +6881,59 @@ mod tests {
             }
         });
         assert!(issue_provenance_empty.is_none());
+    }
+
+    #[test]
+    fn test_bench_dataset_verify_cli_missing_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let cmd = args::DatasetVerifyCmd {
+            dataset_path: Some(temp.path().join("candidate.jsonl")),
+            dataset: Some("lite".to_string()),
+            split: Some("test".to_string()),
+            dataset_cache_dir: Some(temp.path().to_path_buf()),
+            canonical_dir: Some(temp.path().join("missing_canonical")),
+            format: "text".to_string(),
+        };
+
+        let res = super::bench_dataset_verify(cmd);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("canonical reference for dataset alias `lite` split `test` not found")
+        );
+    }
+
+    #[test]
+    fn test_bench_dataset_verify_cli_clean_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let inst = crate::run::swebench::SweBenchInstance {
+            instance_id: "inst-1".to_string(),
+            repo: Some("repo".to_string()),
+            base_commit: None,
+            problem_statement: Some("fix it".to_string()),
+            image: None,
+            other: serde_json::Map::new(),
+        };
+        let line = serde_json::to_string(&inst).unwrap() + "\n";
+
+        let candidate_path = temp.path().join("candidate.jsonl");
+        std::fs::write(&candidate_path, &line).unwrap();
+
+        let canonical_dir = temp.path().join("canonical").join("lite");
+        std::fs::create_dir_all(&canonical_dir).unwrap();
+        let reference_path = canonical_dir.join("test.jsonl");
+        std::fs::write(&reference_path, &line).unwrap();
+
+        let cmd = args::DatasetVerifyCmd {
+            dataset_path: Some(candidate_path),
+            dataset: Some("lite".to_string()),
+            split: Some("test".to_string()),
+            dataset_cache_dir: Some(temp.path().to_path_buf()),
+            canonical_dir: Some(temp.path().join("canonical")),
+            format: "json".to_string(),
+        };
+
+        let res = super::bench_dataset_verify(cmd);
+        assert!(res.is_ok());
     }
 }

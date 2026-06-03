@@ -19,6 +19,7 @@ pub mod compare;
 pub mod contamination_check;
 pub mod dataset;
 pub mod dataset_stats;
+pub mod dataset_verify;
 pub mod diff_config;
 pub mod env_preview;
 pub mod eval_flake;
