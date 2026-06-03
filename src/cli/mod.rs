@@ -3352,13 +3352,16 @@ fn bench_inspect(i: args::InspectCmd) -> Result<(), Error> {
         return Ok(());
     }
 
-    if matches!(i.format.as_str(), "markdown" | "html" | "csv" | "mermaid") {
+    if matches!(
+        i.format.as_str(),
+        "markdown" | "html" | "csv" | "mermaid" | "json-export"
+    ) {
         return bench_inspect_export(i);
     }
 
     if i.output.is_some() {
         return Err(Error::Config(crate::error::ConfigError::Invalid(format!(
-            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid), not `{}`",
+            "inspect: --output is only supported with export formats (markdown/html/csv/mermaid/json-export), not `{}`",
             i.format
         ))));
     }
@@ -3432,6 +3435,7 @@ fn bench_inspect_export(i: args::InspectCmd) -> Result<(), Error> {
         "html" => inspect_export_html(&traj)?,
         "csv" => inspect_export_csv(&traj)?,
         "mermaid" => inspect_export_mermaid(&traj)?,
+        "json-export" => inspect_export_json(&traj)?,
         _ => unreachable!("dispatch guarded by caller"),
     };
 
@@ -3517,6 +3521,22 @@ fn inspect_export_mermaid(_traj: &crate::trajectory::Trajectory) -> Result<Strin
     Err(Error::Config(crate::error::ConfigError::Invalid(
         "format_unavailable: --format mermaid requires the `mermaid-export` Cargo feature; \
          rebuild with `--features mermaid-export`"
+            .into(),
+    )))
+}
+
+#[cfg(feature = "json-export")]
+#[allow(clippy::unnecessary_wraps)]
+fn inspect_export_json(traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    use crate::trajectory::export::{JsonExporter, TrajectoryExporter};
+    Ok(JsonExporter::export(traj))
+}
+
+#[cfg(not(feature = "json-export"))]
+fn inspect_export_json(_traj: &crate::trajectory::Trajectory) -> Result<String, Error> {
+    Err(Error::Config(crate::error::ConfigError::Invalid(
+        "format_unavailable: --format json-export requires the `json-export` Cargo feature; \
+         rebuild with `--features json-export`"
             .into(),
     )))
 }

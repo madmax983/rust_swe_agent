@@ -47,6 +47,9 @@ pub struct MarkdownExporter;
 #[cfg(feature = "csv-export")]
 pub struct CsvExporter;
 
+#[cfg(feature = "json-export")]
+pub struct JsonExporter;
+
 #[cfg(feature = "mermaid-export")]
 pub struct MermaidExporter;
 
@@ -54,6 +57,30 @@ pub struct MermaidExporter;
 pub struct HtmlExporter;
 
 use std::fmt::Write;
+
+#[cfg(feature = "json-export")]
+impl TrajectoryExporter for JsonExporter {
+    fn export(trajectory: &Trajectory) -> String {
+        let redactor = Redactor::default_enabled();
+        // Manually clone the fields because Trajectory does not implement Clone.
+        let mut t_clone = Trajectory {
+            trajectory_format: trajectory.trajectory_format.clone(),
+            info: trajectory.info.clone(),
+            messages: trajectory.messages.clone(),
+            fork_lineage: trajectory.fork_lineage.clone(),
+        };
+        if let Some(task) = &mut t_clone.info.task {
+            *task = redactor.redact_text(task, surface::EXPORT).text;
+        }
+        if let Some(outcome) = &mut t_clone.info.outcome {
+            *outcome = redactor.redact_text(outcome, surface::EXPORT).text;
+        }
+        for msg in &mut t_clone.messages {
+            msg.content = redactor.redact_text(&msg.content, surface::EXPORT).text;
+        }
+        serde_json::to_string_pretty(&t_clone).unwrap_or_else(|_| "{}".to_string())
+    }
+}
 
 #[cfg(feature = "csv-export")]
 impl TrajectoryExporter for CsvExporter {
@@ -319,6 +346,27 @@ mod tests {
         assert!(mermaid.contains("U->>A: Hello \"user\""));
 
         assert!(mermaid.contains("Note over S,T: Outcome: submitted"));
+    }
+
+    #[cfg(feature = "json-export")]
+    #[test]
+    fn test_json_export_format() {
+        let mut t = Trajectory::new();
+        t.info.task = Some("Add a feature".to_string());
+        t.info.outcome = Some("submitted".to_string());
+
+        t.record_message(&Message::system("System prompt"));
+        t.record_message(&Message::user("Hello agent"));
+        t.record_message(&Message::assistant("Hello user"));
+
+        let json = JsonExporter::export(&t);
+        #[allow(clippy::expect_used)]
+        let parsed: Trajectory = serde_json::from_str(&json).expect("failed to parse json");
+
+        assert_eq!(parsed.info.task.as_deref(), Some("Add a feature"));
+        assert_eq!(parsed.info.outcome.as_deref(), Some("submitted"));
+        assert_eq!(parsed.messages.len(), 3);
+        assert_eq!(parsed.messages[0].content, "System prompt");
     }
 
     #[cfg(feature = "html-export")]

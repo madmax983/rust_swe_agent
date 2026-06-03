@@ -87,6 +87,7 @@ live-anthropic = []
 markdown-export = []
 html-export = []
 webhook = []
+json-export = []
 csv-export = []
 mermaid-export = []
 # Enables the `max ui` local sweep browser. Requires `html-export` for rendering.
