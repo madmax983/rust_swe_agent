@@ -363,6 +363,19 @@ fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
     let format = parse_format(a.format.as_str()).map_err(Error::Config)?;
     let fail_on = parse_fail_on(a.fail_on.as_str()).map_err(Error::Config)?;
 
+    // Guard: --output must not overwrite a trajectory artifact.
+    if let Some(ref out_path) = a.output {
+        if out_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".traj.json"))
+        {
+            return Err(Error::Config(crate::error::ConfigError::Invalid(
+                "--output path must not be a .traj.json file".to_owned(),
+            )));
+        }
+    }
+
     let opts = AuditOpts {
         sweep_dir: a.sweep.clone(),
         extra_signatures: a.signatures.clone(),
@@ -373,54 +386,50 @@ fn agent_injection_audit_cmd(a: &args::InjectionAuditCmd) -> Result<(), Error> {
     let report = match run_injection_audit(&opts) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("injection-audit: scan failed: {e}");
-            exit_with_outcome(
-                ExitCode::InjectionAuditScanError,
-                ExitCode::InjectionAuditScanError.outcome_class(),
-            );
+            eprintln!("injection-audit: {e}");
+            // Config errors (bad --signatures file, invalid regex) → usage_error (2).
+            // I/O errors (unreadable sweep dir, bad trajectory) → scan_error (35).
+            let code = if matches!(e, Error::Config(_)) {
+                ExitCode::UsageError
+            } else {
+                ExitCode::InjectionAuditScanError
+            };
+            exit_with_outcome(code, code.outcome_class());
         }
     };
 
     let exit_code = report.exit_code(fail_on);
 
-    match format {
+    // Render the report content.
+    let report_content: String = match format {
         AuditFormat::Json => {
             let json = format_json(&report).map_err(Error::Json)?;
-            let pretty = serde_json::to_string_pretty(&json).map_err(Error::Json)?;
-            if let Some(ref out_path) = a.output {
-                if let Some(parent) = out_path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
-                    }
-                }
-                std::fs::write(out_path, &pretty).map_err(Error::Io)?;
-            }
-            println!("{pretty}");
+            serde_json::to_string_pretty(&json).map_err(Error::Json)?
         }
-        AuditFormat::Jsonl => {
-            let jsonl = format_jsonl(&report);
-            if let Some(ref out_path) = a.output {
-                if let Some(parent) = out_path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
-                    }
+        AuditFormat::Jsonl => format_jsonl(&report),
+        AuditFormat::Text => format_text(&report),
+    };
+
+    // Write to --output if requested.  Write failures are logged but do NOT
+    // override the audit exit code — a flaky output path must not hide the
+    // scan result that CI gates on.
+    if let Some(ref out_path) = a.output {
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("injection-audit: failed to create output directory: {e}");
                 }
-                std::fs::write(out_path, &jsonl).map_err(Error::Io)?;
             }
-            print!("{jsonl}");
         }
-        AuditFormat::Text => {
-            let text = format_text(&report);
-            if let Some(ref out_path) = a.output {
-                if let Some(parent) = out_path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent).map_err(Error::Io)?;
-                    }
-                }
-                std::fs::write(out_path, &text).map_err(Error::Io)?;
-            }
-            print!("{text}");
+        if let Err(e) = std::fs::write(out_path, &report_content) {
+            eprintln!("injection-audit: failed to write output file: {e}");
         }
+    }
+
+    // Print to stdout.
+    match format {
+        AuditFormat::Json | AuditFormat::Text => println!("{report_content}"),
+        AuditFormat::Jsonl => print!("{report_content}"),
     }
 
     if exit_code != ExitCode::Success {

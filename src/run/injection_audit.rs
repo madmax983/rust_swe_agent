@@ -170,7 +170,12 @@ fn compile_builtins() -> Vec<CompiledSignature> {
 fn compile_custom(raw: &[RawSignature]) -> Result<Vec<CompiledSignature>, Error> {
     let mut compiled = Vec::with_capacity(raw.len());
     for r in raw {
-        let severity = HitSeverity::from_str(&r.severity).unwrap_or(HitSeverity::Medium);
+        let severity = HitSeverity::from_str(&r.severity).ok_or_else(|| {
+            Error::Config(crate::error::ConfigError::Invalid(format!(
+                "unknown severity '{}' in custom signature '{}'; expected 'low', 'medium', or 'high'",
+                r.severity, r.name
+            )))
+        })?;
         let regex = Regex::new(&r.pattern).map_err(|e| {
             Error::Config(crate::error::ConfigError::Invalid(format!(
                 "invalid regex pattern '{}' in custom signature '{}': {e}",
@@ -354,11 +359,14 @@ pub struct AuditOpts {
 /// Returns a report with all hits and scan errors. The caller decides the
 /// exit code via [`InjectionAuditReport::exit_code`].
 pub fn run_injection_audit(opts: &AuditOpts) -> Result<InjectionAuditReport, Error> {
-    // Validate sweep directory exists
-    if !opts.sweep_dir.exists() {
+    // Validate sweep path is a directory (also covers the "not found" case)
+    if !opts.sweep_dir.is_dir() {
         return Err(Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("sweep directory not found: {}", opts.sweep_dir.display()),
+            format!(
+                "sweep path is not a directory: {}",
+                opts.sweep_dir.display()
+            ),
         )));
     }
 
