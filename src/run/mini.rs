@@ -425,6 +425,39 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                     .into(),
             )));
         }
+        if !args.config.root.policy.extra_deny_patterns.is_empty()
+            || !args.config.root.policy.extra_allow_patterns.is_empty()
+        {
+            // The command policy engine gates `env.run` in the built-in loop;
+            // Claude Code executes tools itself, bypassing custom rules.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot enforce custom command policy \
+                 (policy.extra_deny_patterns/extra_allow_patterns); the CLI \
+                 runs tools itself"
+                    .into(),
+            )));
+        }
+        if !args.config.root.agent.hooks.pre_tool_use.is_empty()
+            || !args.config.root.agent.hooks.post_tool_use.is_empty()
+        {
+            // PreToolUse/PostToolUse hooks fire around `env.run`, which the
+            // driver never calls.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot run pre/post_tool_use hooks; the \
+                 CLI executes tools outside the harness loop"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.chaos_fail_every > 0 {
+            // Chaos injection wraps `env.run`; the driver bypasses it, so the
+            // configured failures would never fire.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot inject chaos faults \
+                 (environment.chaos_fail_every); it bypasses the wrapped \
+                 environment"
+                    .into(),
+            )));
+        }
     }
 
     std::fs::create_dir_all(&args.output_dir)?;

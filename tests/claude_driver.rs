@@ -58,11 +58,13 @@ echo 'line two' >> a.txt
 cat <<'JSON'
 {"type":"system","subtype":"init","cwd":".","session_id":"sess-abc123","model":"claude-sonnet-4-6","claude_code_version":"2.1.160","tools":["Bash"],"permissionMode":"default","apiKeySource":"none"}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
-{"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"thinking","thinking":"I will append the requested line."}],"usage":{"input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"thinking","thinking":"I will run the tests, then append the requested line."}],"usage":{"input_tokens":3,"output_tokens":5}}}
+{"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"tool_use","id":"toolu_test","name":"Bash","input":{"command":"pytest -q","description":"run tests"}}],"usage":{"input_tokens":8,"output_tokens":12}}}
+{"type":"user","message":{"content":[{"tool_use_id":"toolu_test","type":"tool_result","content":"1 passed in 0.10s","is_error":false}]}}
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo 'line two' >> a.txt","description":"append"}}],"usage":{"input_tokens":10,"output_tokens":20}}}
 {"type":"user","message":{"content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"(Bash completed with no output)","is_error":false}]}}
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"Done. Appended line two to a.txt."}],"usage":{"input_tokens":40,"output_tokens":12}}}
-{"type":"result","subtype":"success","is_error":false,"result":"Done. Appended line two to a.txt.","num_turns":2,"total_cost_usd":0.0123,"usage":{"input_tokens":100,"cache_read_input_tokens":10,"cache_creation_input_tokens":20,"output_tokens":50}}
+{"type":"result","subtype":"success","is_error":false,"result":"Done. Appended line two to a.txt.","num_turns":3,"total_cost_usd":0.0123,"usage":{"input_tokens":100,"cache_read_input_tokens":10,"cache_creation_input_tokens":20,"output_tokens":50}}
 JSON
 "#;
     let path = dir.join("fake_claude.sh");
@@ -155,8 +157,8 @@ async fn claude_driver_produces_valid_trajectory() {
     assert_eq!(traj["trajectory_format"], "mini-swe-agent-1.3");
     assert_eq!(traj["info"]["outcome"], "submitted");
     assert_eq!(traj["info"]["exit_reason"], "submitted");
-    // One tool_use block (the Bash call) in the transcript → one step.
-    assert_eq!(traj["info"]["steps"], 1);
+    // Two tool_use blocks (pytest + echo) in the transcript → two steps.
+    assert_eq!(traj["info"]["steps"], 2);
     // Cost and tokens come from the authoritative result message.
     assert!((traj["info"]["total_cost_usd"].as_f64().unwrap() - 0.0123).abs() < 1e-9);
     assert_eq!(traj["info"]["actual_cost_source"], "provider_reported");
@@ -242,6 +244,58 @@ async fn claude_driver_rejects_interactive_confirmation() {
         err.to_string().contains("interactive"),
         "unexpected error: {err}"
     );
+}
+
+/// `--driver claude-code` is rejected when a custom command policy is set:
+/// the CLI runs tools itself and never consults the policy engine.
+#[tokio::test]
+async fn claude_driver_rejects_custom_policy() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-policy");
+    args.config.root.policy.extra_deny_patterns = vec!["rm -rf".into()];
+
+    let err = run(args)
+        .await
+        .expect_err("custom policy should be rejected");
+    assert!(
+        err.to_string().contains("policy"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `--driver claude-code` is rejected when chaos injection is configured: it
+/// bypasses the wrapped environment, so the faults would never fire.
+#[tokio::test]
+async fn claude_driver_rejects_chaos() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-chaos");
+    args.config.root.environment.chaos_fail_every = 2;
+
+    let err = run(args).await.expect_err("chaos should be rejected");
+    assert!(err.to_string().contains("chaos"), "unexpected error: {err}");
+}
+
+/// A Claude `Bash` test command (`pytest`) is paired with its result into
+/// pre-submit test telemetry, matching the built-in loop.
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_records_pre_submit_test_telemetry() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+
+    run(base_args(repo.path(), out.path(), "cc-tests"))
+        .await
+        .expect("run should complete");
+    let traj = read_traj(out.path(), "cc-tests");
+
+    assert_eq!(traj["info"]["tests_run_before_submit"], true);
+    assert_eq!(traj["info"]["last_tests_passed"], true);
+    let invocations = traj["info"]["test_invocations"].as_array().unwrap();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0]["command"], "pytest -q");
+    assert_eq!(invocations[0]["exit_code"], 0);
 }
 
 /// A successful run that exceeds the configured per-task budget is recorded as

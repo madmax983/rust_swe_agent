@@ -28,21 +28,26 @@
 //! - The `claude` binary path is overridable via `MAXWELLS_CLAUDE_BIN` so the
 //!   parser can be exercised deterministically at $0 with a fixture script.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::agent::default::truncate_observation_text;
 use crate::agent::{DefaultAgent, ExitReason};
 use crate::cost::CostSource;
 use crate::error::Error;
 use crate::model::{Message, MessageExtra};
 use crate::redaction::surface;
 use crate::stream::StreamEvent;
-use crate::trajectory::{FailureCategory, TokenUsage, outcome};
+use crate::trajectory::{
+    FailureCategory, TestCommandPattern, TestInvocation, TokenUsage, detect_test_command,
+    effective_test_command_patterns, outcome,
+};
 
 /// Full toolset handed to Claude Code, one entry per `--allowedTools` value
 /// (the CLI documents it as `<tools...>`). Mirrors the operator's choice to
@@ -145,13 +150,20 @@ pub async fn drive(
         ))
     })?;
 
-    // Drain stderr concurrently so a chatty child can never deadlock us,
-    // capping the read at 1 MiB so a runaway child can't exhaust memory.
+    // Drain stderr concurrently so a chatty child can never deadlock us. Keep
+    // reading to EOF (so the child never hits SIGPIPE on a closed read end) but
+    // retain only the first ~1 MiB so a runaway child can't exhaust memory.
     let stderr_handle = child.stderr.take().map(|stderr| {
         tokio::spawn(async move {
+            const CAP: usize = 1024 * 1024;
             let mut buf = String::new();
-            let mut r = BufReader::new(stderr).take(1024 * 1024);
-            let _ = r.read_to_string(&mut buf).await;
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if buf.len() < CAP {
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
+            }
             buf
         })
     });
@@ -175,7 +187,7 @@ pub async fn drive(
         let process = process_stream(agent, stdout);
         tokio::pin!(process);
         tokio::select! {
-            res = &mut process => Outcome::Stream(res),
+            res = &mut process => Outcome::Stream(Box::new(res)),
             () = async {
                 match timeout_dur {
                     Some(d) => tokio::time::sleep(d).await,
@@ -192,7 +204,7 @@ pub async fn drive(
     };
 
     let parsed = match outcome {
-        Outcome::Stream(res) => res?,
+        Outcome::Stream(res) => (*res)?,
         Outcome::Timeout => {
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -224,9 +236,17 @@ pub async fn drive(
 /// How the streaming race resolved: the stream finished, or the timeout /
 /// cancellation token fired first.
 enum Outcome {
-    Stream(Result<Parsed, Error>),
+    Stream(Box<Result<Parsed, Error>>),
     Timeout,
     Cancelled,
+}
+
+/// A test command seen in a `tool_use` block, awaiting its `tool_result` so
+/// the pass/fail outcome can be paired with it by `tool_use_id`.
+struct PendingTest {
+    command: String,
+    step_index: u32,
+    matched_pattern: String,
 }
 
 /// Aggregated state pulled out of the Claude Code stream.
@@ -241,6 +261,11 @@ struct Parsed {
     claude_version: Option<String>,
     /// Terminal `result` message, if one was emitted.
     result: Option<ResultMsg>,
+    /// Test commands (`pytest`, etc.) awaiting their result, keyed by
+    /// `tool_use_id`.
+    pending_tests: HashMap<String, PendingTest>,
+    /// Completed test invocations, paired with their result exit status.
+    test_invocations: Vec<TestInvocation>,
 }
 
 struct ResultMsg {
@@ -260,6 +285,14 @@ async fn process_stream(
     agent: &mut DefaultAgent,
     stdout: tokio::process::ChildStdout,
 ) -> Result<Parsed, Error> {
+    // Patterns are already validated at agent build; fall back to empty on the
+    // unlikely recompile error rather than aborting the run.
+    let test_patterns = effective_test_command_patterns(
+        &agent.config.root.agent.test_command_patterns,
+        agent.config.root.agent.test_command_patterns_replace,
+    )
+    .unwrap_or_default();
+
     let mut lines = BufReader::new(stdout).lines();
     let mut parsed = Parsed::default();
 
@@ -274,14 +307,31 @@ async fn process_stream(
         };
         match msg.get("type").and_then(Value::as_str) {
             Some("system") => handle_system(&mut parsed, &msg),
-            Some("assistant") => handle_assistant(agent, &mut parsed, &msg),
-            Some("user") => handle_user(agent, &msg),
+            Some("assistant") => handle_assistant(agent, &mut parsed, &msg, &test_patterns),
+            Some("user") => {
+                handle_user(agent, &mut parsed, &msg);
+                // Per-step partial checkpoint after each observation, so an
+                // interrupted long run can be inspected/resumed from here.
+                maybe_checkpoint(agent, parsed.steps);
+            }
             Some("result") => parsed.result = Some(parse_result(&msg)),
             _ => {} // rate_limit_event, stream_event, etc. — ignored.
         }
     }
 
     Ok(parsed)
+}
+
+/// Atomically persist a `partial: true` checkpoint when a checkpoint path is
+/// configured, mirroring the built-in loop's per-turn write.
+fn maybe_checkpoint(agent: &mut DefaultAgent, steps: u32) {
+    if let Some(path) = agent.checkpoint_path.clone() {
+        agent.trajectory.info.steps = Some(steps);
+        agent.trajectory.info.actual_cost_usd = Some(agent.total_cost_usd);
+        if let Err(e) = agent.trajectory.save_partial_atomic(&path) {
+            tracing::warn!(error = %e, "claude driver checkpoint write failed; continuing");
+        }
+    }
 }
 
 fn handle_system(parsed: &mut Parsed, msg: &Value) {
@@ -303,7 +353,12 @@ fn handle_system(parsed: &mut Parsed, msg: &Value) {
 
 /// Record one assistant turn: join text blocks into the message content,
 /// fold thinking into `extra.other`, and capture each `tool_use` as an action.
-fn handle_assistant(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
+fn handle_assistant(
+    agent: &mut DefaultAgent,
+    parsed: &mut Parsed,
+    msg: &Value,
+    test_patterns: &[TestCommandPattern],
+) {
     let Some(blocks) = msg
         .get("message")
         .and_then(|m| m.get("content"))
@@ -330,6 +385,32 @@ fn handle_assistant(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) 
             }
             Some("tool_use") => {
                 parsed.steps += 1;
+                // Mirror the count onto the agent so an interrupted run
+                // (timeout/cancel before the result) still records its steps.
+                agent.steps = parsed.steps;
+                // Track Bash test commands so the following tool_result can be
+                // paired into pre-submit test telemetry.
+                if let (Some(id), Some("Bash")) = (
+                    block.get("id").and_then(Value::as_str),
+                    block.get("name").and_then(Value::as_str),
+                ) {
+                    if let Some(cmd) = block
+                        .get("input")
+                        .and_then(|i| i.get("command"))
+                        .and_then(Value::as_str)
+                    {
+                        if let Some(matched) = detect_test_command(cmd, test_patterns) {
+                            parsed.pending_tests.insert(
+                                id.to_owned(),
+                                PendingTest {
+                                    command: cmd.to_owned(),
+                                    step_index: parsed.steps,
+                                    matched_pattern: matched,
+                                },
+                            );
+                        }
+                    }
+                }
                 actions.push(tool_action_label(block));
             }
             _ => {}
@@ -408,8 +489,9 @@ fn tool_action_label(block: &Value) -> String {
     name.to_owned()
 }
 
-/// Record a `tool_result` (delivered as a `user` message) as an observation.
-fn handle_user(agent: &mut DefaultAgent, msg: &Value) {
+/// Record a `tool_result` (delivered as a `user` message) as an observation,
+/// and pair any test-command results into pre-submit telemetry.
+fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     let Some(blocks) = msg
         .get("message")
         .and_then(|m| m.get("content"))
@@ -426,21 +508,46 @@ fn handle_user(agent: &mut DefaultAgent, msg: &Value) {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
             continue;
         }
-        if block
+        let block_error = block
             .get("is_error")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        has_error |= block_error;
+        // Pair this result with a pending test command by tool_use_id. Claude
+        // Code's Bash tool_result reports `is_error`, not an exit code, so map
+        // success → 0 / failure → 1.
+        if let Some(pending) = block
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .and_then(|id| parsed.pending_tests.remove(id))
         {
-            has_error = true;
+            let command = agent
+                .redactor
+                .redact_text(&pending.command, surface::TRAJECTORY)
+                .text;
+            parsed.test_invocations.push(TestInvocation {
+                step_index: pending.step_index,
+                command,
+                exit_code: i32::from(block_error),
+                matched_pattern: pending.matched_pattern,
+            });
         }
         parts.push(tool_result_text(block.get("content")));
     }
     if parts.is_empty() {
         return;
     }
+    // Apply the configured observation cap (head/tail truncation) before
+    // recording, matching the built-in loop — a command can dump a huge file.
+    let combined = truncate_observation_text(
+        &parts.join("\n\n"),
+        agent.config.root.agent.observation_max_bytes,
+        agent.config.root.agent.observation_head_ratio,
+    )
+    .text;
     let redacted = agent
         .redactor
-        .redact_text(&parts.join("\n\n"), surface::MODEL_OBSERVATION)
+        .redact_text(&combined, surface::MODEL_OBSERVATION)
         .text;
     let mut extra = MessageExtra {
         timestamp: Some(chrono::Utc::now().to_rfc3339()),
@@ -508,7 +615,7 @@ fn parse_result(msg: &Value) -> ResultMsg {
 #[allow(clippy::too_many_lines)]
 fn finalize(
     agent: &mut DefaultAgent,
-    parsed: Parsed,
+    mut parsed: Parsed,
     step_limit: u32,
     exit_code: Option<i32>,
     stderr_text: &str,
@@ -565,6 +672,14 @@ fn finalize(
         completion_tokens: result.output_tokens,
     });
 
+    // Record pre-submit test telemetry. `refresh_test_metadata` (called inside
+    // `finalize_run_metadata`) keys `tests_run_before_submit` off a `__SUBMIT__`
+    // action message the driver never emits, so capture the pass/fail signal
+    // here and stamp it explicitly on the submit path below.
+    let ran_tests = !parsed.test_invocations.is_empty();
+    let last_tests_passed = parsed.test_invocations.last().map(|t| t.exit_code == 0);
+    agent.trajectory.info.test_invocations = std::mem::take(&mut parsed.test_invocations);
+
     let is_max_turns = result.subtype.contains("max_turns");
 
     // The configured spend cap is forwarded to Claude Code as
@@ -589,6 +704,12 @@ fn finalize(
         agent.trajectory.info.failure_category = None;
         agent.trajectory.info.final_output = Some(final_output.clone());
         agent.finalize_run_metadata(outcome::SUBMITTED);
+        // All driver test invocations precede the terminal submission, so stamp
+        // pre-submit telemetry directly (refresh_test_metadata cleared it).
+        if ran_tests {
+            agent.trajectory.info.tests_run_before_submit = true;
+            agent.trajectory.info.last_tests_passed = last_tests_passed;
+        }
         emit_ended(agent, "submitted", None, Some(final_output.clone()));
         Ok(ExitReason::Submitted { final_output })
     } else if over_budget {
