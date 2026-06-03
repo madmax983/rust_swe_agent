@@ -5929,14 +5929,15 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
                     .map_err(Error::Io)?;
                 buf.trim().to_owned()
             } else {
-                std::fs::read_to_string(path).map_err(|e| {
-                    Error::Config(crate::error::ConfigError::Invalid(format!(
-                        "cannot read task file '{}': {e}",
-                        path.display()
-                    )))
-                })?
-                .trim()
-                .to_owned()
+                std::fs::read_to_string(path)
+                    .map_err(|e| {
+                        Error::Config(crate::error::ConfigError::Invalid(format!(
+                            "cannot read task file '{}': {e}",
+                            path.display()
+                        )))
+                    })?
+                    .trim()
+                    .to_owned()
             }
         }
         (None, None) => {

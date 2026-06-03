@@ -10,7 +10,7 @@
 use maxwells_daemon::artifact::{ArtifactKind, ArtifactSchemaVersion};
 use maxwells_daemon::exit_code::ExitCode;
 use maxwells_daemon::run::stability::{
-    StabilityRunDetail, StabilityResults, compute_pass_at_k, compute_patch_identical_rate,
+    StabilityResults, StabilityRunDetail, compute_pass_at_k, compute_patch_identical_rate,
     compute_stats, pass_predicate_label, should_fail_under, validate_runs,
 };
 
@@ -226,17 +226,15 @@ fn compute_pass_at_k_skipped_excluded_from_denominator() {
 
 #[test]
 fn compute_pass_at_k_all_skipped_is_zero() {
-    let details = vec![
-        StabilityRunDetail {
-            run_number: 1,
-            outcome: "skipped_budget_exhausted".into(),
-            passed: false,
-            cost_usd: None,
-            step_count: None,
-            skipped: true,
-            skip_reason: Some("cost_limit_usd".into()),
-        },
-    ];
+    let details = vec![StabilityRunDetail {
+        run_number: 1,
+        outcome: "skipped_budget_exhausted".into(),
+        passed: false,
+        cost_usd: None,
+        step_count: None,
+        skipped: true,
+        skip_reason: Some("cost_limit_usd".into()),
+    }];
     let (pass_count, pass_at_k) = compute_pass_at_k(&details);
     assert_eq!(pass_count, 0);
     assert!((pass_at_k - 0.0).abs() < 1e-9);
@@ -442,11 +440,7 @@ mod integration {
     #[tokio::test]
     async fn two_runs_scripted_submit_both_pass() {
         let tmp = tempfile::tempdir().unwrap();
-        let args = make_args(
-            tmp.path(),
-            2,
-            vec![submit_response(), submit_response()],
-        );
+        let args = make_args(tmp.path(), 2, vec![submit_response(), submit_response()]);
         let exit_code = run(args).await.unwrap();
         assert_eq!(
             exit_code,
@@ -454,8 +448,14 @@ mod integration {
             "expected success when all runs pass"
         );
 
-        let result_path = tmp.path().join("test-stability").join("stability-results.json");
-        assert!(result_path.exists(), "stability-results.json must be written");
+        let result_path = tmp
+            .path()
+            .join("test-stability")
+            .join("stability-results.json");
+        assert!(
+            result_path.exists(),
+            "stability-results.json must be written"
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&result_path).unwrap()).unwrap();
@@ -463,7 +463,10 @@ mod integration {
         assert_eq!(json["runs"].as_u64(), Some(2));
         assert_eq!(json["pass_count"].as_u64(), Some(2));
         let pat = json["pass_at_k"].as_f64().unwrap();
-        assert!((pat - 1.0).abs() < 1e-6, "expected pass_at_k=1.0, got {pat}");
+        assert!(
+            (pat - 1.0).abs() < 1e-6,
+            "expected pass_at_k=1.0, got {pat}"
+        );
         assert_eq!(json["pass_predicate"].as_str(), Some("outcome_submitted"));
         assert_eq!(
             json["artifact_kind"].as_str(),
@@ -479,11 +482,7 @@ mod integration {
     #[tokio::test]
     async fn fail_under_gate_returns_non_zero_exit_code() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut args = make_args(
-            tmp.path(),
-            2,
-            vec![submit_response(), submit_response()],
-        );
+        let mut args = make_args(tmp.path(), 2, vec![submit_response(), submit_response()]);
         // Both runs submit → pass_at_k = 1.0; threshold of 1.1 is impossible to meet
         // so the gate fires and returns StabilityGateFailure.
         args.fail_under = Some(1.1);
@@ -535,18 +534,17 @@ mod integration {
 
         let _exit_code = run(args).await.unwrap();
 
-        let result_path = tmp.path().join("test-stability").join("stability-results.json");
+        let result_path = tmp
+            .path()
+            .join("test-stability")
+            .join("stability-results.json");
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&result_path).unwrap()).unwrap();
 
         // With cost_limit_usd=0, after the first run (cost=0.01) the cumulative cost
         // exceeds 0.0, so runs 2 and 3 should be skipped.
         let detail = json["runs_detail"].as_array().unwrap();
-        assert_eq!(
-            detail.len(),
-            3,
-            "all 3 runs should appear in runs_detail"
-        );
+        assert_eq!(detail.len(), 3, "all 3 runs should appear in runs_detail");
         let skipped_count = detail
             .iter()
             .filter(|d| d["skipped"].as_bool().unwrap_or(false))
@@ -562,16 +560,8 @@ mod integration {
         let tmp1 = tempfile::tempdir().unwrap();
         let tmp2 = tempfile::tempdir().unwrap();
 
-        let args1 = make_args(
-            tmp1.path(),
-            2,
-            vec![submit_response(), submit_response()],
-        );
-        let args2 = make_args(
-            tmp2.path(),
-            2,
-            vec![submit_response(), submit_response()],
-        );
+        let args1 = make_args(tmp1.path(), 2, vec![submit_response(), submit_response()]);
+        let args2 = make_args(tmp2.path(), 2, vec![submit_response(), submit_response()]);
 
         run(args1).await.unwrap();
         run(args2).await.unwrap();

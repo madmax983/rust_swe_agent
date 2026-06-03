@@ -108,10 +108,7 @@ impl StabilityResults {
         let _ = writeln!(
             &mut out,
             "  step_count        : min={:.1}    max={:.1}    mean={:.1}    stddev={:.1}",
-            self.step_count_min,
-            self.step_count_max,
-            self.step_count_mean,
-            self.step_count_stddev
+            self.step_count_min, self.step_count_max, self.step_count_mean, self.step_count_stddev
         );
         let _ = writeln!(&mut out);
         let _ = writeln!(
@@ -259,10 +256,7 @@ pub fn compute_stats(values: &[f64]) -> StatsResult {
         };
     }
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = values
-        .iter()
-        .cloned()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let mean = values.iter().sum::<f64>() / values.len() as f64;
     let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
     StatsResult {
@@ -523,7 +517,6 @@ fn determine_pass(
 }
 
 fn write_results(results: &StabilityResults, path: &Path) -> Result<(), Error> {
-    let json = serde_json::to_string_pretty(results)
-        .map_err(|e| Error::Json(e))?;
+    let json = serde_json::to_string_pretty(results).map_err(|e| Error::Json(e))?;
     std::fs::write(path, json).map_err(Error::Io)
 }
