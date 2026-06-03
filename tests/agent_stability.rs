@@ -108,7 +108,7 @@ fn validate_runs_ten_is_ok() {
 fn validate_runs_error_message_mentions_range() {
     let err = validate_runs(0).unwrap_err();
     assert!(
-        err.contains("1") && err.contains("10"),
+        err.contains('1') && err.contains("10"),
         "error message should mention valid range, got: {err}"
     );
 }
