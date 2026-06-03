@@ -5262,6 +5262,7 @@ impl XorShift64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     #![allow(clippy::unwrap_used)]
     use super::*;
     use futures::FutureExt;
