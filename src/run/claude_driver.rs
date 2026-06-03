@@ -285,10 +285,22 @@ fn discover_claude_config(cwd: &Path) -> Vec<DiscoveredFile> {
 /// Code. `DefaultAgentBuilder` stamps the harness `ToolRegistry` manifest (just
 /// `bash` once the driver's rejection guards run), which misrepresents what the
 /// CLI could call — so tool-coverage/drift reports would treat `Edit`/`Write`/
-/// `Read`/etc. as unavailable. Record `ALLOWED_TOOLS` with a `claude_code`
-/// source instead, matching the manifest shape `tool_coverage` consumes.
-fn record_driver_toolset(agent: &mut DefaultAgent) {
-    let tools: Vec<Value> = ALLOWED_TOOLS
+/// `Read`/etc. as unavailable.
+///
+/// In isolated mode `--tools` restricts the CLI to `ALLOWED_TOOLS`, so that is
+/// authoritative. In fidelity mode the CLI also exposes its default and ambient
+/// (`.claude`/plugin/MCP) tools, so prefer the actual list from the stream's
+/// `system/init` message when available, falling back to `ALLOWED_TOOLS`.
+fn record_driver_toolset(agent: &mut DefaultAgent, isolated: bool, init_tools: Option<&[String]>) {
+    let names: Vec<String> = if isolated {
+        ALLOWED_TOOLS.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        init_tools.filter(|t| !t.is_empty()).map_or_else(
+            || ALLOWED_TOOLS.iter().map(|s| (*s).to_owned()).collect(),
+            <[String]>::to_vec,
+        )
+    };
+    let tools: Vec<Value> = names
         .iter()
         .map(|name| {
             serde_json::json!({
@@ -448,12 +460,26 @@ pub async fn drive(
     // race it against the child without holding a borrow on `agent`.
     let mut cancel = agent.cancellation.clone();
 
+    // If cancellation already landed during setup (e.g. a sweep Ctrl-C before the
+    // driver started), return the interrupt before spawning so the external CLI
+    // never touches the worktree — matching DefaultAgent::step, which returns
+    // UserInterrupt before any tool execution when already cancelled.
+    if cancel
+        .as_ref()
+        .is_some_and(crate::env::CancellationToken::is_cancelled)
+    {
+        return Ok(ExitReason::UserInterrupt);
+    }
+
     // Audit the Claude Code configuration that will actually shape this run.
     // In fidelity mode ambient `.claude` config is live, so discover and record
     // it (paths + hashes + redacted content). In isolated mode `--bare` strips
     // it, so record only the marker that discovery was bypassed.
     record_claude_config(agent, &cwd, isolated);
-    record_driver_toolset(agent);
+    // Baseline toolset (refined from system/init in finalize for fidelity mode);
+    // ensures even an interrupted/timed-out run records the driver's toolset
+    // rather than the stale harness manifest.
+    record_driver_toolset(agent, isolated, None);
 
     let mut cmd = Command::new(&bin);
     cmd.kill_on_drop(true)
@@ -473,8 +499,10 @@ pub async fn drive(
         // ANTHROPIC_API_KEY/apiKeyHelper (no OAuth/keychain).
         cmd.arg("--bare")
             .arg("--no-session-persistence")
+            // `--tools` takes a single comma-separated value (unlike
+            // `--allowedTools`, which accepts a space-separated list).
             .arg("--tools")
-            .args(ALLOWED_TOOLS);
+            .arg(ALLOWED_TOOLS.join(","));
     }
     if let Some(cap) = cost_cap {
         cmd.arg("--max-budget-usd").arg(format!("{cap}"));
@@ -609,7 +637,7 @@ pub async fn drive(
         None => String::new(),
     };
 
-    finalize(agent, parsed, step_limit, exit_code, &stderr_text)
+    finalize(agent, parsed, step_limit, exit_code, &stderr_text, isolated)
 }
 
 /// How the streaming race resolved: the stream finished, or the timeout /
@@ -638,6 +666,9 @@ struct Parsed {
     /// Session id, recorded for provenance.
     session_id: Option<String>,
     claude_version: Option<String>,
+    /// Tool names Claude Code reported available in `system/init` (used to
+    /// record the real fidelity-mode toolset).
+    tools: Option<Vec<String>>,
     /// Terminal `result` message, if one was emitted.
     result: Option<ResultMsg>,
     /// Test commands (`pytest`, etc.) awaiting their result, keyed by
@@ -727,6 +758,11 @@ fn handle_system(parsed: &mut Parsed, msg: &Value) {
             .get("claude_code_version")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
+        parsed.tools = msg.get("tools").and_then(Value::as_array).map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.as_str().map(ToOwned::to_owned))
+                .collect()
+        });
     }
 }
 
@@ -819,8 +855,9 @@ fn handle_assistant(
         .redact_text(&content, surface::MODEL_OBSERVATION)
         .text;
 
+    let ts = chrono::Utc::now().to_rfc3339();
     let mut extra = MessageExtra {
-        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        timestamp: Some(ts.clone()),
         ..Default::default()
     };
     if !actions.is_empty() {
@@ -844,7 +881,15 @@ fn handle_assistant(
 
     agent
         .trajectory
-        .record_with_extra(&Message::assistant(redacted), extra);
+        .record_with_extra(&Message::assistant(redacted.clone()), extra);
+    // Emit the per-step assistant event so live consumers (--event-log,
+    // --webhook-url, --stream-addr) see activity, as the built-in loop does.
+    agent.stream.emit(StreamEvent::AssistantMessage {
+        step: parsed.steps,
+        content: redacted,
+        cost_usd: None,
+        timestamp: ts,
+    });
 }
 
 /// Build a one-line action label for a `tool_use` block, mirroring the
@@ -932,8 +977,9 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
         agent.config.root.agent.observation_head_ratio,
     )
     .text;
+    let ts = chrono::Utc::now().to_rfc3339();
     let mut extra = MessageExtra {
-        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        timestamp: Some(ts.clone()),
         ..Default::default()
     };
     if has_error {
@@ -955,7 +1001,14 @@ fn handle_user(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) {
     );
     agent
         .trajectory
-        .record_with_extra(&Message::user(redacted), extra);
+        .record_with_extra(&Message::user(redacted.clone()), extra);
+    // Emit the per-step observation event for live consumers, mirroring the
+    // built-in loop's post-bash Observation event.
+    agent.stream.emit(StreamEvent::Observation {
+        step: parsed.steps,
+        content: redacted,
+        timestamp: ts,
+    });
 }
 
 /// Flatten a `tool_result` `content` field, which is either a string or an
@@ -1016,7 +1069,11 @@ fn finalize(
     step_limit: u32,
     exit_code: Option<i32>,
     stderr_text: &str,
+    isolated: bool,
 ) -> Result<ExitReason, Error> {
+    // Refine the recorded toolset now that the stream's system/init tool list is
+    // known (fidelity mode); isolated mode stays pinned to ALLOWED_TOOLS.
+    record_driver_toolset(agent, isolated, parsed.tools.as_deref());
     // Provenance: record the Claude Code session so the trajectory is
     // self-describing about which backend produced it.
     if let Some(model) = parsed.model.clone() {

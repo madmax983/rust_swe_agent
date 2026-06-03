@@ -56,7 +56,7 @@ set -euo pipefail
 # Perform the real edit in the current working directory, like Claude Code.
 echo 'line two' >> a.txt
 cat <<'JSON'
-{"type":"system","subtype":"init","cwd":".","session_id":"sess-abc123","model":"claude-sonnet-4-6","claude_code_version":"2.1.160","tools":["Bash"],"permissionMode":"default","apiKeySource":"none"}
+{"type":"system","subtype":"init","cwd":".","session_id":"sess-abc123","model":"claude-sonnet-4-6","claude_code_version":"2.1.160","tools":["Bash","Edit","Write","Read","WebSearch","Task"],"permissionMode":"default","apiKeySource":"none"}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"thinking","thinking":"I will run the tests, then append the requested line."}],"usage":{"input_tokens":3,"output_tokens":5}}}
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"tool_use","id":"toolu_test","name":"Bash","input":{"command":"pytest -q","description":"run tests"}}],"usage":{"input_tokens":8,"output_tokens":12}}}
@@ -210,8 +210,10 @@ async fn claude_driver_produces_valid_trajectory() {
     assert_eq!(rr["timed_out"], false);
     assert!(rr["stdout"].is_string());
 
-    // info.toolset reflects the tools Claude Code was given, not the harness
-    // registry, so tool-coverage reports see Edit/Write/Read as available.
+    // info.toolset reflects the tools Claude Code actually reported in
+    // system/init (fidelity mode), not the harness registry — including tools
+    // outside ALLOWED_TOOLS like WebSearch/Task — so tool-coverage reports see
+    // the real available set.
     let tool_names: Vec<&str> = traj["info"]["toolset"]["tools"]
         .as_array()
         .unwrap()
@@ -221,6 +223,10 @@ async fn claude_driver_produces_valid_trajectory() {
     assert!(tool_names.contains(&"Bash"));
     assert!(tool_names.contains(&"Edit"));
     assert!(tool_names.contains(&"Write"));
+    assert!(
+        tool_names.contains(&"WebSearch"),
+        "fidelity toolset should reflect the streamed system/init list"
+    );
 
     // The driver ran `claude` in the repo, so the real edit landed.
     let contents = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
@@ -602,4 +608,18 @@ async fn claude_driver_isolated_bypasses_ambient_config() {
     // --bare bypasses discovery: no files recorded, just the marker.
     assert!(cfg["files"].is_null());
     assert!(cfg["discovery"].as_str().unwrap().contains("bypassed"));
+
+    // Isolated mode pins the toolset to ALLOWED_TOOLS (`--tools` restricts the
+    // CLI), so the streamed WebSearch/Task tools are NOT recorded as available.
+    let tool_names: Vec<&str> = traj["info"]["toolset"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(tool_names.contains(&"Bash"));
+    assert!(
+        !tool_names.contains(&"WebSearch"),
+        "isolated toolset must be pinned to ALLOWED_TOOLS, not the streamed list"
+    );
 }
