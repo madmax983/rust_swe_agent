@@ -20,8 +20,12 @@ impl DatasetVerifyReport {
 }
 
 pub fn normalize_json_list(val: &serde_json::Value) -> Vec<String> {
+    if val.is_null() {
+        return vec![];
+    }
     if let Some(arr) = val.as_array() {
         arr.iter()
+            .filter(|v| !v.is_null())
             .map(|v| {
                 if let Some(s) = v.as_str() {
                     s.to_string()
@@ -33,6 +37,7 @@ pub fn normalize_json_list(val: &serde_json::Value) -> Vec<String> {
     } else if let Some(s) = val.as_str() {
         if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(s) {
             arr.iter()
+                .filter(|v| !v.is_null())
                 .map(|v| {
                     if let Some(inner_s) = v.as_str() {
                         inner_s.to_string()
@@ -61,11 +66,13 @@ pub fn compute_instance_hash(inst: &SweBenchInstance) -> String {
     let get_other_str = |key: &str| -> String {
         inst.other
             .get(key)
-            .map(|v| {
-                if let Some(s) = v.as_str() {
-                    s.to_string()
+            .and_then(|v| {
+                if v.is_null() {
+                    None
+                } else if let Some(s) = v.as_str() {
+                    Some(s.to_string())
                 } else {
-                    v.to_string()
+                    Some(v.to_string())
                 }
             })
             .unwrap_or_default()
@@ -402,6 +409,82 @@ mod tests {
         assert_eq!(
             result.missing,
             vec!["test-a".to_string(), "test-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_verify_null_vs_absent_equivalence() {
+        let inst_absent = SweBenchInstance {
+            instance_id: "test-1".to_string(),
+            repo: Some("repo".to_string()),
+            base_commit: None,
+            problem_statement: Some("fix it".to_string()),
+            image: None,
+            other: serde_json::Map::new(),
+        };
+
+        // Case 1: patch, test_patch, and environment_setup_commit are omitted vs explicitly null
+        let mut inst_nulls = inst_absent.clone();
+        inst_nulls
+            .other
+            .insert("patch".to_string(), serde_json::Value::Null);
+        inst_nulls
+            .other
+            .insert("test_patch".to_string(), serde_json::Value::Null);
+        inst_nulls.other.insert(
+            "environment_setup_commit".to_string(),
+            serde_json::Value::Null,
+        );
+
+        // Hash of inst_absent should be identical to inst_nulls
+        assert_eq!(
+            compute_instance_hash(&inst_absent),
+            compute_instance_hash(&inst_nulls)
+        );
+
+        // Case 2: FAIL_TO_PASS and PASS_TO_PASS are omitted vs explicitly null vs array containing nulls
+        let mut inst_lists_null = inst_absent.clone();
+        inst_lists_null
+            .other
+            .insert("FAIL_TO_PASS".to_string(), serde_json::Value::Null);
+        inst_lists_null
+            .other
+            .insert("PASS_TO_PASS".to_string(), serde_json::Value::Null);
+
+        assert_eq!(
+            compute_instance_hash(&inst_absent),
+            compute_instance_hash(&inst_lists_null)
+        );
+
+        let mut inst_lists_with_nulls = inst_absent.clone();
+        inst_lists_with_nulls.other.insert(
+            "FAIL_TO_PASS".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::String("test_a".to_string()),
+                serde_json::Value::Null,
+            ]),
+        );
+        inst_lists_with_nulls.other.insert(
+            "PASS_TO_PASS".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Null,
+                serde_json::Value::String("test_b".to_string()),
+            ]),
+        );
+
+        let mut inst_lists_clean = inst_absent;
+        inst_lists_clean.other.insert(
+            "FAIL_TO_PASS".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("test_a".to_string())]),
+        );
+        inst_lists_clean.other.insert(
+            "PASS_TO_PASS".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("test_b".to_string())]),
+        );
+
+        assert_eq!(
+            compute_instance_hash(&inst_lists_clean),
+            compute_instance_hash(&inst_lists_with_nulls)
         );
     }
 }
