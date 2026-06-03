@@ -444,8 +444,12 @@ fn collect_traj_files_recursive(dir: &Path, out: &mut Vec<PathBuf>, errors: &mut
         };
         // Use file_type() to avoid a follow-symlink stat call and prevent
         // infinite recursion on symlink cycles.
-        let Ok(ft) = entry.file_type() else {
-            continue;
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                errors.push(format!("{}: {e}", entry.path().display()));
+                continue;
+            }
         };
         let path = entry.path();
         if ft.is_dir() {

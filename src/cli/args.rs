@@ -348,7 +348,7 @@ pub struct InjectionAuditCmd {
     #[arg(long, default_value = "text")]
     pub format: String,
 
-    /// Minimum severity level that triggers exit code 34.
+    /// Minimum severity level that triggers exit code 37.
     /// One of `low`, `medium` (default), or `high`.
     #[arg(long, default_value = "medium", value_name = "SEVERITY")]
     pub fail_on: String,
