@@ -918,6 +918,8 @@ pub enum BenchCmd {
     Power(PowerCmd),
     /// Preview SWE-bench dataset composition offline and zero-cost before running a sweep.
     DatasetStats(DatasetStatsCmd),
+    /// Verify a candidate dataset offline against its canonical official release.
+    DatasetVerify(DatasetVerifyCmd),
     /// Identify the commit that introduced a resolved-rate regression.
     Bisect(BisectCmd),
     /// Re-derive and verify sweep aggregates against trajectories.
@@ -1078,6 +1080,34 @@ pub struct DatasetStatsCmd {
     /// Model name to use for TokenCounter offline estimation.
     #[arg(long, default_value = "gpt-4")]
     pub model: String,
+}
+
+/// `bench dataset-verify` — verify a candidate dataset offline against its canonical official release.
+#[derive(Debug, Args, Clone)]
+pub struct DatasetVerifyCmd {
+    /// Local JSONL dataset file to verify. If omitted, verifies the cached named dataset.
+    #[arg(long)]
+    pub dataset_path: Option<PathBuf>,
+
+    /// The target canonical release alias to compare against: `full`, `lite`, or `verified`.
+    #[arg(long, value_name = "ALIAS")]
+    pub dataset: Option<String>,
+
+    /// The target canonical release split to compare against: `train`, `test`, or `dev`.
+    #[arg(long, default_value = "test", value_name = "SPLIT")]
+    pub split: Option<String>,
+
+    /// Directory for the named-dataset on-disk cache.
+    #[arg(long, value_name = "DIR")]
+    pub dataset_cache_dir: Option<PathBuf>,
+
+    /// Directory containing the canonical references (defaults to `<dataset_cache_dir>/canonical`).
+    #[arg(long, value_name = "DIR")]
+    pub canonical_dir: Option<PathBuf>,
+
+    /// Format: `text` or `json`.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// `bench bisect` — identify the commit that introduced a resolved-rate regression.
