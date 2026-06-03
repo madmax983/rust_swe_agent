@@ -5915,6 +5915,7 @@ pub fn compare_rehearsals(
 
 // ── agent suite ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
     // ── Validate --runs ───────────────────────────────────────────────────────
     if let Err(msg) = crate::run::stability::validate_runs(s.runs) {
@@ -6021,6 +6022,7 @@ async fn agent_stability_cmd(s: args::StabilityCmd) -> Result<(), Error> {
         per_task_budget_usd: s.per_task_budget_usd,
         deterministic_responses: None,
         deterministic_usage_per_call: None,
+        print_summary: s.format.as_deref() != Some("json"),
     };
 
     let exit_code = crate::run::stability::run(stability_args).await?;

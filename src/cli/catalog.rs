@@ -103,6 +103,12 @@ pub fn entries() -> &'static [CatalogEntry] {
             stage: "preflight",
         },
         CatalogEntry {
+            path: "agent stability",
+            summary: "Measure single-task run-to-run variance by running N times and reporting pass@k",
+            cost_tier: "paid",
+            stage: "run",
+        },
+        CatalogEntry {
             path: "agent suite",
             summary: "Run an operator-defined personal eval task pack",
             cost_tier: "paid",

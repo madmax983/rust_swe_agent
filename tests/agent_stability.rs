@@ -434,6 +434,7 @@ mod integration {
             per_task_budget_usd: None,
             deterministic_responses: Some(responses),
             deterministic_usage_per_call: None,
+            print_summary: false,
         }
     }
 
@@ -530,6 +531,7 @@ mod integration {
                 cache_creation_tokens: 0,
                 cost_usd: Some(0.01),
             }),
+            print_summary: false,
         };
 
         let _exit_code = run(args).await.unwrap();

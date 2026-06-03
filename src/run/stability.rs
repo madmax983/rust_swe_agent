@@ -86,12 +86,15 @@ impl StabilityResults {
         use std::fmt::Write as _;
         let mut out = String::new();
 
+        let non_skipped_count =
+            u32::try_from(self.runs_detail.iter().filter(|d| !d.skipped).count())
+                .unwrap_or(u32::MAX);
         let _ = writeln!(
             &mut out,
             "agent stability: \"{}\" — {}/{} runs passed (pass_at_k={:.3})",
             truncate(&self.task, 60),
             self.pass_count,
-            self.runs - self.runs_detail.iter().filter(|d| d.skipped).count() as u32,
+            non_skipped_count,
             self.pass_at_k,
         );
         let _ = writeln!(&mut out, "  pass_predicate    : {}", self.pass_predicate);
@@ -183,18 +186,20 @@ pub struct StabilityArgs {
     pub deterministic_responses: Option<Vec<String>>,
     /// Fixed per-call usage reported by the scripted backend (test-only).
     pub deterministic_usage_per_call: Option<crate::model::ModelUsage>,
+    /// When `false`, suppress the human-readable summary (used with `--format json`).
+    pub print_summary: bool,
 }
 
 // ── Public computation helpers ────────────────────────────────────────────────
 
 /// Validate that `n` is in the range 1..=10. Returns an error message on failure.
 pub fn validate_runs(n: u32) -> Result<(), String> {
-    if n < 1 || n > 10 {
+    if (1..=10).contains(&n) {
+        Ok(())
+    } else {
         Err(format!(
             "--runs must be between 1 and 10 (inclusive), got {n}"
         ))
-    } else {
-        Ok(())
     }
 }
 
@@ -217,8 +222,9 @@ pub fn pass_predicate_label(verify: &[String]) -> &'static str {
 /// Skipped runs are excluded from both numerator and denominator.
 pub fn compute_pass_at_k(details: &[StabilityRunDetail]) -> (u32, f64) {
     let non_skipped: Vec<&StabilityRunDetail> = details.iter().filter(|d| !d.skipped).collect();
-    let total = non_skipped.len() as f64;
-    let pass_count = non_skipped.iter().filter(|d| d.passed).count() as u32;
+    let total = f64::from(u32::try_from(non_skipped.len()).unwrap_or(u32::MAX));
+    let pass_count =
+        u32::try_from(non_skipped.iter().filter(|d| d.passed).count()).unwrap_or(u32::MAX);
     let pass_at_k = if total > 0.0 {
         f64::from(pass_count) / total
     } else {
@@ -241,7 +247,8 @@ pub fn compute_patch_identical_rate(patches: &[Option<String>]) -> f64 {
         *counts.entry(p).or_insert(0) += 1;
     }
     let max_count = counts.values().max().copied().unwrap_or(0);
-    max_count as f64 / submitted.len() as f64
+    f64::from(u32::try_from(max_count).unwrap_or(u32::MAX))
+        / f64::from(u32::try_from(submitted.len()).unwrap_or(u32::MAX))
 }
 
 /// Compute min / max / mean / population stddev for a slice of values.
@@ -255,10 +262,11 @@ pub fn compute_stats(values: &[f64]) -> StatsResult {
             stddev: 0.0,
         };
     }
-    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let len_f64 = f64::from(u32::try_from(values.len()).unwrap_or(u32::MAX));
+    let mean = values.iter().sum::<f64>() / len_f64;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / len_f64;
     StatsResult {
         min,
         max,
@@ -274,6 +282,7 @@ pub fn compute_stats(values: &[f64]) -> StatsResult {
 /// Writes `<output_dir>/<stability_name>/stability-results.json` and prints a
 /// human-readable summary. Returns `StabilityGateFailure` when `--fail-under`
 /// is set and `pass_at_k < fail_under`.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
     // ── Prepare output directory ──────────────────────────────────────────────
     let stability_dir = args.output_dir.join(&args.stability_name);
@@ -310,6 +319,10 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
         // ── Build per-run trajectory name and output path ─────────────────────
         let trajectory_name = format!("run_{run_number:02}");
         let traj_path = stability_dir.join(format!("{trajectory_name}.traj.json"));
+
+        // Delete any stale trajectory from a previous run of the same stability name
+        // so we can never mistake an old result for the current run's outcome.
+        let _ = std::fs::remove_file(&traj_path);
 
         // ── Build MiniArgs and execute ────────────────────────────────────────
         let mut run_cfg = args.config.clone();
@@ -354,7 +367,11 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
             issue_provenance: None,
         };
 
-        let _run_outcome = crate::run::mini::run(mini_args).await;
+        if let Err(e) = crate::run::mini::run(mini_args).await {
+            if !matches!(e, Error::VerificationFailed(..)) {
+                return Err(e);
+            }
+        }
 
         // ── Read trajectory from disk ─────────────────────────────────────────
         let detail = if let Some(traj) = try_load_trajectory(&traj_path) {
@@ -450,12 +467,26 @@ pub async fn run(args: StabilityArgs) -> Result<ExitCode, Error> {
     let results_path = stability_dir.join("stability-results.json");
     write_results(&results, &results_path)?;
 
-    // ── Print summary ─────────────────────────────────────────────────────────
-    print!("{}", results.summary_text());
+    // ── Print summary (suppressed when --format json is active) ───────────────
+    if args.print_summary {
+        print!("{}", results.summary_text());
+    }
 
-    // ── --fail-under gate ─────────────────────────────────────────────────────
+    // ── Exit code resolution ──────────────────────────────────────────────────
+    if results.runs_detail.iter().any(|d| d.skipped) {
+        return Ok(ExitCode::BudgetHalt);
+    }
+
     if should_fail_under(pass_at_k, args.fail_under) {
         return Ok(ExitCode::StabilityGateFailure);
+    }
+
+    if args.fail_under.is_none() && results.runs_detail.iter().any(|d| !d.passed && !d.skipped) {
+        return if args.verify.is_empty() {
+            Ok(ExitCode::TaskUnsuccessful)
+        } else {
+            Ok(ExitCode::VerificationFailure)
+        };
     }
 
     Ok(ExitCode::Success)
@@ -517,6 +548,6 @@ fn determine_pass(
 }
 
 fn write_results(results: &StabilityResults, path: &Path) -> Result<(), Error> {
-    let json = serde_json::to_string_pretty(results).map_err(|e| Error::Json(e))?;
+    let json = serde_json::to_string_pretty(results).map_err(Error::Json)?;
     std::fs::write(path, json).map_err(Error::Io)
 }
