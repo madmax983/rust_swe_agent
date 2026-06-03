@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used)]
 
-use maxwells_daemon::run::github_issue::{parse_issue_ref, resolve_issue_task};
+use maxwells_daemon::run::github_issue::{
+    GithubIssueComment, GithubIssueCommentAuthor, format_issue_prompt, parse_issue_ref,
+    resolve_issue_task,
+};
 use std::path::PathBuf;
 
 #[test]
@@ -69,8 +72,10 @@ fn test_offline_snapshot_byte_identical() {
     assert_eq!(prov_a.issue_repo, None);
     assert_eq!(prov_a.issue_number, None);
 
-    // Verify PromptGuard envelopes exist in the generated task text
-    assert!(task_a.contains("Fix the compiler panic on division by zero"));
+    // Verify PromptGuard envelopes exist in the generated task text and wrap the title
+    assert!(task_a.contains(
+        "<untrusted_task_text>\nFix the compiler panic on division by zero\n</untrusted_task_text>"
+    ));
     assert!(task_a.contains("<untrusted_task_text>"));
     assert!(task_a.contains(
         "Running `cargo build` on a crate containing `/ 0` causes a compiler crash. Please fix it."
@@ -83,4 +88,33 @@ fn test_offline_snapshot_byte_identical() {
     assert!(task_a.contains("panic at main.rs:10"));
     assert!(task_a.contains("torvalds:"));
     assert!(task_a.contains("Actually, this might be related to constant evaluation."));
+}
+
+#[test]
+fn test_comment_author_attribution() {
+    let author_only = GithubIssueComment {
+        body: Some("comment 1".to_string()),
+        author: Some(GithubIssueCommentAuthor {
+            login: "author_user".to_string(),
+        }),
+        user: None,
+    };
+    let user_only = GithubIssueComment {
+        body: Some("comment 2".to_string()),
+        author: None,
+        user: Some(GithubIssueCommentAuthor {
+            login: "user_user".to_string(),
+        }),
+    };
+    let anonymous = GithubIssueComment {
+        body: Some("comment 3".to_string()),
+        author: None,
+        user: None,
+    };
+
+    let prompt = format_issue_prompt("test", "test body", &[author_only, user_only, anonymous]);
+
+    assert!(prompt.contains("author_user:\ncomment 1"));
+    assert!(prompt.contains("user_user:\ncomment 2"));
+    assert!(prompt.contains("anonymous:\ncomment 3"));
 }

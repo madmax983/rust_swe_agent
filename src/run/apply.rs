@@ -967,6 +967,7 @@ fn unescape_c_string_os(s: &str) -> OsString {
 }
 
 /// Build an `OsString` from a raw byte vec, preserving non-UTF-8 bytes on Unix.
+#[allow(clippy::needless_pass_by_value)]
 fn bytes_to_os_string(bytes: Vec<u8>) -> OsString {
     #[cfg(unix)]
     {

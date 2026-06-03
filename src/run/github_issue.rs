@@ -30,6 +30,7 @@ pub struct GithubIssueSnapshot {
 pub struct GithubIssueComment {
     pub body: Option<String>,
     pub author: Option<GithubIssueCommentAuthor>,
+    pub user: Option<GithubIssueCommentAuthor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -163,7 +164,7 @@ fn compute_body_sha256(body: &str) -> String {
 pub fn format_issue_prompt(title: &str, body: &str, comments: &[GithubIssueComment]) -> String {
     let mut out = String::new();
     out.push_str("GitHub Issue: ");
-    out.push_str(title);
+    out.push_str(&PromptGuard::wrap(UntrustedKind::TaskText, title));
     out.push_str("\n\n");
 
     out.push_str("Issue Description:\n");
@@ -176,9 +177,10 @@ pub fn format_issue_prompt(title: &str, body: &str, comments: &[GithubIssueComme
             let author = c
                 .author
                 .as_ref()
+                .or(c.user.as_ref())
                 .map_or("anonymous", |a| a.login.as_str());
             let comment_body = c.body.as_deref().unwrap_or("");
-            let comment_block = format!("{}:\n{}", author, comment_body);
+            let comment_block = format!("{author}:\n{comment_body}");
             out.push_str(&PromptGuard::wrap(UntrustedKind::TaskText, &comment_block));
             out.push_str("\n\n");
         }
@@ -196,6 +198,8 @@ fn handle_api_error(status: reqwest::StatusCode, body: &str) -> Error {
                 || body.contains("api-rate-limit-exceeded")))
     {
         Error::GithubIssue(GithubIssueError::RateLimited(body.to_owned()))
+    } else if status == reqwest::StatusCode::FORBIDDEN {
+        Error::GithubIssue(GithubIssueError::NotFound(body.to_owned()))
     } else {
         Error::GithubIssue(GithubIssueError::RequestFailed(format!(
             "status {status}: {body}"
@@ -204,6 +208,7 @@ fn handle_api_error(status: reqwest::StatusCode, body: &str) -> Error {
 }
 
 /// Resolves a GitHub issue task online or from a local JSON snapshot.
+#[allow(clippy::too_many_lines)]
 pub async fn resolve_issue_task_async(
     issue_ref_str: Option<String>,
     snapshot_path: Option<PathBuf>,
@@ -309,11 +314,12 @@ pub async fn resolve_issue_task_async(
                 return Err(handle_api_error(status_comments, &comments_body));
             }
 
-            let page_comments: Vec<GithubIssueComment> = serde_json::from_str(&comments_body).map_err(|e| {
-                Error::GithubIssue(GithubIssueError::RequestFailed(format!(
-                    "failed to parse comments JSON on page {page}: {e}"
-                )))
-            })?;
+            let page_comments: Vec<GithubIssueComment> = serde_json::from_str(&comments_body)
+                .map_err(|e| {
+                    Error::GithubIssue(GithubIssueError::RequestFailed(format!(
+                        "failed to parse comments JSON on page {page}: {e}"
+                    )))
+                })?;
 
             let page_len = page_comments.len();
             comments.extend(page_comments);
@@ -361,4 +367,58 @@ pub fn resolve_issue_task(
             snapshot_path,
             "GITHUB_TOKEN",
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn test_handle_api_error_mappings() {
+        // 404 -> NotFound
+        let err = handle_api_error(StatusCode::NOT_FOUND, "not found msg");
+        match err {
+            Error::GithubIssue(GithubIssueError::NotFound(msg)) => {
+                assert_eq!(msg, "not found msg");
+            }
+            _ => panic!("expected NotFound, got {err:?}"),
+        }
+
+        // 403 rate limit -> RateLimited
+        let err = handle_api_error(StatusCode::FORBIDDEN, "rate limit exceeded");
+        match err {
+            Error::GithubIssue(GithubIssueError::RateLimited(msg)) => {
+                assert_eq!(msg, "rate limit exceeded");
+            }
+            _ => panic!("expected RateLimited, got {err:?}"),
+        }
+
+        // 403 other -> NotFound
+        let err = handle_api_error(StatusCode::FORBIDDEN, "some other 403 error");
+        match err {
+            Error::GithubIssue(GithubIssueError::NotFound(msg)) => {
+                assert_eq!(msg, "some other 403 error");
+            }
+            _ => panic!("expected NotFound, got {err:?}"),
+        }
+
+        // 429 -> RateLimited
+        let err = handle_api_error(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+        match err {
+            Error::GithubIssue(GithubIssueError::RateLimited(msg)) => {
+                assert_eq!(msg, "too many requests");
+            }
+            _ => panic!("expected RateLimited, got {err:?}"),
+        }
+
+        // 500 -> RequestFailed
+        let err = handle_api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal server error");
+        match err {
+            Error::GithubIssue(GithubIssueError::RequestFailed(msg)) => {
+                assert!(msg.contains("status 500 Internal Server Error: internal server error"));
+            }
+            _ => panic!("expected RequestFailed, got {err:?}"),
+        }
+    }
 }

@@ -227,14 +227,17 @@ impl ExitCode {
             Error::BisectBudgetExhausted => Self::BisectBudgetExhausted,
             Error::BisectSchemaBreak => Self::BisectSchemaBreak,
             Error::Audit(_) => Self::AuditFailure,
-            Error::Template(_) | Error::Trajectory(_) | Error::Github(_) => Self::InternalError,
+            Error::Template(_)
+            | Error::Trajectory(_)
+            | Error::Github(_)
+            | Error::Io(_)
+            | Error::Json(_) => Self::InternalError,
             Error::GithubIssue(issue_e) => match issue_e {
                 crate::error::GithubIssueError::MissingToken(_) => Self::GithubIssueMissingToken,
                 crate::error::GithubIssueError::NotFound(_) => Self::GithubIssueNotFound,
                 crate::error::GithubIssueError::RateLimited(_) => Self::GithubIssueRateLimited,
                 crate::error::GithubIssueError::RequestFailed(_) => Self::TaskUnsuccessful,
             },
-            Error::Io(_) | Error::Json(_) => Self::InternalError,
         }
     }
 

@@ -251,10 +251,8 @@ pub fn compute_time_to_first_edit_signal(
 ) -> f64 {
     match first_edit_step {
         None => 0.0,
-        Some(step) if total_steps == 0 => {
-            // Single-step trajectory that edited: treat as maximally suspicious.
-            if step == 0 { 1.0 } else { 0.0 }
-        }
+        Some(0) if total_steps == 0 => 1.0,
+        Some(_) if total_steps == 0 => 0.0,
         Some(step) => {
             let frac = step as f64 / (total_steps.saturating_sub(1).max(1)) as f64;
             (1.0 - frac).clamp(0.0, 1.0)

@@ -1156,6 +1156,23 @@ async fn mini_resume_cmd(
         std::path::Path::to_path_buf,
     );
 
+    let issue_provenance = traj.info.manifest.as_ref().and_then(|man| {
+        if man.issue_repo.is_some()
+            || man.issue_number.is_some()
+            || man.issue_fetched_at_utc.is_some()
+            || man.issue_body_sha256.is_some()
+        {
+            Some(crate::run::github_issue::IssueProvenance {
+                issue_repo: man.issue_repo.clone(),
+                issue_number: man.issue_number,
+                issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                issue_body_sha256: man.issue_body_sha256.clone(),
+            })
+        } else {
+            None
+        }
+    });
+
     let args = crate::run::mini::MiniArgs {
         task,
         extra_context: m.extra_context,
@@ -1184,7 +1201,7 @@ async fn mini_resume_cmd(
         no_step_persist: m.no_step_persist,
         parent_sweep_run_id: None,
         continue_from: None,
-        issue_provenance: None,
+        issue_provenance,
     };
     crate::run::mini::run(args).await
 }
@@ -6358,5 +6375,86 @@ mod tests {
         assert!(res.is_err());
         let err_str = res.unwrap_err().to_string();
         assert!(err_str.contains("multiple task sources provided"));
+    }
+
+    #[test]
+    fn test_issue_provenance_extraction_from_trajectory() {
+        use crate::trajectory::{MiniProvenanceManifest, Trajectory};
+
+        // Case 1: Trajectory with provenance
+        let mut traj = Trajectory::default();
+        let manifest = MiniProvenanceManifest {
+            harness_git_sha: None,
+            harness_binary_version: "0.1.0".to_string(),
+            started_at_utc: "2026-06-01T00:00:00Z".to_string(),
+            ended_at_utc: None,
+            env_kind: "local".to_string(),
+            working_dir: None,
+            config_sha256: "dummy".to_string(),
+            config_redacted: serde_json::Value::Null,
+            cli_invocation: vec![],
+            extra_context_present: false,
+            task_timeout_secs: None,
+            step_limit: 50,
+            model_name: "claude-3-5-sonnet".to_string(),
+            fallback_models: vec![],
+            redaction_policy_id: "dummy".to_string(),
+            deterministic_mode: false,
+            chaos_fail_every: 0,
+            parent_sweep_run_id: None,
+            issue_repo: Some("owner/repo".to_string()),
+            issue_number: Some(123),
+            issue_fetched_at_utc: Some("2026-06-01T00:00:00Z".to_string()),
+            issue_body_sha256: Some("abcdef".to_string()),
+        };
+        traj.info.manifest = Some(manifest);
+
+        let issue_provenance = traj.info.manifest.as_ref().and_then(|man| {
+            if man.issue_repo.is_some()
+                || man.issue_number.is_some()
+                || man.issue_fetched_at_utc.is_some()
+                || man.issue_body_sha256.is_some()
+            {
+                Some(crate::run::github_issue::IssueProvenance {
+                    issue_repo: man.issue_repo.clone(),
+                    issue_number: man.issue_number,
+                    issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                    issue_body_sha256: man.issue_body_sha256.clone(),
+                })
+            } else {
+                None
+            }
+        });
+
+        let prov = issue_provenance.unwrap();
+        assert_eq!(prov.issue_repo, Some("owner/repo".to_string()));
+        assert_eq!(prov.issue_number, Some(123));
+        assert_eq!(
+            prov.issue_fetched_at_utc,
+            Some("2026-06-01T00:00:00Z".to_string())
+        );
+        assert_eq!(prov.issue_body_sha256, Some("abcdef".to_string()));
+
+        // Case 2: Trajectory without provenance
+        let mut traj_empty = Trajectory::default();
+        traj_empty.info.manifest = None;
+
+        let issue_provenance_empty = traj_empty.info.manifest.as_ref().and_then(|man| {
+            if man.issue_repo.is_some()
+                || man.issue_number.is_some()
+                || man.issue_fetched_at_utc.is_some()
+                || man.issue_body_sha256.is_some()
+            {
+                Some(crate::run::github_issue::IssueProvenance {
+                    issue_repo: man.issue_repo.clone(),
+                    issue_number: man.issue_number,
+                    issue_fetched_at_utc: man.issue_fetched_at_utc.clone(),
+                    issue_body_sha256: man.issue_body_sha256.clone(),
+                })
+            } else {
+                None
+            }
+        });
+        assert!(issue_provenance_empty.is_none());
     }
 }
