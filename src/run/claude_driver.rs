@@ -44,12 +44,22 @@ use crate::redaction::surface;
 use crate::stream::StreamEvent;
 use crate::trajectory::{FailureCategory, TokenUsage, outcome};
 
-/// Full toolset handed to Claude Code. Mirrors the operator's choice to let
-/// the agent edit directly; mutations still land in the working tree, so
+/// Full toolset handed to Claude Code, one entry per `--allowedTools` value
+/// (the CLI documents it as `<tools...>`). Mirrors the operator's choice to
+/// let the agent edit directly; mutations still land in the working tree, so
 /// `git diff` patch capture in `mini::run` is agnostic to *how* they were
 /// made. Web/Task tools are intentionally omitted to keep runs local and
 /// reproducible.
-const ALLOWED_TOOLS: &str = "Bash Edit MultiEdit Write Read Glob Grep NotebookEdit";
+const ALLOWED_TOOLS: [&str; 8] = [
+    "Bash",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+];
 
 /// Environment variable that overrides the `claude` binary path. Used by
 /// tests to substitute a deterministic fixture script.
@@ -61,9 +71,11 @@ const CLAUDE_BIN_ENV: &str = "MAXWELLS_CLAUDE_BIN";
 /// `workdir` is the directory `claude` runs in (and where edits land). When
 /// `None`, the current process directory is used — matching the built-in
 /// local environment's behavior.
+#[allow(clippy::too_many_lines)]
 pub async fn drive(
     agent: &mut DefaultAgent,
     task: String,
+    extra_context: Option<&str>,
     workdir: Option<&Path>,
     timeout_secs: Option<u64>,
 ) -> Result<ExitReason, Error> {
@@ -84,17 +96,43 @@ pub async fn drive(
         );
     }
 
+    // Fold any merged extra-context / active-skill guidance into the prompt so
+    // the backend actually sees the context the trajectory claims was present.
+    let prompt = match extra_context {
+        Some(ctx) if !ctx.trim().is_empty() => format!("{task}\n\n{ctx}"),
+        _ => task.clone(),
+    };
+
+    // Honor the operator's configured spend cap by forwarding it to Claude
+    // Code's own `--max-budget-usd`; an over-budget result is also downgraded
+    // post-hoc in `finalize` so spend controls hold even if the cap is fuzzy.
+    let cost_cap = [
+        agent.config.root.agent.cost_limit_usd,
+        agent.config.root.agent.per_task_budget_usd,
+    ]
+    .into_iter()
+    .flatten()
+    .min_by(f64::total_cmp);
+
+    // Cancellation token (sweep Ctrl-C) shared by the agent; cloned so we can
+    // race it against the child without holding a borrow on `agent`.
+    let mut cancel = agent.cancellation.clone();
+
     let mut cmd = Command::new(&bin);
-    cmd.arg("-p")
-        .arg(&task)
+    cmd.kill_on_drop(true)
+        .arg("-p")
+        .arg(&prompt)
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
         .arg("--max-turns")
         .arg(step_limit.to_string())
         .arg("--allowedTools")
-        .arg(ALLOWED_TOOLS)
-        .current_dir(&cwd)
+        .args(ALLOWED_TOOLS);
+    if let Some(cap) = cost_cap {
+        cmd.arg("--max-budget-usd").arg(format!("{cap}"));
+    }
+    cmd.current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -107,31 +145,70 @@ pub async fn drive(
         ))
     })?;
 
-    // Drain stderr concurrently so a chatty child can never deadlock us.
+    // Drain stderr concurrently so a chatty child can never deadlock us,
+    // capping the read at 1 MiB so a runaway child can't exhaust memory.
     let stderr_handle = child.stderr.take().map(|stderr| {
         tokio::spawn(async move {
             let mut buf = String::new();
-            let mut r = BufReader::new(stderr);
+            let mut r = BufReader::new(stderr).take(1024 * 1024);
             let _ = r.read_to_string(&mut buf).await;
             buf
         })
     });
 
-    let process = process_stream(agent, &mut child, step_limit);
+    // Take stdout out of the child so `process_stream` does not hold a borrow
+    // on `child` — that lets the timeout/cancel branches kill it.
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Trajectory("claude child has no stdout pipe".into()))?;
+    let timeout_dur = timeout_secs.map(Duration::from_secs);
 
-    let parsed = match timeout_secs {
-        None => process.await?,
-        Some(secs) => {
-            let dur = Duration::from_secs(secs);
-            let Ok(res) = tokio::time::timeout(dur, process).await else {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                agent.finalize_wallclock_timeout(dur);
-                return Err(Error::Trajectory(format!(
-                    "task wallclock timeout after {secs}s (claude driver)"
-                )));
-            };
-            res?
+    // Race the stream against the optional wallclock timeout and the
+    // operator's cancellation token (sweep Ctrl-C). The branches yield an
+    // owned `Outcome` so none of them borrows `agent` during the select; the
+    // only agent borrow is the `process` future, dropped immediately after.
+    //
+    // Scope the borrowing `process` future so it is dropped at the block's
+    // end, releasing the `&mut agent` borrow before the handlers below use it.
+    let outcome = {
+        let process = process_stream(agent, stdout);
+        tokio::pin!(process);
+        tokio::select! {
+            res = &mut process => Outcome::Stream(res),
+            () = async {
+                match timeout_dur {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => Outcome::Timeout,
+            () = async {
+                match cancel.as_mut() {
+                    Some(c) => c.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => Outcome::Cancelled,
+        }
+    };
+
+    let parsed = match outcome {
+        Outcome::Stream(res) => res?,
+        Outcome::Timeout => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let dur = timeout_dur.unwrap_or_default();
+            agent.finalize_wallclock_timeout(dur);
+            return Err(Error::Trajectory(format!(
+                "task wallclock timeout after {}s (claude driver)",
+                dur.as_secs()
+            )));
+        }
+        Outcome::Cancelled => {
+            // Kill the child and let `mini::run`'s cancellation finalizer
+            // stamp the trajectory, matching the built-in interrupt path.
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Ok(ExitReason::UserInterrupt);
         }
     };
 
@@ -142,6 +219,14 @@ pub async fn drive(
     };
 
     finalize(agent, parsed, step_limit, status.code(), &stderr_text)
+}
+
+/// How the streaming race resolved: the stream finished, or the timeout /
+/// cancellation token fired first.
+enum Outcome {
+    Stream(Result<Parsed, Error>),
+    Timeout,
+    Cancelled,
 }
 
 /// Aggregated state pulled out of the Claude Code stream.
@@ -169,17 +254,12 @@ struct ResultMsg {
     output_tokens: u64,
 }
 
-/// Read the NDJSON stream from `child`'s stdout, recording assistant turns and
-/// tool observations into the trajectory as they arrive.
+/// Read the NDJSON stream from the child's `stdout`, recording assistant turns
+/// and tool observations into the trajectory as they arrive.
 async fn process_stream(
     agent: &mut DefaultAgent,
-    child: &mut tokio::process::Child,
-    _step_limit: u32,
+    stdout: tokio::process::ChildStdout,
 ) -> Result<Parsed, Error> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Trajectory("claude child has no stdout pipe".into()))?;
     let mut lines = BufReader::new(stdout).lines();
     let mut parsed = Parsed::default();
 
@@ -264,8 +344,9 @@ fn handle_assistant(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) 
         parsed.model = Some(m.to_owned());
     }
 
-    // Skip pure-thinking turns with no text and no action (keeps the
-    // trajectory close to the built-in loop's one-action-per-turn shape).
+    // Skip only completely-empty turns. A thinking-only turn is still
+    // recorded (empty content + `extra.thinking`) so the reasoning receipt
+    // survives in the trajectory.
     if text_parts.is_empty() && actions.is_empty() && thinking_parts.is_empty() {
         return;
     }
@@ -281,6 +362,12 @@ fn handle_assistant(agent: &mut DefaultAgent, parsed: &mut Parsed, msg: &Value) 
         ..Default::default()
     };
     if !actions.is_empty() {
+        // Redact action labels (bash commands, file paths) on the trajectory
+        // surface, matching the built-in loop — a tool call can carry a
+        // configured literal, token, or secret-bearing path.
+        for action in &mut actions {
+            *action = agent.redactor.redact_text(action, surface::TRAJECTORY).text;
+        }
         extra.actions = Some(actions);
     }
     if !thinking_parts.is_empty() {
@@ -330,30 +417,41 @@ fn handle_user(agent: &mut DefaultAgent, msg: &Value) {
     else {
         return;
     };
+    // Parallel tool calls arrive as several `tool_result` blocks in one
+    // `user` message; combine them into a single observation so the
+    // trajectory keeps its alternating assistant/user shape.
+    let mut parts: Vec<String> = Vec::new();
+    let mut has_error = false;
     for block in blocks {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
             continue;
         }
-        let is_error = block
+        if block
             .get("is_error")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let text = tool_result_text(block.get("content"));
-        let redacted = agent
-            .redactor
-            .redact_text(&text, surface::MODEL_OBSERVATION)
-            .text;
-        let mut extra = MessageExtra {
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-            ..Default::default()
-        };
-        if is_error {
-            extra.other.insert("tool_error".into(), Value::Bool(true));
+            .unwrap_or(false)
+        {
+            has_error = true;
         }
-        agent
-            .trajectory
-            .record_with_extra(&Message::user(redacted), extra);
+        parts.push(tool_result_text(block.get("content")));
     }
+    if parts.is_empty() {
+        return;
+    }
+    let redacted = agent
+        .redactor
+        .redact_text(&parts.join("\n\n"), surface::MODEL_OBSERVATION)
+        .text;
+    let mut extra = MessageExtra {
+        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+        ..Default::default()
+    };
+    if has_error {
+        extra.other.insert("tool_error".into(), Value::Bool(true));
+    }
+    agent
+        .trajectory
+        .record_with_extra(&Message::user(redacted), extra);
 }
 
 /// Flatten a `tool_result` `content` field, which is either a string or an
@@ -407,6 +505,7 @@ fn parse_result(msg: &Value) -> ResultMsg {
 /// Stamp the trajectory with cost/tokens/outcome from the parsed stream and
 /// return the terminal [`ExitReason`], mirroring `DefaultAgent`'s own
 /// finalization on each terminal path.
+#[allow(clippy::too_many_lines)]
 fn finalize(
     agent: &mut DefaultAgent,
     parsed: Parsed,
@@ -468,7 +567,20 @@ fn finalize(
 
     let is_max_turns = result.subtype.contains("max_turns");
 
-    if result.subtype == "success" && !result.is_error {
+    // The configured spend cap is forwarded to Claude Code as
+    // `--max-budget-usd`, but enforce it post-hoc too: an over-budget run is
+    // recorded as `budget_exhausted`, never `submitted`, so spend controls
+    // hold even if the CLI overshoots the cap on its final turn.
+    let cost_cap = [
+        agent.config.root.agent.cost_limit_usd,
+        agent.config.root.agent.per_task_budget_usd,
+    ]
+    .into_iter()
+    .flatten()
+    .min_by(f64::total_cmp);
+    let over_budget = cost_cap.is_some_and(|cap| result.total_cost_usd >= cap);
+
+    if result.subtype == "success" && !result.is_error && !over_budget {
         let final_output = agent
             .redactor
             .redact_text(&result.final_text, surface::TRAJECTORY)
@@ -479,6 +591,21 @@ fn finalize(
         agent.finalize_run_metadata(outcome::SUBMITTED);
         emit_ended(agent, "submitted", None, Some(final_output.clone()));
         Ok(ExitReason::Submitted { final_output })
+    } else if over_budget {
+        let limit_usd = cost_cap.unwrap_or(0.0);
+        agent.trajectory.info.exit_reason = Some("budget_exhausted".into());
+        agent.trajectory.info.failure_category = Some(FailureCategory::BudgetExhausted);
+        agent.finalize_run_metadata(outcome::BUDGET_EXHAUSTED);
+        emit_ended(
+            agent,
+            "budget_exhausted",
+            Some(FailureCategory::BudgetExhausted),
+            None,
+        );
+        Ok(ExitReason::BudgetExhausted {
+            limit_usd,
+            spent_usd: result.total_cost_usd,
+        })
     } else if is_max_turns {
         agent.trajectory.info.exit_reason = Some("step_limit".into());
         agent.trajectory.info.failure_category = Some(FailureCategory::StepLimit);
@@ -499,10 +626,18 @@ fn finalize(
             Value::String(result.subtype.clone()),
         );
         agent.finalize_run_metadata(outcome::ERROR);
-        Err(Error::Trajectory(format!(
-            "claude driver ended with non-success result: {}",
-            result.subtype
-        )))
+        let err_msg = if result.is_error {
+            format!(
+                "claude driver ended with error: {}",
+                truncate(&result.final_text, 500)
+            )
+        } else {
+            format!(
+                "claude driver ended with non-success result: {}",
+                result.subtype
+            )
+        };
+        Err(Error::Trajectory(err_msg))
     }
 }
 

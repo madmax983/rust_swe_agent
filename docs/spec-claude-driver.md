@@ -67,6 +67,28 @@ backends. As a result the Claude-Code path produces the same artifacts:
 `success` is treated as a submission: the working-tree diff is the patch and
 `result.result` is the `final_output`.
 
+## Safety-contract enforcement
+
+The driver delegates execution to a CLI it cannot instrument mid-action, so it
+enforces the harness's safety contracts at the boundaries instead:
+
+- **`--read-only`** is rejected (the CLI auto-allows `Bash`/`Edit`/`Write`, so
+  it cannot offer an analysis-only guarantee).
+- **Interactive confirmation** (`--interactive` / `--ui`) is rejected — the
+  per-action operator confirmer lives inside `DefaultAgent` and cannot gate
+  Claude's tool calls.
+- **Cost caps** (`agent.cost_limit_usd` / `--per-task-budget-usd`) are forwarded
+  to Claude Code's `--max-budget-usd`, and re-checked post-hoc: an over-budget
+  run is recorded as `budget_exhausted`, never `submitted`.
+- **Cancellation** (sweep Ctrl-C via the run's cancellation token) is raced
+  against the stream; when it fires the child is killed and the run is finalized
+  as an interrupt, matching the built-in loop.
+- **Merged `--extra-context` / active-skill guidance** is appended to the prompt
+  Claude Code receives, so the backend actually sees the context the trajectory
+  records.
+- **Tool-action labels** in `extra.actions` are redacted on the trajectory
+  surface, the same as the built-in path.
+
 ## Cost & provenance
 
 - Cost is taken verbatim from `result.total_cost_usd` and recorded with
@@ -88,7 +110,19 @@ backends. As a result the Claude-Code path produces the same artifacts:
 - **No `--resume` / `--continue`.** Those paths stay on the built-in loop.
 - **Step semantics differ.** `steps` counts tool invocations, the closest analog
   to the built-in loop's one-action-per-turn step. It is not Claude Code's
-  `num_turns`.
+  `num_turns`, and the harness does not hard-stop the run when the tool-use
+  count crosses `step_limit` (Claude Code's `--max-turns` is the active bound).
+
+### Deferred (not yet at built-in parity)
+
+These built-in behaviors are not yet mirrored by the driver and remain open:
+
+- **Pre-submit test telemetry** (`tests_run_before_submit`, `last_tests_passed`)
+  — the built-in loop matches test-command patterns and records a
+  `TestInvocation` per run; the driver only records the action label.
+- **Per-step partial checkpoints** — the built-in loop writes a resumable
+  partial trajectory after each step; the driver appends in memory and writes
+  once at the end, so an interrupted long run loses streamed progress.
 
 ## Testing
 

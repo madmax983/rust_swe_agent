@@ -11,6 +11,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Command;
 
 use maxwells_daemon::{
@@ -18,6 +19,7 @@ use maxwells_daemon::{
     run::mini::{InteractiveMode, MiniArgs, RunDriver, run},
 };
 
+#[cfg(unix)]
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -31,6 +33,7 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+#[cfg(unix)]
 fn init_repo(dir: &Path) {
     git(dir, &["init", "-q", "-b", "main"]);
     git(dir, &["config", "user.email", "test@test"]);
@@ -43,6 +46,7 @@ fn init_repo(dir: &Path) {
 
 /// Write an executable fake `claude` that appends to `a.txt` (a real edit in
 /// its cwd) and prints a canned stream-json transcript. Returns its path.
+#[cfg(unix)]
 fn write_fake_claude(dir: &Path) -> std::path::PathBuf {
     // The transcript mirrors the real wire shapes: system/init, a thinking
     // turn, a Bash tool_use turn, the tool_result delivered as a `user`
@@ -69,6 +73,27 @@ JSON
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     path
+}
+
+/// Point `MAXWELLS_CLAUDE_BIN` at a single shared fixture, exactly once.
+/// `OnceLock` serializes initialization, so the var is set before any test
+/// reads it and is never mutated again — avoiding a concurrent env-var race
+/// between the parallel `#[tokio::test]` cases.
+#[cfg(unix)]
+fn ensure_fake_claude() {
+    use std::sync::OnceLock;
+    static FAKE: OnceLock<std::path::PathBuf> = OnceLock::new();
+    FAKE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("maxwells_cc_fake_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_fake_claude(&dir);
+        // SAFETY: runs once under OnceLock with all other threads blocked
+        // until it completes, so no other thread reads env concurrently.
+        unsafe {
+            std::env::set_var("MAXWELLS_CLAUDE_BIN", &path);
+        }
+        path
+    });
 }
 
 fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
@@ -106,6 +131,7 @@ fn base_args(repo: &Path, out: &Path, name: &str) -> MiniArgs {
     }
 }
 
+#[cfg(unix)]
 fn read_traj(out: &Path, name: &str) -> serde_json::Value {
     let path = out.join(format!("{name}.traj.json"));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -117,13 +143,7 @@ async fn claude_driver_produces_valid_trajectory() {
     let repo = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
     init_repo(repo.path());
-    let fake = write_fake_claude(repo.path());
-
-    // SAFETY: each integration-test file is its own process and this is the
-    // only test touching the variable, so there is no cross-test race.
-    unsafe {
-        std::env::set_var("MAXWELLS_CLAUDE_BIN", &fake);
-    }
+    ensure_fake_claude();
 
     run(base_args(repo.path(), out.path(), "cc"))
         .await
@@ -177,10 +197,6 @@ async fn claude_driver_produces_valid_trajectory() {
     // The driver ran `claude` in the repo, so the real edit landed.
     let contents = std::fs::read_to_string(repo.path().join("a.txt")).unwrap();
     assert_eq!(contents, "line one\nline two\n");
-
-    unsafe {
-        std::env::remove_var("MAXWELLS_CLAUDE_BIN");
-    }
 }
 
 /// `--driver claude-code` is rejected with `--env docker` (the CLI edits the
@@ -196,4 +212,54 @@ async fn claude_driver_rejects_docker_env() {
     let err = run(args).await.expect_err("docker should be rejected");
     let msg = err.to_string();
     assert!(msg.contains("local environment"), "unexpected error: {msg}");
+}
+
+/// `--driver claude-code` is rejected with `--read-only`: the CLI auto-allows
+/// mutation tools, so it cannot honor an analysis-only contract.
+#[tokio::test]
+async fn claude_driver_rejects_read_only() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-ro");
+    args.read_only = true;
+
+    let err = run(args).await.expect_err("read-only should be rejected");
+    assert!(
+        err.to_string().contains("read-only"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `--driver claude-code` is rejected with interactive confirmation modes: the
+/// driver cannot route Claude's tool calls through the operator confirmer.
+#[tokio::test]
+async fn claude_driver_rejects_interactive_confirmation() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-int");
+    args.interactive_mode = InteractiveMode::StderrPrompt;
+
+    let err = run(args).await.expect_err("interactive should be rejected");
+    assert!(
+        err.to_string().contains("interactive"),
+        "unexpected error: {err}"
+    );
+}
+
+/// A successful run that exceeds the configured per-task budget is recorded as
+/// `budget_exhausted`, never `submitted`, so spend controls hold.
+#[tokio::test]
+#[cfg(unix)]
+async fn claude_driver_downgrades_over_budget_run() {
+    let repo = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    ensure_fake_claude();
+
+    let mut args = base_args(repo.path(), out.path(), "cc-budget");
+    // Fixture reports total_cost_usd = 0.0123; set a cap well below that.
+    args.config.root.agent.per_task_budget_usd = Some(0.001);
+
+    run(args).await.expect("run should complete");
+    let traj = read_traj(out.path(), "cc-budget");
+    assert_eq!(traj["info"]["outcome"], "budget_exhausted");
+    assert_eq!(traj["info"]["failure_category"], "budget_exhausted");
 }

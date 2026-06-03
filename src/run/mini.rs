@@ -392,16 +392,39 @@ fn build_mini_manifest(
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: MiniArgs) -> Result<(), Error> {
     // The Claude Code driver shells out to the host `claude` binary and edits
-    // the host working tree directly; it has no path into a Docker sandbox.
-    // Fail fast with a clear message rather than silently ignoring `--env docker`.
-    if args.driver == RunDriver::ClaudeCode
-        && matches!(args.config.root.environment.kind, EnvKind::Docker)
-    {
-        return Err(Error::Config(ConfigError::Invalid(
-            "--driver claude-code is only supported with the local environment, \
-             not --env docker"
-                .into(),
-        )));
+    // the host working tree directly. It cannot honor several safety contracts
+    // the built-in loop enforces inside `DefaultAgent::step`, so reject the
+    // combinations it would silently violate rather than mislead the operator.
+    if args.driver == RunDriver::ClaudeCode {
+        if matches!(args.config.root.environment.kind, EnvKind::Docker) {
+            // No path into a Docker sandbox — it runs on the host.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code is only supported with the local environment, \
+                 not --env docker"
+                    .into(),
+            )));
+        }
+        if args.read_only {
+            // Claude Code auto-allows Bash/Edit/Write, so it would mutate the
+            // worktree despite the analysis-only contract.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot honor --read-only (it auto-allows \
+                 mutation tools); drop one of the two flags"
+                    .into(),
+            )));
+        }
+        if matches!(
+            args.interactive_mode,
+            InteractiveMode::StderrPrompt | InteractiveMode::Ratatui
+        ) {
+            // Per-action operator confirmation is gated inside DefaultAgent;
+            // the driver can't route Claude's tool calls through the confirmer.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot honor interactive confirmation \
+                 (--interactive/--ui); tool calls would run unattended"
+                    .into(),
+            )));
+        }
     }
 
     std::fs::create_dir_all(&args.output_dir)?;
@@ -852,6 +875,7 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
             crate::run::claude_driver::drive(
                 &mut agent,
                 args.task.clone(),
+                resolved_skills.merged_extra_context.as_deref(),
                 args.local_workdir.as_deref(),
                 args.task_timeout_secs,
             )
