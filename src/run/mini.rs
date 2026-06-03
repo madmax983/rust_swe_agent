@@ -46,6 +46,9 @@ fn current_git_sha() -> Option<String> {
 const PATCH_BASE_ENV: &str = "MAXWELL_PATCH_BASE";
 const LEGACY_PATCH_BASE_ENV: &str = "RUST_SWE_AGENT_PATCH_BASE";
 const VERIFICATION_PREVIEW_MAX_BYTES: usize = 2 * 1024;
+// Default value from EnvCfg::default_timeout_secs; used to detect non-default
+// per-command timeout that the claude-code driver cannot enforce.
+const DEFAULT_ENV_TIMEOUT_SECS: u64 = 60;
 
 #[cfg(test)]
 struct CancelBeforePatchCaptureHook {
@@ -512,6 +515,32 @@ pub async fn run(args: MiniArgs) -> Result<(), Error> {
                 "--driver claude-code cannot enforce stagnation detection; \
                  set agent.detect_stagnation = false in config, or switch \
                  to --driver builtin"
+                    .into(),
+            )));
+        }
+        if args.config.root.environment.timeout_secs != DEFAULT_ENV_TIMEOUT_SECS {
+            // The built-in loop wraps every bash call in RunRequest::with_timeout
+            // using this value. Claude Code executes tools itself and cannot
+            // receive per-command timeouts from the harness, so a non-default
+            // value would be silently ignored.
+            return Err(Error::Config(ConfigError::Invalid(format!(
+                "--driver claude-code cannot enforce per-command timeout \
+                 (environment.timeout_secs={}); the CLI runs tools itself. \
+                 Remove the override or switch to --driver builtin",
+                args.config.root.environment.timeout_secs
+            ))));
+        }
+        if args.config.root.agent.per_task_budget_usd.is_some()
+            && !args.config.root.agent.hide_budget_from_agent
+        {
+            // The built-in loop appends a budget block to each observation when
+            // hide_budget_from_agent is false, letting the agent track spend.
+            // The driver records only raw Claude tool results, so this template
+            // would never fire and the agent would have no budget visibility.
+            return Err(Error::Config(ConfigError::Invalid(
+                "--driver claude-code cannot append budget-visibility blocks \
+                 (agent.hide_budget_from_agent = false with per_task_budget_usd); \
+                 set hide_budget_from_agent = true or switch to --driver builtin"
                     .into(),
             )));
         }

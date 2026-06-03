@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -204,6 +204,7 @@ pub async fn drive(
         .take()
         .ok_or_else(|| Error::Trajectory("claude child has no stdout pipe".into()))?;
     let timeout_dur = timeout_secs.map(Duration::from_secs);
+    let run_start = Instant::now();
 
     // Race the stream against the optional wallclock timeout and the
     // operator's cancellation token (sweep Ctrl-C). The branches yield an
@@ -253,13 +254,15 @@ pub async fn drive(
         }
     };
 
-    // Wait for the child to exit, still bounded by the original timeout so
-    // a CLI that closes stdout but hangs during shutdown can't block the run
-    // indefinitely. A generous grace period covers normal cleanup; if it
-    // fires we kill the child and proceed with whatever parsed result we have.
-    let wait_deadline = timeout_dur.map(|d| d.saturating_sub(WAIT_GRACE_SECS));
-    let exit_code = if let Ok(Ok(status)) =
-        tokio::time::timeout(wait_deadline.unwrap_or(WAIT_GRACE_SECS), child.wait()).await
+    // Wait for the child to exit, bounded by the *remaining* task budget (not
+    // the original duration) so a CLI that closes stdout near the end of its
+    // timeout window cannot extend the run beyond the configured cap. The grace
+    // window is further capped to WAIT_GRACE_SECS so normal, fast cleanup does
+    // not consume the full remaining budget.
+    let wait_deadline = timeout_dur.map_or(WAIT_GRACE_SECS, |d| {
+        d.saturating_sub(run_start.elapsed()).min(WAIT_GRACE_SECS)
+    });
+    let exit_code = if let Ok(Ok(status)) = tokio::time::timeout(wait_deadline, child.wait()).await
     {
         status.code()
     } else {
@@ -447,7 +450,9 @@ fn handle_assistant(
                                 id.to_owned(),
                                 PendingTest {
                                     command: cmd.to_owned(),
-                                    step_index: parsed.steps,
+                                    // steps was just incremented; subtract 1 so the index
+                                    // is zero-based, matching the built-in loop's convention.
+                                    step_index: parsed.steps - 1,
                                     matched_pattern: matched,
                                 },
                             );

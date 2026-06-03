@@ -396,3 +396,41 @@ async fn claude_driver_rejects_resume() {
         "unexpected error: {err}"
     );
 }
+
+/// `--driver claude-code` is rejected when `environment.timeout_secs` is
+/// non-default: the harness per-command timeout is applied in `env.run` which
+/// the driver bypasses, so the configured limit would be silently ignored.
+#[tokio::test]
+async fn claude_driver_rejects_non_default_cmd_timeout() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-cmd-timeout");
+    args.config.root.environment.timeout_secs = 30; // non-default (default is 60)
+
+    let err = run(args)
+        .await
+        .expect_err("non-default command timeout should be rejected");
+    assert!(
+        err.to_string().contains("timeout"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `--driver claude-code` is rejected when budget-visibility is enabled
+/// (`per_task_budget_usd` set and `hide_budget_from_agent = false`): the
+/// built-in loop appends a budget block to each observation but the driver
+/// only records raw tool results, so the template would silently do nothing.
+#[tokio::test]
+async fn claude_driver_rejects_budget_visibility() {
+    let out = tempfile::tempdir().unwrap();
+    let mut args = base_args(out.path(), out.path(), "cc-budget-vis");
+    args.config.root.agent.per_task_budget_usd = Some(1.0);
+    args.config.root.agent.hide_budget_from_agent = false;
+
+    let err = run(args)
+        .await
+        .expect_err("budget visibility should be rejected");
+    assert!(
+        err.to_string().contains("budget"),
+        "unexpected error: {err}"
+    );
+}
